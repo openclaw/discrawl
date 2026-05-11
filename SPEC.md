@@ -47,10 +47,15 @@ Out of scope for V1:
 These are settled unless the user explicitly changes them:
 
 - config format: `TOML`
-- config location: `~/.discrawl/config.toml`
-- DB location: `~/.discrawl/discrawl.db`
-- cache dir: `~/.discrawl/cache/`
-- log dir: `~/.discrawl/logs/`
+- config location: platform-native XDG config dir, e.g.
+  `${XDG_CONFIG_HOME:-~/.config}/discrawl/config.toml` on Linux
+- DB location: platform-native XDG data dir, e.g.
+  `${XDG_DATA_HOME:-~/.local/share}/discrawl/discrawl.db` on Linux
+- cache dir: platform-native XDG cache dir, e.g. `${XDG_CACHE_HOME:-~/.cache}/discrawl/`
+- log dir: platform-native XDG state dir, e.g.
+  `${XDG_STATE_HOME:-~/.local/state}/discrawl/logs/`
+- legacy installs with `~/.discrawl/config.toml` continue to load that config when the new default
+  config file does not exist, even if XDG env vars are present
 - token source: `DISCORD_BOT_TOKEN` or configured env var, then optional OS keyring fallback
 - guild model: one guild in CLI UX, multi-guild-ready schema
 - search: hybrid, with FTS first and embeddings optional
@@ -74,8 +79,8 @@ An agent should assume:
 
 ### Key file paths
 
-- `~/.discrawl/config.toml`
-- `~/.discrawl/discrawl.db`
+- platform-native Discrawl config file
+- platform-native Discrawl SQLite database
 - `~/.profile`
 
 ### OpenAI embeddings key
@@ -406,7 +411,7 @@ discrawl [global flags] <command> [args]
 
 Purpose:
 
-- create `~/.discrawl/config.toml`
+- create the platform-native Discrawl config file
 - discover accessible Discord guilds
 - persist guild id and DB path
 
@@ -551,16 +556,16 @@ Format:
 
 Location:
 
-- `~/.discrawl/config.toml`
+- platform-native Discrawl config file
 
 Suggested shape:
 
 ```toml
 version = 1
 guild_id = "1456350064065904867"
-db_path = "~/.discrawl/discrawl.db"
-cache_dir = "~/.discrawl/cache"
-log_dir = "~/.discrawl/logs"
+db_path = "~/.local/share/discrawl/discrawl.db"
+cache_dir = "~/.cache/discrawl"
+log_dir = "~/.local/state/discrawl/logs"
 
 [discord]
 token_source = "env"

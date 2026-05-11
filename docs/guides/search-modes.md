@@ -17,7 +17,7 @@
 
 ## Semantic and hybrid prerequisites
 
-- `[search.embeddings]` configured in `~/.discrawl/config.toml`
+- `[search.embeddings]` configured in the Discrawl config file
 - local `message_embeddings` rows for the configured provider, model, and input version
 - input version is currently `message_normalized_v1`, so vectors are tied to normalized message text rather than raw Discord payloads
 

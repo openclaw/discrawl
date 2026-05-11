@@ -13,7 +13,8 @@ discrawl init --with-embeddings
 
 ## What it does
 
-- writes `~/.discrawl/config.toml` (or whatever `--config` / `DISCRAWL_CONFIG` points to)
+- writes the default XDG config file, or whatever `--config` /
+  `DISCRAWL_CONFIG` points to
 - discovers guilds the configured bot can access
 - if exactly one guild is available, sets it as `default_guild_id` automatically
 - creates the SQLite database at `db_path`

@@ -3,6 +3,7 @@ module github.com/openclaw/discrawl
 go 1.26.3
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/alecthomas/kong v1.15.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/gorilla/websocket v1.5.3

@@ -36,9 +36,11 @@ discrawl search "panic: nil pointer"
 discrawl tail
 ```
 
-`init` discovers accessible guilds and writes `~/.discrawl/config.toml`. If exactly one guild is available, it becomes the default automatically.
+`init` discovers accessible guilds and writes the default XDG config file. If
+exactly one guild is available, it becomes the default automatically.
 
-`doctor` verifies the config loads, the token resolves, the bot can reach the Gateway, and the local DB and FTS index are wired up.
+`doctor` verifies the config loads, the token resolves, the bot can reach the
+Gateway, and the local DB and FTS index are wired up.
 
 ## Quick start (Git-only reader)
 
@@ -50,14 +52,26 @@ discrawl search "launch checklist"
 discrawl messages --channel general --hours 24
 ```
 
-`subscribe` writes a token-free config (`discord.token_source = "none"`) and imports the snapshot. Read commands auto-refresh when the local snapshot is older than `15m`.
+`subscribe` writes a token-free config (`discord.token_source = "none"`) and
+imports the snapshot. Read commands auto-refresh when the local snapshot is
+older than `15m`.
 
 ## Default runtime paths
 
-- config: `~/.discrawl/config.toml`
-- database: `~/.discrawl/discrawl.db`
-- cache: `~/.discrawl/cache/`
-- logs: `~/.discrawl/logs/`
+Discrawl follows the OS storage convention instead of writing a new top-level directory in your
+home folder. Linux uses XDG Base Directory paths. macOS uses `~/Library` folders unless you set XDG
+variables yourself.
+
+- Linux config: `${XDG_CONFIG_HOME:-~/.config}/discrawl/config.toml`
+- Linux database/share: `${XDG_DATA_HOME:-~/.local/share}/discrawl/`
+- Linux cache: `${XDG_CACHE_HOME:-~/.cache}/discrawl/`
+- Linux logs: `${XDG_STATE_HOME:-~/.local/state}/discrawl/logs/`
+- macOS config/database/logs/share: `~/Library/Application Support/discrawl/`
+- macOS cache: `~/Library/Caches/discrawl/`
+
+Existing `~/.discrawl/config.toml` installs continue to load when the new default config file does
+not exist, even if XDG variables are set globally by your desktop. To migrate deliberately, copy or
+create the new config file first, or point Discrawl at it with `--config` / `DISCRAWL_CONFIG`.
 
 ## Next steps
 

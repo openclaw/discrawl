@@ -8,7 +8,9 @@ Routine imports are delta-planned from crawlkit shard fingerprints, with a Git-o
 
 ```bash
 discrawl update
-discrawl update --repo ~/.discrawl/share --remote https://github.com/example/discord-archive.git
+discrawl update \
+  --repo ~/.local/share/discrawl/share \
+  --remote https://github.com/example/discord-archive.git
 discrawl update --with-embeddings
 ```
 

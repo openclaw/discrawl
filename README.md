@@ -98,12 +98,21 @@ cmdkey /generic:discrawl:discord_bot_token /user:discord_bot_token /pass:%DISCOR
 
 Set `discord.token_source = "keyring"` if you want to require keyring lookup instead of env-first fallback.
 
-Default runtime paths:
+Default runtime paths follow the OS convention instead of writing a new top-level directory in
+your home folder. Linux uses the XDG Base Directory variables. macOS uses `~/Library` folders,
+unless you set XDG variables yourself.
 
-- config: `~/.discrawl/config.toml`
-- database: `~/.discrawl/discrawl.db`
-- cache: `~/.discrawl/cache/`
-- logs: `~/.discrawl/logs/`
+- Linux config: `${XDG_CONFIG_HOME:-~/.config}/discrawl/config.toml`
+- Linux database/share: `${XDG_DATA_HOME:-~/.local/share}/discrawl/`
+- Linux cache: `${XDG_CACHE_HOME:-~/.cache}/discrawl/`
+- Linux logs: `${XDG_STATE_HOME:-~/.local/state}/discrawl/logs/`
+- macOS config/database/share/logs: `~/Library/Application Support/discrawl/`
+- macOS cache: `~/Library/Caches/discrawl/`
+
+Existing installs that already have `~/.discrawl/config.toml` continue to load that config when
+the new default config file does not exist. This is true even if XDG variables are set globally by
+your desktop. To migrate deliberately, copy or create the new config file first, or point Discrawl
+at it with `--config` / `DISCRAWL_CONFIG`.
 
 ## Install
 
@@ -149,8 +158,10 @@ discrawl search "launch checklist"
 discrawl messages --channel general --hours 24
 ```
 
-`init` discovers accessible guilds and writes `~/.discrawl/config.toml`. If exactly one guild is available, that guild becomes the default automatically.
-`subscribe` writes a token-free config, imports the private Git snapshot, and read commands auto-refresh when the local snapshot is older than `15m`.
+`init` discovers accessible guilds and writes the default XDG config file. If
+exactly one guild is available, that guild becomes the default automatically.
+`subscribe` writes a token-free config, imports the private Git snapshot, and
+read commands auto-refresh when the local snapshot is older than `15m`.
 
 `doctor` is the fastest sanity check:
 
@@ -578,9 +589,9 @@ Typical config shape:
 version = 1
 default_guild_id = ""
 guild_ids = []
-db_path = "~/.discrawl/discrawl.db"
-cache_dir = "~/.discrawl/cache"
-log_dir = "~/.discrawl/logs"
+db_path = "~/.local/share/discrawl/discrawl.db" # macOS: "~/Library/Application Support/discrawl/discrawl.db"
+cache_dir = "~/.cache/discrawl" # macOS: "~/Library/Caches/discrawl"
+log_dir = "~/.local/state/discrawl/logs" # macOS: "~/Library/Application Support/discrawl/logs"
 
 [discord]
 token_source = "env" # use "none" for Git-only read access
@@ -612,7 +623,7 @@ batch_size = 64
 
 [share]
 remote = ""
-repo_path = "~/.discrawl/share"
+repo_path = "~/.local/share/discrawl/share" # macOS: "~/Library/Application Support/discrawl/share"
 branch = "main"
 auto_update = true
 stale_after = "15m"

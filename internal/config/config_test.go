@@ -41,6 +41,176 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, "2m", cfg.Search.Embeddings.RequestTimeout)
 }
 
+func TestDefaultPathsUseXDGDirs(t *testing.T) {
+	// Explicit XDG env vars define the candidate new-install paths on every
+	// platform, including macOS.
+	home := t.TempDir()
+	configHome := filepath.Join(home, "xdg-config")
+	dataHome := filepath.Join(home, "xdg-data")
+	cacheHome := filepath.Join(home, "xdg-cache")
+	stateHome := filepath.Join(home, "xdg-state")
+	setTestHome(t, home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	cfg := Default()
+	require.Equal(t, filepath.Join(dataHome, "discrawl", "discrawl.db"), cfg.DBPath)
+	require.Equal(t, filepath.Join(cacheHome, "discrawl"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(stateHome, "discrawl", "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(dataHome, "discrawl", "share"), cfg.Share.RepoPath)
+	require.Equal(t, filepath.Join(configHome, "discrawl", "config.toml"), ResolvePath(""))
+}
+
+func TestDefaultPathsUseXDGFallbacks(t *testing.T) {
+	// With no XDG env vars, use the adrg/xdg platform defaults.
+	home := t.TempDir()
+	configHome, dataHome, cacheHome, stateHome := defaultXDGTestDirs(home)
+	setTestHome(t, home)
+	clearXDGEnv(t)
+
+	cfg := Default()
+	require.Equal(t, filepath.Join(dataHome, "discrawl", "discrawl.db"), cfg.DBPath)
+	require.Equal(t, filepath.Join(cacheHome, "discrawl"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(stateHome, "discrawl", "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(dataHome, "discrawl", "share"), cfg.Share.RepoPath)
+	require.Equal(t, filepath.Join(configHome, "discrawl", "config.toml"), ResolvePath(""))
+}
+
+func TestDefaultPathsIgnoreRelativeXDGDirs(t *testing.T) {
+	// Relative XDG env values are invalid per the spec and should fall back.
+	home := t.TempDir()
+	configHome, dataHome, cacheHome, stateHome := defaultXDGTestDirs(home)
+	setTestHome(t, home)
+	t.Setenv("XDG_CONFIG_HOME", "relative-config")
+	t.Setenv("XDG_DATA_HOME", "relative-data")
+	t.Setenv("XDG_CACHE_HOME", "relative-cache")
+	t.Setenv("XDG_STATE_HOME", "relative-state")
+
+	cfg := Default()
+	require.Equal(t, filepath.Join(dataHome, "discrawl", "discrawl.db"), cfg.DBPath)
+	require.Equal(t, filepath.Join(cacheHome, "discrawl"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(stateHome, "discrawl", "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(configHome, "discrawl", "config.toml"), ResolvePath(""))
+}
+
+func TestDefaultPathsPreferExistingLegacyInstallPaths(t *testing.T) {
+	// Existing ~/.discrawl installs should continue to run without migration.
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".discrawl")
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "cache"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "logs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "share"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(legacy, "discrawl.db"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(legacy, "config.toml"), nil, 0o600))
+	setTestHome(t, home)
+	clearXDGEnv(t)
+
+	cfg := Default()
+	require.Equal(t, filepath.Join(legacy, "discrawl.db"), cfg.DBPath)
+	require.Equal(t, filepath.Join(legacy, "cache"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(legacy, "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(legacy, "share"), cfg.Share.RepoPath)
+	require.Equal(t, filepath.Join(legacy, "config.toml"), ResolvePath(""))
+}
+
+func TestDefaultPathsKeepLegacyInstallWithXDGEnv(t *testing.T) {
+	// XDG env vars are often ambient desktop state. They should not force an
+	// existing ~/.discrawl install to migrate before the new paths exist.
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".discrawl")
+	configHome := filepath.Join(home, "xdg-config")
+	dataHome := filepath.Join(home, "xdg-data")
+	cacheHome := filepath.Join(home, "xdg-cache")
+	stateHome := filepath.Join(home, "xdg-state")
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "cache"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "logs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "share"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(legacy, "discrawl.db"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(legacy, "config.toml"), nil, 0o600))
+	setTestHome(t, home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	cfg := Default()
+	require.Equal(t, filepath.Join(legacy, "discrawl.db"), cfg.DBPath)
+	require.Equal(t, filepath.Join(legacy, "cache"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(legacy, "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(legacy, "share"), cfg.Share.RepoPath)
+	require.Equal(t, filepath.Join(legacy, "config.toml"), ResolvePath(""))
+}
+
+func TestDefaultPathsMixLegacyAndNewLocations(t *testing.T) {
+	// Fallback is path-by-path so partial migration does not hide newer data.
+	home := t.TempDir()
+	_, dataHome, _, stateHome := defaultXDGTestDirs(home)
+	legacy := filepath.Join(home, ".discrawl")
+	newDBPath := filepath.Join(dataHome, "discrawl", "discrawl.db")
+	require.NoError(t, os.MkdirAll(filepath.Dir(newDBPath), 0o755))
+	require.NoError(t, os.WriteFile(newDBPath, nil, 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "cache"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(legacy, "share"), 0o755))
+	setTestHome(t, home)
+	clearXDGEnv(t)
+
+	cfg := Default()
+	require.Equal(t, newDBPath, cfg.DBPath)
+	require.Equal(t, filepath.Join(legacy, "cache"), cfg.CacheDir)
+	require.Equal(t, filepath.Join(stateHome, "discrawl", "logs"), cfg.LogDir)
+	require.Equal(t, filepath.Join(legacy, "share"), cfg.Share.RepoPath)
+}
+
+func TestDefaultPathsPreferNewConfigOverLegacy(t *testing.T) {
+	// Once the new config exists, it becomes the default source of truth.
+	home := t.TempDir()
+	configHome, _, _, _ := defaultXDGTestDirs(home)
+	legacyConfig := filepath.Join(home, ".discrawl", "config.toml")
+	newConfig := filepath.Join(configHome, "discrawl", "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyConfig), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(newConfig), 0o755))
+	require.NoError(t, os.WriteFile(legacyConfig, nil, 0o600))
+	require.NoError(t, os.WriteFile(newConfig, nil, 0o600))
+	setTestHome(t, home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	require.Equal(t, newConfig, ResolvePath(""))
+}
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+}
+
+func clearXDGEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+}
+
+func defaultXDGTestDirs(home string) (configHome, dataHome, cacheHome, stateHome string) {
+	switch runtime.GOOS {
+	case "darwin":
+		appSupport := filepath.Join(home, "Library", "Application Support")
+		return appSupport, appSupport, filepath.Join(home, "Library", "Caches"), appSupport
+	case "windows":
+		localAppData := filepath.Join(home, "AppData", "Local")
+		return localAppData, localAppData, filepath.Join(localAppData, "cache"), localAppData
+	default:
+		return filepath.Join(home, ".config"),
+			filepath.Join(home, ".local", "share"),
+			filepath.Join(home, ".cache"),
+			filepath.Join(home, ".local", "state")
+	}
+}
+
 func TestDefaultSyncConcurrencyBounds(t *testing.T) {
 	old := runtime.GOMAXPROCS(0)
 	t.Cleanup(func() { runtime.GOMAXPROCS(old) })
@@ -262,11 +432,17 @@ func TestExpandPath(t *testing.T) {
 func TestResolvePath(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "env.toml")
+	// ResolvePath reads process-wide home/XDG state through adrg/xdg; isolate
+	// the test so host XDG variables or Windows known-folder env vars do not
+	// leak into the fallback assertion below.
+	setTestHome(t, dir)
 	t.Setenv(DefaultConfigEnv, envPath)
 	require.Equal(t, "flag.toml", ResolvePath("flag.toml"))
 	require.Equal(t, envPath, ResolvePath(""))
 	t.Setenv(DefaultConfigEnv, "")
-	require.Contains(t, ResolvePath(""), filepath.Join(".discrawl", "config.toml"))
+	clearXDGEnv(t)
+	configHome, _, _, _ := defaultXDGTestDirs(dir)
+	require.Equal(t, filepath.Join(configHome, "discrawl", "config.toml"), ResolvePath(""))
 	_, err := ExpandPath("")
 	require.ErrorContains(t, err, "empty path")
 }

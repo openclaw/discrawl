@@ -1,12 +1,15 @@
 # `subscribe`
 
-Subscribes to a Git-backed snapshot repo. The Git-only setup path - no Discord bot token required.
+Subscribes to a Git-backed snapshot repo. The Git-only setup path needs no
+Discord bot token.
 
 ## Usage
 
 ```bash
 discrawl subscribe https://github.com/example/discord-archive.git
-discrawl subscribe --repo ~/.discrawl/share https://github.com/example/discord-archive.git
+discrawl subscribe \
+  --repo ~/.local/share/discrawl/share \
+  https://github.com/example/discord-archive.git
 discrawl subscribe --branch main https://github.com/example/discord-archive.git
 discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.git
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git

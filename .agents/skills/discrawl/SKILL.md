@@ -11,14 +11,18 @@ for current external context.
 
 ## Sources
 
-- DB: `~/.discrawl/discrawl.db`
-- Config: `~/.discrawl/config.toml`
-- Cache: `~/.discrawl/cache`
-- Logs: `~/.discrawl/logs`
-- Git share repo: `~/.discrawl/share`
+- DB: platform-native XDG data dir, usually
+  `${XDG_DATA_HOME:-~/.local/share}/discrawl/discrawl.db` on Linux or
+  `~/Library/Application Support/discrawl/discrawl.db` on macOS
+- Config: platform-native XDG config dir, with legacy fallback to
+  `~/.discrawl/config.toml`
+- Cache: platform-native XDG cache dir
+- Logs: platform-native XDG state dir
+- Git share repo: platform-native XDG data dir
 - Repo: `openclaw/discrawl`; use `~/GIT/_Perso/discrawl` only after verifying
   its remote targets `openclaw/discrawl`, otherwise use a fresh checkout
-- Preferred CLI: `discrawl`; fallback to `go run ./cmd/discrawl` from the repo if the installed binary is stale
+- Preferred CLI: `discrawl`; fallback to `go run ./cmd/discrawl` from the repo
+  if the installed binary is stale
 
 ## Freshness
 
@@ -31,7 +35,16 @@ discrawl status --json
 For precise freshness from the default database:
 
 ```bash
-sqlite3 ~/.discrawl/discrawl.db \
+# Discrawl uses macOS ~/Library defaults unless XDG_DATA_HOME is explicitly set.
+case "$(uname -s)" in
+  Darwin)
+    db="$HOME/Library/Application Support/discrawl/discrawl.db"
+    ;;
+  *)
+    db="${XDG_DATA_HOME:-$HOME/.local/share}/discrawl/discrawl.db"
+    ;;
+esac
+sqlite3 "$db" \
   "select coalesce(max(updated_at),'') from sync_state where scope like 'channel:%';"
 ```
 

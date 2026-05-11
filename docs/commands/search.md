@@ -38,7 +38,7 @@ User query terms are parameterized and quoted before `MATCH`, so tokens like `AN
 
 ## Semantic prerequisites
 
-- `[search.embeddings]` configured in `~/.discrawl/config.toml`
+- `[search.embeddings]` configured in the Discrawl config file
 - local `message_embeddings` rows for the configured provider, model, and input version
 - input version is currently `message_normalized_v1`
 
