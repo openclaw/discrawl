@@ -252,10 +252,11 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 func applyImportPragmas(ctx context.Context, db *sql.DB) (func(context.Context) error, error) {
 	// Snapshot imports touch most of the archive. Keep SQLite's crash recovery
 	// enabled; journal_mode=off can leave the live DB malformed if the process
-	// or host dies mid-import.
+	// or host dies mid-import. Keep temporary storage file-backed and bound the
+	// page cache so large imports and FTS rebuilds do not exhaust small hosts.
 	for _, stmt := range []string{
-		`pragma temp_store = memory`,
-		`pragma cache_size = -262144`,
+		`pragma temp_store = file`,
+		`pragma cache_size = -32768`,
 		`pragma journal_mode = wal`,
 		`pragma synchronous = normal`,
 	} {

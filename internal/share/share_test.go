@@ -311,7 +311,7 @@ func TestImportIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
 	require.Len(t, results, 1)
 }
 
-func TestApplyImportPragmasKeepCrashRecoveryEnabled(t *testing.T) {
+func TestApplyImportPragmasBoundImportMemory(t *testing.T) {
 	ctx := context.Background()
 	s := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
 	defer func() { _ = s.Close() }()
@@ -319,6 +319,14 @@ func TestApplyImportPragmasKeepCrashRecoveryEnabled(t *testing.T) {
 	restore, err := applyImportPragmas(ctx, s.DB())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, restore(ctx)) }()
+
+	var tempStore int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma temp_store`).Scan(&tempStore))
+	require.Equal(t, 1, tempStore, "snapshot imports should use file-backed temporary storage")
+
+	var cacheSize int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma cache_size`).Scan(&cacheSize))
+	require.GreaterOrEqual(t, cacheSize, -65536)
 
 	var journalMode string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma journal_mode`).Scan(&journalMode))
