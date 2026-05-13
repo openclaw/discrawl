@@ -4,6 +4,10 @@
 
 ### Changes
 
+### Fixes
+
+- Kept large Git snapshot imports and FTS rebuilds from exhausting memory on small hosts by using file-backed SQLite temp storage and a bounded import cache. (#65) Thanks @hxy91819.
+
 ## 0.7.2 - 2026-05-11
 
 ### Changes
