@@ -15,6 +15,7 @@ discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 discrawl subscribe --no-import https://github.com/example/discord-archive.git
 discrawl subscribe --with-embeddings https://github.com/example/discord-archive.git
+discrawl subscribe --no-media https://github.com/example/discord-archive.git
 ```
 
 ## What it does
@@ -31,6 +32,7 @@ discrawl subscribe --with-embeddings https://github.com/example/discord-archive.
 - `--no-auto-update` - disable auto-refresh (use [`update`](update.html) manually)
 - `--no-import` - write config only; skip the initial pull/import
 - `--with-embeddings` - import vectors that match your local `[search.embeddings]` identity
+- `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 
 ## Disabled in this mode
 

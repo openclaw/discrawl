@@ -28,7 +28,9 @@ Proven DMs use the synthetic guild id `@me`. Unclassifiable desktop-cache payloa
 
 ## Attachments
 
-Attachment binaries are not stored in SQLite. Only attachment metadata, filenames, and (optionally) extracted text.
+Attachment binaries are not stored in SQLite. SQLite stores attachment metadata, filenames, optional extracted text, and media cache bookkeeping.
+
+`discrawl attachments fetch` and `discrawl sync --with-media` download media into `cache_dir/media` and record the relative media path, SHA-256, byte size, fetch time, and fetch status on the attachment row.
 
 Set `sync.attachment_text = false` if you want to keep attachment metadata and filenames but disable attachment body fetches for text indexing.
 

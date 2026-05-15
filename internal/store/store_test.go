@@ -1140,7 +1140,7 @@ func TestOpenMigratesSchemaV1ToV2(t *testing.T) {
 
 	var version int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
-	require.Equal(t, 2, version)
+	require.Equal(t, storeSchemaVersion, version)
 
 	_, rows, err := s.ReadOnlyQuery(ctx, "select provider, model, input_version, last_error, locked_at from embedding_jobs where message_id = 'm1'")
 	require.NoError(t, err)
@@ -1182,7 +1182,7 @@ func TestOpenMigratesUnversionedV1SchemaToV2(t *testing.T) {
 
 	var version int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
-	require.Equal(t, 2, version)
+	require.Equal(t, storeSchemaVersion, version)
 
 	_, rows, err := s.ReadOnlyQuery(ctx, "select provider, model, input_version, last_error, locked_at from embedding_jobs where message_id = 'm1'")
 	require.NoError(t, err)

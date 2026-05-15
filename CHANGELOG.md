@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Added attachment media caching with `discrawl attachments`, `attachments fetch`, `sync --with-media`, and Git snapshot backup/restore for cached non-DM media files.
 - Docker: add a local image with `/data` persistence and CI smoke coverage.
 
 ### Fixes

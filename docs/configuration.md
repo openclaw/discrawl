@@ -62,6 +62,8 @@ concurrency = 16
 repair_every = "6h"
 full_history = true
 attachment_text = true
+attachment_media = false
+max_attachment_bytes = 104857600
 
 [desktop]
 path = "~/.config/discord" # macOS default: "~/Library/Application Support/discord"
@@ -84,6 +86,7 @@ repo_path = "~/.local/share/discrawl/share" # macOS: "~/Library/Application Supp
 branch = "main"
 auto_update = true
 stale_after = "15m"
+media = true
 
 [share.filter]
 public_only = false
@@ -118,6 +121,8 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `guild_ids` is reserved for explicit multi-guild fan-out; usually you do not set this directly
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
+- `sync.attachment_media = true` makes `sync` behave like `sync --with-media`; media bytes are cached under `cache_dir/media`
+- `share.media = false` makes publish/update/auto-update omit or skip restoring cached media; `subscribe --no-media` writes this for Git-only readers
 - `[share.filter]` narrows only `publish` output; sync can still keep a richer local archive
 - `share.filter.public_only` exports only channels visible to the guild
   `@everyone` role after category/channel permission overwrites; private

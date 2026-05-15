@@ -16,7 +16,7 @@ const (
 	timeLayout         = time.RFC3339Nano
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 2
+	storeSchemaVersion = 3
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
@@ -175,9 +175,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.applyQueryIndexMigration(ctx); err != nil {
 			return err
 		}
-		if err := s.setSchemaVersion(ctx, storeSchemaVersion); err != nil {
+		if err := s.setSchemaVersion(ctx, 2); err != nil {
 			return err
 		}
+		currentVersion = 2
+	}
+	if currentVersion < 3 {
+		if err := s.applyAttachmentMediaMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 3); err != nil {
+			return err
+		}
+		currentVersion = 3
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
@@ -185,6 +195,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("%w: got %d want %d", ErrSchemaVersionMismatch, version, storeSchemaVersion)
 	}
 	if err := s.applyQueryIndexMigration(ctx); err != nil {
+		return err
+	}
+	if err := s.applyAttachmentMediaMigration(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
@@ -360,6 +373,12 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 			url text,
 			proxy_url text,
 			text_content text not null default '',
+			media_path text,
+			content_sha256 text,
+			content_size integer not null default 0,
+			fetched_at text,
+			fetch_status text not null default '',
+			fetch_error text not null default '',
 			updated_at text not null
 		);`,
 		`create table if not exists mention_events (
@@ -440,6 +459,39 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate baseline schema: %w", err)
 		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) applyAttachmentMediaMigration(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{"media_path", `alter table message_attachments add column media_path text`},
+		{"content_sha256", `alter table message_attachments add column content_sha256 text`},
+		{"content_size", `alter table message_attachments add column content_size integer not null default 0`},
+		{"fetched_at", `alter table message_attachments add column fetched_at text`},
+		{"fetch_status", `alter table message_attachments add column fetch_status text not null default ''`},
+		{"fetch_error", `alter table message_attachments add column fetch_error text not null default ''`},
+	} {
+		ok, err := columnExists(ctx, tx, "message_attachments", column.name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := tx.ExecContext(ctx, column.sql); err != nil {
+				return fmt.Errorf("add message_attachments.%s: %w", column.name, err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `create index if not exists idx_attachments_sha256 on message_attachments(content_sha256)`); err != nil {
+		return fmt.Errorf("ensure attachment media index: %w", err)
 	}
 	return tx.Commit()
 }

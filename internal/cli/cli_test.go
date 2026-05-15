@@ -23,6 +23,7 @@ import (
 	"github.com/openclaw/discrawl/internal/config"
 	discordclient "github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/discorddesktop"
+	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/report"
 	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
@@ -629,6 +630,132 @@ func TestParseSyncSources(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestFetchSyncMediaScopesWiretapToDMs(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s := seedCLIStore(t, filepath.Join(dir, "discrawl.db"))
+	defer func() { _ = s.Close() }()
+	require.NoError(t, addCLIAttachment(ctx, s, ""))
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: store.DirectMessageGuildID, Name: "Discord Direct Messages", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "dm-c1", GuildID: store.DirectMessageGuildID, Kind: "dm", Name: "Alice", RawJSON: `{}`}))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "dm1",
+			GuildID:           store.DirectMessageGuildID,
+			ChannelID:         "dm-c1",
+			ChannelName:       "Alice",
+			AuthorID:          "u2",
+			AuthorName:        "Alice",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "dm attachment",
+			NormalizedContent: "dm attachment private.png",
+			HasAttachments:    true,
+			RawJSON:           `{}`,
+		},
+		Attachments: []store.AttachmentRecord{{
+			AttachmentID: "a-dm",
+			MessageID:    "dm1",
+			GuildID:      store.DirectMessageGuildID,
+			ChannelID:    "dm-c1",
+			AuthorID:     "u2",
+			Filename:     "private.png",
+			ContentType:  "image/png",
+		}},
+	}}))
+	cfg := config.Default()
+	rt := &runtime{ctx: ctx, cfg: cfg, store: s, now: time.Now}
+
+	stats, err := rt.fetchSyncMedia(syncSources{name: "wiretap", wiretap: true}, syncer.SyncOptions{GuildIDs: []string{"g1"}}, filepath.Join(dir, "cache"), nil)
+	require.NoError(t, err)
+	require.Equal(t, &media.FetchStats{Attachments: 1, Skipped: 1}, stats)
+
+	guildRows, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m100"})
+	require.NoError(t, err)
+	require.Len(t, guildRows, 1)
+	require.Empty(t, guildRows[0].FetchStatus)
+	dmRows, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "dm1"})
+	require.NoError(t, err)
+	require.Len(t, dmRows, 1)
+	require.Equal(t, "no_url", dmRows[0].FetchStatus)
+}
+
+func TestFetchSyncMediaHonorsSince(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s := seedCLIStore(t, filepath.Join(dir, "discrawl.db"))
+	defer func() { _ = s.Close() }()
+	cutoff := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{
+		{
+			Record: store.MessageRecord{
+				ID:                "m-old",
+				GuildID:           "g1",
+				ChannelID:         "c1",
+				ChannelName:       "general",
+				AuthorID:          "u1",
+				AuthorName:        "Peter",
+				MessageType:       0,
+				CreatedAt:         cutoff.Add(-time.Hour).Format(time.RFC3339Nano),
+				Content:           "old attachment",
+				NormalizedContent: "old attachment old.png",
+				HasAttachments:    true,
+				RawJSON:           `{}`,
+			},
+			Attachments: []store.AttachmentRecord{{
+				AttachmentID: "a-old",
+				MessageID:    "m-old",
+				GuildID:      "g1",
+				ChannelID:    "c1",
+				AuthorID:     "u1",
+				Filename:     "old.png",
+				ContentType:  "image/png",
+			}},
+		},
+		{
+			Record: store.MessageRecord{
+				ID:                "m-new",
+				GuildID:           "g1",
+				ChannelID:         "c1",
+				ChannelName:       "general",
+				AuthorID:          "u1",
+				AuthorName:        "Peter",
+				MessageType:       0,
+				CreatedAt:         cutoff.Add(time.Hour).Format(time.RFC3339Nano),
+				Content:           "new attachment",
+				NormalizedContent: "new attachment new.png",
+				HasAttachments:    true,
+				RawJSON:           `{}`,
+			},
+			Attachments: []store.AttachmentRecord{{
+				AttachmentID: "a-new",
+				MessageID:    "m-new",
+				GuildID:      "g1",
+				ChannelID:    "c1",
+				AuthorID:     "u1",
+				Filename:     "new.png",
+				ContentType:  "image/png",
+			}},
+		},
+	}))
+	cfg := config.Default()
+	rt := &runtime{ctx: ctx, cfg: cfg, store: s, now: time.Now}
+
+	stats, err := rt.fetchSyncMedia(syncSources{name: "discord", discord: true}, syncer.SyncOptions{GuildIDs: []string{"g1"}, Since: cutoff}, filepath.Join(dir, "cache"), nil)
+	require.NoError(t, err)
+	require.Equal(t, &media.FetchStats{Attachments: 1, Skipped: 1}, stats)
+
+	oldRows, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m-old"})
+	require.NoError(t, err)
+	require.Len(t, oldRows, 1)
+	require.Empty(t, oldRows[0].FetchStatus)
+	newRows, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m-new"})
+	require.NoError(t, err)
+	require.Len(t, newRows, 1)
+	require.Equal(t, "no_url", newRows[0].FetchStatus)
+}
+
 func TestReadCommandsAutoImportStaleShare(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -669,6 +796,90 @@ func TestReadCommandsAutoImportStaleShare(t *testing.T) {
 	lastImport, err := reader.GetSyncState(ctx, share.LastImportSyncScope)
 	require.NoError(t, err)
 	require.NotEmpty(t, lastImport)
+}
+
+func TestAttachmentsCommandListsAndFetchesMedia(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	body := []byte("png-ish")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/file.png", r.URL.Path)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	dbPath := filepath.Join(dir, "discrawl.db")
+	s := seedCLIStore(t, dbPath)
+	require.NoError(t, addCLIAttachment(ctx, s, server.URL+"/file.png"))
+	require.NoError(t, s.Close())
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.CacheDir = filepath.Join(dir, "cache")
+	cfg.Share.Remote = ""
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "file.png")
+	require.Contains(t, out.String(), "image/png")
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "--author", "Peter", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "file.png")
+
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "fetch", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "fetched=1")
+
+	check, err := store.Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = check.Close() }()
+	rows, err := check.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m100"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	path, err := media.LocalPath(cfg.CacheDir, rows[0].MediaPath)
+	require.NoError(t, err)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+
+	require.NoError(t, os.Remove(path))
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "--missing", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "file.png")
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "fetch", "--missing", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "fetched=1")
+	got, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+}
+
+func TestAttachmentsDMCommandsSkipShareAutoUpdate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "discrawl.db")
+	s := seedCLIStore(t, dbPath)
+	require.NoError(t, addCLIDMAttachment(ctx, s))
+	require.NoError(t, s.Close())
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.CacheDir = filepath.Join(dir, "cache")
+	cfg.Share.Remote = filepath.Join(dir, "missing-remote.git")
+	cfg.Share.RepoPath = filepath.Join(dir, "share")
+	cfg.Share.AutoUpdate = true
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "--dm", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "private.png")
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "fetch", "--dm", "--all"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "skipped=1")
 }
 
 func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
@@ -712,6 +923,19 @@ func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
 	lastImport, err := reader.GetSyncState(ctx, share.LastImportSyncScope)
 	require.NoError(t, err)
 	require.Empty(t, lastImport)
+}
+
+func TestSubscribeNoMediaPersistsShareMediaOptOut(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "subscribe", "--no-import", "--no-media", "https://github.com/example/archive.git"}, &out, &bytes.Buffer{}))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.False(t, cfg.ShareMediaEnabled())
 }
 
 func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
@@ -1168,7 +1392,32 @@ func TestReadCommandsMigrateOlderLocalStore(t *testing.T) {
 	defer func() { _ = reader.Close() }()
 	var version int
 	require.NoError(t, reader.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
-	require.Equal(t, 2, version)
+	require.Equal(t, 3, version)
+}
+
+func TestReadOnlyCommandsMigrateOlderLocalStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	cfgPath := filepath.Join(dir, "config.toml")
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	s := seedCLIStore(t, cfg.DBPath)
+	_, err := s.DB().ExecContext(ctx, `pragma user_version = 1`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "status"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "messages=1")
+
+	reader, err := store.OpenReadOnly(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	var version int
+	require.NoError(t, reader.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
+	require.Equal(t, 3, version)
 }
 
 func seedCLIStore(t *testing.T, path string) *store.Store {
@@ -1193,6 +1442,72 @@ func seedCLIStore(t *testing.T, path string) *store.Store {
 		RawJSON:           `{}`,
 	}))
 	return s
+}
+
+func addCLIAttachment(ctx context.Context, s *store.Store, url string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m100",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "automatic updates work",
+			NormalizedContent: "automatic updates work file.png",
+			HasAttachments:    true,
+			RawJSON:           `{"author":{"username":"Peter","global_name":"Peter"}}`,
+		},
+		Attachments: []store.AttachmentRecord{{
+			AttachmentID: "a-cli",
+			MessageID:    "m100",
+			GuildID:      "g1",
+			ChannelID:    "c1",
+			AuthorID:     "u1",
+			Filename:     "file.png",
+			ContentType:  "image/png",
+			Size:         7,
+			URL:          url,
+		}},
+	}})
+}
+
+func addCLIDMAttachment(ctx context.Context, s *store.Store) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.UpsertGuild(ctx, store.GuildRecord{ID: store.DirectMessageGuildID, Name: "Discord Direct Messages", RawJSON: `{}`}); err != nil {
+		return err
+	}
+	if err := s.UpsertChannel(ctx, store.ChannelRecord{ID: "dm-c1", GuildID: store.DirectMessageGuildID, Kind: "dm", Name: "Alice", RawJSON: `{}`}); err != nil {
+		return err
+	}
+	return s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "dm1",
+			GuildID:           store.DirectMessageGuildID,
+			ChannelID:         "dm-c1",
+			ChannelName:       "Alice",
+			AuthorID:          "u2",
+			AuthorName:        "Alice",
+			MessageType:       0,
+			CreatedAt:         now,
+			Content:           "dm attachment",
+			NormalizedContent: "dm attachment private.png",
+			HasAttachments:    true,
+			RawJSON:           `{}`,
+		},
+		Attachments: []store.AttachmentRecord{{
+			AttachmentID: "a-dm",
+			MessageID:    "dm1",
+			GuildID:      store.DirectMessageGuildID,
+			ChannelID:    "dm-c1",
+			AuthorID:     "u2",
+			Filename:     "private.png",
+			ContentType:  "image/png",
+		}},
+	}})
 }
 
 func publishSnapshot(t *testing.T, ctx context.Context, s *store.Store, opts share.Options, message string) {

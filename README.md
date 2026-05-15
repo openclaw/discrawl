@@ -18,6 +18,7 @@ Wiretap DMs stay local and are never exported to the Git-backed snapshot mirror.
 - maintains FTS5 search indexes for fast local text search
 - builds an offline member directory from archived profile payloads
 - extracts small text-like attachments into the local search index
+- downloads and backs up cached attachment media when requested
 - records structured user and role mentions for direct querying
 - tails Gateway events for live updates, with periodic repair syncs
 - imports classifiable Discord Desktop cache messages with `wiretap`, including proven DMs under `@me`
@@ -268,6 +269,7 @@ Bot sync modes:
 `--all` ignores `default_guild_id` and fans out across every discovered guild the bot can access.
 `--skip-members` refreshes guild/channel/message data without crawling the full member list, which is useful for frequent Git snapshot publishers that only need latest messages.
 `--latest-only` is still accepted for explicit latest-only runs; it is now the default for untargeted `sync`. Use `--all-channels` to opt out of the fast default without doing a full historical crawl.
+`--with-media` downloads missing attachment media into `cache_dir/media` after the message sync/import phase.
 When `--channels` includes a forum channel id, `discrawl` expands that forum's threads and syncs their messages as part of the targeted run.
 `--since` limits initial history/bootstrap and full-history backfill to messages at or after the given RFC3339 timestamp. It does not mark older history as complete, so a later `sync --full` without `--since` can continue the backfill.
 Long runs now emit periodic progress logs to stderr so large backfills and Git snapshot imports do not look hung.
@@ -371,6 +373,19 @@ Notes:
 - rows with no displayable/searchable content are skipped by default; `--include-empty` opts back in
 - at least one filter is required
 - `--dm` is shorthand for `--guild @me`, so DM searches and message slices do not need raw SQL
+
+### `attachments`
+
+Lists attachment metadata and downloads media into the local cache when requested.
+
+```bash
+discrawl attachments --channel general --days 7
+discrawl attachments --filename crash --type image --all
+discrawl attachments fetch --channel general --days 7
+discrawl attachments fetch --missing --max-bytes 104857600
+```
+
+Media bytes are stored under `cache_dir/media`, not in SQLite. SQLite stores attachment metadata, content hash, relative media path, fetch status, and fetch error. Cached non-DM media is included in Git snapshots by default; `publish --no-media` omits it.
 
 ### `dms`
 
@@ -491,6 +506,7 @@ Publisher:
 discrawl publish --remote https://github.com/example/discord-archive.git --push
 discrawl publish --readme path/to/discord-backup/README.md --push
 discrawl publish --public-only --include-channels 1458141495701012561 --push
+discrawl publish --no-media --push
 ```
 
 Subscriber:
@@ -514,8 +530,8 @@ Once `share.remote` is configured, read commands auto-fetch and import when the 
 
 Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` import the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. Use `sync --all-channels` or `sync --full` when you intentionally want a broader live repair/backfill pass.
 
-Git snapshots publish non-DM archive tables by default. DMs, desktop wiretap
-rows, and local secrets are never exported.
+Git snapshots publish non-DM archive tables and cached non-DM attachment media by default. DMs, desktop wiretap rows, DM media, and local secrets are never exported. Use `publish --no-media` to omit cached media files.
+Subscribers can use `subscribe --no-media` or `update --no-media` to import only SQLite rows and skip restoring cached files.
 
 Publish filters narrow only the Git snapshot. The publisher can still sync and
 keep a richer local SQLite archive, then publish a smaller view for Git-only
@@ -666,6 +682,8 @@ concurrency = 16
 repair_every = "6h"
 full_history = true
 attachment_text = true
+attachment_media = false
+max_attachment_bytes = 104857600
 
 [desktop]
 path = "~/.config/discord" # macOS default: "~/Library/Application Support/discord"
@@ -688,6 +706,7 @@ repo_path = "~/.local/share/discrawl/share" # macOS: "~/Library/Application Supp
 branch = "main"
 auto_update = true
 stale_after = "15m"
+media = true
 ```
 
 The value above is an example. `init` writes an auto-sized default based on the host: `min(32, max(8, GOMAXPROCS*2))`.
@@ -757,7 +776,7 @@ Proven DMs use `@me` as their guild id. Unclassifiable desktop-cache payloads ar
 
 SQLite schema migrations are versioned with `PRAGMA user_version`. Startup now fails fast when a local DB schema is newer than the supported binary.
 
-Attachment binaries are not stored in SQLite.
+Attachment binaries are not stored in SQLite. `attachments fetch` and `sync --with-media` write media bytes under `cache_dir/media`; SQLite stores the relative media path, content hash, size, and fetch status.
 
 Set `sync.attachment_text = false` if you want to keep attachment metadata and filenames but disable attachment body fetches for text indexing.
 

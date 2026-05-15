@@ -3,8 +3,10 @@ package share
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/openclaw/crawlkit/mirror"
 	"github.com/openclaw/crawlkit/snapshot"
+	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -31,7 +34,10 @@ const (
 	directMessageGuildID        = "@me"
 )
 
-var ErrNoManifest = snapshot.ErrNoManifest
+var (
+	ErrNoManifest      = snapshot.ErrNoManifest
+	errUnsafeMediaPath = errors.New("unsafe media path")
+)
 
 const shardFlushRows = 1024
 
@@ -50,9 +56,11 @@ var SnapshotTables = []string{
 
 type Options struct {
 	RepoPath              string
+	CacheDir              string
 	Remote                string
 	Branch                string
 	Filter                FilterOptions
+	IncludeMedia          bool
 	IncludeEmbeddings     bool
 	EmbeddingProvider     string
 	EmbeddingModel        string
@@ -84,6 +92,7 @@ type Manifest struct {
 	Version     int                 `json:"version"`
 	GeneratedAt time.Time           `json:"generated_at"`
 	Tables      []TableManifest     `json:"tables"`
+	Media       *MediaManifest      `json:"media,omitempty"`
 	Embeddings  []EmbeddingManifest `json:"embeddings,omitempty"`
 	Files       map[string]string   `json:"files,omitempty"`
 }
@@ -97,6 +106,12 @@ type EmbeddingManifest struct {
 	Files        []string `json:"files"`
 	Columns      []string `json:"columns"`
 	Rows         int      `json:"rows"`
+}
+
+type MediaManifest struct {
+	Attachments int                     `json:"attachments"`
+	Files       []snapshot.FileManifest `json:"files"`
+	Bytes       int64                   `json:"bytes"`
 }
 
 func EnsureRepo(ctx context.Context, opts Options) error {
@@ -129,6 +144,9 @@ func Push(ctx context.Context, opts Options) error {
 }
 
 func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error) {
+	if err := validateMediaRoots(opts); err != nil {
+		return Manifest{}, err
+	}
 	if err := EnsureRepo(ctx, opts); err != nil {
 		return Manifest{}, err
 	}
@@ -161,6 +179,19 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		}
 		manifest.Embeddings = []EmbeddingManifest{entry}
 	}
+	if opts.IncludeMedia {
+		entry, err := exportMedia(ctx, s.DB(), opts, filter)
+		if err != nil {
+			return Manifest{}, err
+		}
+		if entry != nil {
+			manifest.Media = entry
+		}
+	} else {
+		if err := os.RemoveAll(filepath.Join(opts.RepoPath, "media")); err != nil {
+			return Manifest{}, fmt.Errorf("reset media dir: %w", err)
+		}
+	}
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return Manifest{}, err
@@ -184,6 +215,7 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		return Manifest{}, err
 	}
 	pragmasRestored := false
+	existingMedia := map[string]attachmentMediaRecord{}
 	defer func() {
 		if !pragmasRestored {
 			_ = restorePragmas(ctx)
@@ -208,6 +240,11 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			return !isDirectMessageSnapshotRow(table, row), nil
 		},
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			existingMedia, err = attachmentMediaByID(ctx, tx)
+			if err != nil {
+				return err
+			}
 			for _, table := range []string{"message_fts", "member_fts"} {
 				if _, err := tx.ExecContext(ctx, "drop table if exists "+table); err != nil {
 					return fmt.Errorf("drop %s: %w", table, err)
@@ -226,6 +263,9 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			if err := repairImportedGuildIDs(ctx, tx); err != nil {
 				return err
 			}
+			if err := preserveImportedAttachmentMedia(ctx, tx, existingMedia); err != nil {
+				return err
+			}
 			if opts.IncludeEmbeddings {
 				return importEmbeddings(ctx, tx, opts, manifest.Embeddings)
 			}
@@ -237,6 +277,11 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	opts.reportProgress(ImportProgress{Phase: "rebuild_fts"})
 	if err := s.RebuildSearchIndexes(ctx); err != nil {
 		return Manifest{}, err
+	}
+	if opts.IncludeMedia {
+		if _, err := importMedia(ctx, opts, manifest.Media); err != nil {
+			return Manifest{}, err
+		}
 	}
 	if err := MarkImported(ctx, s, manifest); err != nil {
 		return Manifest{}, err
@@ -289,6 +334,16 @@ func ImportIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifes
 				return Manifest{}, false, err
 			}
 		}
+		if opts.IncludeMedia {
+			copied, err := importMedia(ctx, opts, manifest.Media)
+			if err != nil {
+				return Manifest{}, false, err
+			}
+			if err := MarkImported(ctx, s, manifest); err != nil {
+				return Manifest{}, false, err
+			}
+			return manifest, copied > 0, nil
+		}
 		if err := MarkImported(ctx, s, manifest); err != nil {
 			return Manifest{}, false, err
 		}
@@ -316,10 +371,18 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 		return Manifest{}, false, errIncrementalUnsupported
 	}
 	if !plan.Changed() {
+		copied := 0
+		if opts.IncludeMedia {
+			var err error
+			copied, err = importMedia(ctx, opts, manifest.Media)
+			if err != nil {
+				return Manifest{}, false, err
+			}
+		}
 		if err := MarkImported(ctx, s, manifest); err != nil {
 			return Manifest{}, false, err
 		}
-		return manifest, false, nil
+		return manifest, copied > 0, nil
 	}
 	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: importPlanRowCount(plan)})
 	restorePragmas, err := applyImportPragmas(ctx, s.DB())
@@ -327,6 +390,7 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 		return Manifest{}, false, err
 	}
 	pragmasRestored := false
+	existingMedia := map[string]attachmentMediaRecord{}
 	defer func() {
 		if !pragmasRestored {
 			_ = restorePragmas(ctx)
@@ -351,6 +415,11 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 		Filter: func(table string, row map[string]any) (bool, error) {
 			return !isDirectMessageSnapshotRow(table, row), nil
 		},
+		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			existingMedia, err = attachmentMediaByID(ctx, tx)
+			return err
+		},
 		DeleteTable: func(ctx context.Context, tx *sql.Tx, table string) error {
 			query, args := snapshotDeleteQuery(table)
 			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -361,6 +430,9 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 		ImportRow: importIncrementalSnapshotRow,
 		AfterImport: func(ctx context.Context, tx *sql.Tx) error {
 			if err := repairImportedGuildIDs(ctx, tx); err != nil {
+				return err
+			}
+			if err := preserveImportedAttachmentMedia(ctx, tx, existingMedia); err != nil {
 				return err
 			}
 			if opts.IncludeEmbeddings {
@@ -381,6 +453,11 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 	if rebuildMemberFTS {
 		opts.reportProgress(ImportProgress{Phase: "rebuild_member_fts"})
 		if err := s.RebuildMemberSearchIndex(ctx); err != nil {
+			return Manifest{}, false, err
+		}
+	}
+	if opts.IncludeMedia {
+		if _, err := importMedia(ctx, opts, manifest.Media); err != nil {
 			return Manifest{}, false, err
 		}
 	}
@@ -408,6 +485,9 @@ func manifestRowCount(manifest Manifest) int {
 	}
 	for _, embeddings := range manifest.Embeddings {
 		total += embeddings.Rows
+	}
+	if manifest.Media != nil {
+		total += manifest.Media.Attachments
 	}
 	return total
 }
@@ -796,6 +876,290 @@ func exportEmbeddings(ctx context.Context, db *sql.DB, opts Options) (EmbeddingM
 		Columns:      columns,
 		Rows:         count,
 	}, nil
+}
+
+func exportMedia(ctx context.Context, db *sql.DB, opts Options, filter *snapshotFilter) (*MediaManifest, error) {
+	if strings.TrimSpace(opts.CacheDir) == "" {
+		return nil, nil
+	}
+	if err := os.RemoveAll(filepath.Join(opts.RepoPath, "media")); err != nil {
+		return nil, fmt.Errorf("reset media dir: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, `
+		select attachment_id, message_id, guild_id, channel_id, coalesce(media_path, ''), coalesce(content_sha256, '')
+		from message_attachments
+		where guild_id <> ? and coalesce(media_path, '') <> ''
+		order by media_path, attachment_id
+	`, directMessageGuildID)
+	if err != nil {
+		return nil, fmt.Errorf("query media attachments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	manifest := &MediaManifest{}
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var attachmentID, messageID, guildID, channelID, mediaPath, expectedHash string
+		if err := rows.Scan(&attachmentID, &messageID, &guildID, &channelID, &mediaPath, &expectedHash); err != nil {
+			return nil, err
+		}
+		if filter != nil {
+			ok := filter.allow("message_attachments", map[string]any{
+				"attachment_id": attachmentID,
+				"message_id":    messageID,
+				"guild_id":      guildID,
+				"channel_id":    channelID,
+			})
+			if !ok {
+				continue
+			}
+		}
+		if _, ok := seen[mediaPath]; ok {
+			manifest.Attachments++
+			continue
+		}
+		source, err := media.LocalPath(opts.CacheDir, mediaPath)
+		if err != nil {
+			return nil, err
+		}
+		info, err := regularMediaFile(filepath.Join(opts.CacheDir, "media"), source, mediaPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if errors.Is(err, errUnsafeMediaPath) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stat media %s: %w", mediaPath, err)
+		}
+		manifest.Attachments++
+		seen[mediaPath] = struct{}{}
+		rel := filepath.ToSlash(filepath.Join("media", mediaPath))
+		target, err := media.RepoPath(opts.RepoPath, mediaPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := copyFile(target, source); err != nil {
+			return nil, fmt.Errorf("copy media %s: %w", mediaPath, err)
+		}
+		hash, err := fileSHA256(target)
+		if err != nil {
+			return nil, err
+		}
+		if expectedHash != "" && hash != expectedHash {
+			return nil, fmt.Errorf("media hash mismatch for %s: got %s want %s", mediaPath, hash, expectedHash)
+		}
+		manifest.Files = append(manifest.Files, snapshot.FileManifest{Path: rel, Size: info.Size(), SHA256: hash})
+		manifest.Bytes += info.Size()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(manifest.Files) == 0 && manifest.Attachments == 0 {
+		return nil, nil
+	}
+	return manifest, nil
+}
+
+func validateMediaRoots(opts Options) error {
+	if strings.TrimSpace(opts.CacheDir) == "" {
+		return nil
+	}
+	repoMedia, err := resolvePathForOverlap(filepath.Join(opts.RepoPath, "media"))
+	if err != nil {
+		return fmt.Errorf("resolve repo media dir: %w", err)
+	}
+	cacheMedia, err := resolvePathForOverlap(filepath.Join(opts.CacheDir, "media"))
+	if err != nil {
+		return fmt.Errorf("resolve cache media dir: %w", err)
+	}
+	if pathsOverlap(repoMedia, cacheMedia) {
+		return fmt.Errorf("share media dir %s overlaps cache media dir %s", repoMedia, cacheMedia)
+	}
+	return nil
+}
+
+func resolvePathForOverlap(path string) (string, error) {
+	current, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current = filepath.Clean(current)
+	missing := []string{}
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(path), nil
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathsOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return pathContains(a, b) || pathContains(b, a)
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != "" && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func importMedia(ctx context.Context, opts Options, manifest *MediaManifest) (int, error) {
+	if manifest == nil || strings.TrimSpace(opts.CacheDir) == "" {
+		return 0, nil
+	}
+	copied := 0
+	for _, file := range manifest.Files {
+		if err := ctx.Err(); err != nil {
+			return copied, err
+		}
+		mediaPath, ok := strings.CutPrefix(filepath.ToSlash(file.Path), "media/")
+		if !ok || strings.TrimSpace(mediaPath) == "" {
+			return copied, fmt.Errorf("invalid media manifest path %q", file.Path)
+		}
+		source, err := media.RepoPath(opts.RepoPath, mediaPath)
+		if err != nil {
+			return copied, err
+		}
+		if _, err := regularMediaFile(filepath.Join(opts.RepoPath, "media"), source, file.Path); err != nil {
+			return copied, err
+		}
+		info, err := os.Lstat(source)
+		if err != nil {
+			return copied, fmt.Errorf("stat media %s: %w", file.Path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return copied, fmt.Errorf("media %s is not a regular file", file.Path)
+		}
+		hash, err := fileSHA256(source)
+		if err != nil {
+			return copied, fmt.Errorf("hash media %s: %w", file.Path, err)
+		}
+		if file.SHA256 != "" && hash != file.SHA256 {
+			return copied, fmt.Errorf("media hash mismatch for %s: got %s want %s", file.Path, hash, file.SHA256)
+		}
+		target, err := media.LocalPath(opts.CacheDir, mediaPath)
+		if err != nil {
+			return copied, err
+		}
+		if sameFileHash(target, hash) {
+			continue
+		}
+		if err := copyFile(target, source); err != nil {
+			return copied, fmt.Errorf("restore media %s: %w", file.Path, err)
+		}
+		copied++
+	}
+	return copied, nil
+}
+
+func regularMediaFile(root, path, label string) (os.FileInfo, error) {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return nil, fmt.Errorf("%w: media %s escapes media root", errUnsafeMediaPath, label)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return nil, err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return nil, fmt.Errorf("%w: media root for %s is not a directory", errUnsafeMediaPath, label)
+	}
+	current := root
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("%w: invalid media path %q", errUnsafeMediaPath, label)
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if i == len(parts)-1 {
+				return nil, fmt.Errorf("%w: media %s is not a regular file", errUnsafeMediaPath, label)
+			}
+			return nil, fmt.Errorf("%w: media %s contains symlinked path component", errUnsafeMediaPath, label)
+		}
+		if i < len(parts)-1 {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("%w: media %s parent is not a directory", errUnsafeMediaPath, label)
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: media %s is not a regular file", errUnsafeMediaPath, label)
+		}
+		return info, nil
+	}
+	return nil, fmt.Errorf("%w: invalid media path %q", errUnsafeMediaPath, label)
+}
+
+func copyFile(target, source string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	src, err := os.Open(source) // #nosec G304 -- source is constrained by media path helpers.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path) // #nosec G304 -- callers pass confined repo/cache paths.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func sameFileHash(path, hash string) bool {
+	current, err := fileSHA256(path)
+	return err == nil && current == hash
 }
 
 func importTable(ctx context.Context, tx *sql.Tx, opts Options, table TableManifest) error {
@@ -1571,9 +1935,75 @@ func importValue(value any) any {
 	}
 }
 
+type attachmentMediaRecord struct {
+	MediaPath     string
+	ContentSHA256 string
+	ContentSize   int64
+	FetchedAt     string
+	FetchStatus   string
+	FetchError    string
+}
+
+func attachmentMediaByID(ctx context.Context, tx *sql.Tx) (map[string]attachmentMediaRecord, error) {
+	rows, err := tx.QueryContext(ctx, `
+		select attachment_id, coalesce(media_path, ''), coalesce(content_sha256, ''),
+		       content_size, coalesce(fetched_at, ''), coalesce(fetch_status, ''), coalesce(fetch_error, '')
+		from message_attachments
+		where coalesce(media_path, '') <> ''
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query existing attachment media: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]attachmentMediaRecord{}
+	for rows.Next() {
+		var id string
+		var record attachmentMediaRecord
+		if err := rows.Scan(&id, &record.MediaPath, &record.ContentSHA256, &record.ContentSize, &record.FetchedAt, &record.FetchStatus, &record.FetchError); err != nil {
+			return nil, err
+		}
+		out[id] = record
+	}
+	return out, rows.Err()
+}
+
+func preserveImportedAttachmentMedia(ctx context.Context, tx *sql.Tx, existing map[string]attachmentMediaRecord) error {
+	if len(existing) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		update message_attachments
+		set media_path = ?, content_sha256 = ?, content_size = ?, fetched_at = ?,
+		    fetch_status = ?, fetch_error = ?
+		where attachment_id = ? and coalesce(media_path, '') = ''
+	`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for attachmentID, record := range existing {
+		if _, err := stmt.ExecContext(ctx, record.MediaPath, nullableString(record.ContentSHA256), record.ContentSize, nullableString(record.FetchedAt), record.FetchStatus, record.FetchError, attachmentID); err != nil {
+			return fmt.Errorf("preserve attachment media %s: %w", attachmentID, err)
+		}
+	}
+	return nil
+}
+
+func nullableString(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
 func importIncrementalSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {
 	if table == "message_events" || table == "mention_events" {
 		delete(row, "event_id")
+	}
+	if table == "message_attachments" {
+		if err := preserveIncrementalAttachmentMedia(ctx, tx, row); err != nil {
+			return err
+		}
 	}
 	if err := insertOrReplaceSnapshotRow(ctx, tx, table, row); err != nil {
 		return err
@@ -1586,6 +2016,36 @@ func importIncrementalSnapshotRow(ctx context.Context, tx *sql.Tx, table string,
 		return nil
 	}
 	return upsertMessageFTSRow(ctx, tx, messageID)
+}
+
+func preserveIncrementalAttachmentMedia(ctx context.Context, tx *sql.Tx, row map[string]any) error {
+	if stringValue(row["media_path"]) != "" {
+		return nil
+	}
+	attachmentID := stringValue(row["attachment_id"])
+	if attachmentID == "" {
+		return nil
+	}
+	var record attachmentMediaRecord
+	err := tx.QueryRowContext(ctx, `
+		select coalesce(media_path, ''), coalesce(content_sha256, ''), content_size,
+		       coalesce(fetched_at, ''), coalesce(fetch_status, ''), coalesce(fetch_error, '')
+		from message_attachments
+		where attachment_id = ? and coalesce(media_path, '') <> ''
+	`, attachmentID).Scan(&record.MediaPath, &record.ContentSHA256, &record.ContentSize, &record.FetchedAt, &record.FetchStatus, &record.FetchError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("query existing attachment media %s: %w", attachmentID, err)
+	}
+	row["media_path"] = record.MediaPath
+	row["content_sha256"] = record.ContentSHA256
+	row["content_size"] = record.ContentSize
+	row["fetched_at"] = record.FetchedAt
+	row["fetch_status"] = record.FetchStatus
+	row["fetch_error"] = record.FetchError
+	return nil
 }
 
 func insertOrReplaceSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {

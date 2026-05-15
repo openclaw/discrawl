@@ -38,9 +38,11 @@ CI runs secret scanning with `gitleaks` against git history and the working tree
 - FTS index rows
 - optional local embedding queue metadata and vectors
 
-Attachment binaries are not stored in SQLite. Only attachment metadata and (optionally) extracted text.
+Attachment binaries are not stored in SQLite. Only attachment metadata, optional extracted text, and media cache bookkeeping are stored there. Cached files live under `cache_dir/media`.
 
 Set `sync.attachment_text = false` if you want to keep attachment metadata and filenames but disable attachment body fetches for text indexing.
+
+Git snapshots include cached non-DM media files by default. Use `publish --no-media` to omit them. DM media under `@me` stays local-only.
 
 ## What is sent over the wire
 

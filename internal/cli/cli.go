@@ -238,6 +238,15 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withLocalStoreRead(false, func() error { return r.runDirectMessages(rest[1:]) })
 	case "mentions":
 		return r.withLocalStoreRead(true, func() error { return r.runMentions(rest[1:]) })
+	case "attachments":
+		if hasHelpArg(rest[1:]) {
+			return printCommandUsage(r.stdout, []string{"attachments"})
+		}
+		autoShareUpdate := !hasBoolFlag(rest[1:], "--dm")
+		if len(rest) > 1 && rest[1] == "fetch" {
+			return r.withLocalStoreLocked(autoShareUpdate, func() error { return r.runAttachments(rest[1:]) })
+		}
+		return r.withLocalStoreRead(autoShareUpdate, func() error { return r.runAttachments(rest[1:]) })
 	case "embed":
 		return r.withLocalStoreLocked(true, func() error { return r.runEmbed(rest[1:]) })
 	case "sql":
@@ -413,6 +422,29 @@ func (r *runtime) withLocalStoreReadOnly(fn func() error) error {
 			r.store = nil
 			return fn()
 		}
+		if errors.Is(openErr, store.ErrSchemaVersionMismatch) {
+			if err := r.withSyncLock(func() error {
+				storeFactory := r.openStore
+				if storeFactory == nil {
+					storeFactory = store.Open
+				}
+				var migrateErr error
+				r.store, migrateErr = storeFactory(r.ctx, dbPath)
+				if migrateErr != nil {
+					return dbErr(migrateErr)
+				}
+				closeErr := r.store.Close()
+				r.store = nil
+				return closeErr
+			}); err != nil {
+				return err
+			}
+			r.store, openErr = store.OpenReadOnly(r.ctx, dbPath)
+			if openErr == nil {
+				defer func() { _ = r.store.Close() }()
+				return fn()
+			}
+		}
 		return dbErr(openErr)
 	}
 	defer func() { _ = r.store.Close() }()
@@ -581,10 +613,16 @@ func (r *runtime) shareOptions() (share.Options, error) {
 	if err != nil {
 		return share.Options{}, configErr(err)
 	}
+	cacheDir, err := config.ExpandPath(r.cfg.CacheDir)
+	if err != nil {
+		return share.Options{}, configErr(err)
+	}
 	return share.Options{
-		RepoPath: repoPath,
-		Remote:   r.cfg.Share.Remote,
-		Branch:   r.cfg.Share.Branch,
-		Progress: r.shareProgress,
+		RepoPath:     repoPath,
+		CacheDir:     cacheDir,
+		Remote:       r.cfg.Share.Remote,
+		Branch:       r.cfg.Share.Branch,
+		IncludeMedia: r.cfg.ShareMediaEnabled(),
+		Progress:     r.shareProgress,
 	}, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/discorddesktop"
+	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/openclaw/discrawl/internal/syncer"
@@ -32,6 +33,7 @@ type syncRunStats struct {
 	Source  string                `json:"source"`
 	Discord *syncer.SyncStats     `json:"discord,omitempty"`
 	Wiretap *discorddesktop.Stats `json:"wiretap,omitempty"`
+	Media   *media.FetchStats     `json:"media,omitempty"`
 }
 
 func (r *runtime) runInit(args []string) error {
@@ -110,6 +112,7 @@ func (r *runtime) runSync(args []string) error {
 	concurrency := fs.Int("concurrency", r.cfg.Sync.Concurrency, "")
 	source := fs.String("source", r.cfg.Sync.Source, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	withMedia := fs.Bool("with-media", r.cfg.AttachmentMediaEnabled(), "")
 	skipMembers := fs.Bool("skip-members", false, "")
 	latestOnly := fs.Bool("latest-only", false, "")
 	guildsFlag := fs.String("guilds", "", "")
@@ -155,11 +158,11 @@ func (r *runtime) runSync(args []string) error {
 		LatestOnly:  syncLatestOnly(*latestOnly, defaultLatest),
 	}
 	return r.withSyncLock(func() error {
-		return r.runSyncLocked(sources, opts)
+		return r.runSyncLocked(sources, opts, *withMedia)
 	})
 }
 
-func (r *runtime) runSyncLocked(sources syncSources, opts syncer.SyncOptions) error {
+func (r *runtime) runSyncLocked(sources syncSources, opts syncer.SyncOptions, withMedia bool) error {
 	var apiStats *syncer.SyncStats
 	if sources.discord {
 		r.setSyncLockPhase("discord sync")
@@ -190,13 +193,81 @@ func (r *runtime) runSyncLocked(sources syncSources, opts syncer.SyncOptions) er
 		}
 		wiretapStats = &stats
 	}
-	if sources.discord && !sources.wiretap {
+	var mediaStats *media.FetchStats
+	if withMedia {
+		r.setSyncLockPhase("attachment media fetch")
+		cacheDir, err := config.ExpandPath(r.cfg.CacheDir)
+		if err != nil {
+			return configErr(err)
+		}
+		channelIDs := opts.ChannelIDs
+		if len(channelIDs) > 0 {
+			channelIDs, err = r.store.ExpandAttachmentChannelIDs(r.ctx, channelIDs)
+			if err != nil {
+				return err
+			}
+		}
+		stats, err := r.fetchSyncMedia(sources, opts, cacheDir, channelIDs)
+		if err != nil {
+			return err
+		}
+		mediaStats = stats
+	}
+	if sources.discord && !sources.wiretap && mediaStats == nil {
 		return r.print(*apiStats)
 	}
-	if sources.wiretap && !sources.discord {
+	if sources.wiretap && !sources.discord && mediaStats == nil {
 		return r.print(*wiretapStats)
 	}
-	return r.print(syncRunStats{Source: sources.name, Discord: apiStats, Wiretap: wiretapStats})
+	return r.print(syncRunStats{Source: sources.name, Discord: apiStats, Wiretap: wiretapStats, Media: mediaStats})
+}
+
+func (r *runtime) fetchSyncMedia(sources syncSources, opts syncer.SyncOptions, cacheDir string, channelIDs []string) (*media.FetchStats, error) {
+	total := media.FetchStats{}
+	if sources.discord {
+		stats, err := media.Fetch(r.ctx, r.store, media.FetchOptions{
+			CacheDir: cacheDir,
+			MaxBytes: r.cfg.Sync.MaxAttachmentBytes,
+			List: store.AttachmentListOptions{
+				GuildIDs:        opts.GuildIDs,
+				ExcludeGuildIDs: []string{store.DirectMessageGuildID},
+				ChannelIDs:      channelIDs,
+				Since:           opts.Since,
+			},
+			StatusUpdate: true,
+			Now:          r.now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		total = addFetchStats(total, stats)
+	}
+	if sources.wiretap {
+		stats, err := media.Fetch(r.ctx, r.store, media.FetchOptions{
+			CacheDir: cacheDir,
+			MaxBytes: r.cfg.Sync.MaxAttachmentBytes,
+			List: store.AttachmentListOptions{
+				GuildIDs: []string{store.DirectMessageGuildID},
+			},
+			StatusUpdate: true,
+			Now:          r.now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		total = addFetchStats(total, stats)
+	}
+	return &total, nil
+}
+
+func addFetchStats(a, b media.FetchStats) media.FetchStats {
+	a.Attachments += b.Attachments
+	a.Fetched += b.Fetched
+	a.Reused += b.Reused
+	a.Skipped += b.Skipped
+	a.Failed += b.Failed
+	a.Bytes += b.Bytes
+	return a
 }
 
 func defaultLatestSyncMode(full bool, allChannels bool, since string, channels string) bool {

@@ -48,11 +48,13 @@ type DesktopConfig struct {
 }
 
 type SyncConfig struct {
-	Source         string `toml:"source"`
-	Concurrency    int    `toml:"concurrency"`
-	RepairEvery    string `toml:"repair_every"`
-	FullHistory    bool   `toml:"full_history"`
-	AttachmentText *bool  `toml:"attachment_text"`
+	Source             string `toml:"source"`
+	Concurrency        int    `toml:"concurrency"`
+	RepairEvery        string `toml:"repair_every"`
+	FullHistory        bool   `toml:"full_history"`
+	AttachmentText     *bool  `toml:"attachment_text"`
+	AttachmentMedia    *bool  `toml:"attachment_media"`
+	MaxAttachmentBytes int64  `toml:"max_attachment_bytes"`
 }
 
 type SearchConfig struct {
@@ -66,6 +68,7 @@ type ShareConfig struct {
 	Branch     string            `toml:"branch,omitempty"`
 	AutoUpdate bool              `toml:"auto_update"`
 	StaleAfter string            `toml:"stale_after"`
+	Media      *bool             `toml:"media"`
 	Filter     ShareFilterConfig `toml:"filter"`
 }
 
@@ -128,11 +131,13 @@ func Default() Config {
 			MaxFileBytes: 64 << 20,
 		},
 		Sync: SyncConfig{
-			Source:         "both",
-			Concurrency:    defaultSyncConcurrency(),
-			RepairEvery:    "6h",
-			FullHistory:    true,
-			AttachmentText: new(true),
+			Source:             "both",
+			Concurrency:        defaultSyncConcurrency(),
+			RepairEvery:        "6h",
+			FullHistory:        true,
+			AttachmentText:     new(true),
+			AttachmentMedia:    new(false),
+			MaxAttachmentBytes: 100 << 20,
 		},
 		Search: SearchConfig{
 			DefaultMode: "fts",
@@ -151,6 +156,7 @@ func Default() Config {
 			Branch:     "main",
 			AutoUpdate: true,
 			StaleAfter: "15m",
+			Media:      new(true),
 		},
 	}
 }
@@ -256,6 +262,12 @@ func (c *Config) Normalize() error {
 	if c.Sync.AttachmentText == nil {
 		c.Sync.AttachmentText = new(true)
 	}
+	if c.Sync.AttachmentMedia == nil {
+		c.Sync.AttachmentMedia = new(false)
+	}
+	if c.Sync.MaxAttachmentBytes <= 0 {
+		c.Sync.MaxAttachmentBytes = 100 << 20
+	}
 	if c.Search.DefaultMode == "" {
 		c.Search.DefaultMode = "fts"
 	}
@@ -292,6 +304,9 @@ func (c *Config) Normalize() error {
 	}
 	if c.Share.StaleAfter == "" {
 		c.Share.StaleAfter = "15m"
+	}
+	if c.Share.Media == nil {
+		c.Share.Media = new(true)
 	}
 	c.Share.Filter.IncludeChannelIDs = uniqueStrings(c.Share.Filter.IncludeChannelIDs)
 	c.Share.Filter.ExcludeChannelIDs = uniqueStrings(c.Share.Filter.ExcludeChannelIDs)
@@ -348,6 +363,14 @@ func (c Config) SearchGuildDefaults() []string {
 
 func (c Config) AttachmentTextEnabled() bool {
 	return c.Sync.AttachmentText == nil || *c.Sync.AttachmentText
+}
+
+func (c Config) AttachmentMediaEnabled() bool {
+	return c.Sync.AttachmentMedia != nil && *c.Sync.AttachmentMedia
+}
+
+func (c Config) ShareMediaEnabled() bool {
+	return c.Share.Media == nil || *c.Share.Media
 }
 
 func (c Config) ShareEnabled() bool {

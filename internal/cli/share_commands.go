@@ -25,6 +25,7 @@ func (r *runtime) runPublish(args []string) error {
 	noCommit := fs.Bool("no-commit", false, "")
 	push := fs.Bool("push", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
 	publicOnly := fs.Bool("public-only", r.cfg.Share.Filter.PublicOnly, "")
 	includeChannels := fs.String("include-channels", strings.Join(r.cfg.Share.Filter.IncludeChannelIDs, ","), "")
 	excludeChannels := fs.String("exclude-channels", strings.Join(r.cfg.Share.Filter.ExcludeChannelIDs, ","), "")
@@ -48,6 +49,9 @@ func (r *runtime) runPublish(args []string) error {
 	}
 	if *withEmbeddings {
 		applyEmbeddingShareOptions(&opts, r.cfg)
+	}
+	if err := applyMediaShareOptions(&opts, r.cfg, !*noMedia); err != nil {
+		return err
 	}
 	manifest, err := share.Export(r.ctx, r.store, opts)
 	if err != nil {
@@ -95,6 +99,7 @@ func (r *runtime) runPublish(args []string) error {
 		"remote":       opts.Remote,
 		"generated_at": manifest.GeneratedAt,
 		"tables":       manifest.Tables,
+		"media":        manifest.Media,
 		"embeddings":   manifest.Embeddings,
 		"readme":       *readmePath,
 		"committed":    committed,
@@ -127,6 +132,7 @@ func (r *runtime) runSubscribe(args []string) error {
 	noAutoUpdate := fs.Bool("no-auto-update", false, "")
 	noImport := fs.Bool("no-import", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	noMedia := fs.Bool("no-media", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -145,6 +151,9 @@ func (r *runtime) runSubscribe(args []string) error {
 	cfg.Share.Branch = *branch
 	cfg.Share.AutoUpdate = !*noAutoUpdate
 	cfg.Share.StaleAfter = *staleAfter
+	if *noMedia {
+		cfg.Share.Media = new(false)
+	}
 	cfg.Discord.TokenSource = "none"
 	if err := config.Write(r.configPath, cfg); err != nil {
 		return configErr(err)
@@ -171,6 +180,9 @@ func (r *runtime) runSubscribe(args []string) error {
 			return configErr(err)
 		}
 		opts := share.Options{RepoPath: expandedRepo, Remote: cfg.Share.Remote, Branch: cfg.Share.Branch, Progress: r.shareProgress}
+		if err := applyMediaShareOptions(&opts, cfg, cfg.ShareMediaEnabled() && !*noMedia); err != nil {
+			return err
+		}
 		if *withEmbeddings {
 			applyEmbeddingShareOptions(&opts, cfg)
 		}
@@ -189,6 +201,7 @@ func (r *runtime) runSubscribe(args []string) error {
 			"remote":       opts.Remote,
 			"generated_at": manifest.GeneratedAt,
 			"tables":       manifest.Tables,
+			"media":        manifest.Media,
 			"embeddings":   manifest.Embeddings,
 			"imported":     imported,
 		})
@@ -202,6 +215,7 @@ func (r *runtime) runUpdate(args []string) error {
 	remote := fs.String("remote", r.cfg.Share.Remote, "")
 	branch := fs.String("branch", r.cfg.Share.Branch, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -215,6 +229,9 @@ func (r *runtime) runUpdate(args []string) error {
 	opts.Progress = r.shareProgress
 	if *withEmbeddings {
 		applyEmbeddingShareOptions(&opts, r.cfg)
+	}
+	if err := applyMediaShareOptions(&opts, r.cfg, !*noMedia); err != nil {
+		return err
 	}
 	r.setSyncLockPhase("share pull")
 	if err := share.Pull(r.ctx, opts); err != nil {
@@ -230,6 +247,7 @@ func (r *runtime) runUpdate(args []string) error {
 		"remote":       opts.Remote,
 		"generated_at": manifest.GeneratedAt,
 		"tables":       manifest.Tables,
+		"media":        manifest.Media,
 		"embeddings":   manifest.Embeddings,
 		"imported":     imported,
 	})
@@ -254,6 +272,16 @@ func applyEmbeddingShareOptions(opts *share.Options, cfg config.Config) {
 	opts.EmbeddingProvider = cfg.Search.Embeddings.Provider
 	opts.EmbeddingModel = cfg.Search.Embeddings.Model
 	opts.EmbeddingInputVersion = store.EmbeddingInputVersion
+}
+
+func applyMediaShareOptions(opts *share.Options, cfg config.Config, enabled bool) error {
+	cacheDir, err := config.ExpandPath(cfg.CacheDir)
+	if err != nil {
+		return configErr(err)
+	}
+	opts.CacheDir = cacheDir
+	opts.IncludeMedia = enabled
+	return nil
 }
 
 func loadConfigOrDefault(path string) (config.Config, error) {

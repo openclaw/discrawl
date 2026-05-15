@@ -66,17 +66,23 @@ type MessageRecord struct {
 }
 
 type AttachmentRecord struct {
-	AttachmentID string
-	MessageID    string
-	GuildID      string
-	ChannelID    string
-	AuthorID     string
-	Filename     string
-	ContentType  string
-	Size         int64
-	URL          string
-	ProxyURL     string
-	TextContent  string
+	AttachmentID  string
+	MessageID     string
+	GuildID       string
+	ChannelID     string
+	AuthorID      string
+	Filename      string
+	ContentType   string
+	Size          int64
+	URL           string
+	ProxyURL      string
+	TextContent   string
+	MediaPath     string
+	ContentSHA256 string
+	ContentSize   int64
+	FetchedAt     string
+	FetchStatus   string
+	FetchError    string
 }
 
 type MentionEventRecord struct {
@@ -452,6 +458,10 @@ func appendEventTx(ctx context.Context, tx *sql.Tx, guildID, channelID, messageI
 }
 
 func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, messageID string, attachments []AttachmentRecord) error {
+	existing, err := existingAttachmentMediaTx(ctx, tx, messageID)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `delete from message_attachments where message_id = ?`, messageID); err != nil {
 		return err
 	}
@@ -462,14 +472,23 @@ func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, messageID string, att
 	stmt, err := tx.PrepareContext(ctx, `
 		insert into message_attachments(
 			attachment_id, message_id, guild_id, channel_id, author_id, filename,
-			content_type, size, url, proxy_url, text_content, updated_at
-		) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			content_type, size, url, proxy_url, text_content, media_path, content_sha256,
+			content_size, fetched_at, fetch_status, fetch_error, updated_at
+		) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stmt.Close() }()
 	for _, attachment := range attachments {
+		if media, ok := existing[attachment.AttachmentID]; ok && attachment.MediaPath == "" {
+			attachment.MediaPath = media.MediaPath
+			attachment.ContentSHA256 = media.ContentSHA256
+			attachment.ContentSize = media.ContentSize
+			attachment.FetchedAt = media.FetchedAt
+			attachment.FetchStatus = media.FetchStatus
+			attachment.FetchError = media.FetchError
+		}
 		if _, err := stmt.ExecContext(
 			ctx,
 			attachment.AttachmentID,
@@ -483,12 +502,48 @@ func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, messageID string, att
 			nullable(attachment.URL),
 			nullable(attachment.ProxyURL),
 			attachment.TextContent,
+			nullable(attachment.MediaPath),
+			nullable(attachment.ContentSHA256),
+			attachment.ContentSize,
+			nullable(attachment.FetchedAt),
+			attachment.FetchStatus,
+			attachment.FetchError,
 			now,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func existingAttachmentMediaTx(ctx context.Context, tx *sql.Tx, messageID string) (map[string]AttachmentRecord, error) {
+	rows, err := tx.QueryContext(ctx, `
+		select attachment_id, coalesce(media_path, ''), coalesce(content_sha256, ''),
+		       content_size, coalesce(fetched_at, ''), coalesce(fetch_status, ''), coalesce(fetch_error, '')
+		from message_attachments
+		where message_id = ?
+	`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]AttachmentRecord{}
+	for rows.Next() {
+		var record AttachmentRecord
+		if err := rows.Scan(
+			&record.AttachmentID,
+			&record.MediaPath,
+			&record.ContentSHA256,
+			&record.ContentSize,
+			&record.FetchedAt,
+			&record.FetchStatus,
+			&record.FetchError,
+		); err != nil {
+			return nil, err
+		}
+		out[record.AttachmentID] = record
+	}
+	return out, rows.Err()
 }
 
 func replaceMentionEventsTx(ctx context.Context, tx *sql.Tx, messageID string, mentions []MentionEventRecord) error {

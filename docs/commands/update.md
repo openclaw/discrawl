@@ -12,6 +12,7 @@ discrawl update \
   --repo ~/.local/share/discrawl/share \
   --remote https://github.com/example/discord-archive.git
 discrawl update --with-embeddings
+discrawl update --no-media
 ```
 
 ## Flags
@@ -20,6 +21,7 @@ discrawl update --with-embeddings
 - `--remote <url>` - target Git remote (defaults to `[share].remote`)
 - `--branch <name>` - snapshot branch (defaults to `[share].branch`)
 - `--with-embeddings` - also import vectors that match your local `[search.embeddings]` identity
+- `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 
 ## When to use it
 

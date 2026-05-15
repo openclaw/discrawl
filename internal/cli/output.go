@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/openclaw/discrawl/internal/discorddesktop"
+	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/report"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/openclaw/discrawl/internal/syncer"
@@ -115,6 +116,7 @@ Commands:
   analytics
   dms
   mentions
+  attachments
   embed
   sql
   members
@@ -150,6 +152,31 @@ Flags:
   --dm                        Search local desktop DM cache.
   --guild ID                  Restrict to one guild id.
   --guilds ID,ID              Restrict to guild ids.
+`,
+	"attachments": `Usage:
+  discrawl attachments [flags]
+  discrawl attachments fetch [flags]
+
+Flags:
+  --channel ID_OR_NAME        Filter by channel id or name.
+  --author ID_OR_NAME         Filter by author id or name.
+  --message ID                Filter by message id.
+  --filename TEXT             Filter by filename.
+  --type TEXT                 Filter by content type.
+  --hours N                   Attachments from the last N hours.
+  --days N                    Attachments from the last N days.
+  --since RFC3339             Attachments at or after timestamp.
+  --before RFC3339            Attachments before timestamp.
+  --limit N                   Maximum rows. Default: 200.
+  --all                       Return all matching rows.
+  --missing                   Only attachments without cached media.
+  --dm                        Read local desktop DM cache.
+  --guild ID                  Restrict to one guild id.
+  --guilds ID,ID              Restrict to guild ids.
+
+Fetch flags:
+  --force                     Re-download already cached attachments.
+  --max-bytes N               Per-attachment download cap.
 `,
 	"messages": `Usage:
   discrawl messages [flags]
@@ -209,6 +236,12 @@ func printHuman(w io.Writer, value any) error {
 				return err
 			}
 		}
+		if v.Media != nil {
+			if _, err := fmt.Fprintf(w, "media_attachments=%d\nmedia_fetched=%d\nmedia_reused=%d\nmedia_skipped=%d\nmedia_failed=%d\nmedia_bytes=%d\n",
+				v.Media.Attachments, v.Media.Fetched, v.Media.Reused, v.Media.Skipped, v.Media.Failed, v.Media.Bytes); err != nil {
+				return err
+			}
+		}
 		return nil
 	case syncer.SyncStats:
 		_, err := fmt.Fprintf(w, "guilds=%d channels=%d threads=%d members=%d messages=%d\n", v.Guilds, v.Channels, v.Threads, v.Members, v.Messages)
@@ -251,6 +284,19 @@ func printHuman(w io.Writer, value any) error {
 			}
 		}
 		return nil
+	case []store.AttachmentRow:
+		for _, row := range v {
+			if _, err := fmt.Fprintf(w, "[%s/%s] %s %s\n%s type=%s size=%d status=%s media=%s url=%s\n\n",
+				row.GuildID, row.ChannelName, row.AuthorName, formatTime(row.CreatedAt), row.Filename,
+				row.ContentType, row.Size, firstNonEmpty(row.FetchStatus, "metadata"), row.MediaPath, firstNonEmpty(row.URL, row.ProxyURL)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case media.FetchStats:
+		_, err := fmt.Fprintf(w, "attachments=%d\nfetched=%d\nreused=%d\nskipped=%d\nfailed=%d\nbytes=%d\n",
+			v.Attachments, v.Fetched, v.Reused, v.Skipped, v.Failed, v.Bytes)
+		return err
 	case []store.DirectMessageConversationRow:
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "CHANNEL\tNAME\tMESSAGES\tAUTHORS\tFIRST\tLAST")

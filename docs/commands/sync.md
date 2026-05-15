@@ -28,6 +28,7 @@ discrawl sync --source wiretap   # desktop cache only; aliases: desktop, cache
 discrawl sync --guild 123456789012345678 --all-channels
 discrawl sync --channels 111,222 --since 2026-03-01T00:00:00Z
 discrawl sync --with-embeddings
+discrawl sync --with-media
 ```
 
 ## Sources
@@ -61,6 +62,7 @@ discrawl sync --with-embeddings
 - `--concurrency <n>` - override worker count (default auto-sized: floor 8, cap 32)
 - `--skip-members` - refresh guild/channel/message data without crawling members
 - `--with-embeddings` - also enqueue changed messages into `embedding_jobs`
+- `--with-media` - after sync, download missing attachment media into `cache_dir/media`
 
 ## Notes
 
