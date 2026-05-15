@@ -938,6 +938,33 @@ func TestAttachmentFlagParsing(t *testing.T) {
 	require.Equal(t, int64(10), *maxBytes)
 }
 
+func TestFilterMissingAttachmentMediaKeepsInvalidAndMissingRows(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	existingPath := "attachments/aa/file.png"
+	fullPath, err := media.LocalPath(cacheDir, existingPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+	require.NoError(t, os.WriteFile(fullPath, []byte("cached"), 0o600))
+
+	rows := filterMissingAttachmentMedia(cacheDir, []store.AttachmentRow{
+		{AttachmentID: "empty"},
+		{AttachmentID: "invalid", MediaPath: "../bad"},
+		{AttachmentID: "missing", MediaPath: "attachments/bb/missing.png"},
+		{AttachmentID: "existing", MediaPath: existingPath},
+	})
+	require.Equal(t, []string{"empty", "invalid", "missing"}, attachmentIDs(rows))
+}
+
+func attachmentIDs(rows []store.AttachmentRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.AttachmentID)
+	}
+	return out
+}
+
 func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

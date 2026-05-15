@@ -361,6 +361,46 @@ func TestImportIncrementalRestoresMediaWhenTablesUnchanged(t *testing.T) {
 	require.Equal(t, body, got)
 }
 
+func TestShareIncrementalPlanRejectsUnsupportedModes(t *testing.T) {
+	_, supported := shareIncrementalPlan(snapshot.ImportPlan{Full: true, Reason: "schema changed"})
+	require.False(t, supported)
+
+	_, supported = shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{
+		Table: snapshot.TableManifest{Name: "custom"},
+		Mode:  snapshot.TableImportFiles,
+	}}})
+	require.False(t, supported)
+
+	_, supported = shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{
+		Table: snapshot.TableManifest{Name: "messages"},
+		Mode:  snapshot.TableImportReplace,
+	}}})
+	require.False(t, supported)
+
+	plan, supported := shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{
+		{Table: snapshot.TableManifest{Name: "messages"}, Mode: snapshot.TableImportFiles},
+		{Table: snapshot.TableManifest{Name: "guilds"}, Mode: snapshot.TableImportFiles},
+		{Table: snapshot.TableManifest{Name: "channels"}, Mode: snapshot.TableImportReplace},
+		{Table: snapshot.TableManifest{Name: "sync_state"}, Mode: snapshot.TableImportSkip},
+	}})
+	require.True(t, supported)
+	require.Len(t, plan.Tables, 4)
+	require.Equal(t, snapshot.TableImportReplace, plan.Tables[1].Mode)
+}
+
+func TestMessageFTSHelpers(t *testing.T) {
+	id, ok := messageFTSRowID("42")
+	require.True(t, ok)
+	require.Equal(t, int64(42), id)
+	id, ok = messageFTSRowID("18446744073709551615")
+	require.True(t, ok)
+	require.NotZero(t, id)
+	_, ok = messageFTSRowID("")
+	require.False(t, ok)
+	require.Nil(t, nullIfEmpty(""))
+	require.Equal(t, "value", nullIfEmpty("value"))
+}
+
 func TestPreviousImportedManifestFallsBackToGitHistory(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -457,6 +497,66 @@ func TestPublicPermissionHelpers(t *testing.T) {
 	require.False(t, isRoleOverwrite("member"))
 	require.False(t, isRoleOverwrite(json.Number("bad")))
 	require.False(t, isRoleOverwrite(struct{}{}))
+}
+
+func TestPublicSnapshotFilterHonorsCategoryAndThreadPermissions(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g1",
+		Name:    "Guild",
+		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      "cat-deny",
+		GuildID: "g1",
+		Kind:    "category",
+		Name:    "Private",
+		RawJSON: `{"permission_overwrites":[{"id":"g1","type":"role","deny":"1024"}]}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:       "child-denied",
+		GuildID:  "g1",
+		ParentID: "cat-deny",
+		Kind:     "text",
+		Name:     "denied",
+		RawJSON:  `{}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      "public",
+		GuildID: "g1",
+		Kind:    "text",
+		Name:    "public",
+		RawJSON: `{}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:             "thread",
+		GuildID:        "g1",
+		ThreadParentID: "public",
+		Kind:           "thread_public",
+		Name:           "thread",
+		RawJSON:        `{}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:              "private-thread",
+		GuildID:         "g1",
+		ThreadParentID:  "public",
+		Kind:            "thread_private",
+		Name:            "private-thread",
+		IsPrivateThread: true,
+		RawJSON:         `{}`,
+	}))
+
+	filter, err := newSnapshotFilter(ctx, s.DB(), FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.False(t, filter.publicChannel("child-denied"))
+	require.True(t, filter.publicChannel("public"))
+	require.True(t, filter.publicChannel("thread"))
+	require.False(t, filter.publicChannel("private-thread"))
+	require.False(t, filter.publicChannel("missing"))
 }
 
 func TestExportSkipsMissingMediaFiles(t *testing.T) {
