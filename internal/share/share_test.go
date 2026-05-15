@@ -296,6 +296,169 @@ func TestImportMediaRejectsSymlinkedDirectories(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
+func TestImportMediaRejectsInvalidAndMismatchedFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "share")
+	cacheDir := filepath.Join(dir, "cache")
+
+	copied, err := importMedia(ctx, Options{RepoPath: repo, CacheDir: cacheDir}, nil)
+	require.NoError(t, err)
+	require.Zero(t, copied)
+
+	_, err = importMedia(ctx, Options{RepoPath: repo, CacheDir: cacheDir}, &MediaManifest{
+		Files: []snapshot.FileManifest{{Path: "tables/not-media.jsonl.gz"}},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid media manifest path")
+
+	mediaPath := "attachments/aa/file.png"
+	source, err := media.RepoPath(repo, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(source), 0o755))
+	require.NoError(t, os.WriteFile(source, []byte("body"), 0o600))
+	_, err = importMedia(ctx, Options{RepoPath: repo, CacheDir: cacheDir}, &MediaManifest{
+		Files: []snapshot.FileManifest{{Path: "media/" + mediaPath, SHA256: strings.Repeat("0", 64)}},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "media hash mismatch")
+}
+
+func TestImportIncrementalRestoresMediaWhenTablesUnchanged(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	body := []byte("cached-media")
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+	mediaPath := filepath.ToSlash(filepath.Join("attachments", hash[:2], hash+"-file.png"))
+	require.NoError(t, addCachedAttachment(ctx, src, mediaPath, hash, int64(len(body))))
+	srcCache := filepath.Join(dir, "src-cache")
+	srcFile, err := media.LocalPath(srcCache, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(srcFile), 0o755))
+	require.NoError(t, os.WriteFile(srcFile, body, 0o600))
+
+	repo := filepath.Join(dir, "share")
+	manifest, err := Export(ctx, src, Options{RepoPath: repo, CacheDir: srcCache, Branch: "main", IncludeMedia: true})
+	require.NoError(t, err)
+	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, err = Import(ctx, dst, Options{RepoPath: repo, CacheDir: filepath.Join(dir, "dst-cache"), Branch: "main", IncludeMedia: false})
+	require.NoError(t, err)
+
+	dstCache := filepath.Join(dir, "dst-cache")
+	imported, changed, err := ImportIncremental(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true}, manifest, manifest)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, manifest.GeneratedAt, imported.GeneratedAt)
+	dstFile, err := media.LocalPath(dstCache, mediaPath)
+	require.NoError(t, err)
+	got, err := os.ReadFile(dstFile)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+}
+
+func TestPreviousImportedManifestFallsBackToGitHistory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	repo := filepath.Join(dir, "share")
+	require.NoError(t, exec.CommandContext(ctx, "git", "init", repo).Run())
+	configureGitUser(t, repo)
+	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "add", ".").Run())
+	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "commit", "-m", "snapshot").Run())
+
+	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	require.NoError(t, dst.SetSyncState(ctx, LastImportManifestSyncScope, manifest.GeneratedAt.Format(time.RFC3339Nano)))
+
+	previous, ok := PreviousImportedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.True(t, ok)
+	require.Equal(t, manifest.GeneratedAt, previous.GeneratedAt)
+	require.NotEmpty(t, tableEntry(t, previous, "messages").FileManifests)
+}
+
+func TestMediaPathValidationHelpers(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "media")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	file := filepath.Join(root, "attachments", "aa", "file.png")
+	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+	require.NoError(t, os.WriteFile(file, []byte("body"), 0o600))
+
+	info, err := regularMediaFile(root, file, "file.png")
+	require.NoError(t, err)
+	require.Equal(t, int64(4), info.Size())
+	_, err = regularMediaFile(root, root, "root")
+	require.Error(t, err)
+	require.ErrorIs(t, err, errUnsafeMediaPath)
+	require.True(t, pathsOverlap(root, filepath.Join(root, "attachments")))
+	require.False(t, pathsOverlap(root, filepath.Join(dir, "other")))
+}
+
+func TestMediaCopyHashHelpers(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.bin")
+	target := filepath.Join(dir, "nested", "target.bin")
+	body := []byte("copy-body")
+	require.NoError(t, os.WriteFile(source, body, 0o600))
+
+	require.NoError(t, copyFile(target, source))
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+	hash, err := fileSHA256(source)
+	require.NoError(t, err)
+	require.True(t, sameFileHash(target, hash))
+	require.False(t, sameFileHash(filepath.Join(dir, "missing.bin"), hash))
+	require.Error(t, copyFile(filepath.Join(dir, "other.bin"), filepath.Join(dir, "missing.bin")))
+}
+
+func TestPublicPermissionHelpers(t *testing.T) {
+	rawGuild := `{"roles":[{"id":"g1","permissions":"1024"}]}`
+	permissions, ok := everyoneGuildPermissions(rawGuild, "g1")
+	require.True(t, ok)
+	require.Equal(t, permissionViewChannel, permissions)
+	_, ok = everyoneGuildPermissions(`{"roles":[{"id":"g1","permissions":{}}]}`, "g1")
+	require.False(t, ok)
+	_, ok = everyoneGuildPermissions(`not-json`, "g1")
+	require.False(t, ok)
+	_, ok = everyoneGuildPermissions(`{"roles":[]}`, "g1")
+	require.False(t, ok)
+
+	require.Equal(t, int64(0), applyEveryoneOverwrite(permissionViewChannel, `{"permission_overwrites":[{"id":"g1","type":"role","deny":"1024"}]}`, "g1"))
+	require.Equal(t, permissionViewChannel, applyEveryoneOverwrite(0, `{"permission_overwrites":[{"id":"g1","type":0,"allow":1024}]}`, "g1"))
+	require.Equal(t, permissionViewChannel, applyEveryoneOverwrite(permissionViewChannel, `not-json`, "g1"))
+
+	parsed, ok := parsePermissionBits(json.Number("1024"))
+	require.True(t, ok)
+	require.Equal(t, permissionViewChannel, parsed)
+	parsed, ok = parsePermissionBits(float64(1024))
+	require.True(t, ok)
+	require.Equal(t, permissionViewChannel, parsed)
+	parsed, ok = parsePermissionBits(nil)
+	require.True(t, ok)
+	require.Zero(t, parsed)
+	_, ok = parsePermissionBits(json.Number("bad"))
+	require.False(t, ok)
+	_, ok = parsePermissionBits(struct{}{})
+	require.False(t, ok)
+
+	require.True(t, isRoleOverwrite(json.Number("0")))
+	require.True(t, isRoleOverwrite(float64(0)))
+	require.True(t, isRoleOverwrite("role"))
+	require.False(t, isRoleOverwrite("member"))
+	require.False(t, isRoleOverwrite(json.Number("bad")))
+	require.False(t, isRoleOverwrite(struct{}{}))
+}
+
 func TestExportSkipsMissingMediaFiles(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -311,6 +474,34 @@ func TestExportSkipsMissingMediaFiles(t *testing.T) {
 	manifest, err := Export(ctx, src, Options{RepoPath: repo, CacheDir: filepath.Join(dir, "cache"), Branch: "main", IncludeMedia: true})
 	require.NoError(t, err)
 	require.Nil(t, manifest.Media)
+}
+
+func TestExportMediaRejectsInvalidPathAndHashMismatch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	require.NoError(t, addCachedAttachment(ctx, src, "../bad.png", strings.Repeat("a", 64), 4))
+	_, err := Export(ctx, src, Options{RepoPath: filepath.Join(dir, "share-bad-path"), CacheDir: filepath.Join(dir, "cache"), Branch: "main", IncludeMedia: true})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid media path")
+
+	src2 := seedStore(t, filepath.Join(dir, "src2.db"))
+	defer func() { _ = src2.Close() }()
+	body := []byte("actual")
+	actual := sha256.Sum256(body)
+	actualHash := hex.EncodeToString(actual[:])
+	mediaPath := filepath.ToSlash(filepath.Join("attachments", actualHash[:2], actualHash+"-file.png"))
+	require.NoError(t, addCachedAttachment(ctx, src2, mediaPath, strings.Repeat("b", 64), int64(len(body))))
+	cacheDir := filepath.Join(dir, "cache2")
+	cacheFile, err := media.LocalPath(cacheDir, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(cacheFile), 0o755))
+	require.NoError(t, os.WriteFile(cacheFile, body, 0o600))
+
+	_, err = Export(ctx, src2, Options{RepoPath: filepath.Join(dir, "share-bad-hash"), CacheDir: cacheDir, Branch: "main", IncludeMedia: true})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "media hash mismatch")
 }
 
 func TestExportSkipsSymlinkedMediaFiles(t *testing.T) {

@@ -187,7 +187,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.setSchemaVersion(ctx, 3); err != nil {
 			return err
 		}
-		currentVersion = 3
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err

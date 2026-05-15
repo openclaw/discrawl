@@ -423,6 +423,20 @@ func TestAttachmentTextExplicitFalseSurvivesNormalize(t *testing.T) {
 	require.False(t, cfg.AttachmentTextEnabled())
 }
 
+func TestMediaBooleansExplicitFalseSurviveNormalize(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	require.False(t, cfg.AttachmentMediaEnabled())
+	require.True(t, cfg.ShareMediaEnabled())
+
+	cfg.Sync.AttachmentMedia = new(true)
+	cfg.Share.Media = new(false)
+	require.NoError(t, cfg.Normalize())
+	require.True(t, cfg.AttachmentMediaEnabled())
+	require.False(t, cfg.ShareMediaEnabled())
+}
+
 func TestExpandPath(t *testing.T) {
 	t.Parallel()
 

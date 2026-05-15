@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"net/http"
@@ -803,7 +804,10 @@ func TestAttachmentsCommandListsAndFetchesMedia(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte("png-ish")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/file.png", r.URL.Path)
+		if r.URL.Path != "/file.png" {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(body)
 	}))
@@ -880,6 +884,58 @@ func TestAttachmentsDMCommandsSkipShareAutoUpdate(t *testing.T) {
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "attachments", "fetch", "--dm", "--all"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "skipped=1")
+}
+
+func TestAttachmentFlagParsing(t *testing.T) {
+	t.Parallel()
+
+	rt := &runtime{
+		now: func() time.Time { return time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC) },
+	}
+	opts, limit, err := rt.parseAttachmentListFlags("attachments", []string{
+		"--channel", "general",
+		"--author=Peter",
+		"--message", "m1",
+		"--filename", "file",
+		"--type", "image",
+		"--hours", "2",
+		"--before", "2026-05-15T13:00:00Z",
+		"--missing",
+		"--guilds", "g1,g2",
+		"--all",
+	}, 20)
+	require.NoError(t, err)
+	require.Zero(t, limit)
+	require.Equal(t, []string{"g1", "g2"}, opts.GuildIDs)
+	require.Equal(t, "general", opts.Channel)
+	require.Equal(t, "Peter", opts.Author)
+	require.Equal(t, "m1", opts.MessageID)
+	require.Equal(t, "file", opts.Filename)
+	require.Equal(t, "image", opts.ContentType)
+	require.True(t, opts.MissingOnly)
+	require.Equal(t, time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC), opts.Since)
+
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"--hours", "1", "--since", "2026-05-15T10:00:00Z"}, 20)
+	require.Error(t, err)
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"positional"}, 20)
+	require.Error(t, err)
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"--limit", "-1"}, 20)
+	require.Error(t, err)
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"--since", "bad"}, 20)
+	require.Error(t, err)
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"--before", "bad"}, 20)
+	require.Error(t, err)
+	_, _, err = rt.parseAttachmentListFlags("attachments", []string{"--dm", "--guild", "g1"}, 20)
+	require.Error(t, err)
+
+	require.Equal(t, []string{"--channel", "general", "tail"}, stripFlags([]string{"--force", "--max-bytes", "10", "--channel", "general", "tail"}, map[string]struct{}{"force": {}, "max-bytes": {}}))
+	fs := flag.NewFlagSet("attachments fetch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	force := fs.Bool("force", false, "")
+	maxBytes := fs.Int64("max-bytes", 0, "")
+	require.NoError(t, parseKnown(fs, []string{"--force", "--max-bytes=10", "--channel", "general"}, attachmentListFlagNames()))
+	require.True(t, *force)
+	require.Equal(t, int64(10), *maxBytes)
 }
 
 func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
