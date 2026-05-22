@@ -10,3 +10,6 @@
 /scripts/*backup* @openclaw/openclaw-secops
 /scripts/*release* @openclaw/openclaw-secops
 /scripts/*publish* @openclaw/openclaw-secops
+/.github/actionlint.yaml @openclaw/openclaw-secops
+/.agents/skills/ @openclaw/openclaw-secops
+/.crabbox.yaml @openclaw/openclaw-secops
