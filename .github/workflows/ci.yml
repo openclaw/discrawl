@@ -151,7 +151,7 @@ jobs:
           cache: true
 
       - name: Snapshot release build
-        uses: goreleaser/goreleaser-action@v7.2.1
+        uses: goreleaser/goreleaser-action@v7.2.2
         with:
           distribution: goreleaser
           version: "~> v2"
