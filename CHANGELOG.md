@@ -4,7 +4,7 @@
 
 ### Changes
 
-- Update `crawlkit` to v0.7.0.
+- Update `crawlkit` to v0.8.0.
 - Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
   `subscribe-cloud`, GitHub-backed `remote login` with OAuth or token-env
   bootstrap, `remote status`, `remote archives`, and cloud-mode `status --json`
