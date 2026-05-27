@@ -10,28 +10,31 @@ import (
 	"time"
 
 	crawlconfig "github.com/openclaw/crawlkit/config"
+	crawlremote "github.com/openclaw/crawlkit/remote"
 )
 
 const (
 	DefaultConfigEnv           = "DISCRAWL_CONFIG"
 	DefaultTokenEnv            = "DISCORD_BOT_TOKEN"
+	DefaultRemoteTokenEnv      = "DISCRAWL_REMOTE_TOKEN"
 	DefaultTokenKeyringService = "discrawl"
 	DefaultTokenKeyringAccount = "discord_bot_token"
 )
 
 type Config struct {
-	Version        int           `toml:"version"`
-	GuildID        string        `toml:"guild_id,omitempty"`
-	DefaultGuildID string        `toml:"default_guild_id,omitempty"`
-	GuildIDs       []string      `toml:"guild_ids,omitempty"`
-	DBPath         string        `toml:"db_path"`
-	CacheDir       string        `toml:"cache_dir"`
-	LogDir         string        `toml:"log_dir"`
-	Discord        DiscordConfig `toml:"discord"`
-	Desktop        DesktopConfig `toml:"desktop"`
-	Sync           SyncConfig    `toml:"sync"`
-	Search         SearchConfig  `toml:"search"`
-	Share          ShareConfig   `toml:"share"`
+	Version        int                `toml:"version"`
+	GuildID        string             `toml:"guild_id,omitempty"`
+	DefaultGuildID string             `toml:"default_guild_id,omitempty"`
+	GuildIDs       []string           `toml:"guild_ids,omitempty"`
+	DBPath         string             `toml:"db_path"`
+	CacheDir       string             `toml:"cache_dir"`
+	LogDir         string             `toml:"log_dir"`
+	Discord        DiscordConfig      `toml:"discord"`
+	Desktop        DesktopConfig      `toml:"desktop"`
+	Sync           SyncConfig         `toml:"sync"`
+	Search         SearchConfig       `toml:"search"`
+	Share          ShareConfig        `toml:"share"`
+	Remote         crawlremote.Config `toml:"remote"`
 }
 
 type DiscordConfig struct {
@@ -157,6 +160,10 @@ func Default() Config {
 			AutoUpdate: true,
 			StaleAfter: "15m",
 			Media:      new(true),
+		},
+		Remote: crawlremote.Config{
+			Mode:     crawlremote.ModeLocal,
+			TokenEnv: DefaultRemoteTokenEnv,
 		},
 	}
 }
@@ -310,6 +317,10 @@ func (c *Config) Normalize() error {
 	}
 	c.Share.Filter.IncludeChannelIDs = uniqueStrings(c.Share.Filter.IncludeChannelIDs)
 	c.Share.Filter.ExcludeChannelIDs = uniqueStrings(c.Share.Filter.ExcludeChannelIDs)
+	if c.Remote.TokenEnv == "" {
+		c.Remote.TokenEnv = DefaultRemoteTokenEnv
+	}
+	c.Remote.Normalize()
 	if c.Search.Embeddings.MaxInputChars <= 0 {
 		c.Search.Embeddings.MaxInputChars = 12000
 	}
@@ -375,6 +386,14 @@ func (c Config) ShareMediaEnabled() bool {
 
 func (c Config) ShareEnabled() bool {
 	return strings.TrimSpace(c.Share.Remote) != ""
+}
+
+func (c Config) RemoteEnabled() bool {
+	return c.Remote.Enabled()
+}
+
+func (c Config) RemoteCloudReadOnly() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Remote.Mode), crawlremote.ModeCloud)
 }
 
 func EnsureRuntimeDirs(cfg Config) error {

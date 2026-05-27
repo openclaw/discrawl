@@ -38,21 +38,25 @@ func (r *runtime) runMetadata(args []string) error {
 		DefaultLogs:     cfg.LogDir,
 		DefaultShare:    cfg.Share.RepoPath,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "tap", "tui", "git-share", "sql", "embeddings"}
+	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "tap", "tui", "git-share", "cloud-remote", "sql", "embeddings"}
 	manifest.Privacy = control.Privacy{ContainsPrivateMessages: true, ExportsSecrets: false, LocalOnlyScopes: []string{"discord", "desktop-cache", "sqlite", "git-share"}}
 	manifest.Commands = map[string]control.Command{
-		"status":       {Title: "Status", Argv: []string{"discrawl", "status", "--json"}, JSON: true},
-		"check-update": {Title: "Check for updates", Argv: []string{"discrawl", "check-update", "--json"}, JSON: true},
-		"doctor":       {Title: "Doctor", Argv: []string{"discrawl", "doctor", "--json"}, JSON: true},
-		"sync":         {Title: "Sync", Argv: []string{"discrawl", "--json", "sync"}, JSON: true, Mutates: true},
-		"tap":          {Title: "Import desktop cache", Argv: []string{"discrawl", "--json", "tap"}, JSON: true, Mutates: true},
-		"cache-import": {Title: "Import desktop cache", Argv: []string{"discrawl", "--json", "cache-import"}, JSON: true, Mutates: true},
-		"wiretap":      {Title: "Legacy desktop cache import", Argv: []string{"discrawl", "--json", "wiretap"}, JSON: true, Mutates: true, Legacy: true, Deprecated: true},
-		"tui":          {Title: "Terminal browser", Argv: []string{"discrawl", "tui"}},
-		"tui-json":     {Title: "Terminal browser rows", Argv: []string{"discrawl", "tui", "--json"}, JSON: true},
-		"publish":      {Title: "Publish share", Argv: []string{"discrawl", "--json", "publish"}, JSON: true, Mutates: true},
-		"subscribe":    {Title: "Subscribe share", Argv: []string{"discrawl", "--json", "subscribe"}, JSON: true, Mutates: true},
-		"update":       {Title: "Update share", Argv: []string{"discrawl", "--json", "update"}, JSON: true, Mutates: true},
+		"status":          {Title: "Status", Argv: []string{"discrawl", "status", "--json"}, JSON: true},
+		"check-update":    {Title: "Check for updates", Argv: []string{"discrawl", "check-update", "--json"}, JSON: true},
+		"doctor":          {Title: "Doctor", Argv: []string{"discrawl", "doctor", "--json"}, JSON: true},
+		"sync":            {Title: "Sync", Argv: []string{"discrawl", "--json", "sync"}, JSON: true, Mutates: true},
+		"tap":             {Title: "Import desktop cache", Argv: []string{"discrawl", "--json", "tap"}, JSON: true, Mutates: true},
+		"cache-import":    {Title: "Import desktop cache", Argv: []string{"discrawl", "--json", "cache-import"}, JSON: true, Mutates: true},
+		"wiretap":         {Title: "Legacy desktop cache import", Argv: []string{"discrawl", "--json", "wiretap"}, JSON: true, Mutates: true, Legacy: true, Deprecated: true},
+		"tui":             {Title: "Terminal browser", Argv: []string{"discrawl", "tui"}},
+		"tui-json":        {Title: "Terminal browser rows", Argv: []string{"discrawl", "tui", "--json"}, JSON: true},
+		"publish":         {Title: "Publish share", Argv: []string{"discrawl", "--json", "publish"}, JSON: true, Mutates: true},
+		"subscribe":       {Title: "Subscribe share", Argv: []string{"discrawl", "--json", "subscribe"}, JSON: true, Mutates: true},
+		"subscribe-cloud": {Title: "Subscribe cloud archive", Argv: []string{"discrawl", "--json", "subscribe-cloud"}, JSON: true, Mutates: true},
+		"remote-status":   {Title: "Remote status", Argv: []string{"discrawl", "--json", "remote", "status"}, JSON: true},
+		"remote-archives": {Title: "Remote archives", Argv: []string{"discrawl", "--json", "remote", "archives"}, JSON: true},
+		"whoami":          {Title: "Remote identity", Argv: []string{"discrawl", "--json", "whoami"}, JSON: true},
+		"update":          {Title: "Update share", Argv: []string{"discrawl", "--json", "update"}, JSON: true, Mutates: true},
 	}
 	return r.print(manifest)
 }

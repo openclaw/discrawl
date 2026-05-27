@@ -49,5 +49,6 @@ discrawl status
 ## See also
 
 - [Git snapshots guide](../guides/git-snapshots.html)
+- [`subscribe-cloud`](subscribe-cloud.html)
 - [`publish`](publish.html)
 - [`update`](update.html)

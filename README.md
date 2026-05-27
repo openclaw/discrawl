@@ -1,6 +1,6 @@
 # discrawl 🛰️ — Mirror Discord into SQLite; search server history locally
 
-`discrawl` mirrors Discord guild data into local SQLite so you can search, inspect, and query server history without depending on Discord search. It can also import classifiable Discord Desktop cache messages for local DM recovery/search without using a user token. Teams can publish the guild archive as a private Git snapshot repo, so readers get fresh org memory without Discord bot credentials.
+`discrawl` mirrors Discord guild data into local SQLite so you can search, inspect, and query server history without depending on Discord search. It can also import classifiable Discord Desktop cache messages for local DM recovery/search without using a user token. Teams can publish the guild archive as a private Git snapshot repo, so readers get fresh org memory without Discord bot credentials. Read-only Cloudflare remote archives can be configured without creating a local SQLite database.
 
 There are two local archive sources:
 
@@ -26,6 +26,8 @@ Wiretap DMs stay local and are never exported to the Git-backed snapshot mirror.
 - browses stored messages and local DMs in a terminal archive UI
 - exposes `metadata --json`, `status --json`, and `doctor --json` for local
   launchers, automation, and CI
+- reports Worker-fronted cloud archive status in read-only mode without
+  touching local SQLite
 - supports Git-only read mode with no Discord credentials on reader machines
 - generates backup README activity reports, with optional AI-written field notes
 - exposes read-only SQL for ad hoc analysis
@@ -530,6 +532,21 @@ discrawl messages --channel general --hours 24
 
 `subscribe` is the Git-only setup path. It writes a config with `discord.token_source = "none"`, imports the snapshot, and does not require a Discord bot token. `sync` and `tail` remain disabled in this mode because they need live Discord access.
 
+Cloud remote subscribers can use a Worker-fronted archive without a local
+SQLite import:
+
+```bash
+discrawl subscribe-cloud --endpoint https://crawl.example.workers.dev --archive openclaw/discord
+discrawl status --json
+discrawl remote archives
+discrawl whoami
+```
+
+`subscribe-cloud` writes `[remote]` config and sets `discord.token_source =
+"none"`. It does not clone a Git repo, import a snapshot, or create the local
+SQLite database. This first cloud path is read-only scaffolding; Git
+`publish`, `subscribe`, and `update` keep their existing behavior.
+
 Configure freshness:
 
 ```bash
@@ -720,6 +737,13 @@ branch = "main"
 auto_update = true
 stale_after = "15m"
 media = true
+
+[remote]
+mode = "local" # use "cloud" for Worker-fronted remote archives
+endpoint = ""
+archive = ""
+token_env = "DISCRAWL_REMOTE_TOKEN"
+stale_after = ""
 ```
 
 The value above is an example. `init` writes an auto-sized default based on the host: `min(32, max(8, GOMAXPROCS*2))`.
@@ -730,6 +754,7 @@ Config override rules:
 - `DISCRAWL_CONFIG` overrides the default config path
 - `discord.token_source = "none"` disables live Discord access for Git-only readers
 - `discord.token_source = "keyring"` skips env lookup and reads only the configured OS keyring item
+- `remote.mode = "cloud"` makes `status --json` and `remote ...` read the configured Worker archive without opening SQLite
 - `DISCRAWL_NO_AUTO_UPDATE=1` disables Git snapshot auto-update for read commands in one process, useful for report jobs that already imported a fresh backup.
 
 ## Embeddings

@@ -16,10 +16,10 @@ Mirror Discord guilds into local SQLite. Search server history without depending
 
 - **New here?** Read [Install](install.html) and run `discrawl init`.
 - **Already have a bot?** Jump to [`sync`](commands/sync.html) and [`search`](commands/search.html).
-- **Just want to read a shared archive?** Use [`subscribe`](commands/subscribe.html) - no token needed.
+- **Just want to read a shared archive?** Use [`subscribe`](commands/subscribe.html) for Git snapshots, or [`subscribe-cloud`](commands/subscribe-cloud.html) for a Worker-fronted archive - no Discord token needed.
 - **Need DM search?** [`wiretap`](commands/wiretap.html) imports local Discord Desktop cache.
 - **Want semantic search?** Configure [Embeddings](guides/embeddings.html), then run [`embed`](commands/embed.html).
-- **Wiring an agent or launcher?** `discrawl metadata --json`, `discrawl status --json`, and `discrawl doctor --json` expose the read-only crawlkit control surface.
+- **Wiring an agent or launcher?** `discrawl metadata --json`, `discrawl status --json`, `discrawl remote status`, and `discrawl doctor --json` expose the read-only crawlkit control surface.
 
 ## At a glance
 

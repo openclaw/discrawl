@@ -5,6 +5,9 @@
 ### Changes
 
 - Update `crawlkit` to v0.7.0.
+- Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
+  `subscribe-cloud`, `remote status`, `remote archives`, and cloud-mode
+  `status --json` output that does not open or create a local SQLite database.
 
 ### Fixes
 

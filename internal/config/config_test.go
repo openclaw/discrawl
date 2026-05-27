@@ -18,6 +18,7 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, 1, cfg.Version)
 	require.Equal(t, "env", cfg.Discord.TokenSource)
 	require.Equal(t, DefaultTokenEnv, cfg.Discord.TokenEnv)
+	require.Equal(t, DefaultRemoteTokenEnv, cfg.Remote.TokenEnv)
 	require.Equal(t, DefaultTokenKeyringService, cfg.Discord.TokenKeyringService)
 	require.Equal(t, DefaultTokenKeyringAccount, cfg.Discord.TokenKeyringAccount)
 	require.Equal(t, defaultSyncConcurrency(), cfg.Sync.Concurrency)
@@ -34,6 +35,10 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.False(t, cfg.ShareEnabled())
 	cfg.Share.Remote = "git@example.com:org/archive.git"
 	require.True(t, cfg.ShareEnabled())
+	require.False(t, cfg.RemoteEnabled())
+	cfg.Remote.Mode = "cloud"
+	require.True(t, cfg.RemoteEnabled())
+	require.True(t, cfg.RemoteCloudReadOnly())
 	require.Equal(t, "openai", cfg.Search.Embeddings.Provider)
 	require.Equal(t, "text-embedding-3-small", cfg.Search.Embeddings.Model)
 	require.Empty(t, cfg.Search.Embeddings.BaseURL)
@@ -325,6 +330,7 @@ func TestWriteAndLoadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "g1", loaded.EffectiveDefaultGuildID())
 	require.Equal(t, []string{"g1", "g2"}, loaded.GuildIDs)
+	require.Equal(t, DefaultRemoteTokenEnv, loaded.Remote.TokenEnv)
 	require.NotNil(t, loaded.Sync.AttachmentText)
 	require.True(t, *loaded.Sync.AttachmentText)
 }

@@ -160,6 +160,7 @@ type runtime struct {
 	lockStarted time.Time
 	openStore   func(context.Context, string) (*store.Store, error)
 	newDiscord  func(config.Config) (discordClient, error)
+	newRemote   func(config.Config) (remoteArchiveClient, error)
 	newSyncer   func(syncer.Client, *store.Store, *slog.Logger) syncService
 	newEmbed    func(config.EmbeddingsConfig) (embed.Provider, error)
 	now         func() time.Time
@@ -265,6 +266,9 @@ func (r *runtime) dispatch(rest []string) error {
 	case "channels":
 		return r.withLocalStoreRead(true, func() error { return r.runChannels(rest[1:]) })
 	case "status":
+		if r.configuredForCloudReadOnly() {
+			return r.withConfig(func() error { return r.runStatus(rest[1:]) })
+		}
 		return r.withLocalStoreReadOnly(func() error { return r.runStatus(rest[1:]) })
 	case "report":
 		return r.withLocalStoreRead(true, func() error { return r.runReport(rest[1:]) })
@@ -272,6 +276,12 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withServicesAutoLocked(false, false, true, func() error { return r.runPublish(rest[1:]) })
 	case "subscribe":
 		return r.runSubscribe(rest[1:])
+	case "subscribe-cloud":
+		return r.runSubscribeCloud(rest[1:])
+	case "remote":
+		return r.runRemote(rest[1:])
+	case "whoami":
+		return r.withConfig(func() error { return r.runRemoteWhoami(rest[1:]) })
 	case "update":
 		return r.withServicesAutoLocked(false, false, true, func() error { return r.runUpdate(rest[1:]) })
 	case "doctor":
@@ -279,6 +289,26 @@ func (r *runtime) dispatch(rest []string) error {
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", rest[0]))
 	}
+}
+
+func (r *runtime) configuredForCloudReadOnly() bool {
+	cfg, err := config.Load(r.configPath)
+	return err == nil && cfg.RemoteCloudReadOnly()
+}
+
+func (r *runtime) withConfig(fn func() error) error {
+	cfg, err := config.Load(r.configPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return configErr(err)
+		}
+		cfg = config.Default()
+		if err := cfg.Normalize(); err != nil {
+			return configErr(err)
+		}
+	}
+	r.cfg = cfg
+	return fn()
 }
 
 func (r *runtime) withServices(withDiscord bool, fn func() error) error {

@@ -123,8 +123,11 @@ Commands:
   members
   channels
   status
+  remote
+  whoami
   report
   doctor
+  subscribe-cloud
 `)
 }
 
@@ -212,6 +215,18 @@ Flags:
   --confirm                   Required with --unsafe.
 
 Read-only SQL is allowed by default. Use "-" or no query to read SQL from stdin.
+`,
+	"remote": `Usage:
+  discrawl remote status
+  discrawl remote archives
+  discrawl remote whoami
+
+Reads the configured Cloudflare-backed remote archive without opening the local SQLite database.
+`,
+	"subscribe-cloud": `Usage:
+  discrawl subscribe-cloud --endpoint URL --archive ARCHIVE [--token-env ENV]
+
+Writes a read-only cloud archive config. This does not create or import a local SQLite database.
 `,
 }
 

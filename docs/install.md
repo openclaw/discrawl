@@ -68,6 +68,16 @@ discrawl messages --channel general --hours 24
 imports the snapshot. Read commands auto-refresh when the local snapshot is
 older than `15m`.
 
+For Worker-fronted archives that should stay fully remote:
+
+```bash
+discrawl subscribe-cloud --endpoint https://crawl.example.workers.dev --archive openclaw/discord
+discrawl status --json
+```
+
+This writes read-only `[remote]` config and does not create a local SQLite
+database.
+
 ## Default runtime paths
 
 Discrawl follows the OS storage convention instead of writing a new top-level directory in your

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/openclaw/crawlkit/control"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1019,6 +1020,94 @@ func TestSubscribeNoMediaPersistsShareMediaOptOut(t *testing.T) {
 	cfg, err := config.Load(cfgPath)
 	require.NoError(t, err)
 	require.False(t, cfg.ShareMediaEnabled())
+}
+
+func TestSubscribeCloudDoesNotCreateLocalDB(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "archive", "discrawl.db")
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"subscribe-cloud",
+		"--endpoint", "https://remote.example.test",
+		"--archive", "openclaw/discord",
+		"--db", dbPath,
+	}, &out, &bytes.Buffer{}))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.Equal(t, "cloud", cfg.Remote.Mode)
+	require.Equal(t, "https://remote.example.test", cfg.Remote.Endpoint)
+	require.Equal(t, "openclaw/discord", cfg.Remote.Archive)
+	require.Equal(t, config.DefaultRemoteTokenEnv, cfg.Remote.TokenEnv)
+	require.Equal(t, "none", cfg.Discord.TokenSource)
+	require.NoFileExists(t, dbPath)
+	require.NoDirExists(t, filepath.Dir(dbPath))
+}
+
+func TestCloudStatusJSONUsesRemoteWithoutLocalDB(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "discrawl.db")
+	tokenEnv := "DISCRAWL_TEST_REMOTE_TOKEN"
+	t.Setenv(tokenEnv, "test-token")
+	seen := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seen = true
+		require.Equal(t, http.MethodGet, req.Method)
+		require.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
+		require.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/status", req.URL.EscapedPath())
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"app": "discrawl",
+			"archive": "openclaw/discord",
+			"mode": "cloud",
+			"last_sync_at": "2026-05-27T10:00:00Z",
+			"last_ingest_at": "2026-05-27T10:05:00Z",
+			"counts": [
+				{"id": "guilds", "label": "Guilds", "value": 2},
+				{"id": "messages", "label": "Messages", "value": 42}
+			],
+			"warnings": ["readonly"]
+		}`)
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.Discord.TokenSource = "none"
+	cfg.Remote.Mode = "cloud"
+	cfg.Remote.Endpoint = server.URL
+	cfg.Remote.Archive = "openclaw/discord"
+	cfg.Remote.TokenEnv = tokenEnv
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "status", "--json"}, &out, &bytes.Buffer{}))
+	require.True(t, seen)
+	require.NoFileExists(t, dbPath)
+
+	var status control.Status
+	require.NoError(t, json.Unmarshal(out.Bytes(), &status))
+	require.Equal(t, "discrawl", status.AppID)
+	require.Equal(t, "current", status.State)
+	require.Empty(t, status.DatabasePath)
+	require.NotNil(t, status.Remote)
+	require.True(t, status.Remote.Enabled)
+	require.Equal(t, "cloud", status.Remote.Mode)
+	require.Equal(t, server.URL, status.Remote.Endpoint)
+	require.Equal(t, "openclaw/discord", status.Remote.Archive)
+	require.Equal(t, "2026-05-27T10:00:00Z", status.Remote.LastSyncAt)
+	require.Equal(t, "2026-05-27T10:05:00Z", status.Remote.LastIngestAt)
+	require.Len(t, status.Databases, 1)
+	require.Equal(t, "cloudflare-d1", status.Databases[0].Kind)
+	require.Equal(t, "openclaw/discord", status.Databases[0].Archive)
+	require.Equal(t, int64(42), status.Counts[1].Value)
+	require.Equal(t, []string{"readonly"}, status.Warnings)
 }
 
 func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {

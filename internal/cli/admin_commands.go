@@ -403,6 +403,9 @@ func (r *runtime) runStatus(args []string) error {
 	if *jsonOut {
 		r.json = true
 	}
+	if r.cfg.RemoteCloudReadOnly() {
+		return r.runRemoteStatusOutput()
+	}
 	dbPath, err := config.ExpandPath(r.cfg.DBPath)
 	if err != nil {
 		return configErr(err)

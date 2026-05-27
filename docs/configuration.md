@@ -92,6 +92,13 @@ media = true
 public_only = false
 include_channel_ids = []
 exclude_channel_ids = []
+
+[remote]
+mode = "local" # use "cloud" for Worker-fronted remote archives
+endpoint = ""
+archive = ""
+token_env = "DISCRAWL_REMOTE_TOKEN"
+stale_after = ""
 ```
 
 `concurrency` is auto-sized at `init` to `min(32, max(8, GOMAXPROCS*2))`.
@@ -113,6 +120,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `DISCRAWL_CONFIG=<path>` overrides the default config path
 - `discord.token_source = "none"` disables live Discord access for Git-only readers
 - `discord.token_source = "keyring"` skips env lookup
+- `remote.mode = "cloud"` makes `status --json` and `remote ...` read the configured Worker archive without opening SQLite
 - `DISCRAWL_NO_AUTO_UPDATE=1` disables Git snapshot auto-update for read commands in one process
 
 ## Notes
