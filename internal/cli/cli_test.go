@@ -31,6 +31,7 @@ import (
 	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/openclaw/discrawl/internal/syncer"
+	"github.com/zalando/go-keyring"
 )
 
 func TestHelpAndVersion(t *testing.T) {
@@ -1164,6 +1165,66 @@ func TestCloudSearchAndMessagesUseRemoteWithoutLocalDB(t *testing.T) {
 	require.Contains(t, messagesOut.String(), "worker-backed message")
 	require.True(t, seen["discrawl.messages.list"])
 	require.NoFileExists(t, dbPath)
+}
+
+func TestRemoteLoginStoresKeyringToken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	keyring.MockInit()
+
+	var pollSecretHash string
+	var pollSecret string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		switch req.URL.Path {
+		case "/v1/auth/github/start":
+			var body crawlremote.LoginStartRequest
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			pollSecretHash = body.PollSecretHash
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginStartResult{LoginID: "login-1", URL: server.URL + "/authorize"})
+		case "/v1/auth/github/poll":
+			var body crawlremote.LoginPollRequest
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			require.Equal(t, "login-1", body.LoginID)
+			pollSecret = body.PollSecret
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
+		case "/v1/whoami":
+			require.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"--json",
+		"remote", "login",
+		"--endpoint", server.URL,
+		"--no-browser",
+		"--timeout", "1s",
+		"--poll-interval", "1ms",
+	}, &out, &bytes.Buffer{}))
+	require.NotEmpty(t, pollSecretHash)
+	require.NotEmpty(t, pollSecret)
+	require.Equal(t, pollSecretHash, crawlremote.LoginPollSecretHash(pollSecret))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.Equal(t, "keyring", cfg.Remote.Auth.TokenSource)
+	require.NotEmpty(t, cfg.Remote.Auth.KeyringService)
+	require.NotEmpty(t, cfg.Remote.Auth.KeyringAccount)
+	stored, err := keyring.Get(cfg.Remote.Auth.KeyringService, cfg.Remote.Auth.KeyringAccount)
+	require.NoError(t, err)
+	require.Equal(t, "session-token", stored)
+
+	var whoami bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "whoami"}, &whoami, &bytes.Buffer{}))
+	require.Contains(t, whoami.String(), `"login": "alice"`)
 }
 
 func TestCloudPublishSendsNonDMRows(t *testing.T) {

@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os/exec"
+	goruntime "runtime"
 	"strings"
+	"time"
 
 	"github.com/openclaw/crawlkit/control"
 	crawlremote "github.com/openclaw/crawlkit/remote"
@@ -91,6 +94,8 @@ func (r *runtime) runRemote(args []string) error {
 			}
 			return r.runRemoteArchives()
 		})
+	case "login":
+		return r.runRemoteLogin(args[1:])
 	case "whoami":
 		return r.withConfig(func() error {
 			return r.runRemoteWhoami(args[1:])
@@ -98,6 +103,142 @@ func (r *runtime) runRemote(args []string) error {
 	default:
 		return usageErr(fmt.Errorf("unknown remote subcommand %q", args[0]))
 	}
+}
+
+func (r *runtime) runRemoteLogin(args []string) error {
+	fs := flag.NewFlagSet("remote login", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	endpoint := fs.String("endpoint", "", "")
+	noBrowser := fs.Bool("no-browser", false, "")
+	timeoutRaw := fs.String("timeout", "5m", "")
+	pollRaw := fs.String("poll-interval", "2s", "")
+	jsonOut := fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil {
+		return usageErr(err)
+	}
+	if *jsonOut {
+		r.json = true
+	}
+	if fs.NArg() > 1 {
+		return usageErr(errors.New("remote login accepts at most one endpoint"))
+	}
+	if fs.NArg() == 1 {
+		if *endpoint != "" {
+			return usageErr(errors.New("use either --endpoint or a positional endpoint"))
+		}
+		*endpoint = fs.Arg(0)
+	}
+	timeout, err := time.ParseDuration(*timeoutRaw)
+	if err != nil || timeout <= 0 {
+		return usageErr(fmt.Errorf("invalid --timeout %q", *timeoutRaw))
+	}
+	pollInterval, err := time.ParseDuration(*pollRaw)
+	if err != nil || pollInterval <= 0 {
+		return usageErr(fmt.Errorf("invalid --poll-interval %q", *pollRaw))
+	}
+	cfg, err := loadConfigOrDefault(r.configPath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*endpoint) != "" {
+		cfg.Remote.Endpoint = *endpoint
+	}
+	cfg.Remote.Normalize()
+	if strings.TrimSpace(cfg.Remote.Endpoint) == "" {
+		return usageErr(errors.New("remote login requires --endpoint or remote.endpoint"))
+	}
+	client, err := crawlremote.NewClientFromConfig(cfg.Remote, crawlremote.Options{UserAgent: "discrawl/" + version})
+	if err != nil {
+		return configErr(err)
+	}
+	pollSecret, err := crawlremote.NewLoginPollSecret()
+	if err != nil {
+		return err
+	}
+	start, err := client.StartGitHubLogin(r.ctx, crawlremote.LoginPollSecretHash(pollSecret))
+	if err != nil {
+		return err
+	}
+	if !*noBrowser {
+		if err := openURL(start.URL); err != nil && !r.json {
+			_, _ = fmt.Fprintf(r.stdout, "Open this URL to continue login:\n%s\n", start.URL)
+		}
+	} else if !r.json {
+		_, _ = fmt.Fprintf(r.stdout, "Open this URL to continue login:\n%s\n", start.URL)
+	}
+	result, err := pollRemoteLogin(r.ctx, client, start.LoginID, pollSecret, timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	auth, err := config.StoreRemoteToken(cfg, result.Token)
+	if err != nil {
+		return configErr(fmt.Errorf("store remote token: %w", err))
+	}
+	if cfg.Remote.Mode == "" || cfg.Remote.Mode == crawlremote.ModeLocal {
+		cfg.Remote.Mode = crawlremote.ModeCloud
+	}
+	cfg.Remote.Auth = auth
+	if err := config.Write(r.configPath, cfg); err != nil {
+		return configErr(err)
+	}
+	return r.print(map[string]any{
+		"config_path":     r.configPath,
+		"endpoint":        cfg.Remote.Endpoint,
+		"archive":         cfg.Remote.Archive,
+		"login":           result.Login,
+		"org":             result.Org,
+		"owner":           result.Owner,
+		"auth_source":     cfg.Remote.Auth.TokenSource,
+		"keyring_service": cfg.Remote.Auth.KeyringService,
+		"keyring_account": cfg.Remote.Auth.KeyringAccount,
+		"updated":         true,
+	})
+}
+
+func pollRemoteLogin(ctx context.Context, client *crawlremote.Client, loginID, pollSecret string, timeout, interval time.Duration) (crawlremote.LoginPollResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		result, err := client.PollGitHubLogin(ctx, loginID, pollSecret)
+		if err != nil {
+			return crawlremote.LoginPollResult{}, err
+		}
+		switch strings.ToLower(strings.TrimSpace(result.Status)) {
+		case "complete":
+			if strings.TrimSpace(result.Token) == "" {
+				return crawlremote.LoginPollResult{}, errors.New("remote login completed without token")
+			}
+			return result, nil
+		case "error":
+			if result.Error != "" {
+				return crawlremote.LoginPollResult{}, fmt.Errorf("remote login failed: %s", result.Error)
+			}
+			return crawlremote.LoginPollResult{}, errors.New("remote login failed")
+		case "", "pending":
+		default:
+			return crawlremote.LoginPollResult{}, fmt.Errorf("remote login returned status %q", result.Status)
+		}
+		select {
+		case <-ctx.Done():
+			return crawlremote.LoginPollResult{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func openURL(rawURL string) error {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		cmd = exec.Command("xdg-open", rawURL)
+	}
+	return cmd.Start()
 }
 
 func (r *runtime) runRemoteStatusOutput() error {
@@ -149,8 +290,15 @@ func (r *runtime) remoteClient(requireArchive bool) (remoteArchiveClient, error)
 	if r.newRemote != nil {
 		return r.newRemote(r.cfg)
 	}
+	tokenProvider := crawlremote.TokenProvider(crawlremote.EnvTokenProvider{Name: r.cfg.Remote.TokenEnv})
+	if token, err := config.ResolveRemoteToken(r.cfg); err != nil {
+		return nil, configErr(err)
+	} else if token.Token != "" {
+		tokenProvider = crawlremote.StaticToken(token.Token)
+	}
 	client, err := crawlremote.NewClientFromConfig(r.cfg.Remote, crawlremote.Options{
-		UserAgent: "discrawl/" + version,
+		TokenProvider: tokenProvider,
+		UserAgent:     "discrawl/" + version,
 	})
 	if err != nil {
 		return nil, configErr(err)

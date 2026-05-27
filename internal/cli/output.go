@@ -220,6 +220,7 @@ Read-only SQL is allowed by default. Use "-" or no query to read SQL from stdin.
 	"remote": `Usage:
   discrawl remote status
   discrawl remote archives
+  discrawl remote login --endpoint URL
   discrawl remote whoami
 
 Reads the configured Cloudflare-backed remote archive without opening the local SQLite database.

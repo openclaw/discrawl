@@ -56,6 +56,7 @@ func (r *runtime) runMetadata(args []string) error {
 		"subscribe-cloud": {Title: "Subscribe cloud archive", Argv: []string{"discrawl", "--json", "subscribe-cloud"}, JSON: true, Mutates: true},
 		"remote-status":   {Title: "Remote status", Argv: []string{"discrawl", "--json", "remote", "status"}, JSON: true},
 		"remote-archives": {Title: "Remote archives", Argv: []string{"discrawl", "--json", "remote", "archives"}, JSON: true},
+		"remote-login":    {Title: "Remote GitHub login", Argv: []string{"discrawl", "--json", "remote", "login"}, JSON: true, Mutates: true},
 		"whoami":          {Title: "Remote identity", Argv: []string{"discrawl", "--json", "whoami"}, JSON: true},
 		"update":          {Title: "Update share", Argv: []string{"discrawl", "--json", "update"}, JSON: true, Mutates: true},
 	}

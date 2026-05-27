@@ -537,6 +537,7 @@ SQLite import:
 
 ```bash
 discrawl subscribe-cloud --endpoint https://crawl.example.workers.dev --archive openclaw/discord
+discrawl remote login --endpoint https://crawl.example.workers.dev --json
 discrawl status --json
 discrawl search "release notes" --json
 discrawl messages --channel 1458141495701012561 --json
@@ -547,6 +548,8 @@ discrawl whoami
 `subscribe-cloud` writes `[remote]` config and sets `discord.token_source =
 "none"`. It does not clone a Git repo, import a snapshot, or create the local
 SQLite database.
+`remote login` starts the Worker GitHub OAuth flow, verifies org/team
+membership server-side, and stores the signed bearer token in the OS keyring.
 
 Publishers can send the current non-DM SQLite archive into the Worker-backed
 D1 archive:
