@@ -218,6 +218,9 @@ func (r *runtime) dispatch(rest []string) error {
 		if hasHelpArg(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"search"})
 		}
+		if r.configuredForCloudReadOnly() {
+			return r.withConfig(func() error { return r.runSearch(rest[1:]) })
+		}
 		autoShareUpdate := !hasBoolFlag(rest[1:], "--dm")
 		return r.withLocalStoreRead(autoShareUpdate, func() error { return r.runSearch(rest[1:]) })
 	case "tui":
@@ -228,6 +231,9 @@ func (r *runtime) dispatch(rest []string) error {
 	case "messages":
 		if hasHelpArg(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"messages"})
+		}
+		if r.configuredForCloudReadOnly() {
+			return r.withConfig(func() error { return r.runMessages(rest[1:]) })
 		}
 		if hasBoolFlag(rest[1:], "--sync") && !hasBoolFlag(rest[1:], "--dm") {
 			return r.withServicesAutoLocked(true, true, true, func() error { return r.runMessages(rest[1:]) })
@@ -274,6 +280,8 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withLocalStoreRead(true, func() error { return r.runReport(rest[1:]) })
 	case "publish":
 		return r.withServicesAutoLocked(false, false, true, func() error { return r.runPublish(rest[1:]) })
+	case "cloud":
+		return r.runCloud(rest[1:])
 	case "subscribe":
 		return r.runSubscribe(rest[1:])
 	case "subscribe-cloud":

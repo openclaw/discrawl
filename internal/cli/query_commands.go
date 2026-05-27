@@ -43,7 +43,15 @@ func (r *runtime) runSearch(args []string) error {
 		Limit:        *limit,
 		IncludeEmpty: *includeEmpty,
 	}
-	switch strings.ToLower(strings.TrimSpace(*mode)) {
+	normalizedMode := strings.ToLower(strings.TrimSpace(*mode))
+	if r.cfg.RemoteCloudReadOnly() {
+		results, err := r.runRemoteSearch(opts, normalizedMode, *dm)
+		if err != nil {
+			return err
+		}
+		return r.print(results)
+	}
+	switch normalizedMode {
 	case "", "fts":
 		results, err := r.store.SearchMessages(r.ctx, opts)
 		if err != nil {

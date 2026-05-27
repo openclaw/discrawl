@@ -538,14 +538,25 @@ SQLite import:
 ```bash
 discrawl subscribe-cloud --endpoint https://crawl.example.workers.dev --archive openclaw/discord
 discrawl status --json
+discrawl search "release notes" --json
+discrawl messages --channel 1458141495701012561 --json
 discrawl remote archives
 discrawl whoami
 ```
 
 `subscribe-cloud` writes `[remote]` config and sets `discord.token_source =
 "none"`. It does not clone a Git repo, import a snapshot, or create the local
-SQLite database. This first cloud path is read-only scaffolding; Git
-`publish`, `subscribe`, and `update` keep their existing behavior.
+SQLite database.
+
+Publishers can send the current non-DM SQLite archive into the Worker-backed
+D1 archive:
+
+```bash
+discrawl cloud publish --remote https://crawl.example.workers.dev --archive openclaw/discord
+```
+
+`cloud publish` excludes `@me`/DM rows and leaves existing Git-backed
+`publish`, `subscribe`, and `update` behavior unchanged.
 
 Configure freshness:
 

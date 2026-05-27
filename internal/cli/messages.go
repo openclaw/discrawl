@@ -111,6 +111,23 @@ func (r *runtime) runMessages(args []string) error {
 		}
 	}
 
+	opts := store.MessageListOptions{
+		GuildIDs:     guildIDs,
+		Channel:      *channel,
+		Author:       *author,
+		Since:        sinceTime,
+		Before:       beforeTime,
+		Limit:        *limit,
+		Last:         *last,
+		IncludeEmpty: *includeEmpty,
+	}
+	if r.cfg.RemoteCloudReadOnly() {
+		rows, err := r.runRemoteMessages(opts, *dm)
+		if err != nil {
+			return err
+		}
+		return r.print(rows)
+	}
 	rows, err := r.store.ListMessages(r.ctx, store.MessageListOptions{
 		GuildIDs:     guildIDs,
 		Channel:      *channel,

@@ -8,6 +8,11 @@
 - Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
   `subscribe-cloud`, `remote status`, `remote archives`, and cloud-mode
   `status --json` output that does not open or create a local SQLite database.
+- Route cloud-mode `search` and filtered `messages` reads to Worker named
+  queries so subscribers can inspect live D1 data without local SQLite.
+- Add `discrawl cloud publish` to export non-DM local SQLite rows into the
+  Cloudflare remote archive ingest API without changing Git snapshot
+  publishing.
 
 ### Fixes
 

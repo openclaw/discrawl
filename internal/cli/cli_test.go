@@ -19,6 +19,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/openclaw/crawlkit/control"
+	crawlremote "github.com/openclaw/crawlkit/remote"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1108,6 +1109,118 @@ func TestCloudStatusJSONUsesRemoteWithoutLocalDB(t *testing.T) {
 	require.Equal(t, "openclaw/discord", status.Databases[0].Archive)
 	require.Equal(t, int64(42), status.Counts[1].Value)
 	require.Equal(t, []string{"readonly"}, status.Warnings)
+}
+
+func TestCloudSearchAndMessagesUseRemoteWithoutLocalDB(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "discrawl.db")
+	tokenEnv := "DISCRAWL_TEST_REMOTE_TOKEN"
+	t.Setenv(tokenEnv, "test-token")
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.Equal(t, http.MethodPost, req.Method)
+		require.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
+		require.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/query", req.URL.EscapedPath())
+		var body crawlremote.QueryRequest
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		seen[body.Name] = true
+		require.Equal(t, "openclaw/discord", body.Archive)
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(crawlremote.QueryResult{
+			Values: []map[string]any{{
+				"message_id":      "m1",
+				"guild_id":        "g1",
+				"channel_id":      "c1",
+				"channel_name":    "general",
+				"author_id":       "u1",
+				"author_username": "Alice",
+				"content":         "worker-backed message",
+				"created_at":      "2026-05-27T17:00:00Z",
+			}},
+			Stats: crawlremote.QueryStats{ServedBy: "d1"},
+		})
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.Discord.TokenSource = "none"
+	cfg.Remote.Mode = "cloud"
+	cfg.Remote.Endpoint = server.URL
+	cfg.Remote.Archive = "openclaw/discord"
+	cfg.Remote.TokenEnv = tokenEnv
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	var searchOut bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "search", "worker"}, &searchOut, &bytes.Buffer{}))
+	require.Contains(t, searchOut.String(), "worker-backed message")
+	require.True(t, seen["discrawl.messages.search"])
+	require.NoFileExists(t, dbPath)
+
+	var messagesOut bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "messages", "--channel", "c1"}, &messagesOut, &bytes.Buffer{}))
+	require.Contains(t, messagesOut.String(), "worker-backed message")
+	require.True(t, seen["discrawl.messages.list"])
+	require.NoFileExists(t, dbPath)
+}
+
+func TestCloudPublishSendsNonDMRows(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "publisher.db")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	publisher := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, addCLIDMAttachment(ctx, publisher))
+	require.NoError(t, publisher.Close())
+
+	tokenEnv := "DISCRAWL_TEST_PUBLISH_TOKEN"
+	t.Setenv(tokenEnv, "publish-token")
+	seenTables := map[string]crawlremote.IngestRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
+		require.Equal(t, http.MethodPost, req.Method)
+		require.Equal(t, "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/ingest", req.URL.EscapedPath())
+		var body crawlremote.IngestRequest
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		require.Equal(t, "discrawl", body.Manifest.App)
+		require.Equal(t, "discrawl/openclaw", body.Manifest.Archive)
+		for idx, column := range body.Columns {
+			if column == "guild_id" {
+				for _, row := range body.Rows {
+					require.NotEqual(t, store.DirectMessageGuildID, row[idx])
+				}
+			}
+		}
+		seenTables[body.Table] = body
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(crawlremote.IngestResult{Table: body.Table, RowsAccepted: int64(len(body.Rows)), Complete: body.Final})
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"--json",
+		"cloud", "publish",
+		"--remote", server.URL,
+		"--archive", "discrawl/openclaw",
+		"--token-env", tokenEnv,
+	}, &out, &bytes.Buffer{}))
+
+	require.Len(t, seenTables, 4)
+	require.Len(t, seenTables["guilds"].Rows, 1)
+	require.Len(t, seenTables["channels"].Rows, 1)
+	require.Len(t, seenTables["messages"].Rows, 1)
+	require.True(t, seenTables["messages"].Final)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
+	require.Equal(t, float64(1), payload["guilds"])
+	require.Equal(t, float64(1), payload["messages"])
 }
 
 func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {

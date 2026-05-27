@@ -38,7 +38,7 @@ func (r *runtime) runMetadata(args []string) error {
 		DefaultLogs:     cfg.LogDir,
 		DefaultShare:    cfg.Share.RepoPath,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "tap", "tui", "git-share", "cloud-remote", "sql", "embeddings"}
+	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "tap", "tui", "git-share", "cloud-remote", "cloud-publish", "sql", "embeddings"}
 	manifest.Privacy = control.Privacy{ContainsPrivateMessages: true, ExportsSecrets: false, LocalOnlyScopes: []string{"discord", "desktop-cache", "sqlite", "git-share"}}
 	manifest.Commands = map[string]control.Command{
 		"status":          {Title: "Status", Argv: []string{"discrawl", "status", "--json"}, JSON: true},
@@ -51,6 +51,7 @@ func (r *runtime) runMetadata(args []string) error {
 		"tui":             {Title: "Terminal browser", Argv: []string{"discrawl", "tui"}},
 		"tui-json":        {Title: "Terminal browser rows", Argv: []string{"discrawl", "tui", "--json"}, JSON: true},
 		"publish":         {Title: "Publish share", Argv: []string{"discrawl", "--json", "publish"}, JSON: true, Mutates: true},
+		"cloud-publish":   {Title: "Publish cloud archive", Argv: []string{"discrawl", "--json", "cloud", "publish"}, JSON: true, Mutates: true},
 		"subscribe":       {Title: "Subscribe share", Argv: []string{"discrawl", "--json", "subscribe"}, JSON: true, Mutates: true},
 		"subscribe-cloud": {Title: "Subscribe cloud archive", Argv: []string{"discrawl", "--json", "subscribe-cloud"}, JSON: true, Mutates: true},
 		"remote-status":   {Title: "Remote status", Argv: []string{"discrawl", "--json", "remote", "status"}, JSON: true},

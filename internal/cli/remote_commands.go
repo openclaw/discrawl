@@ -15,6 +15,7 @@ import (
 
 type remoteArchiveClient interface {
 	Archives(context.Context) ([]crawlremote.Archive, error)
+	Query(context.Context, string, string, crawlremote.QueryRequest) (crawlremote.QueryResult, error)
 	Status(context.Context, string, string) (crawlremote.Status, error)
 	Whoami(context.Context) (crawlremote.Identity, error)
 }
