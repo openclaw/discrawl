@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	crawlremote "github.com/openclaw/crawlkit/remote"
@@ -122,7 +123,7 @@ func publishRows(ctx context.Context, db *sql.DB, query string) ([][]any, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
@@ -160,10 +161,7 @@ func sendIngestRows(ctx context.Context, client *crawlremote.Client, archive str
 		return result.RowsAccepted, err
 	}
 	for start := 0; start < len(rows); start += discrawlCloudBatchSize {
-		end := start + discrawlCloudBatchSize
-		if end > len(rows) {
-			end = len(rows)
-		}
+		end := min(start+discrawlCloudBatchSize, len(rows))
 		result, err := client.Ingest(ctx, "discrawl", archive, crawlremote.IngestRequest{
 			Manifest: manifest,
 			Table:    table,
@@ -184,7 +182,7 @@ func cursorFor(start int) string {
 	if start == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d", start)
+	return strconv.Itoa(start)
 }
 
 var discrawlGuildColumns = []string{"guild_id", "name", "updated_at"}

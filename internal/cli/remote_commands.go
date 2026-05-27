@@ -173,7 +173,7 @@ func (r *runtime) runRemoteLogin(args []string) error {
 		return err
 	}
 	if !*noBrowser {
-		if err := openURL(start.URL); err != nil && !r.json {
+		if err := openURL(r.ctx, start.URL); err != nil && !r.json {
 			_, _ = fmt.Fprintf(r.stdout, "Open this URL to continue login:\n%s\n", start.URL)
 		}
 	} else if !r.json {
@@ -252,15 +252,15 @@ func pollRemoteLogin(ctx context.Context, client *crawlremote.Client, loginID, p
 	}
 }
 
-func openURL(rawURL string) error {
+func openURL(ctx context.Context, rawURL string) error {
 	var cmd *exec.Cmd
 	switch goruntime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", rawURL)
+		cmd = exec.CommandContext(ctx, "open", rawURL)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
-		cmd = exec.Command("xdg-open", rawURL)
+		cmd = exec.CommandContext(ctx, "xdg-open", rawURL)
 	}
 	return cmd.Start()
 }
@@ -333,7 +333,7 @@ func (r *runtime) remoteClient(requireArchive bool) (remoteArchiveClient, error)
 func remoteControlStatus(configPath string, cfg config.Config, status crawlremote.Status) control.Status {
 	counts := append([]control.Count(nil), status.Counts...)
 	archive := firstNonEmpty(status.Archive, cfg.Remote.Archive)
-	summary := fmt.Sprintf("remote archive %s", archive)
+	summary := "remote archive " + archive
 	if messages := countValue(counts, "messages"); messages > 0 {
 		summary = fmt.Sprintf("%d messages in remote archive %s", messages, archive)
 	}

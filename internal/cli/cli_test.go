@@ -1059,10 +1059,10 @@ func TestCloudStatusJSONUsesRemoteWithoutLocalDB(t *testing.T) {
 	seen := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		seen = true
-		require.Equal(t, http.MethodGet, req.Method)
-		require.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
-		require.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/status", req.URL.EscapedPath())
-		w.Header().Set("content-type", "application/json")
+		assert.Equal(t, http.MethodGet, req.Method)
+		assert.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
+		assert.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/status", req.URL.EscapedPath())
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
 			"app": "discrawl",
 			"archive": "openclaw/discord",
@@ -1120,14 +1120,17 @@ func TestCloudSearchAndMessagesUseRemoteWithoutLocalDB(t *testing.T) {
 	t.Setenv(tokenEnv, "test-token")
 	seen := map[string]bool{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		require.Equal(t, http.MethodPost, req.Method)
-		require.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
-		require.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/query", req.URL.EscapedPath())
+		assert.Equal(t, http.MethodPost, req.Method)
+		assert.Equal(t, "Bearer test-token", req.Header.Get("Authorization"))
+		assert.Equal(t, "/v1/apps/discrawl/archives/openclaw%2Fdiscord/query", req.URL.EscapedPath())
 		var body crawlremote.QueryRequest
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		seen[body.Name] = true
-		require.Equal(t, "openclaw/discord", body.Archive)
-		w.Header().Set("content-type", "application/json")
+		assert.Equal(t, "openclaw/discord", body.Archive)
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(crawlremote.QueryResult{
 			Values: []map[string]any{{
 				"message_id":      "m1",
@@ -1176,21 +1179,27 @@ func TestRemoteLoginStoresKeyringToken(t *testing.T) {
 	var pollSecret string
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("content-type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
 		switch req.URL.Path {
 		case "/v1/auth/github/start":
 			var body crawlremote.LoginStartRequest
-			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			pollSecretHash = body.PollSecretHash
 			_ = json.NewEncoder(w).Encode(crawlremote.LoginStartResult{LoginID: "login-1", URL: server.URL + "/authorize"})
 		case "/v1/auth/github/poll":
 			var body crawlremote.LoginPollRequest
-			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-			require.Equal(t, "login-1", body.LoginID)
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, "login-1", body.LoginID)
 			pollSecret = body.PollSecret
 			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
 		case "/v1/whoami":
-			require.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
+			assert.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
 		default:
 			http.NotFound(w, req)
@@ -1235,15 +1244,18 @@ func TestRemoteLoginWithGitHubTokenEnvStoresKeyringToken(t *testing.T) {
 
 	var sawToken string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("content-type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
 		switch req.URL.Path {
 		case "/v1/auth/github/token":
 			var body crawlremote.GitHubTokenLoginRequest
-			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			sawToken = body.Token
 			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
 		case "/v1/whoami":
-			require.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
+			assert.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
 		default:
 			http.NotFound(w, req)
@@ -1289,22 +1301,25 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	t.Setenv(tokenEnv, "publish-token")
 	seenTables := map[string]crawlremote.IngestRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		require.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
-		require.Equal(t, http.MethodPost, req.Method)
-		require.Equal(t, "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/ingest", req.URL.EscapedPath())
+		assert.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
+		assert.Equal(t, http.MethodPost, req.Method)
+		assert.Equal(t, "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/ingest", req.URL.EscapedPath())
 		var body crawlremote.IngestRequest
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		require.Equal(t, "discrawl", body.Manifest.App)
-		require.Equal(t, "discrawl/openclaw", body.Manifest.Archive)
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, "discrawl", body.Manifest.App)
+		assert.Equal(t, "discrawl/openclaw", body.Manifest.Archive)
 		for idx, column := range body.Columns {
 			if column == "guild_id" {
 				for _, row := range body.Rows {
-					require.NotEqual(t, store.DirectMessageGuildID, row[idx])
+					assert.NotEqual(t, store.DirectMessageGuildID, row[idx])
 				}
 			}
 		}
 		seenTables[body.Table] = body
-		w.Header().Set("content-type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(crawlremote.IngestResult{Table: body.Table, RowsAccepted: int64(len(body.Rows)), Complete: body.Final})
 	}))
 	defer server.Close()
@@ -1327,8 +1342,8 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
-	require.Equal(t, float64(1), payload["guilds"])
-	require.Equal(t, float64(1), payload["messages"])
+	require.InDelta(t, float64(1), payload["guilds"], 0)
+	require.InDelta(t, float64(1), payload["messages"], 0)
 }
 
 func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {

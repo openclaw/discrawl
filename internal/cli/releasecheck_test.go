@@ -1,6 +1,11 @@
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestGithubOwnerRepo(t *testing.T) {
 	tests := []struct {
@@ -56,5 +61,31 @@ func TestDiscrawlReleaseCheckOptionsUsesModulePath(t *testing.T) {
 	}
 	if !opts.Force {
 		t.Fatal("force = false")
+	}
+	if opts.AppName != "discrawl" || opts.CurrentVersion == "" || opts.CacheDir == "" {
+		t.Fatalf("incomplete options = %#v", opts)
+	}
+}
+
+func TestRunCheckUpdateRejectsArgsBeforeNetwork(t *testing.T) {
+	r := &runtime{ctx: context.Background(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	err := r.runCheckUpdate([]string{"extra"})
+	if err == nil || !strings.Contains(err.Error(), "takes flags only") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunCheckUpdateJSONSkipped(t *testing.T) {
+	original := releaseModulePath
+	releaseModulePath = func() string { return "" }
+	t.Cleanup(func() { releaseModulePath = original })
+
+	var out bytes.Buffer
+	r := &runtime{ctx: context.Background(), stdout: &out, stderr: &bytes.Buffer{}}
+	if err := r.runCheckUpdate([]string{"--json"}); err != nil {
+		t.Fatalf("check update: %v", err)
+	}
+	if !strings.Contains(out.String(), `"skipped": true`) {
+		t.Fatalf("output = %s", out.String())
 	}
 }
