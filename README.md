@@ -550,6 +550,9 @@ discrawl whoami
 SQLite database.
 `remote login` starts the Worker GitHub OAuth flow, verifies org/team
 membership server-side, and stores the signed bearer token in the OS keyring.
+Use `remote login --github-token-env GITHUB_TOKEN` for non-browser bootstrap;
+the Worker verifies that GitHub token against the same org/team policy and
+stores only the returned remote session token locally.
 
 Publishers can send the current non-DM SQLite archive into the Worker-backed
 D1 archive:

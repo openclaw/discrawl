@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	goruntime "runtime"
 	"strings"
@@ -109,6 +110,7 @@ func (r *runtime) runRemoteLogin(args []string) error {
 	fs := flag.NewFlagSet("remote login", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	endpoint := fs.String("endpoint", "", "")
+	githubTokenEnv := fs.String("github-token-env", "", "")
 	noBrowser := fs.Bool("no-browser", false, "")
 	timeoutRaw := fs.String("timeout", "5m", "")
 	pollRaw := fs.String("poll-interval", "2s", "")
@@ -151,6 +153,17 @@ func (r *runtime) runRemoteLogin(args []string) error {
 	if err != nil {
 		return configErr(err)
 	}
+	if tokenEnv := strings.TrimSpace(*githubTokenEnv); tokenEnv != "" {
+		githubToken := strings.TrimSpace(os.Getenv(tokenEnv))
+		if githubToken == "" {
+			return fmt.Errorf("%s is empty", tokenEnv)
+		}
+		result, err := client.LoginWithGitHubToken(r.ctx, githubToken)
+		if err != nil {
+			return err
+		}
+		return r.finishRemoteLogin(cfg, "github-token", result)
+	}
 	pollSecret, err := crawlremote.NewLoginPollSecret()
 	if err != nil {
 		return err
@@ -170,6 +183,16 @@ func (r *runtime) runRemoteLogin(args []string) error {
 	if err != nil {
 		return err
 	}
+	return r.finishRemoteLogin(cfg, "github-oauth", result)
+}
+
+func (r *runtime) finishRemoteLogin(cfg config.Config, method string, result crawlremote.LoginPollResult) error {
+	if strings.ToLower(strings.TrimSpace(result.Status)) != "complete" {
+		return fmt.Errorf("remote login returned status %q", result.Status)
+	}
+	if strings.TrimSpace(result.Token) == "" {
+		return errors.New("remote login completed without token")
+	}
 	auth, err := config.StoreRemoteToken(cfg, result.Token)
 	if err != nil {
 		return configErr(fmt.Errorf("store remote token: %w", err))
@@ -188,6 +211,7 @@ func (r *runtime) runRemoteLogin(args []string) error {
 		"login":           result.Login,
 		"org":             result.Org,
 		"owner":           result.Owner,
+		"login_method":    method,
 		"auth_source":     cfg.Remote.Auth.TokenSource,
 		"keyring_service": cfg.Remote.Auth.KeyringService,
 		"keyring_account": cfg.Remote.Auth.KeyringAccount,

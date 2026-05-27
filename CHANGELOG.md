@@ -6,9 +6,9 @@
 
 - Update `crawlkit` to v0.7.0.
 - Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
-  `subscribe-cloud`, GitHub-backed `remote login`, `remote status`,
-  `remote archives`, and cloud-mode `status --json` output that does not open
-  or create a local SQLite database.
+  `subscribe-cloud`, GitHub-backed `remote login` with OAuth or token-env
+  bootstrap, `remote status`, `remote archives`, and cloud-mode `status --json`
+  output that does not open or create a local SQLite database.
 - Route cloud-mode `search` and filtered `messages` reads to Worker named
   queries so subscribers can inspect live D1 data without local SQLite.
 - Add `discrawl cloud publish` to export non-DM local SQLite rows into the

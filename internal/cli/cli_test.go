@@ -1227,6 +1227,53 @@ func TestRemoteLoginStoresKeyringToken(t *testing.T) {
 	require.Contains(t, whoami.String(), `"login": "alice"`)
 }
 
+func TestRemoteLoginWithGitHubTokenEnvStoresKeyringToken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	keyring.MockInit()
+	t.Setenv("DISCRAWL_TEST_GITHUB_TOKEN", "github-token")
+
+	var sawToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		switch req.URL.Path {
+		case "/v1/auth/github/token":
+			var body crawlremote.GitHubTokenLoginRequest
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			sawToken = body.Token
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
+		case "/v1/whoami":
+			require.Equal(t, "Bearer session-token", req.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"--json",
+		"remote", "login",
+		"--endpoint", server.URL,
+		"--github-token-env", "DISCRAWL_TEST_GITHUB_TOKEN",
+	}, &out, &bytes.Buffer{}))
+	require.Equal(t, "github-token", sawToken)
+	require.Contains(t, out.String(), `"login_method": "github-token"`)
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	stored, err := keyring.Get(cfg.Remote.Auth.KeyringService, cfg.Remote.Auth.KeyringAccount)
+	require.NoError(t, err)
+	require.Equal(t, "session-token", stored)
+
+	var whoami bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "whoami"}, &whoami, &bytes.Buffer{}))
+	require.Contains(t, whoami.String(), `"login": "alice"`)
+}
+
 func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

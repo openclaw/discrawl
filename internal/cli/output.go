@@ -221,6 +221,7 @@ Read-only SQL is allowed by default. Use "-" or no query to read SQL from stdin.
   discrawl remote status
   discrawl remote archives
   discrawl remote login --endpoint URL
+  discrawl remote login --endpoint URL --github-token-env GITHUB_TOKEN
   discrawl remote whoami
 
 Reads the configured Cloudflare-backed remote archive without opening the local SQLite database.
