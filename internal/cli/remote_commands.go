@@ -256,10 +256,13 @@ func openURL(ctx context.Context, rawURL string) error {
 	var cmd *exec.Cmd
 	switch goruntime.GOOS {
 	case "darwin":
+		// #nosec G204 -- fixed browser launcher executable; rawURL is passed as argv, not shell text.
 		cmd = exec.CommandContext(ctx, "open", rawURL)
 	case "windows":
+		// #nosec G204 -- fixed browser launcher executable; rawURL is passed as argv, not shell text.
 		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
+		// #nosec G204 -- fixed browser launcher executable; rawURL is passed as argv, not shell text.
 		cmd = exec.CommandContext(ctx, "xdg-open", rawURL)
 	}
 	return cmd.Start()
