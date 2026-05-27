@@ -548,6 +548,9 @@ discrawl whoami
 `subscribe-cloud` writes `[remote]` config and sets `discord.token_source =
 "none"`. It does not clone a Git repo, import a snapshot, or create the local
 SQLite database.
+The remote service is deployed separately from discrawl in `openclaw/crawl-remote`
+with Wrangler. discrawl only stores the Worker endpoint/archive in config and
+calls that service.
 `remote login` starts the Worker GitHub OAuth flow, verifies org/team
 membership server-side, and stores the signed bearer token in the OS keyring.
 Use `remote login --github-token-env GITHUB_TOKEN` for non-browser bootstrap;

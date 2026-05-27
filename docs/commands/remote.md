@@ -1,6 +1,9 @@
 # `remote`
 
 Reads the configured Cloudflare remote archive through the Worker API.
+The Worker is deployed separately from discrawl in `openclaw/crawl-remote`
+with Wrangler; discrawl stores an endpoint/archive and never deploys the
+service itself.
 
 ## Usage
 
