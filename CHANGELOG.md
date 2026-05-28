@@ -18,6 +18,8 @@
 - Mirror the non-DM local SQLite archive into the Worker-backed R2 object store
   during `discrawl cloud publish`, alongside the D1 row ingest used for live
   queries.
+- Compress the sanitized SQLite mirror as a gzip chunk bundle with an explicit
+  privacy/count manifest before uploading to R2.
 
 ### Fixes
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1305,57 +1306,98 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	tokenEnv := "DISCRAWL_TEST_PUBLISH_TOKEN"
 	t.Setenv(tokenEnv, "publish-token")
 	seenTables := map[string]crawlremote.IngestRequest{}
-	var sawSQLiteUpload bool
+	var sawSQLitePart bool
+	var sawSQLiteManifest bool
+	var sqliteBundlePart []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		assert.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
 		if req.Method == http.MethodPut && req.URL.EscapedPath() == "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/sqlite" {
-			sawSQLiteUpload = true
+			uploadKind := req.Header.Get("X-Crawl-Sqlite-Upload")
 			payload, err := io.ReadAll(req.Body)
 			if err != nil {
 				t.Errorf("read sqlite upload: %v", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if !bytes.HasPrefix(payload, []byte("SQLite format 3")) {
-				t.Errorf("sqlite upload should contain a sqlite image")
-				http.Error(w, "not sqlite", http.StatusBadRequest)
-				return
-			}
-			uploadPath := filepath.Join(dir, "uploaded-cloud.db")
-			if err := os.WriteFile(uploadPath, payload, 0o600); err != nil {
-				t.Errorf("write sqlite upload: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			uploadDB, err := sql.Open("sqlite", uploadPath)
-			if err != nil {
-				t.Errorf("open sqlite upload: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer func() { _ = uploadDB.Close() }()
-			var dmMessages int
-			if err := uploadDB.QueryRowContext(ctx, "select count(*) from messages where guild_id = ?", store.DirectMessageGuildID).Scan(&dmMessages); err != nil {
-				t.Errorf("count dm messages: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			assert.Zero(t, dmMessages)
-			var tableCount int
-			if err := uploadDB.QueryRowContext(ctx, "select count(*) from sqlite_master where type = 'table' and name in ('guilds', 'channels', 'members', 'messages')").Scan(&tableCount); err != nil {
-				t.Errorf("count cloud tables: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			assert.Equal(t, 4, tableCount)
-			assert.NotEmpty(t, req.Header.Get("X-Crawl-Content-Sha256"))
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{
-				App:      "discrawl",
-				Archive:  "discrawl/openclaw",
-				Complete: true,
-				Object:   &crawlremote.SQLiteObject{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/current.db", Size: int64(len(payload))},
-			})
+			switch uploadKind {
+			case "bundle-part":
+				sawSQLitePart = true
+				assert.Equal(t, "application/gzip", req.Header.Get("Content-Type"))
+				assert.NotEmpty(t, req.Header.Get("X-Crawl-Content-Sha256"))
+				assert.True(t, bytes.HasPrefix(payload, []byte{0x1f, 0x8b}), "sqlite bundle part should be gzip")
+				sqliteBundlePart = append(sqliteBundlePart[:0], payload...)
+				_ = json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{
+					App:      "discrawl",
+					Archive:  "discrawl/openclaw",
+					Complete: false,
+					Object:   &crawlremote.SQLiteObject{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/chunks/current.db.gz.part-0000", Size: int64(len(payload))},
+				})
+			case "bundle-manifest":
+				sawSQLiteManifest = true
+				var manifest crawlremote.SQLiteBundleManifest
+				if err := json.Unmarshal(payload, &manifest); err != nil {
+					t.Errorf("decode sqlite bundle manifest: %v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				assert.Equal(t, crawlremote.SQLiteGzipChunkedBundleFormat, manifest.Format)
+				assert.Equal(t, crawlremote.SQLiteGzipCompression, manifest.Compression.Algorithm)
+				assert.Equal(t, int64(1), manifest.Counts["messages"])
+				assert.Equal(t, false, manifest.Privacy["includes_private_messages"])
+				assert.Equal(t, false, manifest.Privacy["includes_raw_json"])
+				assert.Equal(t, "@me", manifest.Privacy["excludes_guild_id"])
+				reader, err := gzip.NewReader(bytes.NewReader(sqliteBundlePart))
+				if err != nil {
+					t.Errorf("open sqlite bundle gzip: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				decompressed, err := io.ReadAll(reader)
+				if closeErr := reader.Close(); err == nil {
+					err = closeErr
+				}
+				if err != nil {
+					t.Errorf("read sqlite bundle gzip: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				uploadPath := filepath.Join(dir, "uploaded-cloud.db")
+				if err := os.WriteFile(uploadPath, decompressed, 0o600); err != nil {
+					t.Errorf("write sqlite upload: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				uploadDB, err := sql.Open("sqlite", uploadPath)
+				if err != nil {
+					t.Errorf("open sqlite upload: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				defer func() { _ = uploadDB.Close() }()
+				var dmMessages int
+				if err := uploadDB.QueryRowContext(ctx, "select count(*) from messages where guild_id = ?", store.DirectMessageGuildID).Scan(&dmMessages); err != nil {
+					t.Errorf("count dm messages: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				assert.Zero(t, dmMessages)
+				var tableCount int
+				if err := uploadDB.QueryRowContext(ctx, "select count(*) from sqlite_master where type = 'table' and name in ('guilds', 'channels', 'members', 'messages')").Scan(&tableCount); err != nil {
+					t.Errorf("count cloud tables: %v", err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				assert.Equal(t, 4, tableCount)
+				_ = json.NewEncoder(w).Encode(crawlremote.SQLiteBundleUploadResult{
+					App:      "discrawl",
+					Archive:  "discrawl/openclaw",
+					Complete: true,
+					Bundle:   &crawlremote.SQLiteBundle{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/current.manifest.json", Manifest: &manifest},
+				})
+			default:
+				http.Error(w, "missing sqlite bundle upload kind", http.StatusBadRequest)
+			}
 			return
 		}
 		assert.Equal(t, http.MethodPost, req.Method)
@@ -1395,13 +1437,14 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	require.Len(t, seenTables["channels"].Rows, 1)
 	require.Len(t, seenTables["messages"].Rows, 1)
 	require.True(t, seenTables["messages"].Final)
-	require.True(t, sawSQLiteUpload)
+	require.True(t, sawSQLitePart)
+	require.True(t, sawSQLiteManifest)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
 	require.InDelta(t, float64(1), payload["guilds"], 0)
 	require.InDelta(t, float64(1), payload["messages"], 0)
-	require.NotNil(t, payload["sqlite_object"])
+	require.NotNil(t, payload["sqlite_bundle"])
 }
 
 func TestCloudSQLiteExportHelpers(t *testing.T) {
