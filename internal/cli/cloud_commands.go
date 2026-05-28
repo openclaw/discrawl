@@ -40,6 +40,7 @@ func (r *runtime) runCloudPublish(args []string) error {
 	remoteEndpoint := fs.String("remote", "", "")
 	archive := fs.String("archive", "", "")
 	tokenEnv := fs.String("token-env", "", "")
+	sqliteOnly := fs.Bool("sqlite-only", false, "")
 	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
@@ -84,37 +85,43 @@ func (r *runtime) runCloudPublish(args []string) error {
 			Mode:          crawlremote.ModePublisher,
 			Source:        "sqlite",
 		}
-		guilds, err := publishRows(r.ctx, r.store.DB(), discrawlGuildExportSQL)
+		guildCount, channelCount, memberCount, messageCount, err := cloudPublishCounts(r.ctx, r.store.DB())
 		if err != nil {
 			return dbErr(err)
 		}
-		channels, err := publishRows(r.ctx, r.store.DB(), discrawlChannelExportSQL)
-		if err != nil {
-			return dbErr(err)
-		}
-		messages, err := publishRows(r.ctx, r.store.DB(), discrawlMessageExportSQL)
-		if err != nil {
-			return dbErr(err)
-		}
-		members, err := publishRows(r.ctx, r.store.DB(), discrawlMemberExportSQL)
-		if err != nil {
-			return dbErr(err)
-		}
-		guildCount, err := sendIngestRows(r.ctx, client, archiveID, manifest, "guilds", discrawlGuildColumns, guilds, false)
-		if err != nil {
-			return err
-		}
-		channelCount, err := sendIngestRows(r.ctx, client, archiveID, manifest, "channels", discrawlChannelColumns, channels, false)
-		if err != nil {
-			return err
-		}
-		memberCount, err := sendIngestRows(r.ctx, client, archiveID, manifest, "members", discrawlMemberColumns, members, false)
-		if err != nil {
-			return err
-		}
-		messageCount, err := sendIngestRows(r.ctx, client, archiveID, manifest, "messages", discrawlMessageColumns, messages, true)
-		if err != nil {
-			return err
+		if !*sqliteOnly {
+			guilds, err := publishRows(r.ctx, r.store.DB(), discrawlGuildExportSQL)
+			if err != nil {
+				return dbErr(err)
+			}
+			channels, err := publishRows(r.ctx, r.store.DB(), discrawlChannelExportSQL)
+			if err != nil {
+				return dbErr(err)
+			}
+			messages, err := publishRows(r.ctx, r.store.DB(), discrawlMessageExportSQL)
+			if err != nil {
+				return dbErr(err)
+			}
+			members, err := publishRows(r.ctx, r.store.DB(), discrawlMemberExportSQL)
+			if err != nil {
+				return dbErr(err)
+			}
+			guildCount, err = sendIngestRows(r.ctx, client, archiveID, manifest, "guilds", discrawlGuildColumns, guilds, false)
+			if err != nil {
+				return err
+			}
+			channelCount, err = sendIngestRows(r.ctx, client, archiveID, manifest, "channels", discrawlChannelColumns, channels, false)
+			if err != nil {
+				return err
+			}
+			memberCount, err = sendIngestRows(r.ctx, client, archiveID, manifest, "members", discrawlMemberColumns, members, false)
+			if err != nil {
+				return err
+			}
+			messageCount, err = sendIngestRows(r.ctx, client, archiveID, manifest, "messages", discrawlMessageColumns, messages, true)
+			if err != nil {
+				return err
+			}
 		}
 		sqliteBundle, err := uploadSQLiteArchive(r.ctx, client, "discrawl", archiveID, r.store.DB(), r.cfg.DBPath, manifest, map[string]int64{
 			"guilds":   guildCount,
@@ -132,9 +139,34 @@ func (r *runtime) runCloudPublish(args []string) error {
 			"channels":      channelCount,
 			"members":       memberCount,
 			"messages":      messageCount,
+			"sqlite_only":   *sqliteOnly,
 			"sqlite_bundle": sqliteBundle,
 		})
 	})
+}
+
+func cloudPublishCounts(ctx context.Context, db *sql.DB) (guilds int64, channels int64, members int64, messages int64, err error) {
+	if guilds, err = countCloudRows(ctx, db, "select count(*) from guilds where id != '@me'"); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if channels, err = countCloudRows(ctx, db, "select count(*) from channels where guild_id != '@me'"); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if members, err = countCloudRows(ctx, db, "select count(*) from members where guild_id != '@me'"); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if messages, err = countCloudRows(ctx, db, "select count(*) from messages where guild_id != '@me'"); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return guilds, channels, members, messages, nil
+}
+
+func countCloudRows(ctx context.Context, db *sql.DB, query string) (int64, error) {
+	var count int64
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func publishRows(ctx context.Context, db *sql.DB, query string) ([][]any, error) {

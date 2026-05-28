@@ -1444,6 +1444,84 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
 	require.InDelta(t, float64(1), payload["guilds"], 0)
 	require.InDelta(t, float64(1), payload["messages"], 0)
+	require.Equal(t, false, payload["sqlite_only"])
+	require.NotNil(t, payload["sqlite_bundle"])
+}
+
+func TestCloudPublishSQLiteOnlySkipsD1Ingest(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "publisher.db")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	publisher := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, publisher.Close())
+
+	tokenEnv := "DISCRAWL_TEST_PUBLISH_TOKEN"
+	t.Setenv(tokenEnv, "publish-token")
+	var sawSQLitePart bool
+	var sawSQLiteManifest bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
+		if req.Method != http.MethodPut || req.URL.EscapedPath() != "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/sqlite" {
+			http.Error(w, "sqlite-only publish should not ingest D1 rows", http.StatusBadRequest)
+			return
+		}
+		payload, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Header.Get("X-Crawl-Sqlite-Upload") {
+		case "bundle-part":
+			sawSQLitePart = true
+			assert.True(t, bytes.HasPrefix(payload, []byte{0x1f, 0x8b}), "sqlite bundle part should be gzip")
+			_ = json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{
+				App:      "discrawl",
+				Archive:  "discrawl/openclaw",
+				Complete: false,
+				Object:   &crawlremote.SQLiteObject{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/chunks/current.db.gz.part-0000", Size: int64(len(payload))},
+			})
+		case "bundle-manifest":
+			sawSQLiteManifest = true
+			var manifest crawlremote.SQLiteBundleManifest
+			if err := json.Unmarshal(payload, &manifest); err != nil {
+				t.Errorf("decode sqlite bundle manifest: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, int64(1), manifest.Counts["messages"])
+			_ = json.NewEncoder(w).Encode(crawlremote.SQLiteBundleUploadResult{
+				App:      "discrawl",
+				Archive:  "discrawl/openclaw",
+				Complete: true,
+				Bundle:   &crawlremote.SQLiteBundle{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/current.manifest.json", Manifest: &manifest},
+			})
+		default:
+			http.Error(w, "missing sqlite bundle upload kind", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"--json",
+		"cloud", "publish",
+		"--sqlite-only",
+		"--remote", server.URL,
+		"--archive", "discrawl/openclaw",
+		"--token-env", tokenEnv,
+	}, &out, &bytes.Buffer{}))
+	require.True(t, sawSQLitePart)
+	require.True(t, sawSQLiteManifest)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
+	require.Equal(t, true, payload["sqlite_only"])
+	require.InDelta(t, float64(1), payload["messages"], 0)
 	require.NotNil(t, payload["sqlite_bundle"])
 }
 
