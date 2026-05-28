@@ -4,7 +4,7 @@
 
 ### Changes
 
-- Update `crawlkit` to v0.8.0.
+- Update `crawlkit` to v0.10.0.
 - Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
   `subscribe-cloud`, GitHub-backed `remote login` with OAuth or token-env
   bootstrap, `remote status`, `remote archives`, and cloud-mode `status --json`
@@ -14,6 +14,9 @@
 - Add `discrawl cloud publish` to export non-DM local SQLite rows into the
   Cloudflare remote archive ingest API without changing Git snapshot
   publishing.
+- Mirror the non-DM local SQLite archive into the Worker-backed R2 object store
+  during `discrawl cloud publish`, alongside the D1 row ingest used for live
+  queries.
 
 ### Fixes
 

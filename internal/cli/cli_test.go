@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -92,6 +93,10 @@ func TestCommandValidationEdges(t *testing.T) {
 		{"--config", cfgPath, "sync", "--source", "bogus"},
 		{"--config", cfgPath, "sync", "--since", "not-time"},
 		{"--config", cfgPath, "sync", "--no-update", "--update", "force"},
+		{"--config", cfgPath, "cloud", "publish", "--bogus"},
+		{"--config", cfgPath, "cloud", "publish", "extra"},
+		{"--config", cfgPath, "cloud", "publish", "--json"},
+		{"--config", cfgPath, "cloud", "publish", "--remote", "https://remote.example"},
 		{"--config", cfgPath, "publish", "--remote", ""},
 		{"--config", cfgPath, "subscribe"},
 		{"--config", cfgPath, "update", "extra"},
@@ -1300,8 +1305,59 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	tokenEnv := "DISCRAWL_TEST_PUBLISH_TOKEN"
 	t.Setenv(tokenEnv, "publish-token")
 	seenTables := map[string]crawlremote.IngestRequest{}
+	var sawSQLiteUpload bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		assert.Equal(t, "Bearer publish-token", req.Header.Get("Authorization"))
+		if req.Method == http.MethodPut && req.URL.EscapedPath() == "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/sqlite" {
+			sawSQLiteUpload = true
+			payload, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Errorf("read sqlite upload: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !bytes.HasPrefix(payload, []byte("SQLite format 3")) {
+				t.Errorf("sqlite upload should contain a sqlite image")
+				http.Error(w, "not sqlite", http.StatusBadRequest)
+				return
+			}
+			uploadPath := filepath.Join(dir, "uploaded-cloud.db")
+			if err := os.WriteFile(uploadPath, payload, 0o600); err != nil {
+				t.Errorf("write sqlite upload: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			uploadDB, err := sql.Open("sqlite", uploadPath)
+			if err != nil {
+				t.Errorf("open sqlite upload: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer func() { _ = uploadDB.Close() }()
+			var dmMessages int
+			if err := uploadDB.QueryRowContext(ctx, "select count(*) from messages where guild_id = ?", store.DirectMessageGuildID).Scan(&dmMessages); err != nil {
+				t.Errorf("count dm messages: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			assert.Zero(t, dmMessages)
+			var tableCount int
+			if err := uploadDB.QueryRowContext(ctx, "select count(*) from sqlite_master where type = 'table' and name in ('guilds', 'channels', 'members', 'messages')").Scan(&tableCount); err != nil {
+				t.Errorf("count cloud tables: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			assert.Equal(t, 4, tableCount)
+			assert.NotEmpty(t, req.Header.Get("X-Crawl-Content-Sha256"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{
+				App:      "discrawl",
+				Archive:  "discrawl/openclaw",
+				Complete: true,
+				Object:   &crawlremote.SQLiteObject{Key: "v1/discrawl/discrawl%2Fopenclaw/sqlite/current.db", Size: int64(len(payload))},
+			})
+			return
+		}
 		assert.Equal(t, http.MethodPost, req.Method)
 		assert.Equal(t, "/v1/apps/discrawl/archives/discrawl%2Fopenclaw/ingest", req.URL.EscapedPath())
 		var body crawlremote.IngestRequest
@@ -1339,11 +1395,101 @@ func TestCloudPublishSendsNonDMRows(t *testing.T) {
 	require.Len(t, seenTables["channels"].Rows, 1)
 	require.Len(t, seenTables["messages"].Rows, 1)
 	require.True(t, seenTables["messages"].Final)
+	require.True(t, sawSQLiteUpload)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &payload))
 	require.InDelta(t, float64(1), payload["guilds"], 0)
 	require.InDelta(t, float64(1), payload["messages"], 0)
+	require.NotNil(t, payload["sqlite_object"])
+}
+
+func TestCloudSQLiteExportHelpers(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.db")
+	s := seedCLIStore(t, sourcePath)
+	require.NoError(t, s.UpsertMember(ctx, store.MemberRecord{
+		GuildID:     "g1",
+		UserID:      "u1",
+		Username:    "peter",
+		DisplayName: "Peter",
+		RoleIDsJSON: `[]`,
+		RawJSON:     `{"private":"ignored"}`,
+	}))
+	require.NoError(t, addCLIDMAttachment(ctx, s))
+
+	require.Empty(t, sqlPlaceholders(0))
+	require.Equal(t, "?,?,?", sqlPlaceholders(3))
+
+	snapshotPath, cleanup, err := sqliteSnapshotPath(ctx, s.DB())
+	require.NoError(t, err)
+	require.FileExists(t, snapshotPath)
+	cleanup()
+	require.NoFileExists(t, snapshotPath)
+
+	exportPath := filepath.Join(dir, "cloud.db")
+	require.NoError(t, writeCloudSQLiteExport(ctx, s.DB(), exportPath))
+	require.NoError(t, s.Close())
+
+	sum, err := cloudFileSHA256(exportPath)
+	require.NoError(t, err)
+	require.Len(t, sum, 64)
+	_, err = cloudFileSHA256(filepath.Join(dir, "missing.db"))
+	require.Error(t, err)
+
+	cloudDB, err := sql.Open("sqlite", exportPath)
+	require.NoError(t, err)
+	defer func() { _ = cloudDB.Close() }()
+
+	var guilds, channels, members, messages int
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from guilds").Scan(&guilds))
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from channels").Scan(&channels))
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from members").Scan(&members))
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from messages").Scan(&messages))
+	require.Equal(t, 1, guilds)
+	require.Equal(t, 1, channels)
+	require.Equal(t, 1, members)
+	require.Equal(t, 1, messages)
+
+	var dmRows int
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from messages where guild_id = ?", store.DirectMessageGuildID).Scan(&dmRows))
+	require.Zero(t, dmRows)
+
+	var authorUsername string
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select author_username from messages where message_id = 'm100'").Scan(&authorUsername))
+	require.Equal(t, "Peter", authorUsername)
+
+	var rawJSONColumns int
+	require.NoError(t, cloudDB.QueryRowContext(ctx, "select count(*) from pragma_table_info('messages') where name = 'raw_json'").Scan(&rawJSONColumns))
+	require.Zero(t, rawJSONColumns)
+}
+
+func TestCopyCloudSQLiteRowsErrorsAndBytes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source, err := sql.Open("sqlite", filepath.Join(dir, "source.db"))
+	require.NoError(t, err)
+	defer func() { _ = source.Close() }()
+	out, err := sql.Open("sqlite", filepath.Join(dir, "out.db"))
+	require.NoError(t, err)
+	defer func() { _ = out.Close() }()
+
+	_, err = source.ExecContext(ctx, `create table source_rows(value blob)`)
+	require.NoError(t, err)
+	_, err = source.ExecContext(ctx, `insert into source_rows(value) values(x'68656c6c6f')`)
+	require.NoError(t, err)
+	_, err = out.ExecContext(ctx, `create table copied(value text)`)
+	require.NoError(t, err)
+
+	require.NoError(t, copyCloudSQLiteRows(ctx, source, out, "copied", []string{"value"}, `select value from source_rows`))
+	var value string
+	require.NoError(t, out.QueryRowContext(ctx, `select value from copied`).Scan(&value))
+	require.Equal(t, "hello", value)
+
+	err = copyCloudSQLiteRows(ctx, source, out, "copied", []string{"value"}, `select missing from source_rows`)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "query sqlite cloud export copied")
 }
 
 func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
