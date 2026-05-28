@@ -20,7 +20,10 @@ import (
 	"github.com/openclaw/discrawl/internal/config"
 )
 
-const discrawlCloudBatchSize = 250
+const (
+	discrawlCloudBatchSize             = 250
+	discrawlCloudSQLiteBundleChunkSize = int64(64 * 1024 * 1024)
+)
 
 func (r *runtime) runCloud(args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
@@ -246,6 +249,7 @@ func uploadSQLiteArchive(ctx context.Context, client *crawlremote.Client, app, a
 		App:        app,
 		Archive:    archive,
 		SourcePath: snapshotPath,
+		ChunkSize:  discrawlCloudSQLiteBundleChunkSize,
 		Counts:     counts,
 		Privacy: map[string]any{
 			"excludes_guild_id":         "@me",
