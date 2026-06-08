@@ -37,12 +37,16 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           go install mvdan.cc/gofumpt@v0.9.2
           go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
+          go install golang.org/x/tools/cmd/deadcode@v0.45.0
 
       - name: Vet
         run: go vet ./...
 
       - name: Staticcheck
         run: '"$(go env GOPATH)/bin/staticcheck" ./...'
+
+      - name: Deadcode
+        run: '"$(go env GOPATH)/bin/deadcode" -test ./...'
 
       - name: Gofumpt
         run: |
