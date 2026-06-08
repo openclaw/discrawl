@@ -46,7 +46,13 @@ jobs:
         run: '"$(go env GOPATH)/bin/staticcheck" ./...'
 
       - name: Deadcode
-        run: '"$(go env GOPATH)/bin/deadcode" -test ./...'
+        run: |
+          output_file=$(mktemp)
+          "$(go env GOPATH)/bin/deadcode" -test ./... > "$output_file"
+          if [ -s "$output_file" ]; then
+            cat "$output_file"
+            exit 1
+          fi
 
       - name: Gofumpt
         run: |
