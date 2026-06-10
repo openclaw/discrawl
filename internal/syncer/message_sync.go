@@ -315,7 +315,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 		if before == "" && state.Latest != "" {
 			before = state.Latest
 		}
-		count, latest, err := s.syncBackfillPages(ctx, channel, before, channel.Name, embeddings, since, progress)
+		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, progress)
 		messageCount += count
 		newest = maxSnowflake(newest, latest)
 		if err != nil {
@@ -423,7 +423,7 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 	return messageCount, newest, nil
 }
 
-func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, channelName string, embeddings bool, since time.Time, progress *messageSyncProgress) (int, string, error) {
+func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, progress *messageSyncProgress) (int, string, error) {
 	messageCount := 0
 	newest := ""
 	for {
@@ -445,7 +445,12 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 		progress.touch(channel, len(eligible))
 		newest = maxSnowflake(newest, pageNewest)
 		messageCount += len(eligible)
-		if newest != "" {
+		// Backfill pages are older than any previously synced head, so only
+		// checkpoint the latest pointer when it actually advances (backfill
+		// starting from the channel head); persisting backfill-region ids
+		// over a stored head would make resumed full syncs re-crawl the
+		// whole span between the backfill cursor and the head.
+		if newest != "" && maxSnowflake(latestFloor, newest) == newest {
 			if err := s.store.SetSyncState(ctx, channelLatestScope(channel.ID), newest); err != nil {
 				return messageCount, newest, err
 			}
