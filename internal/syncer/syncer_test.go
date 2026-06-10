@@ -31,6 +31,7 @@ type fakeClient struct {
 	messages         map[string][]*discordgo.Message
 	messageErrors    map[string]error
 	messageCalls     map[string]int
+	messageRequests  []messageRequest
 	messageBlocks    map[string]chan struct{}
 	messageStarted   chan string
 	beforeErrors     map[string]map[string]error
@@ -45,6 +46,12 @@ type fakeClient struct {
 	mu               sync.Mutex
 	inFlight         int
 	maxInFlight      int
+}
+
+type messageRequest struct {
+	channelID string
+	beforeID  string
+	afterID   string
 }
 
 func (f *fakeClient) Self(context.Context) (*discordgo.User, error) {
@@ -122,6 +129,11 @@ func (f *fakeClient) ChannelMessages(ctx context.Context, channelID string, limi
 		f.messageCalls = make(map[string]int)
 	}
 	f.messageCalls[channelID]++
+	f.messageRequests = append(f.messageRequests, messageRequest{
+		channelID: channelID,
+		beforeID:  beforeID,
+		afterID:   afterID,
+	})
 	f.mu.Unlock()
 	if f.messageStarted != nil {
 		select {
@@ -203,7 +215,7 @@ func (f *fakeClient) ChannelMessage(_ context.Context, channelID, messageID stri
 func (f *fakeClient) Tail(ctx context.Context, handler discordclient.EventHandler) error {
 	f.tailCalls++
 	msg := &discordgo.Message{
-		ID:        "m3",
+		ID:        "3",
 		GuildID:   "g1",
 		ChannelID: "c1",
 		Content:   "tail event",

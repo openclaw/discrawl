@@ -23,6 +23,8 @@
 
 ### Fixes
 
+- Kept resumed `sync --full` backfills from moving channel latest-message checkpoints backward, avoiding duplicate head recrawls on large interrupted channels. Thanks @hannesrudolph.
+
 ## 0.9.1 - 2026-05-18
 
 ### Changes

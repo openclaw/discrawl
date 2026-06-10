@@ -169,6 +169,111 @@ func TestSyncFullBackfillDoesNotRegressLatestPointer(t *testing.T) {
 	require.Equal(t, "1", complete)
 }
 
+func TestSyncFullBackfillLargeResumeDoesNotRecrawlHeadSpan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+
+	const totalMessages = 1200
+	headID := syntheticSnowflakeID(totalMessages)
+	backfillStartID := syntheticSnowflakeID(1000)
+	interruptBeforeID := syntheticSnowflakeID(900)
+	for id := 1000; id <= totalMessages; id++ {
+		require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+			ID:                syntheticSnowflakeID(id),
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "user",
+			CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+			Content:           fmt.Sprintf("msg-%d", id),
+			NormalizedContent: fmt.Sprintf("msg-%d", id),
+			RawJSON:           `{}`,
+		}))
+	}
+	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("c1"), headID))
+	require.NoError(t, s.SetSyncState(ctx, channelBackfillScope("c1"), backfillStartID))
+
+	messages := make([]*discordgo.Message, 0, totalMessages)
+	for id := totalMessages; id >= 1; id-- {
+		messages = append(messages, &discordgo.Message{
+			ID:        syntheticSnowflakeID(id),
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   fmt.Sprintf("msg-%d", id),
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		})
+	}
+
+	client := &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+		channels: map[string][]*discordgo.Channel{
+			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+		},
+		messages: map[string][]*discordgo.Message{
+			"c1": messages,
+		},
+		beforeErrors: map[string]map[string]error{
+			"c1": {interruptBeforeID: context.DeadlineExceeded},
+		},
+	}
+
+	svc := New(client, s, nil)
+	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 1})
+	require.NoError(t, err)
+	require.Equal(t, 100, stats.Messages)
+
+	latest, err := s.GetSyncState(ctx, channelLatestScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, headID, latest)
+	backfill, err := s.GetSyncState(ctx, channelBackfillScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, interruptBeforeID, backfill)
+
+	delete(client.beforeErrors["c1"], interruptBeforeID)
+	client.mu.Lock()
+	client.messageRequests = nil
+	client.mu.Unlock()
+
+	stats, err = svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 1})
+	require.NoError(t, err)
+	require.Equal(t, 899, stats.Messages)
+
+	client.mu.Lock()
+	requests := append([]messageRequest(nil), client.messageRequests...)
+	client.mu.Unlock()
+	for _, req := range requests {
+		if req.afterID != "" {
+			require.Equal(t, headID, req.afterID)
+		}
+	}
+
+	latest, err = s.GetSyncState(ctx, channelLatestScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, headID, latest)
+	complete, err := s.GetSyncState(ctx, channelHistoryCompleteScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, "1", complete)
+	_, rows, err := s.ReadOnlyQuery(ctx, `select count(*) from messages where channel_id = 'c1'`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1200"}}, rows)
+}
+
+func syntheticSnowflakeID(offset int) string {
+	return fmt.Sprintf("%018d", int64(100000000000000000+offset))
+}
+
 func TestSyncFullSeedsBackfillFromStoredMessages(t *testing.T) {
 	t.Parallel()
 

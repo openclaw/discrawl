@@ -62,7 +62,7 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
 		return err
 	}
-	return t.store.SetSyncState(ctx, channelLatestScope(msg.ChannelID), msg.ID)
+	return t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID)
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {

@@ -108,6 +108,20 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	cursor, err := s.GetSyncState(context.Background(), "channel:c1:latest_message_id")
 	require.NoError(t, err)
 	require.Equal(t, "9", cursor)
+
+	older := *msg
+	older.ID = "8"
+	require.NoError(t, handler.OnMessageCreate(ctx, &older))
+	cursor, err = s.GetSyncState(context.Background(), "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "9", cursor)
+
+	newer := *msg
+	newer.ID = "10"
+	require.NoError(t, handler.OnMessageCreate(ctx, &newer))
+	cursor, err = s.GetSyncState(context.Background(), "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "10", cursor)
 }
 
 func TestHelpers(t *testing.T) {

@@ -459,6 +459,77 @@ func (s *Store) SetSyncState(ctx context.Context, scope, cursor string) error {
 	})
 }
 
+func (s *Store) AdvanceChannelLatestMessageID(ctx context.Context, channelID, messageID string) error {
+	if messageID == "" {
+		return nil
+	}
+	if channelID == "" {
+		return errors.New("channel id is required")
+	}
+	if !isCanonicalDecimalSnowflake(messageID) {
+		return errors.New("channel latest message id must be a canonical decimal snowflake")
+	}
+	result, err := s.db.ExecContext(ctx, `
+insert into sync_state(scope, cursor, updated_at)
+values(?, ?, ?)
+on conflict(scope) do update set
+	cursor = excluded.cursor,
+	updated_at = excluded.updated_at
+where sync_state.cursor is null
+	or sync_state.cursor = ''
+	or (
+		sync_state.cursor not glob '*[^0-9]*'
+		and (sync_state.cursor = '0' or sync_state.cursor not glob '0*')
+		and (
+			length(excluded.cursor) > length(sync_state.cursor)
+			or (length(excluded.cursor) = length(sync_state.cursor) and excluded.cursor > sync_state.cursor)
+		)
+	)
+`, "channel:"+channelID+":latest_message_id", messageID, time.Now().UTC().Format(timeLayout))
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows != 0 {
+		return err
+	}
+	current, err := s.GetSyncState(ctx, "channel:"+channelID+":latest_message_id")
+	if err != nil {
+		return err
+	}
+	if current != "" && !isCanonicalDecimalSnowflake(current) {
+		return errors.New("stored channel latest message id is not a canonical decimal snowflake")
+	}
+	return nil
+}
+
+func (s *Store) EnsureChannelLatestMessageState(ctx context.Context, channelID string) error {
+	if channelID == "" {
+		return errors.New("channel id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+insert into sync_state(scope, cursor, updated_at)
+values(?, '', ?)
+on conflict(scope) do nothing
+`, "channel:"+channelID+":latest_message_id", time.Now().UTC().Format(timeLayout))
+	return err
+}
+
+func isCanonicalDecimalSnowflake(value string) bool {
+	if value == "" {
+		return false
+	}
+	if len(value) > 1 && value[0] == '0' {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) DeleteSyncState(ctx context.Context, scope string) error {
 	return s.q.DeleteSyncState(ctx, scope)
 }

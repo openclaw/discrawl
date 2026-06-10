@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -1641,6 +1642,104 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 	require.True(t, IsReadOnlySQL("-- comment\nselect 1"))
 	require.True(t, IsReadOnlySQL("with latest as (select 1 as one) select one from latest"))
 	require.False(t, IsReadOnlySQL("delete from messages"))
+}
+
+func TestAdvanceChannelLatestMessageIDKeepsSnowflakeMax(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", ""))
+	_, rows, err := s.ReadOnlyQuery(ctx, `select count(*) from sync_state where scope = 'channel:c1:latest_message_id'`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"0"}}, rows)
+
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "9"))
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "8"))
+	cursor, err := s.GetSyncState(ctx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "9", cursor)
+
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "10"))
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "11"))
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "10"))
+	cursor, err = s.GetSyncState(ctx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "11", cursor)
+
+	require.NoError(t, s.EnsureChannelLatestMessageState(ctx, "c2"))
+	cursor, err = s.GetSyncState(ctx, "channel:c2:latest_message_id")
+	require.NoError(t, err)
+	require.Empty(t, cursor)
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c2", "10"))
+	require.NoError(t, s.EnsureChannelLatestMessageState(ctx, "c2"))
+	cursor, err = s.GetSyncState(ctx, "channel:c2:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "10", cursor)
+}
+
+func TestAdvanceChannelLatestMessageIDRejectsMalformedCursors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "", "1"))
+	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "01"))
+	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "abc"))
+	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "1a"))
+
+	require.NoError(t, s.SetSyncState(ctx, "opaque:cursor", "page:abc/10"))
+	cursor, err := s.GetSyncState(ctx, "opaque:cursor")
+	require.NoError(t, err)
+	require.Equal(t, "page:abc/10", cursor)
+
+	require.NoError(t, s.SetSyncState(ctx, "channel:c2:latest_message_id", "opaque"))
+	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "c2", "10"))
+	cursor, err = s.GetSyncState(ctx, "channel:c2:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "opaque", cursor)
+}
+
+func TestAdvanceChannelLatestMessageIDConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	ids := []string{
+		"100000000000000101",
+		"100000000000000099",
+		"99999999999999999",
+		"100000000000000250",
+		"100000000000000001",
+		"100000000000000200",
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(ids)*25)
+	for range 25 {
+		for _, id := range ids {
+			wg.Go(func() {
+				errs <- s.AdvanceChannelLatestMessageID(ctx, "c1", id)
+			})
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	cursor, err := s.GetSyncState(ctx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "100000000000000250", cursor)
 }
 
 func TestIncompleteMessageChannelIDs(t *testing.T) {
