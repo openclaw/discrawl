@@ -13,6 +13,10 @@ import (
 )
 
 func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
+	return acquireSyncLockWithMetadata(ctx, path, fmt.Sprintf("pid=%d\n", os.Getpid()))
+}
+
+func acquireSyncLockWithMetadata(ctx context.Context, path string, metadata string) (func() error, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open sync lock: %w", err)
@@ -29,9 +33,11 @@ func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
 		err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			locked = true
-			_, _ = file.Seek(0, 0)
-			_ = file.Truncate(0)
-			_, _ = fmt.Fprintf(file, "pid=%d\n", os.Getpid())
+			if err := writeSyncLockMetadataRecord(file, path, []byte(metadata)); err != nil {
+				_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+				locked = false
+				return nil, fmt.Errorf("write sync lock metadata: %w", err)
+			}
 			return func() error {
 				unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
 				closeErr := file.Close()
@@ -53,6 +59,10 @@ func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
 }
 
 func tryAcquireSyncLock(path string) (func() error, bool, error) {
+	return tryAcquireSyncLockWithMetadata(path, fmt.Sprintf("pid=%d\n", os.Getpid()))
+}
+
+func tryAcquireSyncLockWithMetadata(path string, metadata string) (func() error, bool, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, false, fmt.Errorf("open sync lock: %w", err)
@@ -65,9 +75,11 @@ func tryAcquireSyncLock(path string) (func() error, bool, error) {
 		}
 		return nil, false, fmt.Errorf("acquire sync lock: %w", err)
 	}
-	_, _ = file.Seek(0, 0)
-	_ = file.Truncate(0)
-	_, _ = fmt.Fprintf(file, "pid=%d\n", os.Getpid())
+	if err := writeSyncLockMetadataRecord(file, path, []byte(metadata)); err != nil {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+		return nil, false, fmt.Errorf("write sync lock metadata: %w", err)
+	}
 	return func() error {
 		unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
 		closeErr := file.Close()

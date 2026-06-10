@@ -98,18 +98,22 @@ func hasBoolFlag(args []string, name string) bool {
 }
 
 func boolFlagEnabled(args []string, name string) bool {
+	enabled := false
 	for _, arg := range args {
 		if arg == name {
-			return true
+			enabled = true
+			continue
 		}
 		if raw, ok := strings.CutPrefix(arg, name+"="); ok {
 			switch strings.ToLower(strings.TrimSpace(raw)) {
 			case "1", "t", "true", "y", "yes", "on":
-				return true
+				enabled = true
+			default:
+				enabled = false
 			}
 		}
 	}
-	return false
+	return enabled
 }
 
 func hasHelpArg(args []string) bool {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -2045,6 +2046,394 @@ func TestReadCommandsDoNotWaitForSyncLock(t *testing.T) {
 	}
 }
 
+func TestMessagesSyncFailsFastWhenTailOwnsSyncLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+	defer releaseToken()
+	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+
+	rt, fakeSync := messagesSyncTestRuntime(ctx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.Error(t, err)
+	require.Equal(t, 2, ExitCode(err))
+	require.Contains(t, err.Error(), "tail already owns live sync; omit --sync while tail is running")
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncFailsFastDuringTailLockMetadataStartup(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+	defer releaseToken()
+	require.NoError(t, writeSyncLockMetadataFiles(lockPath, fmt.Appendf(nil, "pid=%d\n", os.Getpid())))
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		body := fmt.Sprintf("pid=%d\noperation=tail\ntoken=%s\nstarted_at=2026-03-08T12:00:00Z\nupdated_at=2026-03-08T12:00:00Z\nphase=locked\n", os.Getpid(), testSyncLockToken())
+		_ = writeSyncLockMetadataFiles(lockPath, []byte(body))
+	}()
+
+	rt, fakeSync := messagesSyncTestRuntime(ctx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.Error(t, err)
+	require.Equal(t, 2, ExitCode(err))
+	require.Contains(t, err.Error(), "tail already owns live sync; omit --sync while tail is running")
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncIgnoresStaleTailLockMetadata(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	writeSyncLockMetadata(t, filepath.Join(dir, ".discrawl-sync.lock"), "tail", os.Getpid())
+
+	rt, fakeSync := messagesSyncTestRuntime(ctx, cfgPath)
+	require.NoError(t, rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"}))
+	require.Equal(t, 1, fakeSync.syncCalls)
+	require.Contains(t, rt.stdout.(*bytes.Buffer).String(), "automatic updates work")
+}
+
+func TestMessagesSyncTreatsStaleTailMetadataHeldByNonTailAsWriter(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	rt, fakeSync := messagesSyncTestRuntime(waitCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotContains(t, err.Error(), "tail already owns live sync")
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncWaitsDuringTailStartup(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLockWithMetadata(ctx, lockPath, syncLockMetadataBody("tail-starting", "locked", time.Now().UTC(), time.Now().UTC(), testSyncLockToken()))
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	rt, fakeSync := messagesSyncTestRuntime(waitCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotContains(t, err.Error(), "tail already owns live sync")
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncWaitsForNonTailSyncLockOwner(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	writeSyncLockMetadata(t, lockPath, "sync", os.Getpid())
+
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	rt, fakeSync := messagesSyncTestRuntime(waitCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncWaitsForLegacySyncLockMetadata(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	require.NoError(t, os.Remove(syncLockMetadataPath(lockPath)))
+	require.NoError(t, os.WriteFile(lockPath, fmt.Appendf(nil, "pid=%d\n", os.Getpid()), 0o600))
+
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	rt, fakeSync := messagesSyncTestRuntime(waitCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncWaitsForMalformedSyncLockMetadata(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	require.NoError(t, writeSyncLockMetadataFiles(lockPath, []byte("pid\noperation=tail\n")))
+
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	rt, fakeSync := messagesSyncTestRuntime(waitCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestMessagesSyncPreservesCancellationWhileWaitingForSyncLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	writeSyncLockMetadata(t, lockPath, "sync", os.Getpid())
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	rt, fakeSync := messagesSyncTestRuntime(canceledCtx, cfgPath)
+	err = rt.dispatch([]string{"messages", "--channel", "general", "--last", "1", "--sync"})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, fakeSync.syncCalls)
+}
+
+func TestPlainMessagesStillReadsWhileTailOwnsSyncLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+	defer releaseToken()
+	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1"}, &out, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Contains(t, out.String(), "automatic updates work")
+}
+
+func TestMessagesSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+	defer releaseToken()
+	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1", "--sync=false"}, &out, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Contains(t, out.String(), "automatic updates work")
+}
+
+func TestMessagesRepeatedSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(ctx, lockPath)
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+	defer releaseToken()
+	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1", "--sync", "--sync=false"}, &out, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Contains(t, out.String(), "automatic updates work")
+}
+
+func TestTailOpenFailureDoesNotPublishActiveTailOwner(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	fakeSync := &fakeSyncService{tailErr: errors.New("gateway open failed")}
+	rt := tailTestRuntime(ctx, cfgPath, fakeSync)
+	err := rt.dispatch([]string{"tail"})
+	require.ErrorContains(t, err, "gateway open failed")
+	require.Zero(t, fakeSync.tailReadyCalls)
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	owner, ok := readSyncLockOwner(lockPath)
+	require.True(t, ok)
+	require.Equal(t, "tail-starting", owner.Operation)
+	require.False(t, rt.activeTailOwnsSyncLock(lockPath))
+	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+}
+
+func TestTailReadyPromotesOnceAndCleansUpOnCancellation(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	fakeSync := &fakeSyncService{callTailReady: true, tailErr: context.Canceled}
+	rt := tailTestRuntime(ctx, cfgPath, fakeSync)
+	err := rt.dispatch([]string{"tail"})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, fakeSync.tailReadyCalls)
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	owner, ok := readSyncLockOwner(lockPath)
+	require.True(t, ok)
+	require.Equal(t, "tail", owner.Operation)
+	require.False(t, rt.activeTailOwnsSyncLock(lockPath))
+	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+}
+
+func TestSyncLockHelperEdges(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+
+	require.False(t, validSyncLockToken(""))
+	require.False(t, validSyncLockToken("not-hex-not-hex-not-hex-not-hex"))
+	require.True(t, validSyncLockToken(testSyncLockToken()))
+	require.False(t, syncLockTokenHeld(lockPath, testSyncLockToken()))
+
+	require.NoError(t, os.WriteFile(lockPath, []byte("pid=bad\n"), 0o600))
+	_, ok := readSyncLockOwner(lockPath)
+	require.False(t, ok)
+
+	require.NoError(t, writeSyncLockMetadataFiles(lockPath, []byte("pid=123\noperation=legacy\n")))
+	owner, ok := readSyncLockOwner(lockPath)
+	require.True(t, ok)
+	require.Equal(t, "legacy", owner.Operation)
+
+	require.NoError(t, writeSyncLockMetadataSidecar(lockPath, []byte("pid=123\noperation=sidecar\nphase=current\n")))
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	err := syncLockErr(canceledCtx, lockPath)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Contains(t, err.Error(), "phase=current")
+
+	rt := &runtime{}
+	require.NoError(t, rt.activateTailSyncLock())
+}
+
 func TestReadCommandsMigrateOlderLocalStore(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -2117,6 +2506,78 @@ func seedCLIStore(t *testing.T, path string) *store.Store {
 		RawJSON:           `{}`,
 	}))
 	return s
+}
+
+func writeTestConfig(t *testing.T, dir string) (config.Config, string) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	cfg.DefaultGuildID = "g1"
+	cfgPath := filepath.Join(dir, "config.toml")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	return cfg, cfgPath
+}
+
+func testSyncLockToken() string {
+	return fmt.Sprintf("%032x", 1)
+}
+
+func writeSyncLockMetadata(t *testing.T, path, operation string, pid int) {
+	t.Helper()
+	body := fmt.Sprintf("pid=%d\noperation=%s\ntoken=%s\nstarted_at=2026-03-08T12:00:00Z\nupdated_at=2026-03-08T12:00:00Z\nphase=locked\n", pid, operation, testSyncLockToken())
+	require.NoError(t, writeSyncLockMetadataFiles(path, []byte(body)))
+}
+
+func holdSyncLockToken(t *testing.T, ctx context.Context, lockPath, token string) func() {
+	t.Helper()
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	tokenPath := syncLockTokenPath(lockPath, token)
+	release, err := acquireSyncLockWithMetadata(ctx, tokenPath, syncLockMetadataBody("tail-token", "locked", now, now, token))
+	require.NoError(t, err)
+	return func() {
+		_ = release()
+		_ = os.Remove(tokenPath)
+	}
+}
+
+func messagesSyncTestRuntime(ctx context.Context, cfgPath string) (*runtime, *fakeSyncService) {
+	fakeSync := &fakeSyncService{}
+	out := &bytes.Buffer{}
+	rt := &runtime{
+		ctx:        ctx,
+		configPath: cfgPath,
+		stdout:     out,
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		openStore:  store.Open,
+		newDiscord: func(config.Config) (discordClient, error) { return &fakeDiscordClient{}, nil },
+		newSyncer: func(syncer.Client, *store.Store, *slog.Logger) syncService {
+			return fakeSync
+		},
+	}
+	return rt, fakeSync
+}
+
+func tailTestRuntime(ctx context.Context, cfgPath string, fakeSync *fakeSyncService) *runtime {
+	return &runtime{
+		ctx:        ctx,
+		configPath: cfgPath,
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		openStore:  store.Open,
+		newDiscord: func(config.Config) (discordClient, error) { return &fakeDiscordClient{}, nil },
+		newSyncer: func(syncer.Client, *store.Store, *slog.Logger) syncService {
+			return fakeSync
+		},
+	}
+}
+
+func syncLockOwnerFiles(t *testing.T, lockPath string) []string {
+	t.Helper()
+	files, err := filepath.Glob(lockPath + ".*.owner*")
+	require.NoError(t, err)
+	return files
 }
 
 func addCLIAttachment(ctx context.Context, s *store.Store, url string) error {
@@ -2612,9 +3073,14 @@ func (f *fakeDiscordClient) Tail(context.Context, discordclient.EventHandler) er
 type fakeSyncService struct {
 	discovered            []*discordgo.UserGuild
 	lastSync              syncer.SyncOptions
+	syncCalls             int
 	lastTail              []string
 	lastRepair            time.Duration
 	attachmentTextEnabled bool
+	callTailReady         bool
+	tailReadyCalls        int
+	tailReady             func(context.Context) error
+	tailErr               error
 }
 
 func (f *fakeSyncService) DiscoverGuilds(context.Context) ([]*discordgo.UserGuild, error) {
@@ -2622,14 +3088,28 @@ func (f *fakeSyncService) DiscoverGuilds(context.Context) ([]*discordgo.UserGuil
 }
 
 func (f *fakeSyncService) Sync(_ context.Context, opts syncer.SyncOptions) (syncer.SyncStats, error) {
+	f.syncCalls++
 	f.lastSync = opts
 	return syncer.SyncStats{Guilds: len(opts.GuildIDs), Messages: 3}, nil
 }
 
-func (f *fakeSyncService) RunTail(_ context.Context, guildIDs []string, repairEvery time.Duration) error {
+func (f *fakeSyncService) RunTail(ctx context.Context, guildIDs []string, repairEvery time.Duration) error {
 	f.lastTail = guildIDs
 	f.lastRepair = repairEvery
+	if f.callTailReady && f.tailReady != nil {
+		f.tailReadyCalls++
+		if err := f.tailReady(ctx); err != nil {
+			return err
+		}
+	}
+	if f.tailErr != nil {
+		return f.tailErr
+	}
 	return nil
+}
+
+func (f *fakeSyncService) SetTailReadyCallback(fn func(context.Context) error) {
+	f.tailReady = fn
 }
 
 func (f *fakeSyncService) SetAttachmentTextEnabled(enabled bool) {

@@ -332,6 +332,12 @@ func (r *runtime) runTail(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(r.ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if configurable, ok := r.syncer.(tailReadyConfigurer); ok {
+		configurable.SetTailReadyCallback(func(context.Context) error {
+			return r.activateTailSyncLock()
+		})
+		defer configurable.SetTailReadyCallback(nil)
+	}
 	return r.syncer.RunTail(ctx, r.resolveSyncGuilds(*guildFlag, *guildsFlag), *repairEvery)
 }
 

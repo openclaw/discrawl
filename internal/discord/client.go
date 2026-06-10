@@ -21,6 +21,10 @@ type EventHandler interface {
 	OnMemberDelete(context.Context, string, string) error
 }
 
+type TailReadyHandler interface {
+	OnTailReady(context.Context) error
+}
+
 type Client struct {
 	session            *discordgo.Session
 	requestTimeout     time.Duration
@@ -278,6 +282,11 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		_ = c.session.Close()
 		wg.Wait()
 	}()
+	if ready, ok := handler.(TailReadyHandler); ok {
+		if err := ready.OnTailReady(tailCtx); err != nil {
+			return err
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return nil

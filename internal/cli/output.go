@@ -201,7 +201,7 @@ Flags:
   --limit N                   Maximum rows. Default: 200.
   --last N                    Most recent N rows.
   --all                       Return all matching rows.
-  --sync                      Refresh channel before reading.
+  --sync                      Refresh channel before reading; omit while tail is running.
   --include-empty             Include empty/attachment-only messages.
   --dm                        Read local desktop DM cache.
   --guild ID                  Restrict to one guild id.

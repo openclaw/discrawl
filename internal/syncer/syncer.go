@@ -27,6 +27,10 @@ type Client interface {
 	Tail(context.Context, discordclient.EventHandler) error
 }
 
+type closeableClient interface {
+	Close() error
+}
+
 type Syncer struct {
 	client                Client
 	store                 *store.Store
@@ -37,6 +41,7 @@ type Syncer struct {
 	messageChannelTimeout time.Duration
 	messageSyncLogEvery   time.Duration
 	messageSyncWaitEvery  time.Duration
+	tailReady             func(context.Context) error
 }
 
 type SyncOptions struct {
@@ -49,6 +54,10 @@ type SyncOptions struct {
 	SkipMembers  bool
 	LatestOnly   bool
 	RepairReason string
+}
+
+func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
+	s.tailReady = fn
 }
 
 type SyncStats struct {

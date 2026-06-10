@@ -26,12 +26,13 @@ discrawl --json messages --channel maintainers --days 3
 - `--last <n>` - return the newest `N` matching messages, then print oldest-to-newest
 - `--limit <n>` - safety limit (default 200; `--all` removes it)
 - `--all` - removes the safety limit
-- `--sync` - blocking pre-query sync for the matching channel or guild scope
+- `--sync` - blocking pre-query sync for the matching channel or guild scope; omit while `tail` is already maintaining live freshness
 - `--include-empty` - include rows with no displayable/searchable content
 
 ## Notes
 
 - at least one filter is required
+- if `tail` is already running, plain `messages` reads the local archive without waiting; `messages --sync` fails fast instead of waiting behind the tail lock
 - `--dm` skips Git snapshot auto-update because DMs are never imported from the shared mirror
 - use either `--last` for the newest matching rows or `--all` for an uncapped oldest-to-newest slice
 

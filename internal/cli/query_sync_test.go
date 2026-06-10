@@ -113,6 +113,12 @@ func TestHasBoolFlag(t *testing.T) {
 	require.True(t, hasBoolFlag([]string{"--sync"}, "--sync"))
 	require.True(t, hasBoolFlag([]string{"--sync=true"}, "--sync"))
 	require.False(t, hasBoolFlag([]string{"--other"}, "--sync"))
+	require.True(t, boolFlagEnabled([]string{"--sync"}, "--sync"))
+	require.True(t, boolFlagEnabled([]string{"--sync=true"}, "--sync"))
+	require.False(t, boolFlagEnabled([]string{"--sync=false"}, "--sync"))
+	require.False(t, boolFlagEnabled([]string{"--sync", "--sync=false"}, "--sync"))
+	require.True(t, boolFlagEnabled([]string{"--sync=false", "--sync"}, "--sync"))
+	require.False(t, boolFlagEnabled([]string{"--other"}, "--sync"))
 }
 
 func TestIsDiscordID(t *testing.T) {

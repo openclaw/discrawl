@@ -24,6 +24,7 @@
 ### Fixes
 
 - Kept resumed `sync --full` backfills from moving channel latest-message checkpoints backward, avoiding duplicate head recrawls on large interrupted channels. Thanks @hannesrudolph.
+- Made `messages --sync` fail fast with an omit-`--sync` hint when a live `tail` process owns the sync lock, while plain `messages` reads continue without waiting. Thanks @jeanmonet.
 
 ## 0.9.1 - 2026-05-18
 

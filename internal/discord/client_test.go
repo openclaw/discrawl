@@ -353,6 +353,7 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Equal(t, 1, handler.channels)
 	require.Equal(t, 1, handler.memberUpserts)
 	require.Equal(t, 1, handler.memberDeletes)
+	require.Equal(t, 1, handler.ready)
 }
 
 func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
@@ -510,6 +511,12 @@ type recordingHandler struct {
 	channels      int
 	memberUpserts int
 	memberDeletes int
+	ready         int
+}
+
+func (r *recordingHandler) OnTailReady(context.Context) error {
+	r.ready++
+	return nil
 }
 
 func (r *recordingHandler) OnMessageCreate(context.Context, *discordgo.Message) error {

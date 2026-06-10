@@ -12,6 +12,10 @@ import (
 )
 
 func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
+	return acquireSyncLockWithMetadata(ctx, path, fmt.Sprintf("pid=%d\n", os.Getpid()))
+}
+
+func acquireSyncLockWithMetadata(ctx context.Context, path string, metadata string) (func() error, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open sync lock: %w", err)
@@ -25,14 +29,16 @@ func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	handle := windows.Handle(file.Fd())
-	overlapped := &windows.Overlapped{}
+	overlapped := syncLockWindowsOverlapped()
 	for {
 		err = windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
 		if err == nil {
 			locked = true
-			_, _ = file.Seek(0, 0)
-			_ = file.Truncate(0)
-			_, _ = fmt.Fprintf(file, "pid=%d\n", os.Getpid())
+			if err := writeSyncLockMetadataRecord(file, path, []byte(metadata)); err != nil {
+				_ = windows.UnlockFileEx(handle, 0, 1, 0, overlapped)
+				locked = false
+				return nil, fmt.Errorf("write sync lock metadata: %w", err)
+			}
 			return func() error {
 				unlockErr := windows.UnlockFileEx(handle, 0, 1, 0, overlapped)
 				closeErr := file.Close()
@@ -51,20 +57,26 @@ func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
 }
 
 func tryAcquireSyncLock(path string) (func() error, bool, error) {
+	return tryAcquireSyncLockWithMetadata(path, fmt.Sprintf("pid=%d\n", os.Getpid()))
+}
+
+func tryAcquireSyncLockWithMetadata(path string, metadata string) (func() error, bool, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, false, fmt.Errorf("open sync lock: %w", err)
 	}
 	handle := windows.Handle(file.Fd())
-	overlapped := &windows.Overlapped{}
+	overlapped := syncLockWindowsOverlapped()
 	err = windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
 	if err != nil {
 		_ = file.Close()
 		return nil, false, nil
 	}
-	_, _ = file.Seek(0, 0)
-	_ = file.Truncate(0)
-	_, _ = fmt.Fprintf(file, "pid=%d\n", os.Getpid())
+	if err := writeSyncLockMetadataRecord(file, path, []byte(metadata)); err != nil {
+		_ = windows.UnlockFileEx(handle, 0, 1, 0, overlapped)
+		_ = file.Close()
+		return nil, false, fmt.Errorf("write sync lock metadata: %w", err)
+	}
 	return func() error {
 		unlockErr := windows.UnlockFileEx(handle, 0, 1, 0, overlapped)
 		closeErr := file.Close()
@@ -73,4 +85,8 @@ func tryAcquireSyncLock(path string) (func() error, bool, error) {
 		}
 		return closeErr
 	}, true, nil
+}
+
+func syncLockWindowsOverlapped() *windows.Overlapped {
+	return &windows.Overlapped{}
 }

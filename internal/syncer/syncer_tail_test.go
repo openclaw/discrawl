@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
 
+	discordclient "github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -275,4 +276,78 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	status, err := s.Status(context.Background(), "db", "")
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, status.MessageCount, 1)
+}
+
+func TestRunTailWithRepairLoopJoinsTailOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &joiningTailClient{
+		started:  make(chan struct{}),
+		finished: make(chan struct{}),
+		closed:   make(chan struct{}),
+	}
+	svc := New(client, s, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.RunTail(ctx, nil, time.Hour)
+	}()
+
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("tail did not start")
+	}
+	cancel()
+	require.NoError(t, <-done)
+	select {
+	case <-client.finished:
+	default:
+		t.Fatal("RunTail returned before client.Tail finished")
+	}
+	select {
+	case <-client.closed:
+	default:
+		t.Fatal("RunTail returned before closing tail client")
+	}
+}
+
+func TestTailReadyCallback(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	svc := New(&fakeClient{}, nil, nil)
+	svc.SetTailReadyCallback(func(context.Context) error {
+		called = true
+		return nil
+	})
+	handler := &tailHandler{onReady: svc.tailReady}
+	require.NoError(t, handler.OnTailReady(context.Background()))
+	require.True(t, called)
+
+	handler.onReady = nil
+	require.NoError(t, handler.OnTailReady(context.Background()))
+}
+
+type joiningTailClient struct {
+	fakeClient
+	started  chan struct{}
+	finished chan struct{}
+	closed   chan struct{}
+}
+
+func (c *joiningTailClient) Tail(ctx context.Context, _ discordclient.EventHandler) error {
+	close(c.started)
+	<-ctx.Done()
+	close(c.finished)
+	return nil
+}
+
+func (c *joiningTailClient) Close() error {
+	close(c.closed)
+	return nil
 }

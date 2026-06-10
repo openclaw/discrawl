@@ -384,7 +384,7 @@ Notes:
 - `--days` is shorthand for "since now minus N days"
 - `--last` returns the newest `N` matching messages, then prints them oldest-to-newest
 - `--all` removes the safety limit; default is `200`
-- `--sync` runs a blocking pre-query sync for the matching channel or guild scope before reading the local DB
+- `--sync` runs a blocking pre-query sync for the matching channel or guild scope before reading the local DB; omit it while `tail` is already maintaining live freshness
 - rows with no displayable/searchable content are skipped by default; `--include-empty` opts back in
 - at least one filter is required
 - `--dm` is shorthand for `--guild @me`, so DM searches and message slices do not need raw SQL

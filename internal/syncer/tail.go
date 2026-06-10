@@ -14,19 +14,27 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		store:                 s.store,
 		client:                s.client,
 		attachmentTextEnabled: s.attachmentTextEnabled,
+		onReady:               s.tailReady,
 	}
 	if repairEvery <= 0 {
 		return s.client.Tail(ctx, handler)
 	}
+	tailCtx, cancelTail := context.WithCancel(ctx)
+	defer cancelTail()
 	errCh := make(chan error, 2)
 	go func() {
-		errCh <- s.client.Tail(ctx, handler)
+		errCh <- s.client.Tail(tailCtx, handler)
 	}()
 	ticker := time.NewTicker(repairEvery)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			cancelTail()
+			if closeable, ok := s.client.(closeableClient); ok {
+				_ = closeable.Close()
+			}
+			<-errCh
 			return nil
 		case err := <-errCh:
 			return err
@@ -43,6 +51,14 @@ type tailHandler struct {
 	store                 *store.Store
 	client                Client
 	attachmentTextEnabled bool
+	onReady               func(context.Context) error
+}
+
+func (t *tailHandler) OnTailReady(ctx context.Context) error {
+	if t.onReady == nil {
+		return nil
+	}
+	return t.onReady(ctx)
 }
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
