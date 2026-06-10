@@ -90,6 +90,7 @@ type EmbeddingsConfig struct {
 	BatchSize      int    `toml:"batch_size"`
 	MaxInputChars  int    `toml:"max_input_chars"`
 	RequestTimeout string `toml:"request_timeout"`
+	VectorBackend  string `toml:"vector_backend"`
 }
 
 type TokenResolution struct {
@@ -152,6 +153,7 @@ func Default() Config {
 				BatchSize:      64,
 				MaxInputChars:  12000,
 				RequestTimeout: "2m",
+				VectorBackend:  "exact",
 			},
 		},
 		Share: ShareConfig{
@@ -283,6 +285,7 @@ func (c *Config) Normalize() error {
 	c.Search.Embeddings.BaseURL = strings.TrimRight(strings.TrimSpace(c.Search.Embeddings.BaseURL), "/")
 	c.Search.Embeddings.APIKeyEnv = strings.TrimSpace(c.Search.Embeddings.APIKeyEnv)
 	c.Search.Embeddings.RequestTimeout = strings.TrimSpace(c.Search.Embeddings.RequestTimeout)
+	c.Search.Embeddings.VectorBackend = strings.ToLower(strings.TrimSpace(c.Search.Embeddings.VectorBackend))
 	if c.Search.Embeddings.Provider == "" {
 		c.Search.Embeddings.Provider = "openai"
 	}
@@ -326,6 +329,12 @@ func (c *Config) Normalize() error {
 	}
 	if c.Search.Embeddings.RequestTimeout == "" {
 		c.Search.Embeddings.RequestTimeout = "2m"
+	}
+	if c.Search.Embeddings.VectorBackend == "" {
+		c.Search.Embeddings.VectorBackend = "exact"
+	}
+	if c.Search.Embeddings.VectorBackend != "exact" && c.Search.Embeddings.VectorBackend != "turbovec" {
+		return fmt.Errorf("unsupported search.embeddings.vector_backend %q", c.Search.Embeddings.VectorBackend)
 	}
 	if timeout, err := time.ParseDuration(c.Search.Embeddings.RequestTimeout); err != nil {
 		return fmt.Errorf("parse search.embeddings.request_timeout: %w", err)

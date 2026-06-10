@@ -2810,6 +2810,101 @@ func TestSearchSemanticCommandUsesStoredEmbeddings(t *testing.T) {
 	require.Equal(t, 2, requests)
 }
 
+func TestSearchSemanticCommandUsesTurboVecBackend(t *testing.T) {
+	python := os.Getenv("DISCRAWL_TEST_TURBOVEC_PYTHON")
+	if python == "" {
+		t.Skip("set DISCRAWL_TEST_TURBOVEC_PYTHON to run the real turbovec bridge")
+	}
+	t.Setenv("CRAWLKIT_TURBOVEC_PYTHON", python)
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "discrawl.db")
+
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		assert.Equal(t, "/embeddings", r.URL.Path)
+		var req struct {
+			Model string   `json:"model"`
+			Input []string `json:"input"`
+		}
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, "local-model", req.Model)
+		assert.Equal(t, []string{"cats"}, req.Input)
+		_, _ = w.Write([]byte(`{"model":"local-model","data":[{"index":0,"embedding":[1,0,0,0,0,0,0,0]}]}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.Search.DefaultMode = "semantic"
+	cfg.Search.Embeddings.Enabled = true
+	cfg.Search.Embeddings.Provider = "openai_compatible"
+	cfg.Search.Embeddings.Model = "local-model"
+	cfg.Search.Embeddings.BaseURL = server.URL
+	cfg.Search.Embeddings.APIKeyEnv = ""
+	cfg.Search.Embeddings.VectorBackend = "turbovec"
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	s, err := store.Open(ctx, dbPath)
+	require.NoError(t, err)
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "best",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u1",
+		AuthorName:        "Alice",
+		MessageType:       0,
+		CreatedAt:         base.Format(time.RFC3339Nano),
+		Content:           "best vector match",
+		NormalizedContent: "best vector match",
+		RawJSON:           `{"author":{"username":"Alice"}}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "second",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u2",
+		AuthorName:        "Bob",
+		MessageType:       0,
+		CreatedAt:         base.Add(time.Minute).Format(time.RFC3339Nano),
+		Content:           "second vector match",
+		NormalizedContent: "second vector match",
+		RawJSON:           `{"author":{"username":"Bob"}}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "other",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u3",
+		AuthorName:        "Carol",
+		MessageType:       0,
+		CreatedAt:         base.Add(2 * time.Minute).Format(time.RFC3339Nano),
+		Content:           "orthogonal vector",
+		NormalizedContent: "orthogonal vector",
+		RawJSON:           `{"author":{"username":"Carol"}}`,
+	}))
+	require.NoError(t, insertCLIEmbedding(ctx, s, "best", "openai_compatible", "local-model", []float32{1, 0, 0, 0, 0, 0, 0, 0}))
+	require.NoError(t, insertCLIEmbedding(ctx, s, "second", "openai_compatible", "local-model", []float32{0.8, 0.2, 0, 0, 0, 0, 0, 0}))
+	require.NoError(t, insertCLIEmbedding(ctx, s, "other", "openai_compatible", "local-model", []float32{0, 1, 0, 0, 0, 0, 0, 0}))
+	require.NoError(t, s.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "search", "--limit", "2", "cats"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "best vector match")
+	require.Contains(t, out.String(), "second vector match")
+	require.NotContains(t, out.String(), "orthogonal vector")
+	require.Equal(t, 1, requests)
+}
+
 func TestSearchHybridCommandFusesResults(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

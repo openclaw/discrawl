@@ -816,9 +816,10 @@ Local providers can keep message and query embedding on the same machine:
 enabled = true
 provider = "ollama"
 model = "nomic-embed-text"
+vector_backend = "exact"
 ```
 
-With remote providers, message text is sent during `discrawl embed`, and search query text is sent when using `--mode semantic` or `--mode hybrid`. Stored message text is not sent during local vector scoring.
+Set `vector_backend = "turbovec"` to use the optional crawlkit turbovec bridge for semantic scoring. It requires Python plus the `turbovec` package, and embedding dimensions must be divisible by 8. With remote providers, message text is sent during `discrawl embed`, and search query text is sent when using `--mode semantic` or `--mode hybrid`. Stored message text is not sent during local vector scoring.
 
 ## Data Stored Locally
 

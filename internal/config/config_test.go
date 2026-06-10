@@ -46,6 +46,7 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, 64, cfg.Search.Embeddings.BatchSize)
 	require.Equal(t, 12000, cfg.Search.Embeddings.MaxInputChars)
 	require.Equal(t, "2m", cfg.Search.Embeddings.RequestTimeout)
+	require.Equal(t, "exact", cfg.Search.Embeddings.VectorBackend)
 }
 
 func TestDefaultPathsUseXDGDirs(t *testing.T) {
@@ -380,6 +381,14 @@ func TestNormalizeEmbeddingProviderDefaults(t *testing.T) {
 	cfg.Search.Embeddings.APIKeyEnv = "OPENAI_API_KEY"
 	require.NoError(t, cfg.Normalize())
 	require.Equal(t, "OPENAI_API_KEY", cfg.Search.Embeddings.APIKeyEnv)
+
+	cfg = Config{}
+	cfg.Search.Embeddings.VectorBackend = "TURBOVEC"
+	require.NoError(t, cfg.Normalize())
+	require.Equal(t, "turbovec", cfg.Search.Embeddings.VectorBackend)
+
+	cfg.Search.Embeddings.VectorBackend = "bogus"
+	require.ErrorContains(t, cfg.Normalize(), "unsupported search.embeddings.vector_backend")
 }
 
 func TestLoadLegacyEmbeddingConfigDefaults(t *testing.T) {

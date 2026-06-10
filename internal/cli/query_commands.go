@@ -185,16 +185,17 @@ func (r *runtime) semanticSearchOptions(opts store.SearchOptions) (store.Semanti
 		dimensions = len(queryVector)
 	}
 	return store.SemanticSearchOptions{
-		QueryVector:  queryVector,
-		Provider:     r.cfg.Search.Embeddings.Provider,
-		Model:        r.cfg.Search.Embeddings.Model,
-		InputVersion: store.EmbeddingInputVersion,
-		Dimensions:   dimensions,
-		GuildIDs:     opts.GuildIDs,
-		Channel:      opts.Channel,
-		Author:       opts.Author,
-		Limit:        opts.Limit,
-		IncludeEmpty: opts.IncludeEmpty,
+		QueryVector:   queryVector,
+		Provider:      r.cfg.Search.Embeddings.Provider,
+		Model:         r.cfg.Search.Embeddings.Model,
+		InputVersion:  store.EmbeddingInputVersion,
+		Dimensions:    dimensions,
+		VectorBackend: r.cfg.Search.Embeddings.VectorBackend,
+		GuildIDs:      opts.GuildIDs,
+		Channel:       opts.Channel,
+		Author:        opts.Author,
+		Limit:         opts.Limit,
+		IncludeEmpty:  opts.IncludeEmpty,
 	}, nil
 }
 

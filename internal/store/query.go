@@ -15,31 +15,35 @@ import (
 )
 
 const (
-	queryTimeout            = 15 * time.Second
-	semanticQueryTimeout    = 2 * time.Minute
-	queryRowLimit           = 50000
-	searchCandidateFloor    = 200
-	searchCandidateCap      = 5000
-	searchCandidateMultiple = 20
-	messageFTSHealthProbe   = "__discrawl_probe__"
-	rrfK                    = 60.0
-	ftsRRFWeight            = 1.0
-	semanticRRFWeight       = 1.0
+	queryTimeout                         = 15 * time.Second
+	semanticQueryTimeout                 = 2 * time.Minute
+	queryRowLimit                        = 50000
+	searchCandidateFloor                 = 200
+	searchCandidateCap                   = 5000
+	searchCandidateMultiple              = 20
+	semanticTurboVecMaxBatchCandidates   = 2048
+	semanticTurboVecRequestOverheadBytes = int64(256)
+	semanticTurboVecJSONFloatBudgetBytes = int64(16)
+	messageFTSHealthProbe                = "__discrawl_probe__"
+	rrfK                                 = 60.0
+	ftsRRFWeight                         = 1.0
+	semanticRRFWeight                    = 1.0
 )
 
 var ErrNoCompatibleEmbeddings = errors.New("no compatible message embeddings for provider/model/input version; run discrawl embed --rebuild")
 
 type SemanticSearchOptions struct {
-	QueryVector  []float32
-	Provider     string
-	Model        string
-	InputVersion string
-	Dimensions   int
-	GuildIDs     []string
-	Channel      string
-	Author       string
-	Limit        int
-	IncludeEmpty bool
+	QueryVector   []float32
+	Provider      string
+	Model         string
+	InputVersion  string
+	Dimensions    int
+	VectorBackend string
+	GuildIDs      []string
+	Channel       string
+	Author        string
+	Limit         int
+	IncludeEmpty  bool
 }
 
 func (s *Store) GetSyncState(ctx context.Context, scope string) (string, error) {
@@ -154,8 +158,15 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 	opts.Provider = strings.ToLower(strings.TrimSpace(opts.Provider))
 	opts.Model = strings.TrimSpace(opts.Model)
 	opts.InputVersion = strings.TrimSpace(opts.InputVersion)
+	opts.VectorBackend = strings.ToLower(strings.TrimSpace(opts.VectorBackend))
 	if opts.InputVersion == "" {
 		opts.InputVersion = EmbeddingInputVersion
+	}
+	if opts.VectorBackend == "" {
+		opts.VectorBackend = vector.BackendExact
+	}
+	if opts.VectorBackend != vector.BackendExact && opts.VectorBackend != vector.BackendTurboVec {
+		return nil, fmt.Errorf("unsupported vector backend %q", opts.VectorBackend)
 	}
 	if opts.Limit <= 0 {
 		opts.Limit = 20
@@ -222,7 +233,30 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 	}
 	defer func() { _ = rows.Close() }()
 
-	scored := make([]semanticScoredResult, 0, opts.Limit)
+	ranked := make([]semanticRankedResult, 0, opts.Limit)
+	turboBatchSize := semanticTurboVecBatchSize(opts.Dimensions)
+	turboBatch := make([]vector.SearchCandidate[semanticSearchCandidate], 0, turboBatchSize)
+	flushTurboBatch := func() error {
+		if len(turboBatch) == 0 {
+			return nil
+		}
+		results, err := vector.Search(queryCtx, opts.QueryVector, turboBatch, vector.SearchOptions[semanticSearchCandidate]{
+			Backend: opts.VectorBackend,
+			Limit:   opts.Limit,
+			TieLess: semanticCandidateLess,
+		})
+		if err != nil {
+			return fmt.Errorf("score embeddings: %w", err)
+		}
+		for _, result := range results {
+			ranked = insertSemanticRanked(ranked, semanticRankedResult{
+				candidate: result.Item,
+				score:     result.Score,
+			}, opts.Limit)
+		}
+		turboBatch = turboBatch[:0]
+		return nil
+	}
 	for rows.Next() {
 		var (
 			messageID  string
@@ -243,32 +277,38 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		if len(storedVector) != dimensions {
 			return nil, fmt.Errorf("stored embedding vector length mismatch for message %s: got %d want %d", messageID, len(storedVector), dimensions)
 		}
-		score, err := vector.CosineSimilarity(opts.QueryVector, queryNorm, storedVector)
-		if err != nil {
-			if strings.Contains(err.Error(), "candidate vector is zero") {
-				return nil, fmt.Errorf("score embedding for message %s: stored embedding vector is zero", messageID)
+		if vector.Norm(storedVector) == 0 {
+			return nil, fmt.Errorf("score embedding for message %s: stored embedding vector is zero", messageID)
+		}
+		candidate := semanticSearchCandidate{messageID: messageID, createdAt: parseTime(created)}
+		switch opts.VectorBackend {
+		case vector.BackendExact:
+			score, err := vector.CosineSimilarity(opts.QueryVector, queryNorm, storedVector)
+			if err != nil {
+				return nil, fmt.Errorf("score embedding for message %s: %w", messageID, err)
 			}
-			return nil, fmt.Errorf("score embedding for message %s: %w", messageID, err)
-		}
-		row := SearchResult{MessageID: messageID, CreatedAt: parseTime(created)}
-		item := semanticScoredResult{result: row, score: score}
-		insertAt := sort.Search(len(scored), func(i int) bool {
-			return semanticScoreLess(item, scored[i])
-		})
-		if insertAt >= opts.Limit {
-			continue
-		}
-		scored = append(scored, semanticScoredResult{})
-		copy(scored[insertAt+1:], scored[insertAt:])
-		scored[insertAt] = item
-		if len(scored) > opts.Limit {
-			scored = scored[:opts.Limit]
+			ranked = insertSemanticRanked(ranked, semanticRankedResult{candidate: candidate, score: score}, opts.Limit)
+		case vector.BackendTurboVec:
+			turboBatch = append(turboBatch, vector.SearchCandidate[semanticSearchCandidate]{
+				Item:   candidate,
+				Vector: storedVector,
+			})
+			if len(turboBatch) >= turboBatchSize {
+				if err := flushTurboBatch(); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(scored) == 0 {
+	if opts.VectorBackend == vector.BackendTurboVec {
+		if err := flushTurboBatch(); err != nil {
+			return nil, err
+		}
+	}
+	if len(ranked) == 0 {
 		compatible, err := s.hasCompatibleMessageEmbeddings(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -278,21 +318,21 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		}
 		return []SearchResult{}, nil
 	}
-	ids := make([]string, 0, len(scored))
-	for _, item := range scored {
-		ids = append(ids, item.result.MessageID)
+	ids := make([]string, 0, len(ranked))
+	for _, item := range ranked {
+		ids = append(ids, item.candidate.messageID)
 	}
 	details, err := s.searchResultDetails(queryCtx, ids)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SearchResult, 0, len(scored))
-	for _, item := range scored {
-		row, ok := details[item.result.MessageID]
+	out := make([]SearchResult, 0, len(ranked))
+	for _, item := range ranked {
+		row, ok := details[item.candidate.messageID]
 		if !ok {
-			return nil, fmt.Errorf("semantic search result %s disappeared before hydration", item.result.MessageID)
+			return nil, fmt.Errorf("semantic search result %s disappeared before hydration", item.candidate.messageID)
 		}
-		row.CreatedAt = item.result.CreatedAt
+		row.CreatedAt = item.candidate.createdAt
 		out = append(out, row)
 	}
 	return out, nil
@@ -346,19 +386,63 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 	return out, rows.Err()
 }
 
-type semanticScoredResult struct {
-	result SearchResult
-	score  float64
+type semanticSearchCandidate struct {
+	messageID string
+	createdAt time.Time
 }
 
-func semanticScoreLess(left, right semanticScoredResult) bool {
+type semanticRankedResult struct {
+	candidate semanticSearchCandidate
+	score     float64
+}
+
+func insertSemanticRanked(ranked []semanticRankedResult, item semanticRankedResult, limit int) []semanticRankedResult {
+	insertAt := sort.Search(len(ranked), func(i int) bool {
+		return semanticRankedLess(item, ranked[i])
+	})
+	if insertAt >= limit {
+		return ranked
+	}
+	ranked = append(ranked, semanticRankedResult{})
+	copy(ranked[insertAt+1:], ranked[insertAt:])
+	ranked[insertAt] = item
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked
+}
+
+func semanticRankedLess(left, right semanticRankedResult) bool {
 	if left.score != right.score {
 		return left.score > right.score
 	}
-	if !left.result.CreatedAt.Equal(right.result.CreatedAt) {
-		return left.result.CreatedAt.After(right.result.CreatedAt)
+	return semanticCandidateLess(left.candidate, right.candidate)
+}
+
+func semanticCandidateLess(left, right semanticSearchCandidate) bool {
+	if !left.createdAt.Equal(right.createdAt) {
+		return left.createdAt.After(right.createdAt)
 	}
-	return left.result.MessageID > right.result.MessageID
+	return left.messageID > right.messageID
+}
+
+func semanticTurboVecBatchSize(dimensions int) int {
+	if dimensions <= 0 {
+		return 1
+	}
+	perCandidate := int64(dimensions)*semanticTurboVecJSONFloatBudgetBytes + 4
+	budget := vector.DefaultTurboVecMaxInputSize - semanticTurboVecRequestOverheadBytes - int64(dimensions)*semanticTurboVecJSONFloatBudgetBytes
+	if budget <= 0 || perCandidate <= 0 {
+		return 1
+	}
+	maxByInput := int(budget / perCandidate)
+	if maxByInput < 1 {
+		return 1
+	}
+	if maxByInput > semanticTurboVecMaxBatchCandidates {
+		return semanticTurboVecMaxBatchCandidates
+	}
+	return maxByInput
 }
 
 func (s *Store) SearchMessagesHybrid(ctx context.Context, opts SearchOptions, semanticOpts SemanticSearchOptions) ([]SearchResult, error) {

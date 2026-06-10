@@ -79,6 +79,9 @@ provider = "openai"
 model = "text-embedding-3-small"
 api_key_env = "OPENAI_API_KEY"
 batch_size = 64
+max_input_chars = 12000
+request_timeout = "2m"
+vector_backend = "exact"
 
 [share]
 remote = ""
@@ -128,6 +131,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `default_guild_id` is the implicit scope for `sync`, `tail`, `digest`, and `analytics` when `--guild` is not passed
 - `guild_ids` is reserved for explicit multi-guild fan-out; usually you do not set this directly
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search
+- `[search.embeddings].vector_backend` accepts `exact` or optional `turbovec`; turbovec requires Python plus the `turbovec` package and embedding dimensions divisible by 8.
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
 - `sync.attachment_media = true` makes `sync` behave like `sync --with-media`; media bytes are cached under `cache_dir/media`, and CDN `404`/other fetch failures are recorded on attachment rows
 - `share.media = false` makes publish/update/auto-update omit or skip restoring cached media; `subscribe --no-media` writes this for Git-only readers. With the default `share.media = true`, publish/update include cached non-DM media as gzip-compressed snapshot files, but publish does not fetch missing Discord files by itself.

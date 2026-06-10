@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -643,7 +644,7 @@ func TestSearchMessagesSemanticRanksAndFilters(t *testing.T) {
 	require.NoError(t, insertTestEmbedding(ctx, s, "m4", "ollama", "nomic-embed-text", []float32{1, 0}))
 	require.NoError(t, insertTestEmbedding(ctx, s, "m5", "ollama", "nomic-embed-text", []float32{1, 0}))
 
-	results, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+	defaultOpts := SemanticSearchOptions{
 		QueryVector:  []float32{1, 0},
 		Provider:     "ollama",
 		Model:        "nomic-embed-text",
@@ -651,9 +652,16 @@ func TestSearchMessagesSemanticRanksAndFilters(t *testing.T) {
 		Dimensions:   2,
 		GuildIDs:     []string{"g1"},
 		Limit:        3,
-	})
+	}
+	results, err := s.SearchMessagesSemantic(ctx, defaultOpts)
 	require.NoError(t, err)
 	require.Equal(t, []string{"m1", "m2", "m3"}, searchResultIDs(results))
+
+	exactOpts := defaultOpts
+	exactOpts.VectorBackend = " exact "
+	exactResults, err := s.SearchMessagesSemantic(ctx, exactOpts)
+	require.NoError(t, err)
+	require.Equal(t, searchResultIDs(results), searchResultIDs(exactResults))
 
 	results, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
 		QueryVector:  []float32{1, 0},
@@ -697,6 +705,155 @@ func TestSearchMessagesSemanticRanksAndFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, results)
+}
+
+func TestSearchMessagesSemanticTurboVecBackend(t *testing.T) {
+	python := os.Getenv("DISCRAWL_TEST_TURBOVEC_PYTHON")
+	if python == "" {
+		t.Skip("set DISCRAWL_TEST_TURBOVEC_PYTHON to run the real turbovec bridge")
+	}
+	t.Setenv("CRAWLKIT_TURBOVEC_PYTHON", python)
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+	messages := []MessageRecord{
+		{
+			ID:                "best",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			MessageType:       0,
+			CreatedAt:         base.Format(time.RFC3339Nano),
+			Content:           "best vector match",
+			NormalizedContent: "best vector match",
+			RawJSON:           `{}`,
+		},
+		{
+			ID:                "second",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			MessageType:       0,
+			CreatedAt:         base.Add(time.Minute).Format(time.RFC3339Nano),
+			Content:           "second vector match",
+			NormalizedContent: "second vector match",
+			RawJSON:           `{}`,
+		},
+		{
+			ID:                "other",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			MessageType:       0,
+			CreatedAt:         base.Add(2 * time.Minute).Format(time.RFC3339Nano),
+			Content:           "orthogonal vector",
+			NormalizedContent: "orthogonal vector",
+			RawJSON:           `{}`,
+		},
+	}
+	for _, message := range messages {
+		require.NoError(t, s.UpsertMessage(ctx, message))
+	}
+	require.NoError(t, insertTestEmbedding(ctx, s, "best", "ollama", "nomic-embed-text", []float32{1, 0, 0, 0, 0, 0, 0, 0}))
+	require.NoError(t, insertTestEmbedding(ctx, s, "second", "ollama", "nomic-embed-text", []float32{0.8, 0.2, 0, 0, 0, 0, 0, 0}))
+	require.NoError(t, insertTestEmbedding(ctx, s, "other", "ollama", "nomic-embed-text", []float32{0, 1, 0, 0, 0, 0, 0, 0}))
+
+	results, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector:   []float32{1, 0, 0, 0, 0, 0, 0, 0},
+		Provider:      "ollama",
+		Model:         "nomic-embed-text",
+		InputVersion:  EmbeddingInputVersion,
+		Dimensions:    8,
+		VectorBackend: "turbovec",
+		GuildIDs:      []string{"g1"},
+		Limit:         2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"best", "second"}, searchResultIDs(results))
+}
+
+func TestSearchMessagesSemanticTurboVecBatchesCandidates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake turbovec bridge uses a POSIX executable script")
+	}
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	bridgePath := filepath.Join(dir, "fake-turbovec.py")
+	callsPath := filepath.Join(dir, "calls.log")
+	require.NoError(t, os.WriteFile(bridgePath, []byte(`#!/usr/bin/env python3
+import json
+import os
+import sys
+
+req = json.load(sys.stdin)
+with open(os.environ["DISCRAWL_TURBOVEC_CALLS"], "a", encoding="utf-8") as handle:
+    handle.write(str(len(req["vectors"])) + "\n")
+limit = min(int(req.get("limit") or 20), len(req["vectors"]))
+results = [{"index": i, "score": float(len(req["vectors"]) - i)} for i in range(limit)]
+print(json.dumps({"results": results}, separators=(",", ":")))
+`), 0o755))
+	t.Setenv("CRAWLKIT_TURBOVEC_PYTHON", bridgePath)
+	t.Setenv("DISCRAWL_TURBOVEC_CALLS", callsPath)
+
+	s, err := Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+	for i := range semanticTurboVecBatchSize(8) + 2 {
+		messageID := "m" + strconv.Itoa(i)
+		require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+			ID:                messageID,
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			MessageType:       0,
+			CreatedAt:         base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Content:           "candidate " + strconv.Itoa(i),
+			NormalizedContent: "candidate " + strconv.Itoa(i),
+			RawJSON:           `{}`,
+		}))
+		require.NoError(t, insertTestEmbedding(ctx, s, messageID, "ollama", "nomic-embed-text", []float32{1, 0, 0, 0, 0, 0, 0, 0}))
+	}
+
+	results, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector:   []float32{1, 0, 0, 0, 0, 0, 0, 0},
+		Provider:      "ollama",
+		Model:         "nomic-embed-text",
+		InputVersion:  EmbeddingInputVersion,
+		Dimensions:    8,
+		VectorBackend: "turbovec",
+		GuildIDs:      []string{"g1"},
+		Limit:         3,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, strings.Count(string(calls), "\n"), 2)
+}
+
+func TestSemanticTurboVecBatchSizeBoundsInputPayload(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 1, semanticTurboVecBatchSize(0))
+	require.Equal(t, semanticTurboVecMaxBatchCandidates, semanticTurboVecBatchSize(8))
+	require.LessOrEqual(t, semanticTurboVecBatchSize(1536), 2048)
+	require.GreaterOrEqual(t, semanticTurboVecBatchSize(1536), 1)
+	require.Less(t, semanticTurboVecBatchSize(8192), semanticTurboVecMaxBatchCandidates)
 }
 
 func TestSearchMessagesSemanticScoresOlderMatchesBeyondRecentWindow(t *testing.T) {
@@ -815,6 +972,29 @@ func TestSearchMessagesSemanticErrors(t *testing.T) {
 		Limit:        10,
 	})
 	require.ErrorContains(t, err, "stored embedding vector is zero")
+
+	require.NoError(t, insertTestEmbedding(ctx, s, "m1", "ollama", "nomic-embed-text", []float32{1, 0}))
+	_, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector:   []float32{1, 0},
+		Provider:      "ollama",
+		Model:         "nomic-embed-text",
+		InputVersion:  EmbeddingInputVersion,
+		Dimensions:    2,
+		VectorBackend: "bogus",
+		Limit:         10,
+	})
+	require.ErrorContains(t, err, `unsupported vector backend "bogus"`)
+
+	_, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+		QueryVector:   []float32{1, 0},
+		Provider:      "ollama",
+		Model:         "nomic-embed-text",
+		InputVersion:  EmbeddingInputVersion,
+		Dimensions:    2,
+		VectorBackend: "turbovec",
+		Limit:         10,
+	})
+	require.ErrorContains(t, err, "turbovec dimensions must be a positive multiple of 8")
 }
 
 func TestSearchMessagesHybridFusesAndDeduplicates(t *testing.T) {
