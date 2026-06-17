@@ -61,6 +61,7 @@ discrawl sync --with-media
 - `--since <RFC3339>` - limit initial history and `--full` backfill to messages at or after this timestamp
 - `--concurrency <n>` - override worker count (default auto-sized: floor 8, cap 32)
 - `--skip-members` - refresh guild/channel/message data without crawling members
+- `--with-members` - refresh guild members even during the default latest-only sync
 - `--with-embeddings` - also enqueue changed messages into `embedding_jobs`
 - `--with-media` - after sync, download missing attachment media into `cache_dir/media`
 
@@ -76,7 +77,7 @@ discrawl sync --with-media
 - Each channel crawl has a bounded runtime budget; pathological channels are deferred and retried next sync.
 - Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
 - Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
-- Full sync member refresh is best-effort and gives up after five minutes without a caller-supplied deadline.
+- Member refresh is best-effort and gives up after five minutes without a caller-supplied deadline. Routine latest-only syncs skip it unless `--with-members` is set.
 - When the archive is already complete, `sync --full` reuses backlog markers and limits steady-state refresh to live top-level channels plus active threads.
 
 ## See also

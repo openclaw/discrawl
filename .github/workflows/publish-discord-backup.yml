@@ -3,6 +3,7 @@ name: publish-discord-backup
 on:
   schedule:
     - cron: "*/15 * * * *"
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -83,7 +84,12 @@ jobs:
               go run ./cmd/discrawl --config "$CONFIG" update --repo "$BACKUP_REPO" --remote "$BACKUP_REMOTE"
             fi
           fi
-          go run ./cmd/discrawl --config "$CONFIG" sync --guild "$DISCRAWL_GUILD_ID" --skip-members --latest-only
+          sync_args=(--guild "$DISCRAWL_GUILD_ID" --skip-members --latest-only)
+          if [ "${{ github.event.schedule }}" = "17 6 * * *" ]; then
+            sync_args=(--guild "$DISCRAWL_GUILD_ID" --with-members --latest-only)
+            echo "Refreshing Discord member roles and profiles."
+          fi
+          go run ./cmd/discrawl --config "$CONFIG" sync "${sync_args[@]}"
           git -C "$BACKUP_REPO" pull --ff-only origin main
           go run ./cmd/discrawl --config "$CONFIG" publish \
             --repo "$BACKUP_REPO" \

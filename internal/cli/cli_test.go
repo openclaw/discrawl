@@ -3307,6 +3307,12 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.True(t, fakeSync.attachmentTextEnabled)
 
 	rt = newRuntime()
+	require.NoError(t, rt.withServices(true, func() error { return rt.runSync([]string{"--guilds", "g2", "--with-members"}) }))
+	require.Equal(t, []string{"g2"}, fakeSync.lastSync.GuildIDs)
+	require.True(t, fakeSync.lastSync.LatestOnly)
+	require.False(t, fakeSync.lastSync.SkipMembers)
+
+	rt = newRuntime()
 	require.NoError(t, rt.withServices(true, func() error { return rt.runSync([]string{"--all"}) }))
 	require.Nil(t, fakeSync.lastSync.GuildIDs)
 	require.True(t, fakeSync.lastSync.LatestOnly)
@@ -3344,8 +3350,10 @@ func TestSyncModeDefaults(t *testing.T) {
 		skipMembers    bool
 		explicitLatest bool
 		explicitSkip   bool
+		explicitWith   bool
 	}{
 		{name: "routine", defaultLatest: true, latestOnly: true, skipMembers: true},
+		{name: "routine with members", defaultLatest: true, latestOnly: true, explicitWith: true},
 		{name: "all channels", allChannels: true},
 		{name: "full", full: true},
 		{name: "since", since: "2026-04-27T20:00:00Z"},
@@ -3361,9 +3369,22 @@ func TestSyncModeDefaults(t *testing.T) {
 			defaultLatest := defaultLatestSyncMode(tt.full, tt.allChannels, tt.since, tt.channels)
 			require.Equal(t, tt.defaultLatest, defaultLatest)
 			require.Equal(t, tt.latestOnly, syncLatestOnly(tt.explicitLatest, defaultLatest))
-			require.Equal(t, tt.skipMembers, syncSkipsMembers(tt.explicitSkip, defaultLatest))
+			require.Equal(t, tt.skipMembers, syncSkipsMembers(tt.explicitSkip, tt.explicitWith, defaultLatest))
 		})
 	}
+}
+
+func TestSyncRejectsConflictingMemberFlags(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	err := Run(ctx, []string{"--config", cfgPath, "sync", "--skip-members", "--with-members"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 2, ExitCode(err))
+	require.ErrorContains(t, err, "use either --skip-members or --with-members, not both")
 }
 
 func TestDoctorChecksEnabledLocalEmbeddingProvider(t *testing.T) {

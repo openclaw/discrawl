@@ -119,6 +119,7 @@ func (r *runtime) runSync(args []string) error {
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	withMedia := fs.Bool("with-media", r.cfg.AttachmentMediaEnabled(), "")
 	skipMembers := fs.Bool("skip-members", false, "")
+	withMembers := fs.Bool("with-members", false, "")
 	latestOnly := fs.Bool("latest-only", false, "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
@@ -129,6 +130,9 @@ func (r *runtime) runSync(args []string) error {
 	}
 	if *noUpdate && strings.TrimSpace(*updateMode) != "" && !strings.EqualFold(strings.TrimSpace(*updateMode), string(shareUpdateNever)) {
 		return usageErr(errors.New("use either --no-update or --update, not both"))
+	}
+	if *skipMembers && *withMembers {
+		return usageErr(errors.New("use either --skip-members or --with-members, not both"))
 	}
 	if strings.TrimSpace(*updateMode) != "" {
 		if _, err := parseShareUpdateMode(*updateMode); err != nil {
@@ -159,7 +163,7 @@ func (r *runtime) runSync(args []string) error {
 		Concurrency: *concurrency,
 		Since:       sinceTime,
 		Embeddings:  *withEmbeddings,
-		SkipMembers: syncSkipsMembers(*skipMembers, defaultLatest),
+		SkipMembers: syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
 		LatestOnly:  syncLatestOnly(*latestOnly, defaultLatest),
 	}
 	return r.withSyncLock(func() error {
@@ -283,8 +287,8 @@ func syncLatestOnly(explicit bool, defaultLatest bool) bool {
 	return explicit || defaultLatest
 }
 
-func syncSkipsMembers(explicit bool, defaultLatest bool) bool {
-	return explicit || defaultLatest
+func syncSkipsMembers(skipMembers bool, withMembers bool, defaultLatest bool) bool {
+	return skipMembers || (!withMembers && defaultLatest)
 }
 
 func parseSyncSources(raw string) (syncSources, error) {
