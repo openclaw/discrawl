@@ -157,14 +157,15 @@ func (r *runtime) runSync(args []string) error {
 	}
 	defaultLatest := defaultLatestSyncMode(*full, *allChannels, *since, *channels)
 	opts := syncer.SyncOptions{
-		Full:        *full,
-		GuildIDs:    guildIDs,
-		ChannelIDs:  csvList(*channels),
-		Concurrency: *concurrency,
-		Since:       sinceTime,
-		Embeddings:  *withEmbeddings,
-		SkipMembers: syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
-		LatestOnly:  syncLatestOnly(*latestOnly, defaultLatest),
+		Full:           *full,
+		GuildIDs:       guildIDs,
+		ChannelIDs:     csvList(*channels),
+		Concurrency:    *concurrency,
+		Since:          sinceTime,
+		Embeddings:     *withEmbeddings,
+		SkipMembers:    syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
+		RequireMembers: *withMembers,
+		LatestOnly:     syncLatestOnly(*latestOnly, defaultLatest),
 	}
 	return r.withSyncLock(func() error {
 		return r.runSyncLocked(sources, opts, *withMedia)

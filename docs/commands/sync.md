@@ -61,7 +61,7 @@ discrawl sync --with-media
 - `--since <RFC3339>` - limit initial history and `--full` backfill to messages at or after this timestamp
 - `--concurrency <n>` - override worker count (default auto-sized: floor 8, cap 32)
 - `--skip-members` - refresh guild/channel/message data without crawling members
-- `--with-members` - refresh guild members even during the default latest-only sync
+- `--with-members` - refresh guild members even during the default latest-only sync; fail if the member crawl cannot complete
 - `--with-embeddings` - also enqueue changed messages into `embedding_jobs`
 - `--with-media` - after sync, download missing attachment media into `cache_dir/media`
 

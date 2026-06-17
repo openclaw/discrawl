@@ -45,15 +45,16 @@ type Syncer struct {
 }
 
 type SyncOptions struct {
-	Full         bool
-	GuildIDs     []string
-	ChannelIDs   []string
-	Concurrency  int
-	Since        time.Time
-	Embeddings   bool
-	SkipMembers  bool
-	LatestOnly   bool
-	RepairReason string
+	Full           bool
+	GuildIDs       []string
+	ChannelIDs     []string
+	Concurrency    int
+	Since          time.Time
+	Embeddings     bool
+	SkipMembers    bool
+	RequireMembers bool
+	LatestOnly     bool
+	RepairReason   string
 }
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
@@ -143,7 +144,11 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		}
 		if ok {
 			stats.add(batched)
-			stats.Members = s.refreshGuildMembersForSync(ctx, guildID, false, opts)
+			members, err := s.refreshGuildMembersForSync(ctx, guildID, false, opts)
+			if err != nil {
+				return stats, err
+			}
+			stats.Members = members
 			return stats, nil
 		}
 		if s.shouldUseIncrementalFullCatalog(ctx, guildID) {
@@ -158,7 +163,11 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		return stats, err
 	}
 
-	stats.Members = s.refreshGuildMembersForSync(ctx, guildID, targeted, opts)
+	members, err := s.refreshGuildMembersForSync(ctx, guildID, targeted, opts)
+	if err != nil {
+		return stats, err
+	}
+	stats.Members = members
 	messageCount, err := s.syncMessageChannels(ctx, guildID, channelList, opts)
 	if err != nil {
 		return stats, err
@@ -202,11 +211,21 @@ func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Cha
 	return nil
 }
 
-func (s *Syncer) refreshGuildMembersForSync(ctx context.Context, guildID string, targeted bool, opts SyncOptions) int {
-	if targeted || opts.SkipMembers {
-		return 0
+func (s *Syncer) refreshGuildMembersForSync(ctx context.Context, guildID string, targeted bool, opts SyncOptions) (int, error) {
+	if targeted {
+		if opts.RequireMembers {
+			return 0, errors.New("cannot require a member refresh for a targeted channel sync")
+		}
+		return 0, nil
 	}
-	return s.refreshGuildMembers(ctx, guildID)
+	if opts.SkipMembers {
+		return 0, nil
+	}
+	members, err := s.refreshGuildMembers(ctx, guildID)
+	if err != nil && opts.RequireMembers {
+		return 0, err
+	}
+	return members, nil
 }
 
 func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string, opts SyncOptions) (SyncStats, bool, error) {
@@ -249,9 +268,9 @@ func (stats *SyncStats) addChannel(record store.ChannelRecord) {
 	}
 }
 
-func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) int {
+func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) (int, error) {
 	if !s.shouldRefreshMembers(ctx, guildID) {
-		return 0
+		return 0, nil
 	}
 	memberCtx := ctx
 	cancel := func() {}
@@ -276,7 +295,7 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) int {
 			"elapsed", time.Since(startedAt).Round(time.Second).String(),
 			"timed_out", errors.Is(err, context.DeadlineExceeded),
 		)
-		return 0
+		return 0, fmt.Errorf("crawl guild members: %w", err)
 	}
 	converted := make([]store.MemberRecord, 0, len(members))
 	for _, member := range members {
@@ -284,11 +303,12 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) int {
 	}
 	if err := s.store.ReplaceMembers(ctx, guildID, converted); err != nil {
 		s.logger.Warn("member replace failed", "guild_id", guildID, "err", err)
-		return 0
+		return 0, fmt.Errorf("replace guild members: %w", err)
 	}
 	if s.store != nil {
 		if err := s.store.SetSyncState(ctx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			s.logger.Warn("member sync state update failed", "guild_id", guildID, "err", err)
+			return 0, fmt.Errorf("record guild member sync: %w", err)
 		}
 	}
 	s.logger.Info(
@@ -297,7 +317,7 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) int {
 		"members", len(converted),
 		"elapsed", time.Since(startedAt).Round(time.Second).String(),
 	)
-	return len(converted)
+	return len(converted), nil
 }
 
 func (s *Syncer) shouldUseIncrementalFullCatalog(ctx context.Context, guildID string) bool {

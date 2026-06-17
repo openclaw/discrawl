@@ -658,7 +658,7 @@ latest update time, latest archived message, archive totals, and day/week/month
 activity. Filtered publishes skip generated README reports to avoid leaking
 full-archive totals.
 
-The backup workflows restore and save `.discrawl-ci/discrawl.db` with `actions/cache`. On a warm runner cache, scheduled publishers skip the pre-sync snapshot import and go straight to the live latest-message delta before publishing. Cache misses still import the latest published snapshot first so `--latest-only` has channel cursors to resume from. The Discord backup publisher also runs a daily `--with-members` sync so archived member roles and profiles stay current without slowing every 15-minute message delta.
+The backup workflows restore and save `.discrawl-ci/discrawl.db` with `actions/cache`. On a warm runner cache, scheduled publishers skip the pre-sync snapshot import and go straight to the live latest-message delta before publishing. Cache misses still import the latest published snapshot first so `--latest-only` has channel cursors to resume from. The Discord backup publisher also runs a daily `--with-members` sync so archived member roles and profiles stay current without slowing every 15-minute message delta. That explicit member refresh fails the run if Discord rejects or times out the member crawl, rather than publishing a silently stale role snapshot.
 
 ### `digest`
 

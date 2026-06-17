@@ -36,6 +36,7 @@ type fakeClient struct {
 	messageStarted   chan string
 	beforeErrors     map[string]map[string]error
 	memberDelay      time.Duration
+	memberErr        error
 	tailCalls        int
 	tailHandled      chan struct{}
 	messageDelay     time.Duration
@@ -119,6 +120,9 @@ func (f *fakeClient) GuildMembers(ctx context.Context, guildID string) ([]*disco
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
+	}
+	if f.memberErr != nil {
+		return nil, f.memberErr
 	}
 	return f.members[guildID], nil
 }
@@ -392,6 +396,36 @@ func TestSyncMemberRefreshTimeoutStillMarksSuccess(t *testing.T) {
 	lastSync, err := s.GetSyncState(ctx, "sync:last_success")
 	require.NoError(t, err)
 	require.NotEmpty(t, lastSync)
+}
+
+func TestSyncRequiredMemberRefreshFailsOnCrawlError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+		channels: map[string][]*discordgo.Channel{
+			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+		},
+		memberErr: errors.New("rate limited"),
+	}
+
+	svc := New(client, s, nil)
+	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, RequireMembers: true})
+	require.ErrorContains(t, err, "crawl guild members: rate limited")
+	require.Zero(t, stats.Members)
+	require.Equal(t, 1, client.memberCalls)
+
+	lastSync, err := s.GetSyncState(ctx, "sync:last_success")
+	require.NoError(t, err)
+	require.Empty(t, lastSync)
 }
 
 func TestSyncRejectsUnknownRequestedGuild(t *testing.T) {
