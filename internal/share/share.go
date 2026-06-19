@@ -178,10 +178,13 @@ func ValidateTag(ctx context.Context, opts Options) error {
 	} else if err := mirror.EnsureRepo(ctx, mirrorOptions(opts)); err != nil {
 		return err
 	}
+	if err := mirror.ValidateTag(ctx, mirrorOptions(opts), opts.Tag); err != nil {
+		return err
+	}
 	if err := mirror.SyncForWrite(ctx, mirrorOptions(opts)); err != nil {
 		return err
 	}
-	return mirror.ValidateTag(ctx, mirrorOptions(opts), opts.Tag)
+	return nil
 }
 
 func CreateImmutableTag(ctx context.Context, opts Options) (string, error) {

@@ -76,6 +76,8 @@ func TestExportImportRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.Equal(t, manifest.GeneratedAt, imported.GeneratedAt)
+	_, err = ImportAt(ctx, dst, Options{RepoPath: repo, Branch: "main"}, "")
+	require.NoError(t, err)
 }
 
 func TestExportImportRestoresMediaFiles(t *testing.T) {
@@ -1621,6 +1623,10 @@ func TestPullAndPushWithBareRemote(t *testing.T) {
 	committed, err := Commit(ctx, opts, "test: snapshot")
 	require.NoError(t, err)
 	require.True(t, committed)
+	opts.Tag = "snapshot/test"
+	tag, err := CreateImmutableTag(ctx, opts)
+	require.NoError(t, err)
+	require.Equal(t, "snapshot/test", tag)
 	require.NoError(t, Push(ctx, opts))
 
 	subscriber := filepath.Join(dir, "subscriber")
@@ -1629,13 +1635,126 @@ func TestPullAndPushWithBareRemote(t *testing.T) {
 	require.FileExists(t, filepath.Join(subscriber, ManifestName))
 }
 
+func TestValidateTagBeforeRemoteSync(t *testing.T) {
+	ctx := context.Background()
+	repo := filepath.Join(t.TempDir(), "share")
+	require.NoError(t, EnsureRepo(ctx, Options{RepoPath: repo, Branch: "main"}))
+	err := ValidateTag(ctx, Options{
+		RepoPath: repo,
+		Remote:   "https://example.invalid/archive.git",
+		Branch:   "main",
+		Tag:      "bad tag",
+	})
+	require.ErrorContains(t, err, "invalid snapshot tag")
+	require.NoError(t, ValidateTag(ctx, Options{}))
+	require.Error(t, ValidateTag(ctx, Options{Remote: "remote", Tag: "snapshot/valid"}))
+	require.Error(t, ValidateTag(ctx, Options{Tag: "snapshot/valid"}))
+	localRepo := filepath.Join(t.TempDir(), "local-share")
+	require.NoError(t, ValidateTag(ctx, Options{RepoPath: localRepo, Branch: "main", Tag: "snapshot/valid"}))
+	require.Equal(t, []string{"tables/messages/000001.jsonl.gz"}, tableSnapshotFiles(TableManifest{Files: []string{"tables/messages/000001.jsonl.gz"}}))
+	require.Equal(t, []string{"tables/messages.jsonl.gz"}, tableSnapshotFiles(TableManifest{File: "tables/messages.jsonl.gz"}))
+	require.Nil(t, tableSnapshotFiles(TableManifest{}))
+	err = materializeRefFile(ctx, mirror.Options{}, "HEAD", "../escape", t.TempDir())
+	require.ErrorContains(t, err, "invalid historical share path")
+	require.NoError(t, os.MkdirAll(filepath.Join(localRepo, "tables"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(localRepo, "tables", "sample.txt"), []byte("sample\n"), 0o600))
+	committed, err := mirror.Commit(ctx, mirror.Options{RepoPath: localRepo}, "sample")
+	require.NoError(t, err)
+	require.True(t, committed)
+	materialized := t.TempDir()
+	require.NoError(t, materializeRefFile(ctx, mirror.Options{RepoPath: localRepo}, "HEAD", "tables/sample.txt", materialized))
+	require.Equal(t, []byte("sample\n"), mustReadFile(t, filepath.Join(materialized, "tables", "sample.txt")))
+	require.NoError(t, os.WriteFile(filepath.Join(localRepo, ManifestName), []byte(`{`), 0o600))
+	committed, err = mirror.Commit(ctx, mirror.Options{RepoPath: localRepo}, "malformed manifest")
+	require.NoError(t, err)
+	require.True(t, committed)
+	_, err = ImportAt(ctx, nil, Options{RepoPath: localRepo}, "HEAD")
+	require.ErrorContains(t, err, "parse share manifest")
+}
+
+func TestHistoricalRefErrorPaths(t *testing.T) {
+	ctx := context.Background()
+	repo := filepath.Join(t.TempDir(), "share")
+	require.NoError(t, EnsureRepo(ctx, Options{RepoPath: repo, Branch: "main"}))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "sample.txt"), []byte("sample\n"), 0o600))
+	committed, err := mirror.Commit(ctx, mirror.Options{RepoPath: repo}, "sample")
+	require.NoError(t, err)
+	require.True(t, committed)
+	_, err = ImportAt(ctx, nil, Options{RepoPath: repo}, "HEAD")
+	require.Error(t, err)
+	_, err = ImportAt(ctx, nil, Options{}, "HEAD")
+	require.Error(t, err)
+
+	writeManifest := func(manifest Manifest, message string) {
+		t.Helper()
+		body, marshalErr := json.Marshal(manifest)
+		require.NoError(t, marshalErr)
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ManifestName), body, 0o600))
+		changed, commitErr := mirror.Commit(ctx, mirror.Options{RepoPath: repo}, message)
+		require.NoError(t, commitErr)
+		require.True(t, changed)
+	}
+	writeManifest(Manifest{Version: 1, GeneratedAt: time.Now().UTC(), Tables: []TableManifest{{Name: "messages", Files: []string{"tables/missing.jsonl.gz"}}}}, "missing table")
+	_, err = ImportAt(ctx, nil, Options{RepoPath: repo}, "HEAD")
+	require.Error(t, err)
+
+	writeManifest(Manifest{Version: 1, GeneratedAt: time.Now().UTC(), Embeddings: []EmbeddingManifest{{Files: []string{"embeddings/missing.jsonl.gz"}}}}, "skipped embeddings")
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, _ = ImportAt(ctx, dst, Options{RepoPath: repo}, "HEAD")
+	_, err = ImportAt(ctx, dst, Options{RepoPath: repo, IncludeEmbeddings: true}, "HEAD")
+	require.Error(t, err)
+
+	writeManifest(Manifest{Version: 1, GeneratedAt: time.Now().UTC(), Media: &MediaManifest{Files: []snapshot.FileManifest{{Path: "media/missing.gz"}}}}, "missing media")
+	_, err = ImportAt(ctx, dst, Options{RepoPath: repo, IncludeMedia: true}, "HEAD")
+	require.Error(t, err)
+
+	blockedParent := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(blockedParent, "tables"), []byte("blocked"), 0o600))
+	err = materializeRefFile(ctx, mirror.Options{RepoPath: repo}, "HEAD~3", "sample.txt", filepath.Join(blockedParent, "tables", "child"))
+	require.Error(t, err)
+	writeTarget := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(writeTarget, "sample.txt"), 0o755))
+	err = materializeRefFile(ctx, mirror.Options{RepoPath: repo}, "HEAD~3", "sample.txt", writeTarget)
+	require.Error(t, err)
+}
+
 func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	src := seedStore(t, filepath.Join(dir, "src.db"))
 	defer func() { _ = src.Close() }()
-	opts := Options{RepoPath: filepath.Join(dir, "share"), Branch: "main", Tag: "snapshot-old"}
-	_, err := Export(ctx, src, opts)
+	mediaBody := []byte("historical media")
+	mediaSum := sha256.Sum256(mediaBody)
+	mediaHash := hex.EncodeToString(mediaSum[:])
+	mediaPath := filepath.ToSlash(filepath.Join("attachments", mediaHash[:2], mediaHash+"-history.txt"))
+	require.NoError(t, addCachedAttachment(ctx, src, mediaPath, mediaHash, int64(len(mediaBody))))
+	srcCache := filepath.Join(dir, "src-cache")
+	srcMedia, err := media.LocalPath(srcCache, mediaPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(srcMedia), 0o755))
+	require.NoError(t, os.WriteFile(srcMedia, mediaBody, 0o600))
+	embeddingBlob, err := store.EncodeEmbeddingVector([]float32{1, 0.5})
+	require.NoError(t, err)
+	_, err = src.DB().ExecContext(ctx, `
+		insert into message_embeddings(
+			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
+		) values ('m1', 'openai', 'text-embedding-3-small', ?, 2, ?, ?)
+	`, store.EmbeddingInputVersion, embeddingBlob, time.Now().UTC().Format(time.RFC3339Nano))
+	require.NoError(t, err)
+	opts := Options{
+		RepoPath:              filepath.Join(dir, "share"),
+		CacheDir:              srcCache,
+		Branch:                "main",
+		Tag:                   "snapshot-old",
+		IncludeMedia:          true,
+		IncludeEmbeddings:     true,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "text-embedding-3-small",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}
+	_, err = Export(ctx, src, opts)
 	require.NoError(t, err)
 	committed, err := Commit(ctx, opts, "old snapshot")
 	require.NoError(t, err)
@@ -1672,13 +1791,21 @@ func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
 	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
-	manifest, err := ImportAt(ctx, dst, opts, "snapshot-old")
+	restoreOpts := opts
+	restoreOpts.CacheDir = filepath.Join(dir, "dst-cache")
+	manifest, err := ImportAt(ctx, dst, restoreOpts, "snapshot-old")
 	require.NoError(t, err)
 	require.False(t, manifest.GeneratedAt.IsZero())
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "launch", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "launch checklist ready", results[0].Content)
+	restoredMedia, err := media.LocalPath(restoreOpts.CacheDir, mediaPath)
+	require.NoError(t, err)
+	require.Equal(t, mediaBody, mustReadFile(t, restoredMedia))
+	var embeddingCount int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from message_embeddings where message_id = 'm1'`).Scan(&embeddingCount))
+	require.Equal(t, 1, embeddingCount)
 	require.Equal(t, headBefore, strings.TrimSpace(testGitOutput(t, ctx, opts.RepoPath, "rev-parse", "HEAD")))
 }
 
@@ -1778,12 +1905,16 @@ func TestRepoCommandEdges(t *testing.T) {
 	ctx := context.Background()
 	require.ErrorContains(t, EnsureRepo(ctx, Options{}), "repo path is empty")
 	require.NoError(t, Pull(ctx, Options{}))
+	require.Error(t, Pull(ctx, Options{Remote: "remote"}))
+	require.NoError(t, Pull(ctx, Options{RepoPath: filepath.Join(t.TempDir(), "local-share")}))
 
 	repo := filepath.Join(t.TempDir(), "repo")
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".git"), 0o755))
 	require.NoError(t, EnsureRepo(ctx, Options{RepoPath: repo}))
 
 	err := Push(ctx, Options{RepoPath: repo, Branch: "main"})
+	require.ErrorContains(t, err, "git push -u origin main")
+	err = Push(ctx, Options{RepoPath: repo})
 	require.ErrorContains(t, err, "git push -u origin main")
 }
 
