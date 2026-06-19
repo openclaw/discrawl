@@ -11,6 +11,7 @@
 
 - Refresh Discord member roles daily for published archives, and make `sync --with-members` bypass cached freshness when a refresh is required. Thanks @hannesrudolph.
 - Keep incremental share imports compatible with crawlkit's safe changed-tail replacement plan instead of falling back to a full archive rebuild.
+- Accept absolute Windows SQLite paths through the shared crawlkit store opener.
 
 ## 0.11.0 - 2026-06-11
 
