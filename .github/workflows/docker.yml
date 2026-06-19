@@ -13,7 +13,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
 
       - name: Build image
         run: docker build --pull -t discrawl:ci .

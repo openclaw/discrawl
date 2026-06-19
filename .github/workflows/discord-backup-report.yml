@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout discrawl
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
 
       - name: Setup Go
         uses: actions/setup-go@v6.4.0
