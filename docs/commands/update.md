@@ -13,6 +13,7 @@ discrawl update \
   --remote https://github.com/example/discord-archive.git
 discrawl update --with-embeddings
 discrawl update --no-media
+discrawl update --ref backup-2026-06-19
 ```
 
 ## Flags
@@ -20,6 +21,7 @@ discrawl update --no-media
 - `--repo <path>` - local snapshot repo path (defaults to `[share].repo_path`)
 - `--remote <url>` - target Git remote (defaults to `[share].remote`)
 - `--branch <name>` - snapshot branch (defaults to `[share].branch`)
+- `--ref <tag-or-commit>` - import a historical snapshot without changing the share checkout
 - `--with-embeddings` - also import vectors that match your local `[search.embeddings]` identity
 - `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 
@@ -28,6 +30,7 @@ discrawl update --no-media
 - you have `share.remote` configured and want a fresh shard-delta import before running a command that does not auto-update (`sync` does not auto-import unless `--update=auto` is passed)
 - you set `--no-auto-update` when subscribing and want to refresh on demand
 - a CI job already imported the latest snapshot but read commands still consider it stale
+- you need to restore a named tag or commit while leaving the checked-out share branch untouched
 
 ## How `sync` interacts
 

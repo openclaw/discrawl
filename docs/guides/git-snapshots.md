@@ -12,6 +12,7 @@ published snapshots and are preserved locally on import.
 ```bash
 discrawl publish --remote https://github.com/example/discord-archive.git --push
 discrawl publish --readme path/to/discord-backup/README.md --push
+discrawl publish --tag backup-2026-06-19 --push
 ```
 
 The publisher uses your existing bot-synced archive. It exports non-DM tables only.
@@ -62,7 +63,7 @@ discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 ```
 
-`discrawl update` forces the same pull/import step manually. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports the changed message tail shard plus small cursor tables. Unsafe table-shape changes still fall back to a full import.
+`discrawl update` forces the same pull/import step manually. `discrawl update --ref <tag-or-commit>` reads the historical Git objects directly and leaves the share checkout unchanged. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports the changed message tail shard plus small cursor tables. Unsafe table-shape changes still fall back to a full import.
 
 `discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
 

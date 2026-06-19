@@ -21,6 +21,7 @@ func (r *runtime) runPublish(args []string) error {
 	remote := fs.String("remote", r.cfg.Share.Remote, "")
 	branch := fs.String("branch", r.cfg.Share.Branch, "")
 	message := fs.String("message", "", "")
+	tag := fs.String("tag", "", "")
 	readmePath := fs.String("readme", "", "")
 	noCommit := fs.Bool("no-commit", false, "")
 	push := fs.Bool("push", false, "")
@@ -35,8 +36,15 @@ func (r *runtime) runPublish(args []string) error {
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("publish takes no positional arguments"))
 	}
+	if *noCommit && strings.TrimSpace(*tag) != "" {
+		return usageErr(errors.New("publish --tag requires a commit"))
+	}
 	opts, err := shareOptionsFromFlags(*repoPath, *remote, *branch)
 	if err != nil {
+		return err
+	}
+	opts.Tag = strings.TrimSpace(*tag)
+	if err := share.ValidateTag(r.ctx, opts); err != nil {
 		return err
 	}
 	opts.Filter = share.FilterOptions{
@@ -86,6 +94,10 @@ func (r *runtime) runPublish(args []string) error {
 			return err
 		}
 	}
+	createdTag, err := share.CreateImmutableTag(r.ctx, opts)
+	if err != nil {
+		return err
+	}
 	if *push {
 		if err := share.Push(r.ctx, opts); err != nil {
 			return err
@@ -103,6 +115,7 @@ func (r *runtime) runPublish(args []string) error {
 		"embeddings":   manifest.Embeddings,
 		"readme":       *readmePath,
 		"committed":    committed,
+		"tag":          createdTag,
 		"pushed":       *push,
 	})
 }
@@ -214,6 +227,7 @@ func (r *runtime) runUpdate(args []string) error {
 	repoPath := fs.String("repo", r.cfg.Share.RepoPath, "")
 	remote := fs.String("remote", r.cfg.Share.Remote, "")
 	branch := fs.String("branch", r.cfg.Share.Branch, "")
+	ref := fs.String("ref", "", "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
 	if err := fs.Parse(args); err != nil {
@@ -233,14 +247,25 @@ func (r *runtime) runUpdate(args []string) error {
 	if err := applyMediaShareOptions(&opts, r.cfg, !*noMedia); err != nil {
 		return err
 	}
-	r.setSyncLockPhase("share pull")
-	if err := share.Pull(r.ctx, opts); err != nil {
-		return err
-	}
-	r.setSyncLockPhase("share import")
-	manifest, imported, err := share.ImportIfChanged(r.ctx, r.store, opts)
-	if err != nil {
-		return err
+	var manifest share.Manifest
+	var imported bool
+	if strings.TrimSpace(*ref) == "" {
+		r.setSyncLockPhase("share pull")
+		if err := share.Pull(r.ctx, opts); err != nil {
+			return err
+		}
+		r.setSyncLockPhase("share import")
+		manifest, imported, err = share.ImportIfChanged(r.ctx, r.store, opts)
+		if err != nil {
+			return err
+		}
+	} else {
+		r.setSyncLockPhase("share historical import")
+		manifest, err = share.ImportAt(r.ctx, r.store, opts, *ref)
+		if err != nil {
+			return err
+		}
+		imported = true
 	}
 	return r.print(map[string]any{
 		"repo_path":    opts.RepoPath,
@@ -250,6 +275,7 @@ func (r *runtime) runUpdate(args []string) error {
 		"media":        manifest.Media,
 		"embeddings":   manifest.Embeddings,
 		"imported":     imported,
+		"ref":          strings.TrimSpace(*ref),
 	})
 }
 

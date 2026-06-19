@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	crawlstore "github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/crawlkit/vector"
 	"github.com/openclaw/discrawl/internal/store/storedb"
 )
@@ -1038,7 +1039,7 @@ func normalizeFTSQuery(raw string) string {
 	}
 	fields := strings.Fields(raw)
 	for i, field := range fields {
-		fields[i] = `"` + strings.ReplaceAll(field, `"`, " ") + `"`
+		fields[i] = crawlstore.FTS5Phrase(strings.ReplaceAll(field, `"`, " "))
 	}
 	return strings.Join(fields, " ")
 }

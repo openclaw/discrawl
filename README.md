@@ -519,6 +519,7 @@ Publisher:
 
 ```bash
 discrawl publish --remote https://github.com/example/discord-archive.git --push
+discrawl publish --tag backup-2026-06-19 --push
 discrawl publish --readme path/to/discord-backup/README.md --push
 discrawl publish --public-only --include-channels 1458141495701012561 --push
 discrawl publish --no-media --push
@@ -530,6 +531,7 @@ Subscriber:
 discrawl subscribe https://github.com/example/discord-archive.git
 discrawl search "launch checklist"
 discrawl messages --channel general --hours 24
+discrawl update --ref backup-2026-06-19
 ```
 
 `subscribe` is the Git-only setup path. It writes a config with `discord.token_source = "none"`, imports the snapshot, and does not require a Discord bot token. `sync` and `tail` remain disabled in this mode because they need live Discord access.
@@ -576,7 +578,7 @@ discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 ```
 
-Once `share.remote` is configured, read commands auto-fetch and import when the local share import is older than `share.stale_after` (default `15m`). Imports are planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests, so routine updates normally read only changed tail shards and preserve local FTS rows instead of rebuilding the whole archive. `discrawl update` forces the same pull/import step manually. `discrawl sync` does not auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
+Once `share.remote` is configured, read commands auto-fetch and import when the local share import is older than `share.stale_after` (default `15m`). Imports are planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests, so routine updates normally read only changed tail shards and preserve local FTS rows instead of rebuilding the whole archive. `discrawl update` forces the same pull/import step manually; `update --ref <tag-or-commit>` restores that historical snapshot without moving the share checkout. `discrawl sync` does not auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
 
 Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` import the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. Use `sync --all-channels` or `sync --full` when you intentionally want a broader live repair/backfill pass.
 

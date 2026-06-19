@@ -1629,6 +1629,59 @@ func TestPullAndPushWithBareRemote(t *testing.T) {
 	require.FileExists(t, filepath.Join(subscriber, ManifestName))
 }
 
+func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	opts := Options{RepoPath: filepath.Join(dir, "share"), Branch: "main", Tag: "snapshot-old"}
+	_, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	committed, err := Commit(ctx, opts, "old snapshot")
+	require.NoError(t, err)
+	require.True(t, committed)
+	tag, err := CreateImmutableTag(ctx, opts)
+	require.NoError(t, err)
+	require.Equal(t, "snapshot-old", tag)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m1",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			CreatedAt:         now,
+			Content:           "new snapshot",
+			NormalizedContent: "new snapshot",
+			RawJSON:           `{}`,
+		},
+		EventType:   "upsert",
+		PayloadJSON: `{"id":"m1"}`,
+	}}))
+	opts.Tag = ""
+	_, err = Export(ctx, src, opts)
+	require.NoError(t, err)
+	committed, err = Commit(ctx, opts, "new snapshot")
+	require.NoError(t, err)
+	require.True(t, committed)
+	headBefore := strings.TrimSpace(testGitOutput(t, ctx, opts.RepoPath, "rev-parse", "HEAD"))
+
+	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	manifest, err := ImportAt(ctx, dst, opts, "snapshot-old")
+	require.NoError(t, err)
+	require.False(t, manifest.GeneratedAt.IsZero())
+	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "launch", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "launch checklist ready", results[0].Content)
+	require.Equal(t, headBefore, strings.TrimSpace(testGitOutput(t, ctx, opts.RepoPath, "rev-parse", "HEAD")))
+}
+
 func TestPushRebasesRemoteReadmeUpdates(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
@@ -1651,11 +1704,11 @@ func TestPushRebasesRemoteReadmeUpdates(t *testing.T) {
 	require.NoError(t, Push(ctx, opts))
 
 	reporter := filepath.Join(dir, "reporter")
-	require.NoError(t, run(ctx, dir, "git", "clone", "--branch", "main", remote, reporter))
+	testGitRun(t, ctx, dir, "clone", "--branch", "main", remote, reporter)
 	configureGitUser(t, reporter)
 	require.NoError(t, os.WriteFile(filepath.Join(reporter, "README.md"), []byte("report: first\n\nfield notes: fresh\n"), 0o600))
-	require.NoError(t, run(ctx, reporter, "git", "commit", "-am", "docs: update field notes"))
-	require.NoError(t, run(ctx, reporter, "git", "push", "-u", "origin", "main"))
+	testGitRun(t, ctx, reporter, "commit", "-am", "docs: update field notes")
+	testGitRun(t, ctx, reporter, "push", "-u", "origin", "main")
 
 	require.NoError(t, os.WriteFile(filepath.Join(publisher, "README.md"), []byte("report: second\n\nfield notes: old\n"), 0o600))
 	committed, err = Commit(ctx, opts, "test: update report")
@@ -1732,7 +1785,6 @@ func TestRepoCommandEdges(t *testing.T) {
 
 	err := Push(ctx, Options{RepoPath: repo, Branch: "main"})
 	require.ErrorContains(t, err, "git push -u origin main")
-	require.ErrorContains(t, run(ctx, repo, "git", "definitely-not-a-command"), "git definitely-not-a-command")
 }
 
 func TestShareSmallHelpersAndValidation(t *testing.T) {
@@ -1753,9 +1805,6 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, "plain", stringValue("plain"))
 	require.Equal(t, "42", stringValue(json.Number("42")))
 	require.Empty(t, stringValue(42))
-	require.True(t, isNonFastForwardPush("failed to push some refs; fetch first"))
-	require.True(t, isNonFastForwardPush("non-fast-forward"))
-	require.False(t, isNonFastForwardPush("everything up-to-date"))
 
 	query, args := snapshotExportQuery("messages")
 	require.Equal(t, "select * from messages where guild_id != ?", query)
@@ -1804,7 +1853,7 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	Options{Progress: func(progress ImportProgress) { seen = append(seen, progress) }}.reportProgress(ImportProgress{Phase: "phase"})
 	require.Equal(t, []ImportProgress{{Phase: "phase"}}, seen)
 	Options{}.reportProgress(ImportProgress{Phase: "ignored"})
-	require.Equal(t, mirror.Options{RepoPath: "repo", Remote: "origin", Branch: "main"}, mirrorOptions(Options{RepoPath: "repo", Remote: "origin", Branch: "main"}))
+	require.Equal(t, mirror.Options{RepoPath: "repo", Remote: "origin", Branch: "main", DirMode: 0o750}, mirrorOptions(Options{RepoPath: "repo", Remote: "origin", Branch: "main"}))
 
 	var buf bytes.Buffer
 	cw := &countingWriter{w: &buf}
@@ -2253,6 +2302,20 @@ func seedDirectMessageData(t *testing.T, ctx context.Context, s *store.Store) {
 		}},
 	}}))
 	require.NoError(t, s.SetSyncState(ctx, "wiretap:last_import", now.Format(time.RFC3339)))
+}
+
+func testGitRun(t *testing.T, ctx context.Context, dir string, args ...string) {
+	t.Helper()
+	_ = testGitOutput(t, ctx, dir, args...)
+}
+
+func testGitOutput(t *testing.T, ctx context.Context, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	body, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", body)
+	return string(body)
 }
 
 func configureGitUser(t *testing.T, repo string) {

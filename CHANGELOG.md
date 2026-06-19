@@ -4,11 +4,13 @@
 
 ### Changes
 
+- Add immutable Git snapshot tags and non-mutating historical restores with `publish --tag` and `update --ref`.
 - Restore the missing v0.10.0 release history for the first Cloudflare remote archive release. Thanks @joshka.
 - Expose the release changelog directly in the documentation site navigation. Thanks @joshka.
 
 ### Fixes
 
+- Preserve private share-repository permissions and unpublished local branches while moving Git history, ref, and FTS query mechanics onto CrawlKit; refresh Go dependencies.
 - Refresh Discord member roles daily for published archives, and make `sync --with-members` bypass cached freshness when a refresh is required. Thanks @hannesrudolph.
 - Keep incremental share imports compatible with crawlkit's safe changed-tail replacement plan instead of falling back to a full archive rebuild.
 - Accept absolute Windows SQLite paths through the shared crawlkit store opener.

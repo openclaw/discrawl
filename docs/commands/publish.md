@@ -8,6 +8,7 @@ Publishes the local SQLite archive as sharded, compressed NDJSON snapshots in a 
 discrawl publish --remote https://github.com/example/discord-archive.git --push
 discrawl publish --readme path/to/discord-backup/README.md --push
 discrawl publish --message "sync: discord archive" --push
+discrawl publish --tag backup-2026-06-19 --push
 discrawl publish --with-embeddings --push
 discrawl publish --no-media --push
 discrawl publish --public-only --include-channels 1458141495701012561 --push
@@ -19,6 +20,7 @@ discrawl publish --public-only --include-channels 1458141495701012561 --push
 - `--remote <url>` - target Git remote (defaults to `[share].remote`)
 - `--branch <name>` - snapshot branch (defaults to `[share].branch`)
 - `--message <text>` - commit message (default: `sync: discord archive`)
+- `--tag <name>` - create an immutable snapshot tag; requires a commit
 - `--no-commit` - write/export files without creating a Git commit
 - `--push` - push the snapshot commit after writing it
 - `--readme <path>` - update the activity block in this README file too
