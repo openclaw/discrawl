@@ -1809,6 +1809,114 @@ func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
 	require.Equal(t, headBefore, strings.TrimSpace(testGitOutput(t, ctx, opts.RepoPath, "rev-parse", "HEAD")))
 }
 
+func TestTaggedSnapshotHistorySurvivesConcurrentRemotePush(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src := seedStore(t, filepath.Join(dir, "src.db"))
+	defer func() { _ = src.Close() }()
+	seedDirectMessageData(t, ctx, src)
+
+	remote := filepath.Join(dir, "remote.git")
+	// #nosec G204 -- fixed git argv in test setup.
+	require.NoError(t, exec.CommandContext(t.Context(), "git", "-C", dir, "init", "--bare", remote).Run())
+	publisher := filepath.Join(dir, "publisher")
+	opts := Options{RepoPath: publisher, Remote: remote, Branch: "main", Tag: "snapshot-old"}
+	oldManifest, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, tableEntry(t, oldManifest, "messages").Rows)
+	configureGitUser(t, publisher)
+	committed, err := Commit(ctx, opts, "test: old snapshot")
+	require.NoError(t, err)
+	require.True(t, committed)
+	_, err = CreateImmutableTag(ctx, opts)
+	require.NoError(t, err)
+	require.NoError(t, Push(ctx, opts))
+	oldRemoteTag := strings.TrimSpace(testGitOutput(t, ctx, dir, "--git-dir", remote, "rev-parse", "refs/tags/snapshot-old"))
+
+	reporter := filepath.Join(dir, "reporter")
+	testGitRun(t, ctx, dir, "clone", "--branch", "main", remote, reporter)
+	configureGitUser(t, reporter)
+	require.NoError(t, os.WriteFile(filepath.Join(reporter, "README.md"), []byte("concurrent field notes\n"), 0o600))
+	testGitRun(t, ctx, reporter, "add", "README.md")
+	testGitRun(t, ctx, reporter, "commit", "-m", "docs: add concurrent field notes")
+	reporterHead := strings.TrimSpace(testGitOutput(t, ctx, reporter, "rev-parse", "HEAD"))
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m1",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			ChannelName:       "general",
+			AuthorID:          "u1",
+			AuthorName:        "Peter",
+			CreatedAt:         now,
+			Content:           "durable snapshot current",
+			NormalizedContent: "durable snapshot current",
+			RawJSON:           `{}`,
+		},
+		EventType:   "upsert",
+		PayloadJSON: `{"id":"m1"}`,
+	}}))
+	opts.Tag = "snapshot-new"
+	newManifest, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, tableEntry(t, newManifest, "messages").Rows)
+	committed, err = Commit(ctx, opts, "test: new snapshot")
+	require.NoError(t, err)
+	require.True(t, committed)
+	_, err = CreateImmutableTag(ctx, opts)
+	require.NoError(t, err)
+	testGitRun(t, ctx, publisher, "branch", "preserved-local-branch")
+	preservedBranch := strings.TrimSpace(testGitOutput(t, ctx, publisher, "rev-parse", "preserved-local-branch"))
+
+	// Move the remote after the snapshot tag was created. Push must rebase and
+	// retarget only the unpublished tag before atomically publishing both refs.
+	testGitRun(t, ctx, reporter, "push", "origin", "main")
+	require.NoError(t, Push(ctx, opts))
+	require.Equal(t, "main", strings.TrimSpace(testGitOutput(t, ctx, publisher, "branch", "--show-current")))
+	require.Equal(t, preservedBranch, strings.TrimSpace(testGitOutput(t, ctx, publisher, "rev-parse", "preserved-local-branch")))
+	require.Equal(t, oldRemoteTag, strings.TrimSpace(testGitOutput(t, ctx, dir, "--git-dir", remote, "rev-parse", "refs/tags/snapshot-old")))
+	newRemoteTag := strings.TrimSpace(testGitOutput(t, ctx, dir, "--git-dir", remote, "rev-parse", "refs/tags/snapshot-new"))
+	require.NotEqual(t, oldRemoteTag, newRemoteTag)
+	require.Equal(t, newRemoteTag, strings.TrimSpace(testGitOutput(t, ctx, dir, "--git-dir", remote, "rev-parse", "refs/heads/main")))
+	testGitRun(t, ctx, dir, "--git-dir", remote, "merge-base", "--is-ancestor", reporterHead, "refs/heads/main")
+
+	opts.Tag = "snapshot-old"
+	_, err = CreateImmutableTag(ctx, opts)
+	require.Error(t, err)
+	require.Equal(t, oldRemoteTag, strings.TrimSpace(testGitOutput(t, ctx, dir, "--git-dir", remote, "rev-parse", "refs/tags/snapshot-old")))
+
+	subscriber := filepath.Join(dir, "subscriber")
+	subOpts := Options{RepoPath: subscriber, Remote: remote, Branch: "main"}
+	require.NoError(t, Pull(ctx, subOpts))
+	subscriberBranch := strings.TrimSpace(testGitOutput(t, ctx, subscriber, "branch", "--show-current"))
+	subscriberHead := strings.TrimSpace(testGitOutput(t, ctx, subscriber, "rev-parse", "HEAD"))
+	dst, err := store.Open(ctx, filepath.Join(dir, "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	seedDirectMessageData(t, ctx, dst)
+
+	imported, err := ImportAt(ctx, dst, subOpts, "snapshot-old")
+	require.NoError(t, err)
+	require.Equal(t, 1, tableEntry(t, imported, "messages").Rows)
+	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "launch checklist", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	dmResults, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "private dm content", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, dmResults, 1)
+
+	imported, err = ImportAt(ctx, dst, subOpts, "snapshot-new")
+	require.NoError(t, err)
+	require.Equal(t, 1, tableEntry(t, imported, "messages").Rows)
+	results, err = dst.SearchMessages(ctx, store.SearchOptions{Query: "durable snapshot current", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, subscriberBranch, strings.TrimSpace(testGitOutput(t, ctx, subscriber, "branch", "--show-current")))
+	require.Equal(t, subscriberHead, strings.TrimSpace(testGitOutput(t, ctx, subscriber, "rev-parse", "HEAD")))
+}
+
 func TestPushRebasesRemoteReadmeUpdates(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
