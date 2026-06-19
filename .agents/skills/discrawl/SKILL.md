@@ -116,29 +116,6 @@ mutation and the write has been reviewed.
 When the installed CLI lacks a new feature, build or run from a verified
 `openclaw/discrawl` checkout before concluding the feature is missing.
 
-## Changelog And Release Notes
-
-Treat the changelog as user-facing release history. Entries should help a
-reader understand what a release lets them do, what supported behavior changed,
-what failure was prevented, or what migration/privacy/compatibility boundary
-matters.
-
-When revising changelog entries:
-
-- start from the user's question or task, then name commands, config keys, and
-  implementation components only when they explain that user-facing behavior
-- preserve concrete details such as R2, D1, SQLite mirrors, gzip chunks, privacy
-  manifests, upload limits, and cache paths when they explain capabilities,
-  constraints, or safety boundaries
-- check the related commit, PR, or issue before removing a specific detail that
-  may encode rationale
-- avoid broad style churn; preserve existing tense, capitalization, punctuation,
-  wrapping, and section shape unless changing them improves correctness or
-  clarity
-- separate low-level dependency, agent, CI, and harness notes into Maintenance
-  when they do not directly affect install, publish, sync, search, archive
-  safety, or user workflow
-
 ## Discord Boundaries
 
 Bot API sync requires configured Discord bot credentials; do not invent token

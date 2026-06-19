@@ -2,125 +2,110 @@
 
 ## 0.11.1 - Unreleased
 
+### Changes
+
+- Restore the missing v0.10.0 release history for the first Cloudflare remote archive release. Thanks @joshka.
+
 ### Fixes
 
-- Keep routine Git snapshot refreshes fast when only the newest message shards changed, avoiding unnecessary full archive rebuilds for subscribed readers.
-
-### Maintenance
-
-- Refresh the shared archive, SQLite, system, and text-processing dependencies.
-- Harden the repo-local autoreview agent scope guard and harness.
+- Keep incremental share imports compatible with crawlkit's safe changed-tail replacement plan instead of falling back to a full archive rebuild.
 
 ## 0.11.0 - 2026-06-11
 
 ### Changes
 
-- Add optional faster semantic-search scoring with `[search.embeddings].vector_backend = "turbovec"`, while keeping exact cosine scoring as the default. Thanks @vincentkoc.
+- Add optional `turbovec` semantic-search scoring via `[search.embeddings].vector_backend`, while keeping exact cosine as the default backend. Thanks @vincentkoc.
 - Added the Homebrew install command to the `discrawl.sh` landing hero and agent docs index, with a one-row desktop layout and copy button.
-- Let `discrawl cloud publish` upload a sanitized SQLite mirror to Cloudflare R2, so remote subscribers can restore or inspect an archive snapshot as well as query live Cloudflare D1 rows.
-- Keep the remote SQLite mirror privacy-bounded: it excludes `@me` rows, raw Discord JSON, attachment URLs, embeddings, and local-only tables.
-- Compress the R2 SQLite mirror into bounded gzip chunks with an explicit row-count and privacy manifest before upload.
+- Update `crawlkit` through v0.12.0.
+- Add read-only Cloudflare remote archive scaffolding with `[remote]` config,
+  `subscribe-cloud`, GitHub-backed `remote login` with OAuth or token-env
+  bootstrap, `remote status`, `remote archives`, and cloud-mode `status --json`
+  output that does not open or create a local SQLite database.
+- Route cloud-mode `search` and filtered `messages` reads to Worker named
+  queries so subscribers can inspect live D1 data without local SQLite.
+- Add `discrawl cloud publish` to export non-DM local SQLite rows into the
+  Cloudflare remote archive ingest API without changing Git snapshot
+  publishing.
+- Mirror the non-DM local SQLite archive into the Worker-backed R2 object store
+  during `discrawl cloud publish`, alongside the D1 row ingest used for live
+  queries.
+- Compress the sanitized SQLite mirror as a gzip chunk bundle with an explicit
+  privacy/count manifest before uploading to R2.
 
 ### Fixes
 
-- Kept resumed `sync --full` backfills from moving latest-message checkpoints backward, avoiding duplicate recrawls after large interrupted channel syncs. Thanks @hannesrudolph.
+- Kept resumed `sync --full` backfills from moving channel latest-message checkpoints backward, avoiding duplicate head recrawls on large interrupted channels. Thanks @hannesrudolph.
 - Made `messages --sync` fail fast with an omit-`--sync` hint when a live `tail` process owns the sync lock, while plain `messages` reads continue without waiting. Thanks @jeanmonet.
-- Add `discrawl cloud publish --sqlite-only` so publishers can refresh the R2 SQLite bundle without re-ingesting D1 rows.
-- Split Cloudflare SQLite mirror uploads into 64 MiB chunks that stay within Worker upload limits.
-
-### Maintenance
-
-- Refresh the shared archive runtime through `crawlkit` v0.12.0.
-- Add a CI deadcode check.
-- Refresh the secret-scanning action.
 
 ## 0.10.0 - 2026-05-27
 
 ### Changes
 
-- Add read-only Cloudflare remote archive mode, so subscribers can search and read hosted archive data without creating a local SQLite database or using Discord credentials.
-- Add `[remote]` config, `subscribe-cloud`, GitHub-backed `remote login`, `remote status`, `remote archives`, and cloud-mode `status --json` for remote archive setup and inspection.
-- Route cloud-mode `search` and filtered `messages` reads to the hosted archive, so subscribers can inspect remote D1 data without local SQLite.
-- Add `discrawl cloud publish` so publishers can send non-DM local SQLite rows to a hosted remote archive without changing Git snapshot publishing.
-
-### Fixes
-
-- Update the release workflow's Homebrew tap target.
-
-### Maintenance
-
-- Refresh the shared archive runtime through `crawlkit` v0.8.0.
-- Add the repo-local autoreview agent skill and harness.
-- Add constrained Crabbox remote-validation setup.
-- Refresh CI and release workflow dependencies.
+- Add read-only Cloudflare remote archive mode with `[remote]` config, `subscribe-cloud`, GitHub-backed `remote login`, `remote status`, `remote archives`, and cloud-mode `status --json` without creating a local SQLite database.
+- Route cloud-mode `search` and filtered `messages` reads to Worker named queries so subscribers can inspect live D1 data without local SQLite.
+- Add `discrawl cloud publish` to export non-DM local SQLite rows to the Cloudflare remote archive without changing Git snapshot publishing.
 
 ## 0.9.1 - 2026-05-18
 
 ### Changes
 
-- Add `discrawl check-update` and cached interactive terminal notices so users can see when a newer Discrawl release is available without checking GitHub by hand.
+- Add cached release checks with `discrawl check-update` and passive terminal notices when a newer Discrawl release is available.
 
 ### Fixes
-
-- Derive release checks from the configured release repository, so forks and relocated installs do not report updates from the wrong GitHub project.
 
 ## 0.9.0 - 2026-05-17
 
 ### Changes
 
-- Media-enabled `discrawl publish` now stores shared attachment media as gzip files, reducing Git snapshot size while still importing older raw-media snapshots.
-- Semantic search now ranks lightweight embedding rows first and hydrates full message details only for winning results, so large vector sets do less SQLite work per query.
+- Media-enabled `discrawl publish` now migrates shared attachment media to gzip-compressed files while still importing older raw-media snapshots.
+- Semantic search now scores lightweight embedding rows first and hydrates full message details only for the winning results.
 
 ### Fixes
 
-- Bounded gzip media restore size and hash verification so malformed shared snapshots cannot decompress unbounded data.
-- Cancelled concurrent message-sync workers when a peer hits a fatal channel error, avoiding wasted work after the run is already going to fail.
+- Bounded gzip media restore and hash verification so malformed shared snapshots cannot decompress unbounded data.
+- Cancelled concurrent message-sync workers when a peer hits a fatal channel error.
 - Rejected inaccessible explicit guild targets during `init --guild` and `sync --guild/--guilds` instead of silently treating them as successful empty syncs.
 - Hardened embedding snapshot imports against unsafe manifest paths, symlink escapes, and unbounded gzip input.
-- Limited FTS search fallback to missing or unsupported FTS infrastructure errors, so unrelated query failures are reported instead of hidden by fallback search.
+- Limited FTS search fallback to missing or unsupported FTS infrastructure errors so unrelated query failures are reported.
 - Re-sniffed previously skipped wiretap cache files instead of treating unchanged skipped fingerprints as permanently unchanged.
-
-### Maintenance
-
-- Refresh the secret-scanning action.
 
 ## 0.8.0 - 2026-05-15
 
 ### Changes
 
 - Added attachment media caching with `discrawl attachments`, `attachments fetch`, `sync --with-media`, and Git snapshot backup/restore for cached non-DM media files.
-- Documented the media backup workflow, including Discord CDN fetch failures, local cache behavior, and when `discrawl publish` can include cached media.
-- Added a Docker image that keeps config, SQLite data, cache, and Git snapshot state under `/data`, with smoke coverage for the packaged image.
+- Documented media backup flow, including CDN fetch failures, local cache behavior, and Git snapshot publishing.
+- Docker: add a local image with `/data` persistence and CI smoke coverage.
+- Moved stable store SQL for sync state, messages, attachments, embedding jobs, members, and status reads/writes to sqlc-generated typed wrappers while leaving dynamic FTS, semantic search, report, share, and user SQL handwritten.
 
 ### Fixes
 
-- Kept large Git snapshot imports and FTS rebuilds from exhausting memory on small hosts by using file-backed SQLite temporary storage and a bounded import cache. The reported case was a 7.3 GB archive on a 7.4 GB RAM host. (#65) Thanks @hxy91819.
-
-### Maintenance
-
-- Moved stable store SQL for sync state, messages, attachments, embedding jobs, members, and status reads/writes to generated typed wrappers while leaving dynamic FTS, semantic search, report, share, and user SQL handwritten.
+- Kept large Git snapshot imports and FTS rebuilds from exhausting memory on small hosts by using file-backed SQLite temp storage and a bounded import cache. (#65) Thanks @hxy91819.
 
 ## 0.7.2 - 2026-05-11
 
+### Changes
+
 ### Fixes
 
-- Kept Git snapshot imports incremental when metadata, attachment, mention, or event tables changed alongside the message tail, avoiding full archive replays for routine shared-archive updates.
+- Kept Git snapshot imports incremental when metadata, attachment, mention, or event tables changed alongside the message tail, avoiding full archive replays for routine updates.
 
 ## 0.7.1 - 2026-05-11
 
 ### Changes
 
 - `discrawl publish` can now narrow Git snapshots with `--public-only`, `--include-channels`, and `--exclude-channels`, while the local archive can still sync from the full bot-visible dataset.
-- New installs now use OS-native config/runtime paths via crawlkit, while existing `~/.discrawl` installs keep working until users deliberately migrate.
+- New installs now use OS-native config/runtime paths via crawlkit, while
+  existing `~/.discrawl` installs keep working until users deliberately migrate.
 - Moved top-level CLI parsing onto Kong while preserving Discrawl's existing command dispatch and archive lock policy.
 
 ### Maintenance
 
-- Moved Discrawl's platform path policy back into crawlkit so config, data, cache, log, and share directory defaults stay shared across crawler apps.
+- Moved Discrawl's platform path policy back into crawlkit so config, data,
+  cache, log, and share directory defaults stay shared across crawler apps.
 
 ### Fixes
 
-- Kept documented command-local search flags working after the query, such as `discrawl search "term" --limit 5`. Thanks @PrinceOfEgypt.
 - `help search`, `search --help`, `messages --help`, and `sql --help` now print focused command help without opening config, stores, or triggering Git snapshot auto-update.
 - `discrawl sync` now warns once for newly discovered Discord Missing Access / Unknown Channel skips, then keeps repeat unavailable-channel skips out of normal logs while preserving summary counts.
 
@@ -135,6 +120,7 @@
 
 ### Fixes
 
+- Kept documented command-local search flags working after the query, such as `discrawl search "term" --limit 5`. Thanks @PrinceOfEgypt.
 - Made the terminal browser more useful and accurate: default guild scoping, newest-message startup, compact panes, selected-message detail panes, count-header sorting, local/remote status labels, right-click actions, Discord message URLs, row labels, direct-message pane labels, mention rendering, inline mention resolution, attachment details, and reply-context hydration without broad thread scans.
 - Kept read-only commands such as `search`, `messages`, and safe `sql` usable while `tail` or another writer holds the sync lock. Thanks @PrinceOfEgypt.
 - Kept `tui --help`, status, and terminal-browser reads safe for fresh or missing local databases without triggering Git snapshot auto-update.
@@ -230,15 +216,12 @@
 
 - `dms` now lists local wiretap DM conversations and can read or search one DM thread with `--with`, `--last`, and `--search`, so common DM queries no longer require raw SQL.
 - `search --dm` and `messages --dm` now target the local-only `@me` archive directly and skip Git snapshot auto-update, since DMs are never imported from the shared mirror.
+- Go module dependencies and lint rules were refreshed for the current Go toolchain, including stricter JSON marshal checks and modern simplification rules.
 
 ### Fixes
 
 - Wiretap now infers fallback DM channel names from cached Discord user/profile data, so channels discovered only from route/message cache entries resolve to names like `Vincent K` instead of `channel-*`.
 - Wiretap message output now preserves sanitized author labels in stored metadata, improving `dms` and `messages` output without storing raw desktop cache payloads.
-
-### Maintenance
-
-- Go module dependencies and lint rules were refreshed for the current Go toolchain, including stricter JSON marshal checks and modern simplification rules.
 
 ### Tests
 
