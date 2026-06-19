@@ -428,6 +428,39 @@ func TestSyncRequiredMemberRefreshFailsOnCrawlError(t *testing.T) {
 	require.Empty(t, lastSync)
 }
 
+func TestSyncRequiredMemberRefreshBypassesFreshSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.SetSyncState(
+		ctx,
+		guildMemberSyncSuccessScope("g1"),
+		time.Now().UTC().Format(time.RFC3339Nano),
+	))
+	client := &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+		channels: map[string][]*discordgo.Channel{
+			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+		},
+		members: map[string][]*discordgo.Member{
+			"g1": {{User: &discordgo.User{ID: "u1", Username: "user"}}},
+		},
+	}
+
+	svc := New(client, s, nil)
+	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, RequireMembers: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Members)
+	require.Equal(t, 1, client.memberCalls)
+}
+
 func TestSyncRejectsUnknownRequestedGuild(t *testing.T) {
 	t.Parallel()
 

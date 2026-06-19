@@ -221,7 +221,7 @@ func (s *Syncer) refreshGuildMembersForSync(ctx context.Context, guildID string,
 	if opts.SkipMembers {
 		return 0, nil
 	}
-	members, err := s.refreshGuildMembers(ctx, guildID)
+	members, err := s.refreshGuildMembers(ctx, guildID, opts.RequireMembers)
 	if err != nil && opts.RequireMembers {
 		return 0, err
 	}
@@ -268,8 +268,8 @@ func (stats *SyncStats) addChannel(record store.ChannelRecord) {
 	}
 }
 
-func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string) (int, error) {
-	if !s.shouldRefreshMembers(ctx, guildID) {
+func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force bool) (int, error) {
+	if !force && !s.shouldRefreshMembers(ctx, guildID) {
 		return 0, nil
 	}
 	memberCtx := ctx
