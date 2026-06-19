@@ -832,6 +832,12 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 	if err != nil {
 		return Manifest{}, err
 	}
+	manifest = enrichManifestFromGit(ctx, opts.RepoPath, commit, manifest)
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return Manifest{}, fmt.Errorf("marshal historical manifest: %w", err)
+	}
+	manifestBody = append(manifestBody, '\n')
 	tempDir, err := os.MkdirTemp("", "discrawl-share-ref-*")
 	if err != nil {
 		return Manifest{}, fmt.Errorf("create historical share directory: %w", err)

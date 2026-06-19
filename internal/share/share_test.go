@@ -1754,8 +1754,10 @@ func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
 		EmbeddingModel:        "text-embedding-3-small",
 		EmbeddingInputVersion: store.EmbeddingInputVersion,
 	}
-	_, err = Export(ctx, src, opts)
+	oldManifest, err := Export(ctx, src, opts)
 	require.NoError(t, err)
+	writeShareManifest(t, opts.RepoPath, stripFileManifests(oldManifest))
+	configureGitUser(t, opts.RepoPath)
 	committed, err := Commit(ctx, opts, "old snapshot")
 	require.NoError(t, err)
 	require.True(t, committed)
@@ -1796,6 +1798,10 @@ func TestImportAtRestoresTaggedSnapshotWithoutMovingCheckout(t *testing.T) {
 	manifest, err := ImportAt(ctx, dst, restoreOpts, "snapshot-old")
 	require.NoError(t, err)
 	require.False(t, manifest.GeneratedAt.IsZero())
+	require.NotEmpty(t, tableEntry(t, manifest, "messages").FileManifests)
+	storedManifest, ok := PreviousImportedManifest(ctx, dst, opts)
+	require.True(t, ok)
+	require.NotEmpty(t, tableEntry(t, storedManifest, "messages").FileManifests)
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "launch", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
