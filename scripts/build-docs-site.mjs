@@ -10,7 +10,7 @@ const siteUrl = "https://discrawl.sh";
 const brewInstall = "brew install openclaw/tap/discrawl";
 
 const sections = [
-  ["Start", ["README.md", "install.md", "configuration.md", "bot-setup.md", "security.md", "contact.md"]],
+  ["Start", ["README.md", "install.md", "configuration.md", "bot-setup.md", "security.md", "CHANGELOG.md", "contact.md"]],
   ["Guides", rels("guides")],
   ["Commands", rels("commands")],
 ];

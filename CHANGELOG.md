@@ -5,6 +5,7 @@
 ### Changes
 
 - Restore the missing v0.10.0 release history for the first Cloudflare remote archive release. Thanks @joshka.
+- Expose the release changelog directly in the documentation site navigation. Thanks @joshka.
 
 ### Fixes
 

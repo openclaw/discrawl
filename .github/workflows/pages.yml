@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - "CHANGELOG.md"
       - "docs/**"
       - "scripts/build-docs-site.mjs"
       - ".github/workflows/pages.yml"
