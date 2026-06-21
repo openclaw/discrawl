@@ -39,7 +39,7 @@ readable message/thread detail on the right.
 ## Sections
 
 - **[Start](install.html)** - install, configure, set up the Discord bot, security notes, release history, contact
-- **[Guides](guides/)** - sync sources, wiretap internals, search modes, embeddings, Git snapshots, data layout
+- **[Guides](guides/)** - maintainer archive workflows, sync sources, wiretap internals, search modes, embeddings, Git snapshots, data layout
 - **[Commands](commands/)** - one page per CLI command
 
 ## Where to file issues
