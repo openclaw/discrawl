@@ -465,12 +465,21 @@ on conflict(attachment_id) do update set
 	url = excluded.url,
 	proxy_url = excluded.proxy_url,
 	text_content = excluded.text_content,
-	media_path = excluded.media_path,
-	content_sha256 = excluded.content_sha256,
-	content_size = excluded.content_size,
-	fetched_at = excluded.fetched_at,
-	fetch_status = excluded.fetch_status,
-	fetch_error = excluded.fetch_error,
+	media_path = coalesce(excluded.media_path, message_attachments.media_path),
+	content_sha256 = coalesce(excluded.content_sha256, message_attachments.content_sha256),
+	content_size = case
+		when excluded.content_size > 0 then excluded.content_size
+		else message_attachments.content_size
+	end,
+	fetched_at = coalesce(excluded.fetched_at, message_attachments.fetched_at),
+	fetch_status = case
+		when excluded.fetch_status <> '' then excluded.fetch_status
+		else message_attachments.fetch_status
+	end,
+	fetch_error = case
+		when excluded.fetch_error <> '' then excluded.fetch_error
+		else message_attachments.fetch_error
+	end,
 	updated_at = excluded.updated_at
 `
 

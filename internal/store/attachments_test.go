@@ -90,6 +90,39 @@ func TestAttachmentMediaUpdatesAndFilters(t *testing.T) {
 	require.Empty(t, rows)
 }
 
+func TestAttachmentUpsertMovesDuplicateIDAndKeepsMedia(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, seedAttachmentForGuild(ctx, s, "g1", "c1", "m1", "a1"))
+	require.NoError(t, s.UpdateAttachmentMedia(ctx, AttachmentMediaUpdate{
+		AttachmentID:  "a1",
+		MediaPath:     "attachments/aa/hash-file.png",
+		ContentSHA256: "hash",
+		ContentSize:   4,
+		FetchedAt:     "2026-05-15T12:05:00Z",
+		FetchStatus:   "fetched",
+	}))
+	require.NoError(t, seedAttachmentForGuild(ctx, s, "g1", "c2", "m2", "a1"))
+
+	rows, err := s.ListAttachments(ctx, AttachmentListOptions{MessageID: "m1"})
+	require.NoError(t, err)
+	require.Empty(t, rows)
+
+	rows, err = s.ListAttachments(ctx, AttachmentListOptions{MessageID: "m2"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "a1", rows[0].AttachmentID)
+	require.Equal(t, "m2", rows[0].MessageID)
+	require.Equal(t, "c2", rows[0].ChannelID)
+	require.Equal(t, "attachments/aa/hash-file.png", rows[0].MediaPath)
+	require.Equal(t, "hash", rows[0].ContentSHA256)
+	require.Equal(t, int64(4), rows[0].ContentSize)
+	require.Equal(t, "fetched", rows[0].FetchStatus)
+}
+
 func seedAttachmentForGuild(ctx context.Context, s *Store, guildID, channelID, messageID, attachmentID string) error {
 	if err := s.UpsertGuild(ctx, GuildRecord{ID: guildID, Name: guildID, RawJSON: `{}`}); err != nil {
 		return err
