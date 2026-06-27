@@ -28,7 +28,7 @@ jobs:
 
       - name: Restore Discord DB cache
         id: restore-discord-db
-        uses: actions/cache/restore@v5.0.5
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             .discrawl-ci/discrawl.db
@@ -82,7 +82,7 @@ jobs:
           git -C "$BACKUP_REPO" push
 
       - name: Save Discord DB cache
-        uses: actions/cache/save@v5.0.5
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             .discrawl-ci/discrawl.db
