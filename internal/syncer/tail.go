@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -22,6 +23,13 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	}
 	tailCtx, cancelTail := context.WithCancel(ctx)
 	defer cancelTail()
+	var closeOnce sync.Once
+	closeClient := func() {
+		if closeable, ok := s.client.(closeableClient); ok {
+			_ = closeable.Close()
+		}
+	}
+	defer closeOnce.Do(closeClient)
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- s.client.Tail(tailCtx, handler)
@@ -32,9 +40,7 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		select {
 		case <-ctx.Done():
 			cancelTail()
-			if closeable, ok := s.client.(closeableClient); ok {
-				_ = closeable.Close()
-			}
+			closeOnce.Do(closeClient)
 			<-errCh
 			return nil
 		case err := <-errCh:
