@@ -443,6 +443,8 @@ func TestDiagnosticsReportsSQLiteAndActiveWriter(t *testing.T) {
 	cfg, cfgPath := writeTestConfig(t, dir)
 	s := seedCLIStore(t, cfg.DBPath)
 	defer func() { _ = s.Close() }()
+	require.NoError(t, s.SetSyncState(ctx, "sync:last_success", "2026-07-01T11:59:00Z"))
+	require.NoError(t, s.SetSyncState(ctx, "tail:last_event", "synthetic-message"))
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -471,12 +473,16 @@ func TestDiagnosticsReportsSQLiteAndActiveWriter(t *testing.T) {
 	require.Equal(t, "importing", report.SyncLock.Owner.Phase)
 	require.Equal(t, now.Format(time.RFC3339Nano), report.SyncLock.Owner.StartedAt)
 	require.Equal(t, now.Add(time.Minute).Format(time.RFC3339Nano), report.SyncLock.Owner.UpdatedAt)
+	require.NotEmpty(t, report.Freshness.LastSyncAt)
+	require.NotEmpty(t, report.Freshness.LastTailEventAt)
 
 	require.NoError(t, release())
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "diagnostics"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "sync_lock_held=false")
 	require.Contains(t, out.String(), "sync_lock_state=stale_metadata")
+	require.Contains(t, out.String(), "last_sync_at=")
+	require.Contains(t, out.String(), "last_tail_event_at=")
 }
 
 func TestDiagnosticsMissingDatabaseIsVisibleAndNonMutating(t *testing.T) {
