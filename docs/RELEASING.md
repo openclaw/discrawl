@@ -32,9 +32,11 @@ gh run list -L 5 --branch main
 
 Coverage floor: `85%+`
 
-## 2) Update changelog
+## 2) Finalize changelog and release notes
 
-Add a new section in `CHANGELOG.md`.
+Replace the current `Unreleased` heading in `CHANGELOG.md` with the release
+version and date. Use that exact section as the GitHub Release body and append a
+link to the full changelog at the tagged commit.
 
 Example:
 
@@ -45,21 +47,29 @@ Example:
 ```sh
 git checkout main
 git pull --ff-only origin main
-git commit -am "release: vX.Y.Z"
+git commit -am "chore(release): vX.Y.Z"
 git tag -a vX.Y.Z -m "Release X.Y.Z"
 git push origin main --tags
 ```
 
-## 4) Verify GitHub release assets
+## 4) Verify GitHub Release
 
 The tag push triggers `.github/workflows/release.yml`.
 
 ```sh
 gh run list -L 5 --workflow release.yml
-gh release view vX.Y.Z
+gh release view vX.Y.Z --json url,body,assets
 ```
 
-Confirm assets exist for:
+Before closeout, confirm the Release body contains the exact `X.Y.Z`
+changelog section and a full-changelog link. If it is missing or stale, prepare
+the corrected body in a reviewed file and run:
+
+```sh
+gh release edit vX.Y.Z --notes-file /tmp/discrawl-release-notes.md
+```
+
+Confirm checksums plus assets exist for:
 
 - `darwin_amd64`
 - `darwin_arm64`
@@ -68,16 +78,14 @@ Confirm assets exist for:
 - `windows_amd64`
 - `windows_arm64`
 
-## 5) Update Homebrew tap
+## 5) Verify Homebrew tap update
 
 `discrawl` ships a binary formula in `~/Projects/homebrew-tap/Formula/discrawl.rb` that points at the GitHub release archives.
 
-After tagging a real release:
-
-1. update the formula `version`
-2. update the per-platform release archive `sha256` values
-3. test local install + version output
-4. commit + push `homebrew-tap`
+The release workflow dispatches `openclaw/homebrew-tap`'s
+`update-formula.yml` and waits for it to finish. Verify the formula version and
+per-platform checksums landed, then test the installed binary. Do not manually
+duplicate a successful automated update.
 
 Useful commands:
 
@@ -89,6 +97,16 @@ brew install openclaw/tap/discrawl
 discrawl --version
 brew info openclaw/tap/discrawl
 ```
+
+## 6) Close out the release
+
+Only after the GitHub Release, release notes, assets, and Homebrew formula are
+verified, add the next patch section at the top of `CHANGELOG.md`. For example,
+after `0.11.4`:
+
+- `## 0.11.5 - Unreleased`
+
+Commit that closeout with a conventional `chore:` message and push `main`.
 
 ## Notes
 
