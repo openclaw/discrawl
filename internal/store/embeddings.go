@@ -259,7 +259,7 @@ func (s *Store) processEmbeddingBatch(ctx context.Context, provider embed.Provid
 	for _, job := range jobs {
 		messageIDs = append(messageIDs, job.MessageID)
 	}
-	if err := s.ResolveMessageFailures(ctx, FailureRef{Operation: "embed_message", Source: "embeddings"}, messageIDs); err != nil {
+	if err := s.ResolveMessageFailures(ctx, embeddingFailureRef(opts, ""), messageIDs); err != nil {
 		return false, err
 	}
 	stats.Processed += len(jobs)
@@ -268,19 +268,22 @@ func (s *Store) processEmbeddingBatch(ctx context.Context, provider embed.Provid
 }
 
 func (s *Store) recordEmbeddingFailures(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob, failure error) error {
-	identity := strings.Join([]string{opts.Provider, opts.Model, opts.InputVersion}, "/")
 	for _, job := range jobs {
-		if err := s.RecordFailure(ctx, FailureRef{
-			Operation:   "embed_message",
-			Source:      "embeddings",
-			MessageID:   job.MessageID,
-			RelatedKind: "embedding_identity",
-			RelatedID:   identity,
-		}, failure); err != nil {
+		if err := s.RecordFailure(ctx, embeddingFailureRef(opts, job.MessageID), failure); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func embeddingFailureRef(opts EmbeddingDrainOptions, messageID string) FailureRef {
+	return FailureRef{
+		Operation:   "embed_message",
+		Source:      "embeddings",
+		MessageID:   messageID,
+		RelatedKind: "embedding_identity",
+		RelatedID:   strings.Join([]string{opts.Provider, opts.Model, opts.InputVersion}, "/"),
+	}
 }
 
 func withEmbeddingFailureRecord(failure, recordErr error) error {

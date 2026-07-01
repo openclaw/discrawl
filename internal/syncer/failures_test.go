@@ -27,7 +27,7 @@ func TestTailFailureLedgerHelpers(t *testing.T) {
 	require.NoError(t, nilHandler.resolveMessageFailures(ctx, "g", "c", "m"))
 
 	handler := &tailHandler{store: st}
-	require.NoError(t, handler.recordMessageFailure(nil, "g1", "c1", "m1", errors.New("gateway write failed")))
+	require.NoError(t, handler.recordMessageFailure(ctx, "g1", "c1", "m1", errors.New("gateway write failed")))
 	report, err := st.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
 	require.Len(t, report.Failures, 1)

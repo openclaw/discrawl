@@ -512,6 +512,50 @@ func TestUpsertMessageWithEmbeddingsDoesNotRequeueUnchangedDoneJob(t *testing.T)
 	require.Equal(t, [][]string{{"pending", "0", ""}}, rows)
 }
 
+func TestEmbeddingSuccessResolvesOnlyCurrentIdentityFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		MessageType:       0,
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		Content:           "hello",
+		NormalizedContent: "hello",
+		RawJSON:           `{}`,
+	}, WriteOptions{EnqueueEmbedding: true}))
+
+	opts := normalizeEmbeddingDrainOptions(EmbeddingDrainOptions{
+		Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 1,
+	})
+	currentRef := embeddingFailureRef(opts, "m1")
+	oldRef := currentRef
+	oldRef.RelatedID = "other/old-model/old-input"
+	require.NoError(t, s.RecordFailure(ctx, oldRef, errors.New("old provider failed")))
+	require.NoError(t, s.RecordFailure(ctx, currentRef, errors.New("current provider failed")))
+
+	stats, err := s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{
+		batches: []embed.EmbeddingBatch{{Vectors: [][]float32{{1, 2}}}},
+	}, opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Succeeded)
+
+	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, oldRef.RelatedID, report.Failures[0].RelatedID)
+	report, err = s.ListFailures(ctx, FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 2)
+}
+
 func TestDrainEmbeddingJobsFailsWholeBatchOnDimensionMismatch(t *testing.T) {
 	t.Parallel()
 

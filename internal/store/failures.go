@@ -181,11 +181,27 @@ func (s *Store) ResolveMessageFailures(ctx context.Context, ref FailureRef, mess
 		return nil
 	}
 	now := time.Now().UTC()
+	clauses := []string{"resolved_at is null", "operation = ?", "source = ?"}
+	baseArgs := []any{now.Format(timeLayout), ref.Operation, ref.Source}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"guild_id", ref.GuildID},
+		{"channel_id", ref.ChannelID},
+		{"related_kind", ref.RelatedKind},
+		{"related_id", ref.RelatedID},
+	} {
+		if field.value != "" {
+			clauses = append(clauses, field.name+" = ?")
+			baseArgs = append(baseArgs, field.value)
+		}
+	}
 	for start := 0; start < len(ids); start += 500 {
 		batch := ids[start:min(start+500, len(ids))]
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		query := `update failure_ledger set resolved_at = ? where resolved_at is null and operation = ? and source = ? and message_id in (` + placeholders + `)`
-		args := []any{now.Format(timeLayout), ref.Operation, ref.Source}
+		query := `update failure_ledger set resolved_at = ? where ` + strings.Join(clauses, " and ") + ` and message_id in (` + placeholders + `)`
+		args := append([]any(nil), baseArgs...)
 		for _, id := range batch {
 			args = append(args, id)
 		}
