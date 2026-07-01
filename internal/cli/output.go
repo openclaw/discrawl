@@ -208,6 +208,13 @@ Flags:
   --guild ID                  Restrict to one guild id.
   --guilds ID,ID              Restrict to guild ids.
 `,
+	"channels": `Usage:
+  discrawl channels list
+  discrawl channels show CHANNEL_ID
+  discrawl channels resolve [--guild ID | --guilds ID,ID] [--json] ID_OR_NAME
+
+Resolution prefers an exact channel id, then an exact name, then a unique partial name. Ambiguous names fail with candidate guild/channel ids.
+`,
 	"sql": `Usage:
   discrawl sql [--unsafe --confirm] <query>
   discrawl sql [--unsafe --confirm] -
@@ -307,6 +314,25 @@ func printHuman(w io.Writer, value any) error {
 			_, err = fmt.Fprintf(w, "repair_command=%s\n", v.RepairCommand)
 		}
 		return err
+	case channelResolution:
+		if _, err := fmt.Fprintf(w, "status=%s\nquery=%s\n", v.Status, v.Query); err != nil {
+			return err
+		}
+		if v.Match != "" {
+			if _, err := fmt.Fprintf(w, "match=%s\n", v.Match); err != nil {
+				return err
+			}
+		}
+		if v.Selected != nil {
+			_, err := fmt.Fprintf(w, "channel_id=%s\nguild_id=%s\nname=%s\nkind=%s\n", v.Selected.ChannelID, v.Selected.GuildID, v.Selected.Name, v.Selected.Kind)
+			return err
+		}
+		for _, candidate := range v.Candidates {
+			if _, err := fmt.Fprintf(w, "candidate=%s guild=%s name=%s kind=%s\n", candidate.ChannelID, candidate.GuildID, candidate.Name, candidate.Kind); err != nil {
+				return err
+			}
+		}
+		return nil
 	case store.EmbeddingDrainStats:
 		_, err := fmt.Fprintf(w, "processed=%d\nsucceeded=%d\nfailed=%d\nskipped=%d\nremaining_backlog=%d\nprovider=%s\nmodel=%s\ninput_version=%s\n",
 			v.Processed, v.Succeeded, v.Failed, v.Skipped, v.RemainingBacklog, v.Provider, v.Model, v.InputVersion)

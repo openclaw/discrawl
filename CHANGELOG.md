@@ -5,6 +5,7 @@
 ### Changes
 
 - Add read-only `publish --check` scope preflight with fail-closed metadata readiness, source hints, predicted channel/message counts, and concrete repair guidance.
+- Add shared channel resolution for `channels`, `search`, `messages`, and message sync with stable id precedence and actionable ambiguity candidates.
 
 ## 0.11.3 - 2026-06-23
 

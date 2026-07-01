@@ -128,16 +128,22 @@ func (r *runtime) runMessages(args []string) error {
 		}
 		return r.print(rows)
 	}
-	rows, err := r.store.ListMessages(r.ctx, store.MessageListOptions{
-		GuildIDs:     guildIDs,
-		Channel:      *channel,
-		Author:       *author,
-		Since:        sinceTime,
-		Before:       beforeTime,
-		Limit:        *limit,
-		Last:         *last,
-		IncludeEmpty: *includeEmpty,
-	})
+	if strings.TrimSpace(opts.Channel) != "" {
+		channelQuery := normalizeChannelQuery(opts.Channel)
+		if isDiscordID(channelQuery) {
+			opts.Channel = channelQuery
+		} else {
+			resolution, err := r.resolveLocalChannel(channelQuery, guildIDs)
+			if err != nil {
+				if resolution.Status != "not_found" || !*syncNow {
+					return err
+				}
+			} else {
+				opts.Channel = resolution.Selected.ChannelID
+			}
+		}
+	}
+	rows, err := r.store.ListMessages(r.ctx, opts)
 	if err != nil {
 		return err
 	}

@@ -360,6 +360,11 @@ Modes:
 
 FTS uses SQLite FTS5 with the default `unicode61` tokenizer. User query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators. Punctuation still follows FTS5 tokenization rules.
 
+Local `search --channel` and `messages --channel` resolve exactly one channel:
+exact id first, then exact name, then a unique partial name. Ambiguous names
+fail with candidate guild/channel ids. Run `discrawl channels resolve help
+--json`, then reuse the numeric id for stable scripts and agent workflows.
+
 Semantic and hybrid search require `[search.embeddings]` plus local `message_embeddings` rows for the configured provider, model, and input version. Run `discrawl sync --with-embeddings` to enqueue changed messages, then `discrawl embed` to generate vectors. The input version is currently `message_normalized_v1`, so vectors are tied to normalized message text rather than raw Discord payloads.
 
 ### `messages`
@@ -379,7 +384,7 @@ discrawl --json messages --channel maintainers --days 3
 
 Notes:
 
-- `--channel` accepts a channel id, exact name, `#name`, or partial name match
+- `--channel` resolves one channel by exact id, exact name, or unique partial name
 - `--hours` is shorthand for "since now minus N hours"
 - `--days` is shorthand for "since now minus N days"
 - `--last` returns the newest `N` matching messages, then prints them oldest-to-newest

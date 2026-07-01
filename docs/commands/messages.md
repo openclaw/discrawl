@@ -17,7 +17,7 @@ discrawl --json messages --channel maintainers --days 3
 
 ## Flags
 
-- `--channel <id|name|#name>` - id, exact name, `#name`, or partial name match
+- `--channel <id|name|#name>` - resolve one exact id, exact name, or unique partial name
 - `--guild <id>` / `--guilds <id,id>` / `--dm` - restrict the guild scope (`--dm` is shorthand for `--guild @me`)
 - `--author <name>` - restrict to one author
 - `--hours <n>` - shorthand for "since now minus N hours"
@@ -35,6 +35,7 @@ discrawl --json messages --channel maintainers --days 3
 - if `tail` is already running, plain `messages` reads the local archive without waiting; `messages --sync` fails fast instead of waiting behind the tail lock
 - `--dm` skips Git snapshot auto-update because DMs are never imported from the shared mirror
 - use either `--last` for the newest matching rows or `--all` for an uncapped oldest-to-newest slice
+- ambiguous channel names fail with candidate guild/channel ids; resolve once with `discrawl channels resolve <name> --json` and reuse the numeric id
 
 ## See also
 

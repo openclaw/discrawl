@@ -2,8 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/openclaw/discrawl/internal/syncer"
@@ -44,36 +42,18 @@ func (r *runtime) messageSyncOptions(channel, guild, guilds string) (syncer.Sync
 	if err != nil {
 		return opts, err
 	}
-	needle := strings.ToLower(channelFilter)
-	allowedGuilds := map[string]struct{}{}
-	for _, guildID := range requestedGuilds {
-		allowedGuilds[guildID] = struct{}{}
-	}
-	for _, row := range rows {
-		if len(allowedGuilds) > 0 {
-			if _, ok := allowedGuilds[row.GuildID]; !ok {
-				continue
-			}
+	resolution, err := resolveChannelRows(rows, channelFilter, requestedGuilds)
+	if err != nil {
+		if resolution.Status == "not_found" && len(requestedGuilds) > 0 {
+			return opts, nil
 		}
-		if !channelMatches(row.ID, row.Name, channelFilter, needle) {
-			continue
-		}
-		opts.ChannelIDs = append(opts.ChannelIDs, row.ID)
-		if len(requestedGuilds) == 0 && !slices.Contains(opts.GuildIDs, row.GuildID) {
-			opts.GuildIDs = append(opts.GuildIDs, row.GuildID)
-		}
+		return opts, err
 	}
-	if len(opts.ChannelIDs) > 0 {
-		return opts, nil
+	opts.ChannelIDs = []string{resolution.Selected.ChannelID}
+	if len(requestedGuilds) == 0 {
+		opts.GuildIDs = []string{resolution.Selected.GuildID}
 	}
-	if len(opts.GuildIDs) > 0 {
-		return opts, nil
-	}
-	return opts, fmt.Errorf("cannot resolve channel %q; pass a channel id or --guild", channel)
-}
-
-func channelMatches(id, name, raw, lowered string) bool {
-	return id == raw || name == raw || strings.Contains(strings.ToLower(name), lowered)
+	return opts, nil
 }
 
 func isDiscordID(raw string) bool {
@@ -119,6 +99,15 @@ func boolFlagEnabled(args []string, name string) bool {
 func hasHelpArg(args []string) bool {
 	for _, arg := range args {
 		if arg == "help" || arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
 			return true
 		}
 	}

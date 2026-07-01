@@ -27,7 +27,7 @@ discrawl --json search "websocket closed"
 - `--mode <fts|semantic|hybrid>` - search mode
 - `--guild <id>` / `--guilds <id,id>` - restrict the guild scope
 - `--dm` - shorthand for `--guild @me`
-- `--channel <id|name|#name>` - restrict to one channel (id, exact name, `#name`, or partial match)
+- `--channel <id|name|#name>` - resolve and restrict to one channel (exact id, exact name, or unique partial name)
 - `--author <name>` - restrict to one author
 - `--limit <n>` - cap result count
 - `--include-empty` - include rows with no searchable content (attachment text/filenames, embeds, and replies still count as content)
@@ -35,6 +35,10 @@ discrawl --json search "websocket closed"
 ## FTS behavior
 
 User query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators. Punctuation still follows FTS5 tokenization rules.
+
+Ambiguous channel names fail with candidate guild/channel ids instead of
+silently searching multiple channels. Use `discrawl channels resolve <name>
+--json`, then keep the numeric id for repeatable workflows.
 
 ## Semantic prerequisites
 

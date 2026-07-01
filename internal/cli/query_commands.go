@@ -51,6 +51,18 @@ func (r *runtime) runSearch(args []string) error {
 		}
 		return r.print(results)
 	}
+	if strings.TrimSpace(opts.Channel) != "" {
+		channelQuery := normalizeChannelQuery(opts.Channel)
+		if isDiscordID(channelQuery) {
+			opts.Channel = channelQuery
+		} else {
+			resolution, err := r.resolveLocalChannel(channelQuery, guildIDs)
+			if err != nil {
+				return err
+			}
+			opts.Channel = resolution.Selected.ChannelID
+		}
+	}
 	switch normalizedMode {
 	case "", "fts":
 		results, err := r.store.SearchMessages(r.ctx, opts)
@@ -338,16 +350,20 @@ func (r *runtime) runChannels(args []string) error {
 	if len(args) == 0 {
 		return usageErr(errors.New("channels requires a subcommand"))
 	}
-	rows, err := r.store.Channels(r.ctx, "")
-	if err != nil {
-		return err
-	}
 	switch args[0] {
 	case "list":
+		rows, err := r.store.Channels(r.ctx, "")
+		if err != nil {
+			return err
+		}
 		return r.print(rows)
 	case "show":
 		if len(args) < 2 {
 			return usageErr(errors.New("channels show requires a channel id"))
+		}
+		rows, err := r.store.Channels(r.ctx, "")
+		if err != nil {
+			return err
 		}
 		filtered := make([]store.ChannelRow, 0, 1)
 		for _, row := range rows {
@@ -356,6 +372,8 @@ func (r *runtime) runChannels(args []string) error {
 			}
 		}
 		return r.print(filtered)
+	case "resolve":
+		return r.runChannelsResolve(args[1:])
 	default:
 		return usageErr(fmt.Errorf("unknown channels subcommand %q", args[0]))
 	}

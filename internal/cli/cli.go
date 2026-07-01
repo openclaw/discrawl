@@ -222,7 +222,7 @@ func (r *runtime) dispatch(rest []string) error {
 	case "tap", "cache-import":
 		return r.withLocalStoreLocked(false, func() error { return r.runWiretap(rest[1:]) })
 	case "search":
-		if hasHelpArg(rest[1:]) {
+		if hasHelpFlag(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"search"})
 		}
 		if r.configuredForCloudReadOnly() {
@@ -236,7 +236,7 @@ func (r *runtime) dispatch(rest []string) error {
 		}
 		return r.withLocalStoreReadOnly(func() error { return r.runTUI(rest[1:]) })
 	case "messages":
-		if hasHelpArg(rest[1:]) {
+		if hasHelpFlag(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"messages"})
 		}
 		if r.configuredForCloudReadOnly() {
