@@ -10,6 +10,7 @@
 - Add read-only archive coverage reporting with per-guild/channel bounds, named-versus-synthetic channel counts, persisted wiretap skip counters, and watch-mode deltas via `wiretap --stats`.
 - Preserve fetched attachment media metadata when duplicate attachment snapshots refresh the singleton attachment row. Thanks @agent-eli.
 - Add a local-only failure ledger with row-level write context, retry/resolution tracking, JSON queries, and known-failure coverage counts.
+- Add a local-first maintainer archive workflow guide covering health, coverage, wiretap, stable queries, and privacy-safe publish preflight. Thanks @joshka.
 
 ## 0.11.3 - 2026-06-23
 

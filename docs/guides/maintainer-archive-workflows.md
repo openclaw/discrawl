@@ -1,81 +1,81 @@
 # Maintainer archive workflows
 
-Use the local archive first. A Discrawl maintainer workflow should answer most
-questions from SQLite, a Git snapshot, or a cloud remote before it reaches for
-live Discord. Live bot sync is still the right tool when the question depends on
-current permissions, fresh channel metadata, or messages missing from the local
-archive.
+Use the local archive first. Reach for live Discord only when a question needs
+new bot-visible data, current permissions, or messages that are absent locally.
+This keeps routine maintainer research fast, repeatable, and within the archive's
+privacy boundary.
 
-## Start with health and freshness
+## Know which archive mode you are using
 
-Run read-only checks before asking an agent, script, or report to trust the
-archive:
+Discrawl has four distinct data paths:
+
+| Mode | Typical command | What it provides |
+| --- | --- | --- |
+| Local bot archive | `discrawl sync --source discord` | Bot-visible guild metadata and message history from the Discord API |
+| Local desktop cache | `discrawl sync --source wiretap` | Classifiable cache evidence, including proven DMs, without a bot or user token |
+| Git snapshot reader | `discrawl subscribe ...` / `discrawl update` | A shared non-DM archive imported into local SQLite |
+| Cloud remote reader | `discrawl remote status` | Worker-fronted read-only archive metadata and queries without local SQLite |
+
+Bot sync and wiretap can update the same local SQLite archive. Git snapshot and
+cloud remote modes are reader paths for already-published data. See [sync
+sources](sync-sources.html), [Git-backed snapshots](git-snapshots.html), and the
+[`remote`](../commands/remote.html) command reference.
+
+## Start with local health, freshness, and coverage
+
+Run read-only checks before trusting an archive:
 
 ```bash
 discrawl status --json
+discrawl diagnostics --json
+discrawl coverage --json
+discrawl failures --json
+```
+
+- [`status`](../commands/status.html) reports archive counts, latest message
+  time, Git snapshot freshness, and configured cloud remote metadata.
+- [`diagnostics`](../commands/diagnostics.html) checks SQLite integrity, WAL
+  state, freshness markers, and the authoritative Discrawl writer lock without
+  authenticating to Discord or creating a missing database.
+- [`coverage`](../commands/coverage.html) reports per-guild and per-channel
+  message bounds, history-complete markers, named versus synthetic channels,
+  wiretap skip counters, and unresolved known failures.
+- [`failures`](../commands/failures.html) lists unresolved sync, import, media,
+  embedding, and row-write failures. Use `--all` when resolved retry history is
+  relevant.
+
+Use [`doctor`](../commands/doctor.html) when bot configuration and live bot
+reachability matter:
+
+```bash
 discrawl doctor
 ```
 
-[`status`](../commands/status.html) reports where the database lives, archive
-counts, latest message times, Git snapshot freshness, and cloud remote metadata
-when `[remote].mode = "cloud"` is configured. [`doctor`](../commands/doctor.html)
-checks config, token source, bot reachability, database compatibility, and FTS
-wiring without printing secrets.
+Unlike `diagnostics`, `doctor` resolves the configured bot token and checks
+Discord auth. It does not print the token or run a sync.
 
-These checks decide the next source.
+If a configured Git snapshot is stale, run `discrawl update`. If cloud mode is
+configured, use `discrawl status --json` or `discrawl remote status` without
+opening local SQLite. Run a bot sync only when current bot-visible state is
+needed.
 
-Query the local archive directly when it is fresh enough.
+## Query locally with stable channel ids
 
-Run [`update`](../commands/update.html) when a configured Git snapshot is stale,
-or let read commands auto-update according to the configured stale window.
-
-Use `status --json` and [`remote`](../commands/remote.html) to inspect a
-configured cloud remote without opening the local SQLite database.
-
-Run a bot sync when bot-visible metadata or latest messages matter.
-
-## No-bot path with wiretap
-
-When bot access is unavailable, use the Discord Desktop cache importer:
+Discover channels once, then keep numeric ids in repeatable scripts and agent
+prompts:
 
 ```bash
-discrawl sync --source wiretap
+discrawl --json channels list
+discrawl messages --channel 123456789012345678 --hours 24
+discrawl search --channel 123456789012345678 "release checklist"
 ```
 
-This reads only the desktop-cache source. It works without a bot token,
-credential extraction, or user-account Discord API calls. See
-[`sync`](../commands/sync.html), [sync sources](sync-sources.html), and
-[wiretap](wiretap.html).
+Names can collide across guilds and can change over time. Numeric ids make a
+query's scope explicit and avoid ambiguity. See [`channels`](../commands/channels.html),
+[`messages`](../commands/messages.html), and [`search`](../commands/search.html).
 
-`wiretap` can import classifiable cached guild messages and proven direct
-messages. Proven DMs are stored under the synthetic guild id `@me`. Treat that
-data as incomplete local cache evidence.
-
-## Manual browsing plus watch mode
-
-For cache-driven investigations, open Discord Desktop and browse the channels or
-DMs you need. Then keep Discrawl importing while you scroll:
-
-```bash
-discrawl wiretap --watch-every 2m
-```
-
-Run [`wiretap`](../commands/wiretap.html) directly for desktop-cache import. Run
-`sync --source wiretap` when the same source should fit the normal sync workflow.
-
-Watch mode is a local importer loop. Stop it when the browsing/import pass is
-done, especially before running metadata repair, publishing checks, or tests that
-expect a quiet database.
-
-## Check coverage before querying
-
-After any sync or import, repeat the status check:
-
-```bash
-discrawl status --json
-```
-
-For exact coverage questions, use read-only SQL:
+Use read-only SQL for exact counts or relationships that high-level commands do
+not expose:
 
 ```bash
 discrawl sql 'select count(*) as messages from messages'
@@ -87,102 +87,111 @@ printf '%s\n' \
   discrawl sql -
 ```
 
-[`sql`](../commands/sql.html) opens a read-only connection by default. Use it for
-counts, rankings, and coverage checks when high-level command output is too
-coarse. If quoting gets awkward, pass SQL on stdin:
+[`sql`](../commands/sql.html) uses a read-only connection. Inspect [data
+layout](data-storage.html) before depending on raw column names, and prefer
+`coverage` for ordinary archive-readiness checks.
+
+## Use wiretap when bot access is unavailable
+
+Import the Discord Desktop cache once through the normal sync workflow:
 
 ```bash
-printf '%s\n' 'select guild_id, count(*) from messages group by guild_id;' |
-  discrawl sql -
+discrawl sync --source wiretap
 ```
 
-Inspect the schema before writing ad hoc queries that depend on column names. See
-[data layout](data-storage.html) for the stable model and the `@me` boundary.
-
-## Use stable channel ids
-
-Prefer numeric channel ids for repeatable maintainer queries:
+For an investigation that needs manual browsing, open Discord Desktop, browse
+or scroll the relevant channels, and run a watched importer:
 
 ```bash
-discrawl messages --channel 1458141495701012561 --hours 24
-discrawl search --channel 1458141495701012561 "release checklist"
-discrawl sync --channels 1458141495701012561 --since 2026-06-01T00:00:00Z
+discrawl wiretap --watch-every 2m --stats --json
 ```
 
-Names can collide, change, or mean different things across guilds. Numeric ids
-make agent prompts, scripts, and follow-up sessions easier to replay.
+`--stats` attaches a coverage snapshot to every pass and reports deltas after
+the first watched sample. Stop the loop with Ctrl-C when the browsing pass is
+done. Confirm the stopped state and archive health with:
 
-Use [`channels`](../commands/channels.html) to discover ids, then keep the ids in
-the local notes or workflow that needs repeatability.
+```bash
+discrawl diagnostics --json
+discrawl coverage --json
+discrawl failures --source wiretap --json
+```
 
-## Bot metadata vs desktop cache data
+Wiretap reads cache files only. It does not extract credentials, use a Discord
+user token, call the Discord API as the user, or run a selfbot. Cache evidence is
+inherently incomplete: content appears only when Discord Desktop cached a
+classifiable payload.
 
-Bot sync and wiretap import complement each other.
+Proven direct messages are stored under the synthetic guild id `@me`. These
+rows, their media, wiretap sync state, and DM embedding vectors stay local-only
+and are excluded from Git snapshots. Snapshot imports preserve existing local
+DM rows. See the [wiretap guide](wiretap.html) and [data layout](data-storage.html).
 
-`discrawl sync --source discord` reads bot-visible guilds, channels, threads,
-members, permissions, and live message history. It needs a real bot token and
-guild access.
+## Refresh bot metadata when classification matters
 
-`discrawl sync --source wiretap` reads local Discord Desktop cache data when bot
-access is unavailable. It is cache-only and makes no live Discord calls.
-
-`discrawl wiretap --watch-every 2m` repeats local import while you browse
-Discord Desktop. Stop the loop when the import pass is done.
-
-`discrawl subscribe` and `discrawl update` are Git snapshot reader-mode tools for
-shared archive data. They run without Discord credentials.
-
-Cloud remote mode reads a Worker-fronted archive for remote metadata and
-read-only queries.
-
-Run a Discord-source sync when publish filters or public/private classification
-depend on current bot-visible metadata:
+Run a Discord-source sync when a task depends on current guild/channel metadata,
+permissions, threads, members, or bot-visible message history:
 
 ```bash
 discrawl sync --source discord
+discrawl coverage --json
+discrawl failures --source discord --json
 ```
 
-That repair pass refreshes bot-owned guild, channel, member, and permission data
-missing from desktop cache import.
+Desktop cache import cannot prove current Discord permissions. A bot sync is the
+repair path when public/private publish classification lacks usable role or
+permission metadata.
 
-## Public/private publish preflight
+## Preflight privacy-sensitive publishing
 
-Before privacy-sensitive publishing, refresh the bot-visible metadata and inspect
-the intended scope:
+Check scope without creating or modifying the snapshot repository:
 
 ```bash
 discrawl sync --source discord
-discrawl status --json
-discrawl publish --public-only --no-media --no-commit
+discrawl diagnostics --json
+discrawl coverage --json
+discrawl failures --json
+discrawl publish --public-only --check --json
 ```
 
-[`publish`](../commands/publish.html) always excludes local-only DM data. With
-`--public-only`, it exports only channels visible to the guild `@everyone` role
-after category and channel permission overwrites. Add `--include-channels` or
-`--exclude-channels` with numeric ids when the shared snapshot should be narrower
-than the public archive.
+[`publish --check`](../commands/publish.html) uses the same permission and filter
+logic as export. It reports candidate and allowed channel/message counts,
+metadata readiness, source hints, and whether an empty result is intentional.
+It fails closed when `--public-only` lacks usable `@everyone` role metadata and
+does not initialize a share repo or contact its remote.
 
-Git snapshots exclude `@me` rows, DM media, wiretap sync state, and vectors for
-DM messages. Snapshot imports preserve local DM search during shared guild mirror
-refreshes.
-
-## Stop importers and check database health
-
-Background importers and readers can overlap with SQLite. Before metadata edits,
-publish preflight checks, or tests that need deterministic output, confirm watch
-loops and long syncs have stopped.
-
-On macOS or Linux:
+After the preflight is ready, publish the intended numeric scope explicitly:
 
 ```bash
-pgrep -fl 'discrawl (wiretap|sync|tail)' || true
-discrawl doctor
-discrawl status --json
+discrawl publish --public-only \
+  --include-channels 123456789012345678 \
+  --no-media \
+  --push
 ```
 
-If SQLite reports a busy or locked database, stop the background importer you
-started and repeat the health checks. Rule out a running `wiretap --watch-every`,
-`sync`, or `tail` process before treating the archive as corrupt.
+`--public-only`, `--include-channels`, and `--exclude-channels` narrow only the
+Git snapshot; the richer local archive remains intact. DM `@me` rows are always
+excluded. Use `--no-media` unless cached non-DM attachment bytes are intended to
+be part of the snapshot.
+
+## Handle active writers and archive errors
+
+Discrawl serializes local writers with an operating-system file lock. Before a
+deterministic publish, metadata repair, or test run, inspect it directly:
+
+```bash
+discrawl diagnostics --json
+```
+
+The report identifies active `sync`, `tail`, `wiretap`, import, and other
+Discrawl writers from the same lock metadata used by the runtime. It distinguishes
+a held lock from stale metadata, so an old PID or leftover lock file is not
+mistaken for a running importer.
+
+If coverage is incomplete, use its per-channel bounds and history markers to
+choose a targeted or full sync. If `failures` has unresolved rows, use their
+source and stable ids to retry the matching operation. Treat a non-`ok` SQLite
+integrity result as a real archive-health problem; a large WAL or stale lock
+metadata alone is diagnostic context, not proof of corruption.
 
 ## See also
 
@@ -191,8 +200,9 @@ started and repeat the health checks. Rule out a running `wiretap --watch-every`
 - [Git-backed snapshots](git-snapshots.html)
 - [Data layout](data-storage.html)
 - [`status`](../commands/status.html)
+- [`diagnostics`](../commands/diagnostics.html)
+- [`coverage`](../commands/coverage.html)
+- [`failures`](../commands/failures.html)
 - [`doctor`](../commands/doctor.html)
-- [`sync`](../commands/sync.html)
-- [`wiretap`](../commands/wiretap.html)
 - [`sql`](../commands/sql.html)
 - [`publish`](../commands/publish.html)
