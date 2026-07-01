@@ -129,7 +129,7 @@ func TestUpsertMessagesRefreshesDuplicateAttachmentID(t *testing.T) {
 
 	_, rows, err := s.ReadOnlyQuery(ctx, "select attachment_id, message_id, channel_id, filename, text_content, media_path from message_attachments")
 	require.NoError(t, err)
-	require.Equal(t, [][]string{{"a1", "m2", "c2", "second.txt", "fresh text", ""}}, rows)
+	require.Equal(t, [][]string{{"a1", "m2", "c2", "second.txt", "fresh text", "attachments/a1.txt"}}, rows)
 }
 
 func TestUpsertMessagesNormalizesTimestampStrings(t *testing.T) {

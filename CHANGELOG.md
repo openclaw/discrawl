@@ -8,6 +8,7 @@
 - Add shared channel resolution for `channels`, `search`, `messages`, and message sync with stable id precedence and actionable ambiguity candidates.
 - Add read-only `diagnostics` output for SQLite integrity, WAL size, archive freshness, and authoritative Discrawl writer-lock ownership.
 - Add read-only archive coverage reporting with per-guild/channel bounds, named-versus-synthetic channel counts, persisted wiretap skip counters, and watch-mode deltas via `wiretap --stats`.
+- Preserve fetched attachment media metadata when duplicate attachment snapshots refresh the singleton attachment row. Thanks @agent-eli.
 
 ## 0.11.3 - 2026-06-23
 
