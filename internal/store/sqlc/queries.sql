@@ -408,7 +408,7 @@ on conflict(attachment_id) do update set
 		else message_attachments.fetch_status
 	end,
 	fetch_error = case
-		when excluded.fetch_error <> '' then excluded.fetch_error
+		when excluded.fetch_status <> '' or excluded.fetch_error <> '' then excluded.fetch_error
 		else message_attachments.fetch_error
 	end,
 	updated_at = excluded.updated_at;

@@ -99,6 +99,7 @@ func TestUpsertMessagesRefreshesDuplicateAttachmentID(t *testing.T) {
 			TextContent:  "cached text",
 			MediaPath:    "attachments/a1.txt",
 			FetchStatus:  "done",
+			FetchError:   "stale failure",
 		}},
 	}
 	second := MessageMutation{
@@ -127,9 +128,9 @@ func TestUpsertMessagesRefreshesDuplicateAttachmentID(t *testing.T) {
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{first}))
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{second}))
 
-	_, rows, err := s.ReadOnlyQuery(ctx, "select attachment_id, message_id, channel_id, filename, text_content, media_path from message_attachments")
+	_, rows, err := s.ReadOnlyQuery(ctx, "select attachment_id, message_id, channel_id, filename, text_content, media_path, fetch_status, fetch_error from message_attachments")
 	require.NoError(t, err)
-	require.Equal(t, [][]string{{"a1", "m2", "c2", "second.txt", "fresh text", "attachments/a1.txt"}}, rows)
+	require.Equal(t, [][]string{{"a1", "m2", "c2", "second.txt", "fresh text", "attachments/a1.txt", "done", ""}}, rows)
 }
 
 func TestUpsertMessagesNormalizesTimestampStrings(t *testing.T) {
