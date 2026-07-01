@@ -14,6 +14,7 @@ import (
 	"github.com/openclaw/discrawl/internal/discorddesktop"
 	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/report"
+	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/openclaw/discrawl/internal/syncer"
 )
@@ -231,6 +232,12 @@ Reads the configured Cloudflare-backed remote archive without opening the local 
 
 Publishes the local non-DM SQLite archive into a Cloudflare-backed remote archive.
 `,
+	"publish": `Usage:
+  discrawl publish [flags]
+  discrawl publish --check [--public-only] [--include-channels IDS] [--exclude-channels IDS] [--json]
+
+Use --check for a read-only, no-network scope preflight. Other publish flags write the configured snapshot repository.
+`,
 	"subscribe-cloud": `Usage:
   discrawl subscribe-cloud --endpoint URL --archive ARCHIVE [--token-env ENV]
 
@@ -283,6 +290,22 @@ func printHuman(w io.Writer, value any) error {
 		_, err := fmt.Fprintf(w, "db=%s\nguilds=%d\nchannels=%d\nthreads=%d\nmessages=%d\nmembers=%d\nembedding_backlog=%d\nlast_sync=%s\nlast_tail_event=%s\n",
 			v.DBPath, v.GuildCount, v.ChannelCount, v.ThreadCount, v.MessageCount, v.MemberCount, v.EmbeddingBacklog,
 			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt))
+		return err
+	case share.PublishScopePreflight:
+		_, err := fmt.Fprintf(w, "ready=%t\npublic_only=%t\nchannels_candidate=%d\nchannels_allowed=%d\nchannels_excluded=%d\nmessages_candidate=%d\nmessages_allowed=%d\nmessages_excluded=%d\nempty=%t\n",
+			v.Ready, v.PublicOnly,
+			v.Channels.Candidate, v.Channels.Allowed, v.Channels.Excluded,
+			v.Messages.Candidate, v.Messages.Allowed, v.Messages.Excluded,
+			v.Empty)
+		if err != nil {
+			return err
+		}
+		if v.EmptyReason != "" {
+			_, err = fmt.Fprintf(w, "empty_reason=%s\n", v.EmptyReason)
+		}
+		if err == nil && v.RepairCommand != "" {
+			_, err = fmt.Fprintf(w, "repair_command=%s\n", v.RepairCommand)
+		}
 		return err
 	case store.EmbeddingDrainStats:
 		_, err := fmt.Fprintf(w, "processed=%d\nsucceeded=%d\nfailed=%d\nskipped=%d\nremaining_backlog=%d\nprovider=%s\nmodel=%s\ninput_version=%s\n",

@@ -286,6 +286,9 @@ func (r *runtime) dispatch(rest []string) error {
 	case "report":
 		return r.withLocalStoreRead(true, func() error { return r.runReport(rest[1:]) })
 	case "publish":
+		if boolFlagEnabled(rest[1:], "--check") || boolFlagEnabled(rest[1:], "-check") {
+			return r.withLocalStoreReadOnly(func() error { return r.runPublish(rest[1:]) })
+		}
 		return r.withServicesAutoLocked(false, false, true, func() error { return r.runPublish(rest[1:]) })
 	case "cloud":
 		return r.runCloud(rest[1:])

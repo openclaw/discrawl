@@ -677,6 +677,74 @@ func TestPublicPermissionHelpers(t *testing.T) {
 	require.False(t, isRoleOverwrite(struct{}{}))
 }
 
+func TestPreflightPublishScopeDistinguishesMissingMetadataFromEmptyScope(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g-ready",
+		Name:    "Ready",
+		RawJSON: `{"roles":[{"id":"g-ready","permissions":"1024"}]}`,
+	}))
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g-cache",
+		Name:    "Cache only",
+		RawJSON: `{"source":"discord_desktop"}`,
+	}))
+	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-public", GuildID: "g-ready", Kind: "text", Name: "public", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-private", GuildID: "g-ready", Kind: "text", Name: "private", RawJSON: `{"permission_overwrites":[{"id":"g-ready","type":0,"deny":"1024"}]}`})
+	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-cache", GuildID: "g-cache", Kind: "text", Name: "cache", RawJSON: `{"source":"discord_desktop"}`})
+	upsertSnapshotFilterMessage(t, ctx, s, "m-public", "c-public", "u1", "public")
+	upsertSnapshotFilterMessage(t, ctx, s, "m-private", "c-private", "u2", "private")
+	upsertSnapshotFilterMessage(t, ctx, s, "m-cache", "c-cache", "u3", "cache")
+
+	report, err := PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	require.Equal(t, PublishScopeCount{Candidate: 3, Allowed: 1, Excluded: 2}, report.Channels)
+	require.Equal(t, PublishScopeCount{Candidate: 3, Allowed: 1, Excluded: 2}, report.Messages)
+	require.False(t, report.Empty)
+	require.Equal(t, "discrawl sync --source discord", report.RepairCommand)
+	require.Len(t, report.Guilds, 2)
+	guilds := map[string]PublishScopeGuild{}
+	for _, guild := range report.Guilds {
+		guilds[guild.GuildID] = guild
+	}
+	require.True(t, guilds["g-ready"].MetadataReady)
+	require.Equal(t, "discord_metadata", guilds["g-ready"].SourceHint)
+	require.False(t, guilds["g-cache"].MetadataReady)
+	require.Equal(t, "discord_desktop", guilds["g-cache"].SourceHint)
+
+	report, err = PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true, IncludeChannelIDs: []string{"missing"}})
+	require.NoError(t, err)
+	require.True(t, report.Ready)
+	require.True(t, report.Empty)
+	require.Equal(t, "no_matching_messages", report.EmptyReason)
+	require.Empty(t, report.RepairCommand)
+
+	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-orphan", GuildID: "g-missing", Kind: "text", Name: "orphan", RawJSON: `{}`})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID: "m-orphan", GuildID: "g-missing", ChannelID: "c-orphan", ChannelName: "orphan",
+			AuthorID: "u4", AuthorName: "orphan", CreatedAt: now, Content: "orphan", NormalizedContent: "orphan", RawJSON: `{}`,
+		},
+		EventType: "upsert", PayloadJSON: `{"id":"m-orphan"}`, Options: store.WriteOptions{AppendEvent: true},
+	}}))
+	report, err = PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true, IncludeChannelIDs: []string{"c-orphan"}})
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	require.Equal(t, "metadata_incomplete", report.EmptyReason)
+	guilds = map[string]PublishScopeGuild{}
+	for _, guild := range report.Guilds {
+		guilds[guild.GuildID] = guild
+	}
+	require.Equal(t, "unknown", guilds["g-missing"].SourceHint)
+	require.Equal(t, 1, guilds["g-missing"].CandidateMessages)
+}
+
 func TestPublicSnapshotFilterHonorsCategoryAndThreadPermissions(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))

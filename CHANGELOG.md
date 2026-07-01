@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.4 - Unreleased
+
+### Changes
+
+- Add read-only `publish --check` scope preflight with fail-closed metadata readiness, source hints, predicted channel/message counts, and concrete repair guidance.
+
 ## 0.11.3 - 2026-06-23
 
 ### Fixes

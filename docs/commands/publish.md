@@ -12,6 +12,7 @@ discrawl publish --tag backup-2026-06-19 --push
 discrawl publish --with-embeddings --push
 discrawl publish --no-media --push
 discrawl publish --public-only --include-channels 1458141495701012561 --push
+discrawl publish --public-only --check --json
 ```
 
 ## Flags
@@ -23,6 +24,7 @@ discrawl publish --public-only --include-channels 1458141495701012561 --push
 - `--tag <name>` - create an immutable snapshot tag; requires a commit
 - `--no-commit` - write/export files without creating a Git commit
 - `--push` - push the snapshot commit after writing it
+- `--check` - inspect filter readiness and predicted scope without writing files or contacting the remote
 - `--readme <path>` - update the activity block in this README file too
 - `--public-only` - export only channels visible to the guild `@everyone` role
 - `--include-channels <ids>` - comma-separated channel ids to export; forum parents include their allowed public threads
@@ -33,6 +35,16 @@ discrawl publish --public-only --include-channels 1458141495701012561 --push
 Filters narrow only the published snapshot. The local SQLite archive can still
 be synced from a richer bot-visible dataset. Git-only readers see the filtered
 snapshot; the publisher keeps the complete local DB.
+
+Run `publish --check` before a filtered publish when you need a read-only
+preflight. It uses the same channel permission/filter logic as export and
+reports candidate versus allowed channel/message counts, per-guild metadata
+readiness, source hints, and whether an empty result means incomplete metadata
+or a genuinely empty scope. If `--public-only` lacks usable `@everyone` role
+metadata, the check fails closed and recommends `discrawl sync --source
+discord`. A not-ready check exits non-zero after printing its report. `--check`
+does not initialize or modify the snapshot repository and does not contact its
+remote.
 
 Filter rules:
 

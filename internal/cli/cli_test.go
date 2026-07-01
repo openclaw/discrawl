@@ -1782,6 +1782,71 @@ func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
 	require.Contains(t, out.String(), "automatic updates work")
 }
 
+func TestPublishCheckIsReadOnlyAndUsesPublishFilters(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "publisher.db")
+	cfg.Share.Remote = "https://invalid.example/archive.git"
+	cfg.Share.RepoPath = filepath.Join(dir, "must-not-exist")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	publisher := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, publisher.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g1",
+		Name:    "Guild",
+		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
+	}))
+	require.NoError(t, publisher.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath,
+		"publish",
+		"--public-only",
+		"--check",
+		"--json",
+	}, &out, &bytes.Buffer{}))
+	var report share.PublishScopePreflight
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.True(t, report.Ready)
+	require.Equal(t, share.PublishScopeCount{Candidate: 1, Allowed: 1}, report.Channels)
+	require.Equal(t, share.PublishScopeCount{Candidate: 1, Allowed: 1}, report.Messages)
+	require.NoDirExists(t, cfg.Share.RepoPath)
+
+	err := Run(ctx, []string{"--config", cfgPath, "publish", "--check", "--push"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 2, ExitCode(err))
+	require.ErrorContains(t, err, "publish --check cannot be combined with --push")
+
+	publisher, err = store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, publisher.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, publisher.Close())
+	out.Reset()
+	err = Run(ctx, []string{"--config", cfgPath, "publish", "--public-only", "--check", "--json"}, &out, &bytes.Buffer{})
+	require.Equal(t, 1, ExitCode(err))
+	require.ErrorContains(t, err, "publish scope is not ready")
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.False(t, report.Ready)
+	require.Equal(t, "discrawl sync --source discord", report.RepairCommand)
+	require.NoDirExists(t, cfg.Share.RepoPath)
+}
+
+func TestPublishCheckRejectsMissingLocalStoreWithoutCreatingArchive(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "missing.db")
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	for _, checkFlag := range []string{"--check", "-check"} {
+		err := Run(ctx, []string{"--config", cfgPath, "publish", checkFlag}, &bytes.Buffer{}, &bytes.Buffer{})
+		require.ErrorContains(t, err, "publish --check requires a local SQLite archive")
+		require.NoFileExists(t, cfg.DBPath)
+	}
+}
+
 func TestFilteredPublishRemovesGeneratedReadme(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

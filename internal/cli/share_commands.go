@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ func (r *runtime) runPublish(args []string) error {
 	readmePath := fs.String("readme", "", "")
 	noCommit := fs.Bool("no-commit", false, "")
 	push := fs.Bool("push", false, "")
+	check := fs.Bool("check", false, "")
+	jsonOut := fs.Bool("json", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
 	publicOnly := fs.Bool("public-only", r.cfg.Share.Filter.PublicOnly, "")
@@ -35,6 +38,35 @@ func (r *runtime) runPublish(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("publish takes no positional arguments"))
+	}
+	filter := share.FilterOptions{
+		PublicOnly:        *publicOnly,
+		IncludeChannelIDs: csvList(*includeChannels),
+		ExcludeChannelIDs: csvList(*excludeChannels),
+	}
+	if *check {
+		for _, name := range []string{"repo", "remote", "branch", "message", "tag", "readme", "no-commit", "push", "with-embeddings", "no-media"} {
+			if flagPassed(fs, name) {
+				return usageErr(fmt.Errorf("publish --check cannot be combined with --%s", name))
+			}
+		}
+		if r.store == nil {
+			return dbErr(errors.New("publish --check requires a local SQLite archive"))
+		}
+		if *jsonOut {
+			r.json = true
+		}
+		report, err := share.PreflightPublishScope(r.ctx, r.store, filter)
+		if err != nil {
+			return err
+		}
+		if err := r.print(report); err != nil {
+			return err
+		}
+		if !report.Ready {
+			return errors.New("publish scope is not ready; run the reported repair command and check again")
+		}
+		return nil
 	}
 	if *noCommit && strings.TrimSpace(*tag) != "" {
 		return usageErr(errors.New("publish --tag requires a commit"))
@@ -47,11 +79,7 @@ func (r *runtime) runPublish(args []string) error {
 	if err := share.ValidateTag(r.ctx, opts); err != nil {
 		return err
 	}
-	opts.Filter = share.FilterOptions{
-		PublicOnly:        *publicOnly,
-		IncludeChannelIDs: csvList(*includeChannels),
-		ExcludeChannelIDs: csvList(*excludeChannels),
-	}
+	opts.Filter = filter
 	if *readmePath != "" && opts.Filter.Active() {
 		return usageErr(errors.New("publish --readme is not supported with share filters; filtered report stats would otherwise leak the full archive"))
 	}
