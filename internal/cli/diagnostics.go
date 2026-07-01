@@ -106,14 +106,15 @@ func (r *runtime) runDiagnostics(args []string) error {
 	if !known {
 		report.SyncLock.Detection = "unsupported"
 	}
-	if lockErr != nil {
+	switch {
+	case lockErr != nil:
 		report.SyncLock.Error = lockErr.Error()
 		report.Warnings = append(report.Warnings, "sync lock state could not be determined")
-	} else if !known {
+	case !known:
 		report.Warnings = append(report.Warnings, "sync lock state detection is unsupported on this platform")
-	} else if held {
+	case held:
 		report.SyncLock.State = "active_writer"
-	} else {
+	default:
 		report.SyncLock.State = "unlocked"
 	}
 	if owner, ok := readSyncLockOwner(lockPath); ok {
