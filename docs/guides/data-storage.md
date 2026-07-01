@@ -19,6 +19,7 @@ path if you want to move an existing archive to the platform-native location.
 - append-only message event records
 - FTS5 index rows
 - optional local embedding queue metadata and vectors
+- local-only sync/import/media/embedding failure history
 
 Messages imported from Discord Desktop use the same message, attachment, mention, and FTS paths as bot-synced messages.
 
@@ -44,6 +45,14 @@ The schema is multi-guild ready even when the common UX stays single-guild simpl
 
 SQLite schema migrations are versioned with `PRAGMA user_version`. Startup fails fast when a local DB schema is newer than the supported binary - that means you have a binary older than the database.
 
+## Failure history
+
+`failure_ledger` records bounded error text and available Discord row
+identifiers. Unresolved failures are retained; resolved failures age out after
+90 days. The table is intentionally absent from Git snapshot exports and
+imports, so one machine's operational diagnostics never become published
+archive content. Query it through [`failures`](../commands/failures.html).
+
 ## Querying directly
 
 Anything you want, with read-only SQL:
@@ -60,6 +69,7 @@ See [`sql`](../commands/sql.html).
 - [`status`](../commands/status.html) - high-level archive status
 - [`coverage`](../commands/coverage.html) - per-guild/channel archive readiness and wiretap progress counters
 - [`diagnostics`](../commands/diagnostics.html) - SQLite integrity, WAL, freshness, and writer-lock state
+- [`failures`](../commands/failures.html) - local ingestion and write failure history
 - [`channels`](../commands/channels.html) - channel directory
 - [`members`](../commands/members.html) - member directory
 - [Security](../security.html)

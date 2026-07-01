@@ -104,6 +104,9 @@ func (s *Store) DrainEmbeddingJobs(ctx context.Context, provider embed.Provider,
 			if err := s.markEmbeddingJobsDone(ctx, opts, []embeddingJob{job}); err != nil {
 				return stats, err
 			}
+			if err := s.ResolveMessageFailures(ctx, FailureRef{Operation: "embed_message", Source: "embeddings"}, []string{job.MessageID}); err != nil {
+				return stats, err
+			}
 			stats.Processed++
 			stats.Skipped++
 			continue
@@ -221,11 +224,17 @@ func (s *Store) processEmbeddingBatch(ctx context.Context, provider embed.Provid
 			if markErr := s.markEmbeddingJobsRateLimited(ctx, opts, jobs, err); markErr != nil {
 				return false, markErr
 			}
+			if recordErr := s.recordEmbeddingFailures(ctx, opts, jobs, err); recordErr != nil {
+				return false, recordErr
+			}
 			stats.Requeued += len(jobs)
 			return true, nil
 		}
 		if markErr := s.markEmbeddingJobsFailed(ctx, opts, jobs, err); markErr != nil {
 			return false, markErr
+		}
+		if recordErr := s.recordEmbeddingFailures(ctx, opts, jobs, err); recordErr != nil {
+			return false, recordErr
 		}
 		stats.Processed += len(jobs)
 		stats.Failed += len(jobs)
@@ -236,16 +245,49 @@ func (s *Store) processEmbeddingBatch(ctx context.Context, provider embed.Provid
 		if markErr := s.markEmbeddingJobsFailed(ctx, opts, jobs, err); markErr != nil {
 			return false, markErr
 		}
+		if recordErr := s.recordEmbeddingFailures(ctx, opts, jobs, err); recordErr != nil {
+			return false, recordErr
+		}
 		stats.Processed += len(jobs)
 		stats.Failed += len(jobs)
 		return false, nil
 	}
 	if err := s.storeEmbeddingBatch(ctx, opts, jobs, batch.Vectors, dimensions); err != nil {
+		return false, withEmbeddingFailureRecord(err, s.recordEmbeddingFailures(ctx, opts, jobs, err))
+	}
+	messageIDs := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		messageIDs = append(messageIDs, job.MessageID)
+	}
+	if err := s.ResolveMessageFailures(ctx, FailureRef{Operation: "embed_message", Source: "embeddings"}, messageIDs); err != nil {
 		return false, err
 	}
 	stats.Processed += len(jobs)
 	stats.Succeeded += len(jobs)
 	return false, nil
+}
+
+func (s *Store) recordEmbeddingFailures(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob, failure error) error {
+	identity := strings.Join([]string{opts.Provider, opts.Model, opts.InputVersion}, "/")
+	for _, job := range jobs {
+		if err := s.RecordFailure(ctx, FailureRef{
+			Operation:   "embed_message",
+			Source:      "embeddings",
+			MessageID:   job.MessageID,
+			RelatedKind: "embedding_identity",
+			RelatedID:   identity,
+		}, failure); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func withEmbeddingFailureRecord(failure, recordErr error) error {
+	if recordErr == nil {
+		return failure
+	}
+	return fmt.Errorf("%w (record failure ledger: %w)", failure, recordErr)
 }
 
 func (s *Store) lockEmbeddingJobs(ctx context.Context, jobs []embeddingJob, lockedAt, staleBefore string) ([]embeddingJob, error) {

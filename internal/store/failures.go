@@ -1,0 +1,361 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const (
+	defaultFailureLimit   = 100
+	maxFailureLimit       = 1000
+	maxFailureMessage     = 2048
+	resolvedFailureMaxAge = 90 * 24 * time.Hour
+)
+
+var (
+	failureBearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;]+`)
+	failureSecretPattern = regexp.MustCompile(`(?i)([?&](?:token|key|secret|authorization)=)[^&\s]+`)
+	failureJSONPattern   = regexp.MustCompile(`(?i)("(?:token|key|secret|authorization)"\s*:\s*")[^"]+`)
+)
+
+type FailureRef struct {
+	Operation   string
+	Source      string
+	GuildID     string
+	ChannelID   string
+	MessageID   string
+	RelatedKind string
+	RelatedID   string
+}
+
+type Failure struct {
+	FailureID    int64     `json:"failure_id"`
+	Operation    string    `json:"operation"`
+	Source       string    `json:"source"`
+	GuildID      string    `json:"guild_id,omitempty"`
+	ChannelID    string    `json:"channel_id,omitempty"`
+	MessageID    string    `json:"message_id,omitempty"`
+	RelatedKind  string    `json:"related_kind,omitempty"`
+	RelatedID    string    `json:"related_id,omitempty"`
+	ErrorClass   string    `json:"error_class"`
+	ErrorMessage string    `json:"error_message"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	RetryCount   int       `json:"retry_count"`
+	ResolvedAt   time.Time `json:"resolved_at,omitzero"`
+}
+
+type FailureListOptions struct {
+	IncludeResolved bool
+	Source          string
+	GuildID         string
+	ChannelID       string
+	Limit           int
+}
+
+type FailureReport struct {
+	GeneratedAt     time.Time `json:"generated_at"`
+	UnresolvedCount int       `json:"unresolved_count"`
+	Failures        []Failure `json:"failures"`
+}
+
+// RowWriteError carries identifiers without retaining message content, URLs, or raw payloads.
+type RowWriteError struct {
+	Ref         FailureRef
+	AuthorID    string
+	Filename    string
+	ContentType string
+	Size        int64
+	Err         error
+}
+
+func (e *RowWriteError) Error() string {
+	if e == nil {
+		return "row write failed"
+	}
+	return fmt.Sprintf(
+		"%s failed: guild_id=%q channel_id=%q message_id=%q %s=%q author_id=%q filename=%q content_type=%q size=%d: %v",
+		firstNonEmpty(e.Ref.Operation, "row write"), e.Ref.GuildID, e.Ref.ChannelID, e.Ref.MessageID,
+		firstNonEmpty(e.Ref.RelatedKind, "related_id"), e.Ref.RelatedID, e.AuthorID, e.Filename, e.ContentType, e.Size, e.Err,
+	)
+}
+
+func (e *RowWriteError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func FailureRefFromError(err error) FailureRef {
+	var rowErr *RowWriteError
+	if errors.As(err, &rowErr) && rowErr != nil {
+		return rowErr.Ref
+	}
+	return FailureRef{}
+}
+
+func (s *Store) RecordFailure(ctx context.Context, ref FailureRef, failure error) error {
+	if failure == nil {
+		return s.ResolveFailures(ctx, ref)
+	}
+	ref = normalizeFailureRef(mergeFailureRef(ref, FailureRefFromError(failure)))
+	if ref.Operation == "" || ref.Source == "" {
+		return errors.New("failure operation and source are required")
+	}
+	now := time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `
+		insert into failure_ledger(
+			operation, source, guild_id, channel_id, message_id, related_kind, related_id,
+			error_class, error_message, first_seen_at, last_seen_at, retry_count, resolved_at
+		) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, null)
+		on conflict(operation, source, guild_id, channel_id, message_id, related_kind, related_id)
+		do update set
+			error_class = excluded.error_class,
+			error_message = excluded.error_message,
+			last_seen_at = excluded.last_seen_at,
+			retry_count = failure_ledger.retry_count + 1,
+			resolved_at = null
+	`, ref.Operation, ref.Source, ref.GuildID, ref.ChannelID, ref.MessageID, ref.RelatedKind, ref.RelatedID,
+		failureClass(failure), sanitizeFailureMessage(failure.Error()), now.Format(timeLayout), now.Format(timeLayout)); err != nil {
+		return fmt.Errorf("record %s/%s failure: %w", ref.Source, ref.Operation, err)
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
+// ResolveFailures resolves every unresolved row matching the non-empty identifiers in ref.
+func (s *Store) ResolveFailures(ctx context.Context, ref FailureRef) error {
+	ref = normalizeFailureRef(ref)
+	if ref.Operation == "" || ref.Source == "" {
+		return errors.New("failure operation and source are required")
+	}
+	now := time.Now().UTC()
+	clauses := []string{"resolved_at is null", "operation = ?", "source = ?"}
+	args := []any{now.Format(timeLayout), ref.Operation, ref.Source}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"guild_id", ref.GuildID},
+		{"channel_id", ref.ChannelID},
+		{"message_id", ref.MessageID},
+		{"related_kind", ref.RelatedKind},
+		{"related_id", ref.RelatedID},
+	} {
+		if field.value != "" {
+			clauses = append(clauses, field.name+" = ?")
+			args = append(args, field.value)
+		}
+	}
+	query := `update failure_ledger set resolved_at = ? where ` + strings.Join(clauses, " and ")
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("resolve %s/%s failures: %w", ref.Source, ref.Operation, err)
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
+func (s *Store) ResolveMessageFailures(ctx context.Context, ref FailureRef, messageIDs []string) error {
+	ref = normalizeFailureRef(ref)
+	if ref.Operation == "" || ref.Source == "" {
+		return errors.New("failure operation and source are required")
+	}
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(messageIDs))
+	for _, id := range messageIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	for start := 0; start < len(ids); start += 500 {
+		batch := ids[start:min(start+500, len(ids))]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		query := `update failure_ledger set resolved_at = ? where resolved_at is null and operation = ? and source = ? and message_id in (` + placeholders + `)`
+		args := []any{now.Format(timeLayout), ref.Operation, ref.Source}
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("resolve %s/%s message failures: %w", ref.Source, ref.Operation, err)
+		}
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
+func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, generatedAt time.Time) (FailureReport, error) {
+	opts.Source = strings.TrimSpace(opts.Source)
+	opts.GuildID = strings.TrimSpace(opts.GuildID)
+	opts.ChannelID = strings.TrimSpace(opts.ChannelID)
+	if opts.Limit <= 0 {
+		opts.Limit = defaultFailureLimit
+	}
+	if opts.Limit > maxFailureLimit {
+		return FailureReport{}, fmt.Errorf("failure limit must be at most %d", maxFailureLimit)
+	}
+	where, args := failureWhere(opts)
+	report := FailureReport{GeneratedAt: generatedAt.UTC(), Failures: []Failure{}}
+	countOpts := opts
+	countOpts.IncludeResolved = false
+	countWhere, countArgs := failureWhere(countOpts)
+	if err := s.db.QueryRowContext(ctx, `select count(*) from failure_ledger `+countWhere, countArgs...).Scan(&report.UnresolvedCount); err != nil {
+		return FailureReport{}, fmt.Errorf("count unresolved failures: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		select failure_id, operation, source, guild_id, channel_id, message_id,
+		       related_kind, related_id, error_class, error_message,
+		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
+		from failure_ledger
+		`+where+`
+		order by (resolved_at is null) desc, last_seen_at desc, failure_id desc
+		limit ?`, append(args, opts.Limit)...)
+	if err != nil {
+		return FailureReport{}, fmt.Errorf("list failures: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var row Failure
+		var firstSeen, lastSeen, resolved string
+		if err := rows.Scan(
+			&row.FailureID, &row.Operation, &row.Source, &row.GuildID, &row.ChannelID, &row.MessageID,
+			&row.RelatedKind, &row.RelatedID, &row.ErrorClass, &row.ErrorMessage,
+			&firstSeen, &lastSeen, &row.RetryCount, &resolved,
+		); err != nil {
+			return FailureReport{}, fmt.Errorf("scan failure: %w", err)
+		}
+		row.FirstSeenAt = parseTime(firstSeen)
+		row.LastSeenAt = parseTime(lastSeen)
+		row.ResolvedAt = parseTime(resolved)
+		report.Failures = append(report.Failures, row)
+	}
+	if err := rows.Err(); err != nil {
+		return FailureReport{}, fmt.Errorf("list failures: %w", err)
+	}
+	return report, nil
+}
+
+func (s *Store) pruneResolvedFailures(ctx context.Context, now time.Time) error {
+	cutoff := now.Add(-resolvedFailureMaxAge).Format(timeLayout)
+	if _, err := s.db.ExecContext(ctx, `delete from failure_ledger where resolved_at is not null and resolved_at < ?`, cutoff); err != nil {
+		return fmt.Errorf("prune resolved failures: %w", err)
+	}
+	return nil
+}
+
+func failureWhere(opts FailureListOptions) (string, []any) {
+	clauses := []string{"1 = 1"}
+	args := []any{}
+	if !opts.IncludeResolved {
+		clauses = append(clauses, "resolved_at is null")
+	}
+	if opts.Source != "" {
+		clauses = append(clauses, "source = ?")
+		args = append(args, opts.Source)
+	}
+	if opts.GuildID != "" {
+		clauses = append(clauses, "guild_id = ?")
+		args = append(args, opts.GuildID)
+	}
+	if opts.ChannelID != "" {
+		clauses = append(clauses, "channel_id = ?")
+		args = append(args, opts.ChannelID)
+	}
+	return "where " + strings.Join(clauses, " and "), args
+}
+
+func mergeFailureRef(base, contextual FailureRef) FailureRef {
+	if base.Operation == "" {
+		base.Operation = contextual.Operation
+	}
+	if base.Source == "" {
+		base.Source = contextual.Source
+	}
+	if base.GuildID == "" {
+		base.GuildID = contextual.GuildID
+	}
+	if base.ChannelID == "" {
+		base.ChannelID = contextual.ChannelID
+	}
+	if base.MessageID == "" {
+		base.MessageID = contextual.MessageID
+	}
+	if base.RelatedKind == "" {
+		base.RelatedKind = contextual.RelatedKind
+	}
+	if base.RelatedID == "" {
+		base.RelatedID = contextual.RelatedID
+	}
+	return base
+}
+
+func normalizeFailureRef(ref FailureRef) FailureRef {
+	ref.Operation = strings.TrimSpace(ref.Operation)
+	ref.Source = strings.TrimSpace(ref.Source)
+	ref.GuildID = strings.TrimSpace(ref.GuildID)
+	ref.ChannelID = strings.TrimSpace(ref.ChannelID)
+	ref.MessageID = strings.TrimSpace(ref.MessageID)
+	ref.RelatedKind = strings.TrimSpace(ref.RelatedKind)
+	ref.RelatedID = strings.TrimSpace(ref.RelatedID)
+	return ref
+}
+
+func failureClass(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	}
+	root := err
+	for {
+		unwrapped := errors.Unwrap(root)
+		if unwrapped == nil {
+			break
+		}
+		root = unwrapped
+	}
+	typ := reflect.TypeOf(root)
+	if typ == nil {
+		return "error"
+	}
+	name := strings.TrimPrefix(typ.String(), "*")
+	if strings.Contains(strings.ToLower(name), "sqlite") {
+		return "sqlite"
+	}
+	return name
+}
+
+func sanitizeFailureMessage(message string) string {
+	message = strings.ToValidUTF8(message, "")
+	message = strings.Join(strings.Fields(message), " ")
+	message = failureBearerPattern.ReplaceAllString(message, `${1}[redacted]`)
+	message = failureSecretPattern.ReplaceAllString(message, `${1}[redacted]`)
+	message = failureJSONPattern.ReplaceAllString(message, `${1}[redacted]`)
+	runes := []rune(message)
+	if len(runes) > maxFailureMessage {
+		message = string(runes[:maxFailureMessage])
+	}
+	return message
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}

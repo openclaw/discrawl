@@ -35,6 +35,7 @@ type CoverageGuild struct {
 	NamedChannelCount           int               `json:"named_channel_count"`
 	SyntheticChannelCount       int               `json:"synthetic_channel_count"`
 	HistoryCompleteChannelCount int               `json:"history_complete_channel_count"`
+	KnownFailureCount           int               `json:"known_failure_count"`
 	EarliestMessageAt           time.Time         `json:"earliest_message_at,omitzero"`
 	LatestMessageAt             time.Time         `json:"latest_message_at,omitzero"`
 	Channels                    []CoverageChannel `json:"channels"`
@@ -50,6 +51,7 @@ type CoverageChannel struct {
 	EarliestMessageAt time.Time `json:"earliest_message_at,omitzero"`
 	LatestMessageAt   time.Time `json:"latest_message_at,omitzero"`
 	HistoryComplete   *bool     `json:"history_complete,omitempty"`
+	KnownFailureCount int       `json:"known_failure_count"`
 }
 
 type CoverageTotals struct {
@@ -60,6 +62,8 @@ type CoverageTotals struct {
 	NamedChannelCount           int `json:"named_channel_count"`
 	SyntheticChannelCount       int `json:"synthetic_channel_count"`
 	HistoryCompleteChannelCount int `json:"history_complete_channel_count"`
+	KnownFailureCount           int `json:"known_failure_count"`
+	UnscopedKnownFailureCount   int `json:"unscoped_known_failure_count"`
 }
 
 type WiretapImportStats struct {
@@ -213,10 +217,60 @@ func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.T
 		report.Totals.SyntheticChannelCount += guild.SyntheticChannelCount
 		report.Totals.HistoryCompleteChannelCount += guild.HistoryCompleteChannelCount
 	}
+	if err := s.loadKnownFailureCoverage(queryCtx, guildID, &report); err != nil {
+		return CoverageReport{}, err
+	}
 	if err := s.loadCoverageState(ctx, &report); err != nil {
 		return CoverageReport{}, err
 	}
 	return report, nil
+}
+
+func (s *Store) loadKnownFailureCoverage(ctx context.Context, guildID string, report *CoverageReport) error {
+	rows, err := s.db.QueryContext(ctx, `
+		select guild_id, channel_id, count(*)
+		from failure_ledger
+		where resolved_at is null and (? = '' or guild_id = ?)
+		group by guild_id, channel_id
+	`, guildID, guildID)
+	if err != nil {
+		return fmt.Errorf("query known failure coverage: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	guilds := make(map[string]*CoverageGuild, len(report.Guilds))
+	channels := map[string]*CoverageChannel{}
+	channelGuilds := map[string]*CoverageGuild{}
+	for i := range report.Guilds {
+		guild := &report.Guilds[i]
+		guilds[guild.ID] = guild
+		for j := range guild.Channels {
+			channel := &guild.Channels[j]
+			channels[channel.ID] = channel
+			channelGuilds[channel.ID] = guild
+		}
+	}
+	for rows.Next() {
+		var failureGuildID, channelID string
+		var count int
+		if err := rows.Scan(&failureGuildID, &channelID, &count); err != nil {
+			return fmt.Errorf("scan known failure coverage: %w", err)
+		}
+		report.Totals.KnownFailureCount += count
+		if channel := channels[channelID]; channel != nil {
+			channel.KnownFailureCount += count
+			channelGuilds[channelID].KnownFailureCount += count
+			continue
+		}
+		if guild := guilds[failureGuildID]; guild != nil {
+			guild.KnownFailureCount += count
+			continue
+		}
+		report.Totals.UnscopedKnownFailureCount += count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("query known failure coverage: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) loadCoverageState(ctx context.Context, report *CoverageReport) error {

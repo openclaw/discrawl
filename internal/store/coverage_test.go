@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,6 +36,8 @@ func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 		FilesScanned: 4, Messages: 3, Channels: 2, SkippedMessages: 5, SkippedChannels: 6,
 		FinishedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}))
+	require.NoError(t, s.RecordFailure(ctx, FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}, errors.New("known channel failure")))
+	require.NoError(t, s.RecordFailure(ctx, FailureRef{Operation: "embed_message", Source: "embeddings", MessageID: "missing"}, errors.New("unscoped failure")))
 
 	generatedAt := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
 	report, err := s.Coverage(ctx, "", generatedAt)
@@ -43,6 +46,7 @@ func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 	require.Equal(t, CoverageTotals{
 		GuildCount: 2, MessageCount: 3, ChannelCount: 3, MessageChannelCount: 2,
 		NamedChannelCount: 2, SyntheticChannelCount: 1, HistoryCompleteChannelCount: 1,
+		KnownFailureCount: 2, UnscopedKnownFailureCount: 1,
 	}, report.Totals)
 	require.Equal(t, time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC), report.LastBotSyncAt)
 	require.Equal(t, 5, report.Wiretap.SkippedMessages)
@@ -56,6 +60,8 @@ func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 	require.Equal(t, "c1", report.Guilds[0].Channels[0].ID)
 	require.NotNil(t, report.Guilds[0].Channels[0].HistoryComplete)
 	require.True(t, *report.Guilds[0].Channels[0].HistoryComplete)
+	require.Equal(t, 1, report.Guilds[0].KnownFailureCount)
+	require.Equal(t, 1, report.Guilds[0].Channels[0].KnownFailureCount)
 	require.True(t, report.Guilds[0].Channels[1].Synthetic)
 
 	filtered, err := s.Coverage(ctx, "g2", generatedAt)

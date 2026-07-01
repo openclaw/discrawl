@@ -20,6 +20,7 @@ discrawl coverage --json
 - history-complete markers when known
 - last bot sync and wiretap import times
 - skipped-message and skipped-channel counts from the latest successful wiretap pass
+- unresolved known-failure counts per guild/channel, plus unscoped failures
 
 The human output uses a table per guild. JSON returns the same guild/channel
 rows plus aggregate totals for agent and script use. Soft-deleted messages do
@@ -34,6 +35,10 @@ Coverage is local and read-only. It does not authenticate, start a sync, wait
 for a writer lock, or update a configured share. Persisted wiretap coverage
 state contains compact counters and timestamps only; `wiretap:*` state remains
 excluded from Git snapshots.
+
+Known failures mean Discrawl attempted work and retained the failure. Missing
+rows without a known failure may still be unattempted. Use
+[`failures`](failures.html) for row identifiers, retry counts, and errors.
 
 ## Watch progress
 
@@ -52,3 +57,4 @@ channels, named channels, and synthetic channels since the previous pass.
 - [`wiretap`](wiretap.html) - import local Discord Desktop cache data
 - [`status`](status.html) - high-level archive and share status
 - [`diagnostics`](diagnostics.html) - SQLite integrity, WAL, freshness, and writer-lock checks
+- [`failures`](failures.html) - unresolved and recently resolved ingestion failures

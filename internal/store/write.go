@@ -310,7 +310,16 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 		}
 	}
 	if err := qtx.UpsertMessage(ctx, upsertMessageParams(message, now)); err != nil {
-		return err
+		return &RowWriteError{
+			Ref: FailureRef{
+				Operation: "write_message",
+				GuildID:   message.GuildID,
+				ChannelID: message.ChannelID,
+				MessageID: message.ID,
+			},
+			AuthorID: message.AuthorID,
+			Err:      err,
+		}
 	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ?`, rowID); err != nil {
@@ -418,7 +427,21 @@ func replaceAttachmentsTx(ctx context.Context, qtx *storedb.Queries, messageID s
 			attachment.FetchError = media.FetchError
 		}
 		if err := qtx.InsertMessageAttachment(ctx, insertMessageAttachmentParams(attachment, now)); err != nil {
-			return err
+			return &RowWriteError{
+				Ref: FailureRef{
+					Operation:   "write_attachment",
+					GuildID:     attachment.GuildID,
+					ChannelID:   attachment.ChannelID,
+					MessageID:   attachment.MessageID,
+					RelatedKind: "attachment_id",
+					RelatedID:   attachment.AttachmentID,
+				},
+				AuthorID:    attachment.AuthorID,
+				Filename:    attachment.Filename,
+				ContentType: attachment.ContentType,
+				Size:        attachment.Size,
+				Err:         err,
+			}
 		}
 	}
 	return nil

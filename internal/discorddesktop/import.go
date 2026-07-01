@@ -798,6 +798,17 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			return err
 		}
 		if err := st.UpsertGuild(ctx, guild); err != nil {
+			return recordImportFailure(ctx, st, store.FailureRef{
+				Operation: "import_guild",
+				Source:    "wiretap",
+				GuildID:   guild.ID,
+			}, err)
+		}
+		if err := resolveImportFailures(ctx, st, store.FailureRef{
+			Operation: "import_guild",
+			Source:    "wiretap",
+			GuildID:   guild.ID,
+		}); err != nil {
 			return err
 		}
 	}
@@ -808,12 +819,35 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			return err
 		}
 		if err := st.UpsertChannel(ctx, channel); err != nil {
+			return recordImportFailure(ctx, st, store.FailureRef{
+				Operation: "import_channel",
+				Source:    "wiretap",
+				GuildID:   channel.GuildID,
+				ChannelID: channel.ID,
+			}, err)
+		}
+		if err := resolveImportFailures(ctx, st, store.FailureRef{
+			Operation: "import_channel",
+			Source:    "wiretap",
+			GuildID:   channel.GuildID,
+			ChannelID: channel.ID,
+		}); err != nil {
 			return err
 		}
 	}
 	messages := mapValues(snap.messages)
 	sort.Slice(messages, func(i, j int) bool { return messages[i].Record.ID < messages[j].Record.ID })
 	if err := st.UpsertMessages(ctx, messages); err != nil {
+		return recordImportFailure(ctx, st, store.FailureRef{
+			Operation: "import_messages",
+			Source:    "wiretap",
+		}, err)
+	}
+	messageIDs := make([]string, 0, len(messages))
+	for _, message := range messages {
+		messageIDs = append(messageIDs, message.Record.ID)
+	}
+	if err := resolveImportMessageFailures(ctx, st, messageIDs); err != nil {
 		return err
 	}
 	if prune {
@@ -822,6 +856,30 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 		}
 	}
 	return st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano))
+}
+
+func recordImportFailure(ctx context.Context, st *store.Store, ref store.FailureRef, failure error) error {
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := st.RecordFailure(ledgerCtx, ref, failure); err != nil {
+		return fmt.Errorf("%w (record failure ledger: %w)", failure, err)
+	}
+	return failure
+}
+
+func resolveImportFailures(ctx context.Context, st *store.Store, ref store.FailureRef) error {
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return st.ResolveFailures(ledgerCtx, ref)
+}
+
+func resolveImportMessageFailures(ctx context.Context, st *store.Store, messageIDs []string) error {
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return st.ResolveMessageFailures(ledgerCtx, store.FailureRef{
+		Operation: "import_messages",
+		Source:    "wiretap",
+	}, messageIDs)
 }
 
 func collectValue(snap snapshot, channelLookup map[string]store.ChannelRecord, value any, fallbackTime time.Time) {

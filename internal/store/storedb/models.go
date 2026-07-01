@@ -38,6 +38,23 @@ type EmbeddingJob struct {
 	UpdatedAt    string
 }
 
+type FailureLedger struct {
+	FailureID    int64
+	Operation    string
+	Source       string
+	GuildID      string
+	ChannelID    string
+	MessageID    string
+	RelatedKind  string
+	RelatedID    string
+	ErrorClass   string
+	ErrorMessage string
+	FirstSeenAt  string
+	LastSeenAt   string
+	RetryCount   int64
+	ResolvedAt   sql.NullString
+}
+
 type Guild struct {
 	ID        string
 	Name      string

@@ -654,6 +654,40 @@ func TestCoverageMissingArchiveFailsWithoutCreatingDatabase(t *testing.T) {
 	require.NoFileExists(t, cfg.DBPath)
 }
 
+func TestFailuresHumanJSONAndResolvedHistory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	ref := store.FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}
+	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("synthetic timeout")))
+	require.NoError(t, s.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "failures"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "unresolved=1")
+	require.Contains(t, out.String(), "source=discord operation=sync_messages")
+
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "failures", "--json"}, &out, &bytes.Buffer{}))
+	var report store.FailureReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "c1", report.Failures[0].ChannelID)
+
+	s, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, s.ResolveFailures(ctx, ref))
+	require.NoError(t, s.Close())
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "failures", "--all", "--json"}, &out, &bytes.Buffer{}))
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Zero(t, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.False(t, report.Failures[0].ResolvedAt.IsZero())
+}
+
 func TestWiretapStatsIncludesCoverage(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -131,6 +131,24 @@ create table message_embeddings (
 	primary key (message_id, provider, model, input_version)
 );
 
+create table failure_ledger (
+	failure_id integer primary key autoincrement,
+	operation text not null,
+	source text not null,
+	guild_id text not null default '',
+	channel_id text not null default '',
+	message_id text not null default '',
+	related_kind text not null default '',
+	related_id text not null default '',
+	error_class text not null,
+	error_message text not null,
+	first_seen_at text not null,
+	last_seen_at text not null,
+	retry_count integer not null default 0,
+	resolved_at text,
+	unique(operation, source, guild_id, channel_id, message_id, related_kind, related_id)
+);
+
 -- sqlc only needs parseable table shapes. Runtime migrations create real FTS5
 -- virtual tables and maintain rowids.
 create table message_fts (

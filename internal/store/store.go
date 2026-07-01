@@ -17,7 +17,7 @@ const (
 	timeLayout         = "2006-01-02T15:04:05.000000000Z07:00"
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 3
+	storeSchemaVersion = 4
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
@@ -190,6 +190,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.setSchemaVersion(ctx, 3); err != nil {
 			return err
 		}
+		currentVersion = 3
+	}
+	if currentVersion < 4 {
+		if err := s.applyFailureLedgerMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 4); err != nil {
+			return err
+		}
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
@@ -200,6 +209,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.applyAttachmentMediaMigration(ctx); err != nil {
+		return err
+	}
+	if err := s.applyFailureLedgerMigration(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
@@ -420,6 +432,23 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 			embedded_at text not null,
 			primary key (message_id, provider, model, input_version)
 		);`,
+		`create table if not exists failure_ledger (
+			failure_id integer primary key autoincrement,
+			operation text not null,
+			source text not null,
+			guild_id text not null default '',
+			channel_id text not null default '',
+			message_id text not null default '',
+			related_kind text not null default '',
+			related_id text not null default '',
+			error_class text not null,
+			error_message text not null,
+			first_seen_at text not null,
+			last_seen_at text not null,
+			retry_count integer not null default 0,
+			resolved_at text,
+			unique(operation, source, guild_id, channel_id, message_id, related_kind, related_id)
+		);`,
 		// Uses SQLite FTS5's default unicode61 tokenizer; normalizeFTSQuery quotes user terms before MATCH.
 		`create virtual table if not exists message_fts using fts5(
 			message_id unindexed,
@@ -456,6 +485,8 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 		`create index if not exists idx_mentions_author on mention_events(author_id, event_at);`,
 		`create index if not exists idx_embedding_jobs_state_updated on embedding_jobs(state, updated_at);`,
 		`create index if not exists idx_message_embeddings_identity on message_embeddings(provider, model, input_version, dimensions);`,
+		`create index if not exists idx_failure_ledger_unresolved on failure_ledger(resolved_at, last_seen_at desc);`,
+		`create index if not exists idx_failure_ledger_scope on failure_ledger(guild_id, channel_id, message_id);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -494,6 +525,40 @@ func (s *Store) applyAttachmentMediaMigration(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx, `create index if not exists idx_attachments_sha256 on message_attachments(content_sha256)`); err != nil {
 		return fmt.Errorf("ensure attachment media index: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) applyFailureLedgerMigration(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, stmt := range []string{
+		`create table if not exists failure_ledger (
+			failure_id integer primary key autoincrement,
+			operation text not null,
+			source text not null,
+			guild_id text not null default '',
+			channel_id text not null default '',
+			message_id text not null default '',
+			related_kind text not null default '',
+			related_id text not null default '',
+			error_class text not null,
+			error_message text not null,
+			first_seen_at text not null,
+			last_seen_at text not null,
+			retry_count integer not null default 0,
+			resolved_at text,
+			unique(operation, source, guild_id, channel_id, message_id, related_kind, related_id)
+		);`,
+		`create index if not exists idx_failure_ledger_unresolved on failure_ledger(resolved_at, last_seen_at desc);`,
+		`create index if not exists idx_failure_ledger_scope on failure_ledger(guild_id, channel_id, message_id);`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migrate failure ledger: %w", err)
+		}
 	}
 	return tx.Commit()
 }

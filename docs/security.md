@@ -37,8 +37,13 @@ CI runs secret scanning with `gitleaks` against git history and the working tree
 - append-only message event records
 - FTS index rows
 - optional local embedding queue metadata and vectors
+- local-only failure history with bounded, redacted error text
 
 Attachment binaries are not stored in SQLite. Only attachment metadata, optional extracted text, and media cache bookkeeping are stored there. Cached files live under `cache_dir/media`. Failed CDN downloads are recorded with their HTTP status, such as `404`, instead of being retried silently forever.
+
+The operational failure ledger is excluded from Git snapshot exports and
+imports. It may contain local row identifiers and sanitized error context, so
+inspect `discrawl failures --json` before sharing its output.
 
 Set `sync.attachment_text = false` if you want to keep attachment metadata and filenames but disable attachment body fetches for text indexing.
 

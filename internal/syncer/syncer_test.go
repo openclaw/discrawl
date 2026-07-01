@@ -1079,6 +1079,24 @@ func TestSyncSkipsRetryableChannelErrors(t *testing.T) {
 	unavailable, err := s.GetSyncState(ctx, "channel:c2:unavailable")
 	require.NoError(t, err)
 	require.Empty(t, unavailable)
+
+	failures, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, failures.Failures, 1)
+	require.Equal(t, "sync_messages", failures.Failures[0].Operation)
+	require.Equal(t, "c2", failures.Failures[0].ChannelID)
+	require.Equal(t, "deadline_exceeded", failures.Failures[0].ErrorClass)
+
+	delete(client.messageErrors, "c2")
+	_, err = svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 2})
+	require.NoError(t, err)
+	failures, err = s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, failures.Failures)
+	failures, err = s.ListFailures(ctx, store.FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, failures.Failures, 1)
+	require.False(t, failures.Failures[0].ResolvedAt.IsZero())
 }
 
 func TestSyncClearsUnavailableMarkerAfterSuccessfulRead(t *testing.T) {

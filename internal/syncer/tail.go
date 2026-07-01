@@ -74,18 +74,21 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	}
 	mutation, err := buildMessageMutation(ctx, msg, "", "", false, t.attachmentTextEnabled)
 	if err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
 	if err := t.store.AppendMessageEvent(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create", msg); err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
-	return t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID)
+	if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+	}
+	return t.resolveMessageFailures(ctx, msg.GuildID, msg.ChannelID, msg.ID)
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
@@ -95,25 +98,29 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
 		return nil
 	}
+	guildID, channelID, messageID := msg.GuildID, msg.ChannelID, msg.ID
 	var err error
 	msg, err = t.messageUpdateSnapshot(ctx, msg)
 	if err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, guildID, channelID, messageID, err))
 	}
 	if msg == nil || !t.allowGuild(msg.GuildID) {
 		return nil
 	}
 	mutation, err := buildMessageMutation(ctx, msg, "", "", false, t.attachmentTextEnabled)
 	if err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
 	if err := t.store.AppendMessageEvent(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update", msg); err != nil {
-		return err
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
 	}
-	return t.store.SetSyncState(ctx, "tail:last_event", msg.ID)
+	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
+		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+	}
+	return t.resolveMessageFailures(ctx, msg.GuildID, msg.ChannelID, msg.ID)
 }
 
 func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.Message) (*discordgo.Message, error) {

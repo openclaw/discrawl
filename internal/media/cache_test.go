@@ -259,6 +259,27 @@ func TestFetchRecordsSkippedAndFailedStatuses(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "failed", rows[0].FetchStatus)
 	require.Len(t, rows[0].FetchError, 512)
+
+	failures, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, failures.Failures, 1)
+	require.Equal(t, "a2", failures.Failures[0].RelatedID)
+
+	stats, err = Fetch(ctx, s, FetchOptions{
+		CacheDir:   t.TempDir(),
+		MaxBytes:   1024,
+		HTTPClient: staticHTTPClient([]byte("recovered")),
+		List:       store.AttachmentListOptions{MessageID: "m2"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Fetched)
+	failures, err = s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, failures.Failures)
+	failures, err = s.ListFailures(ctx, store.FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, failures.Failures, 1)
+	require.False(t, failures.Failures[0].ResolvedAt.IsZero())
 }
 
 func TestFetchRejectsNonDiscordAttachmentURL(t *testing.T) {

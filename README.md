@@ -26,7 +26,7 @@ Wiretap DMs stay local and are never exported to the Git-backed snapshot mirror.
 - imports classifiable Discord Desktop cache messages with `wiretap`, including proven DMs under `@me`
 - publishes and imports private Git-backed archive snapshots for org-wide read access
 - browses stored messages and local DMs in a terminal archive UI
-- exposes `metadata --json`, `status --json`, `diagnostics --json`, `coverage --json`, and `doctor --json` for local
+- exposes `metadata --json`, `status --json`, `diagnostics --json`, `coverage --json`, `failures --json`, and `doctor --json` for local
   launchers, automation, and CI
 - reports Worker-fronted cloud archive status in read-only mode without
   touching local SQLite
@@ -536,10 +536,26 @@ discrawl coverage --json
 The report covers every guild by default and includes per-guild and
 per-channel message counts and time bounds, message-capable channel counts,
 history-complete markers, last bot/wiretap activity, and the most recent
-wiretap skipped-message/channel counters. "Synthetic" means Discrawl only has
+wiretap skipped-message/channel counters. Unresolved known failures are counted
+per guild/channel so a failed attempt is distinguishable from unattempted data. "Synthetic" means Discrawl only has
 an id-derived placeholder such as `channel-123456` or `dm-123456`; "named"
 means it has a useful channel or conversation label. Soft-deleted messages are
 excluded.
+
+### `failures`
+
+Lists unresolved local sync, wiretap import, media, embedding, and row-write
+failures with the available guild/channel/message/attachment identifiers.
+
+```bash
+discrawl failures
+discrawl failures --source wiretap --json
+discrawl failures --all --limit 200
+```
+
+Repeated failures increment `retry_count`; successful later ingestion marks
+matching rows resolved. Resolved history is retained for 90 days. The ledger is
+local-only and excluded from Git snapshots.
 
 ### `diagnostics`
 

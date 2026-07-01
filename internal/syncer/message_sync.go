@@ -86,12 +86,18 @@ func (s *Syncer) syncMessageChannelsSerial(ctx context.Context, guildID string, 
 		total += count
 		if err != nil {
 			if s.skipSyncError(ctx, channel, err) {
+				if recordErr := s.recordChannelFailure(ctx, guildID, channel.ID, err); recordErr != nil {
+					s.logger.Warn("record channel failure", "channel_id", channel.ID, "err", recordErr)
+				}
 				progress.recordSkip(channel, err)
 				continue
 			}
-			return total, fmt.Errorf("sync channel %s: %w", channel.ID, err)
+			return total, fmt.Errorf("sync channel %s: %w", channel.ID, withFailureRecordError(err, s.recordChannelFailure(ctx, guildID, channel.ID, err)))
 		}
 		if err := s.clearUnavailableChannel(ctx, channel.ID); err != nil {
+			return total, withFailureRecordError(err, s.recordChannelFailure(ctx, guildID, channel.ID, err))
+		}
+		if err := s.resolveChannelFailures(ctx, guildID, channel.ID); err != nil {
 			return total, err
 		}
 		progress.record(channel, count)
@@ -140,6 +146,16 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 				}
 				if succeeded {
 					err = s.clearUnavailableChannel(ctx, channel.ID)
+					if err == nil {
+						err = s.resolveChannelFailures(ctx, guildID, channel.ID)
+					}
+				}
+				if skipped != nil {
+					if recordErr := s.recordChannelFailure(ctx, guildID, channel.ID, skipped); recordErr != nil {
+						s.logger.Warn("record channel failure", "channel_id", channel.ID, "err", recordErr)
+					}
+				} else if err != nil {
+					err = withFailureRecordError(err, s.recordChannelFailure(ctx, guildID, channel.ID, err))
 				}
 				select {
 				case results <- result{channelID: channel.ID, channel: channel, count: count, err: err, skipped: skipped}:

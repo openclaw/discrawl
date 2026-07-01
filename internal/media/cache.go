@@ -77,6 +77,9 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 		}
 		if attachment.MediaPath != "" && (missingOnly || !opts.Force) {
 			if mediaFileReusable(opts.CacheDir, attachment) {
+				if err := resolveAttachmentFailure(ctx, s, attachment); err != nil {
+					return stats, err
+				}
 				stats.Reused++
 				continue
 			}
@@ -89,8 +92,12 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 		switch {
 		case err != nil:
 			stats.Failed++
+			if recordErr := s.RecordFailure(ctx, attachmentFailureRef(attachment), err); recordErr != nil {
+				return stats, recordErr
+			}
 			if opts.StatusUpdate {
 				if err := s.UpdateAttachmentFetchStatus(ctx, attachment.AttachmentID, opts.Now().UTC().Format(time.RFC3339Nano), "failed", clampError(err.Error())); err != nil {
+					_ = s.RecordFailure(ctx, attachmentFailureRef(attachment), err)
 					return stats, err
 				}
 			}
@@ -100,6 +107,9 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 				if err := s.UpdateAttachmentFetchStatus(ctx, attachment.AttachmentID, opts.Now().UTC().Format(time.RFC3339Nano), result.reason, ""); err != nil {
 					return stats, err
 				}
+			}
+			if err := resolveAttachmentFailure(ctx, s, attachment); err != nil {
+				return stats, err
 			}
 		default:
 			stats.Fetched++
@@ -112,11 +122,31 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 				FetchedAt:     opts.Now().UTC().Format(time.RFC3339Nano),
 				FetchStatus:   "fetched",
 			}); err != nil {
+				_ = s.RecordFailure(ctx, attachmentFailureRef(attachment), err)
+				return stats, err
+			}
+			if err := resolveAttachmentFailure(ctx, s, attachment); err != nil {
 				return stats, err
 			}
 		}
 	}
 	return stats, nil
+}
+
+func attachmentFailureRef(attachment store.AttachmentRow) store.FailureRef {
+	return store.FailureRef{
+		Operation:   "fetch_attachment",
+		Source:      "media",
+		GuildID:     attachment.GuildID,
+		ChannelID:   attachment.ChannelID,
+		MessageID:   attachment.MessageID,
+		RelatedKind: "attachment_id",
+		RelatedID:   attachment.AttachmentID,
+	}
+}
+
+func resolveAttachmentFailure(ctx context.Context, s *store.Store, attachment store.AttachmentRow) error {
+	return s.ResolveFailures(ctx, attachmentFailureRef(attachment))
 }
 
 func mediaFileReusable(cacheDir string, attachment store.AttachmentRow) bool {

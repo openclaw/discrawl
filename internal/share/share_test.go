@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -1209,7 +1210,7 @@ func TestImportRepairsBlankMessageGuildIDs(t *testing.T) {
 	require.Equal(t, "g1", results[0].GuildID)
 }
 
-func TestSnapshotExcludesLocalEmbeddingState(t *testing.T) {
+func TestSnapshotExcludesLocalEmbeddingAndFailureState(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -1219,6 +1220,7 @@ func TestSnapshotExcludesLocalEmbeddingState(t *testing.T) {
 		values ('m1', 'done', 0, 'ollama', 'nomic-embed-text', ?, ?)
 	`, store.EmbeddingInputVersion, time.Now().UTC().Format(time.RFC3339Nano))
 	require.NoError(t, err)
+	require.NoError(t, src.RecordFailure(ctx, store.FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1"}, errors.New("private local failure")))
 	_, err = src.DB().ExecContext(ctx, `
 		insert into message_embeddings(
 			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
@@ -1231,10 +1233,12 @@ func TestSnapshotExcludesLocalEmbeddingState(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, tableNames(manifest), "embedding_jobs")
 	require.NotContains(t, tableNames(manifest), "message_embeddings")
+	require.NotContains(t, tableNames(manifest), "failure_ledger")
 	require.Empty(t, manifest.Embeddings)
 
 	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
 	require.NoError(t, err)
+	require.NoError(t, dst.RecordFailure(ctx, store.FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "local"}, errors.New("keep me")))
 	defer func() { _ = dst.Close() }()
 	_, err = dst.DB().ExecContext(ctx, `
 		insert into embedding_jobs(message_id, state, attempts, provider, model, input_version, updated_at)
@@ -1249,6 +1253,9 @@ func TestSnapshotExcludesLocalEmbeddingState(t *testing.T) {
 		select state from embedding_jobs where message_id = 'm1'
 	`).Scan(&state))
 	require.Equal(t, "pending", state)
+	var failures int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from failure_ledger where guild_id = 'local'`).Scan(&failures))
+	require.Equal(t, 1, failures)
 }
 
 func TestSnapshotExcludesAndPreservesDirectMessages(t *testing.T) {

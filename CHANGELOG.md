@@ -9,6 +9,7 @@
 - Add read-only `diagnostics` output for SQLite integrity, WAL size, archive freshness, and authoritative Discrawl writer-lock ownership.
 - Add read-only archive coverage reporting with per-guild/channel bounds, named-versus-synthetic channel counts, persisted wiretap skip counters, and watch-mode deltas via `wiretap --stats`.
 - Preserve fetched attachment media metadata when duplicate attachment snapshots refresh the singleton attachment row. Thanks @agent-eli.
+- Add a local-only failure ledger with row-level write context, retry/resolution tracking, JSON queries, and known-failure coverage counts.
 
 ## 0.11.3 - 2026-06-23
 

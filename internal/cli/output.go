@@ -126,6 +126,7 @@ Commands:
   status
   diagnostics
   coverage
+  failures
   remote
   whoami
   report
@@ -148,6 +149,11 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"failures": `Usage:
+  discrawl failures [--all] [--source SOURCE] [--guild ID] [--channel ID] [--limit N] [--json]
+
+Lists unresolved local sync, import, media, embedding, and write failures by default. Use --all to include resolved rows retained for 90 days.
+`,
 	"coverage": `Usage:
   discrawl coverage [--guild ID] [--json]
 
@@ -307,6 +313,24 @@ func printHuman(w io.Writer, value any) error {
 		return err
 	case store.CoverageReport:
 		return printCoverageHuman(w, v)
+	case store.FailureReport:
+		if _, err := fmt.Fprintf(w, "unresolved=%d\nreturned=%d\n", v.UnresolvedCount, len(v.Failures)); err != nil {
+			return err
+		}
+		for _, row := range v.Failures {
+			status := "unresolved"
+			if !row.ResolvedAt.IsZero() {
+				status = "resolved"
+			}
+			if _, err := fmt.Fprintf(w, "\n%s source=%s operation=%s guild=%s channel=%s message=%s %s=%s retries=%d last=%s\n%s: %s\n",
+				status, row.Source, row.Operation, row.GuildID, row.ChannelID, row.MessageID,
+				row.RelatedKind, row.RelatedID, row.RetryCount, formatTime(row.LastSeenAt),
+				row.ErrorClass, row.ErrorMessage,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	case wiretapProgress:
 		if _, err := fmt.Fprintf(w, "import_messages=%d\nimport_channels=%d\nimport_skipped_messages=%d\nimport_skipped_channels=%d\n", v.Import.Messages, v.Import.Channels, v.Import.SkippedMessages, v.Import.SkippedChannels); err != nil {
 			return err
@@ -617,7 +641,7 @@ func printHuman(w io.Writer, value any) error {
 }
 
 func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
-	if _, err := fmt.Fprintf(w, "guilds=%d\nchannels=%d\nmessage_channels=%d\nnamed_channels=%d\nsynthetic_channels=%d\nmessages=%d\nhistory_complete_channels=%d\nlast_bot_sync=%s\nlast_wiretap_import=%s\nwiretap_skipped_messages=%d\nwiretap_skipped_channels=%d\n",
+	if _, err := fmt.Fprintf(w, "guilds=%d\nchannels=%d\nmessage_channels=%d\nnamed_channels=%d\nsynthetic_channels=%d\nmessages=%d\nhistory_complete_channels=%d\nknown_failures=%d\nunscoped_known_failures=%d\nlast_bot_sync=%s\nlast_wiretap_import=%s\nwiretap_skipped_messages=%d\nwiretap_skipped_channels=%d\n",
 		report.Totals.GuildCount,
 		report.Totals.ChannelCount,
 		report.Totals.MessageChannelCount,
@@ -625,6 +649,8 @@ func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
 		report.Totals.SyntheticChannelCount,
 		report.Totals.MessageCount,
 		report.Totals.HistoryCompleteChannelCount,
+		report.Totals.KnownFailureCount,
+		report.Totals.UnscopedKnownFailureCount,
 		formatTime(report.LastBotSyncAt),
 		formatTime(report.Wiretap.LastImportAt),
 		report.Wiretap.SkippedMessages,
@@ -633,15 +659,15 @@ func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
 		return err
 	}
 	for _, guild := range report.Guilds {
-		if _, err := fmt.Fprintf(w, "\n%s (%s): messages=%d channels=%d named=%d synthetic=%d first=%s last=%s\n",
+		if _, err := fmt.Fprintf(w, "\n%s (%s): messages=%d channels=%d named=%d synthetic=%d known_failures=%d first=%s last=%s\n",
 			guild.Name, guild.ID, guild.MessageCount, guild.ChannelCount,
-			guild.NamedChannelCount, guild.SyntheticChannelCount,
+			guild.NamedChannelCount, guild.SyntheticChannelCount, guild.KnownFailureCount,
 			formatTime(guild.EarliestMessageAt), formatTime(guild.LatestMessageAt),
 		); err != nil {
 			return err
 		}
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "CHANNEL\tID\tKIND\tSOURCE\tMESSAGES\tFIRST\tLAST\tHISTORY")
+		_, _ = fmt.Fprintln(tw, "CHANNEL\tID\tKIND\tSOURCE\tMESSAGES\tFAILURES\tFIRST\tLAST\tHISTORY")
 		for _, channel := range guild.Channels {
 			source := "named"
 			if channel.Synthetic {
@@ -651,8 +677,8 @@ func printCoverageHuman(w io.Writer, report store.CoverageReport) error {
 			if channel.HistoryComplete != nil && *channel.HistoryComplete {
 				history = "complete"
 			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-				channel.Name, channel.ID, channel.Kind, source, channel.MessageCount,
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
+				channel.Name, channel.ID, channel.Kind, source, channel.MessageCount, channel.KnownFailureCount,
 				formatTime(channel.EarliestMessageAt), formatTime(channel.LatestMessageAt), history,
 			)
 		}
