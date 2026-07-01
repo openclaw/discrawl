@@ -30,6 +30,9 @@ func (r *runtime) runFailures(args []string) error {
 	if *jsonOut {
 		r.json = true
 	}
+	if r.store == nil {
+		return dbErr(errors.New("failures requires a local SQLite archive"))
+	}
 	report, err := r.store.ListFailures(r.ctx, store.FailureListOptions{
 		IncludeResolved: *includeResolved,
 		Source:          strings.TrimSpace(*source),

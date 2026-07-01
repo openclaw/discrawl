@@ -688,6 +688,15 @@ func TestFailuresHumanJSONAndResolvedHistory(t *testing.T) {
 	require.False(t, report.Failures[0].ResolvedAt.IsZero())
 }
 
+func TestFailuresMissingArchiveFailsWithoutCreatingDatabase(t *testing.T) {
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	err := Run(context.Background(), []string{"--config", cfgPath, "failures"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.Equal(t, 5, ExitCode(err))
+	require.ErrorContains(t, err, "failures requires a local SQLite archive")
+	require.NoFileExists(t, cfg.DBPath)
+}
+
 func TestWiretapStatsIncludesCoverage(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
