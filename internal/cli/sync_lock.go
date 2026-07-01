@@ -183,6 +183,9 @@ func (r *runtime) syncLockPath() (string, error) {
 type syncLockOwner struct {
 	PID       int
 	Operation string
+	Phase     string
+	StartedAt string
+	UpdatedAt string
 	Token     string
 }
 
@@ -241,7 +244,14 @@ func readSyncLockOwnerFile(path string) (syncLockOwner, bool) {
 	if err != nil {
 		return syncLockOwner{}, false
 	}
-	return syncLockOwner{PID: pid, Operation: fields["operation"], Token: fields["token"]}, true
+	return syncLockOwner{
+		PID:       pid,
+		Operation: fields["operation"],
+		Phase:     fields["phase"],
+		StartedAt: fields["started_at"],
+		UpdatedAt: fields["updated_at"],
+		Token:     fields["token"],
+	}, true
 }
 
 func writeSyncLockMetadataRecord(file *os.File, path string, metadata []byte) error {

@@ -437,6 +437,106 @@ func TestControlStatusIncludesShareAndFileSizes(t *testing.T) {
 	require.Contains(t, out.Summary, "5 messages")
 }
 
+func TestDiagnosticsReportsSQLiteAndActiveWriter(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	defer func() { _ = s.Close() }()
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	release, err := acquireSyncLockWithMetadata(ctx, lockPath, syncLockMetadataBody("wiretap", "importing", now, now.Add(time.Minute), testSyncLockToken()))
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "diagnostics", "--json"}, &out, &bytes.Buffer{}))
+	var report diagnosticsReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "ok", report.Status)
+	require.Equal(t, cfg.DBPath, report.Database.Path)
+	require.True(t, report.Database.Exists)
+	require.Positive(t, report.Database.Bytes)
+	require.Equal(t, "wal", report.Database.JournalMode)
+	require.Equal(t, "ok", report.Database.Integrity)
+	require.Equal(t, cfg.DBPath+"-wal", report.Database.WAL.Path)
+	require.True(t, report.SafeForReadOnlyInspection)
+	require.True(t, report.SyncLock.Held)
+	require.Equal(t, "active_writer", report.SyncLock.State)
+	require.Equal(t, "file_lock", report.SyncLock.Detection)
+	require.NotNil(t, report.SyncLock.Owner)
+	require.Equal(t, os.Getpid(), report.SyncLock.Owner.PID)
+	require.True(t, report.SyncLock.Owner.Alive)
+	require.Equal(t, "wiretap", report.SyncLock.Owner.Operation)
+	require.Equal(t, "importing", report.SyncLock.Owner.Phase)
+	require.Equal(t, now.Format(time.RFC3339Nano), report.SyncLock.Owner.StartedAt)
+	require.Equal(t, now.Add(time.Minute).Format(time.RFC3339Nano), report.SyncLock.Owner.UpdatedAt)
+
+	require.NoError(t, release())
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "diagnostics"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "sync_lock_held=false")
+	require.Contains(t, out.String(), "sync_lock_state=stale_metadata")
+}
+
+func TestDiagnosticsMissingDatabaseIsVisibleAndNonMutating(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "diagnostics"}, &out, &bytes.Buffer{}))
+	var report diagnosticsReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "warning", report.Status)
+	require.False(t, report.Database.Exists)
+	require.Equal(t, "not_available", report.Database.Integrity)
+	require.False(t, report.SafeForReadOnlyInspection)
+	require.False(t, report.SyncLock.Held)
+	require.Equal(t, "unlocked", report.SyncLock.State)
+	require.NoFileExists(t, cfg.DBPath)
+	require.NoFileExists(t, lockPath)
+	require.NoFileExists(t, syncLockMetadataPath(lockPath))
+}
+
+func TestDiagnosticsReportsUnreadableDatabase(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	require.NoError(t, os.WriteFile(cfg.DBPath, []byte("not sqlite"), 0o600))
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "diagnostics", "--json"}, &out, &bytes.Buffer{}))
+	var report diagnosticsReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "warning", report.Status)
+	require.True(t, report.Database.Exists)
+	require.Equal(t, "unavailable", report.Database.Integrity)
+	require.NotEmpty(t, report.Database.OpenError)
+	require.False(t, report.SafeForReadOnlyInspection)
+}
+
+func TestDiagnosticsChecksIntegrityAcrossSchemaMismatch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	_, err := s.Exec(ctx, "pragma user_version = 999")
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	var out bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "diagnostics", "--json"}, &out, &bytes.Buffer{}))
+	var report diagnosticsReport
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "warning", report.Status)
+	require.Equal(t, 999, report.Database.SchemaVersion)
+	require.Equal(t, "ok", report.Database.Integrity)
+	require.True(t, report.SafeForReadOnlyInspection)
+	require.Contains(t, report.Freshness.Error, "database schema version mismatch")
+}
+
 func TestFormattingAndTUISourceBranches(t *testing.T) {
 	require.Equal(t, "-", formatDaysSilent(-1))
 	require.Equal(t, "4", formatDaysSilent(4))

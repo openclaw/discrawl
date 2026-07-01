@@ -58,6 +58,7 @@ See [`sql`](../commands/sql.html).
 ## See also
 
 - [`status`](../commands/status.html) - high-level archive status
+- [`diagnostics`](../commands/diagnostics.html) - SQLite integrity, WAL, freshness, and writer-lock state
 - [`channels`](../commands/channels.html) - channel directory
 - [`members`](../commands/members.html) - member directory
 - [Security](../security.html)

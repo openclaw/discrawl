@@ -124,6 +124,7 @@ Commands:
   members
   channels
   status
+  diagnostics
   remote
   whoami
   report
@@ -146,6 +147,11 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"diagnostics": `Usage:
+  discrawl diagnostics [--json]
+
+Reports read-only SQLite integrity, WAL, freshness, and Discrawl sync-lock state.
+`,
 	"check-update": `Usage:
   discrawl check-update [--json] [--force]
 
@@ -297,6 +303,32 @@ func printHuman(w io.Writer, value any) error {
 		_, err := fmt.Fprintf(w, "db=%s\nguilds=%d\nchannels=%d\nthreads=%d\nmessages=%d\nmembers=%d\nembedding_backlog=%d\nlast_sync=%s\nlast_tail_event=%s\n",
 			v.DBPath, v.GuildCount, v.ChannelCount, v.ThreadCount, v.MessageCount, v.MemberCount, v.EmbeddingBacklog,
 			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt))
+		return err
+	case diagnosticsReport:
+		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\nsafe_for_read_only_inspection=%t\n",
+			v.Status, v.Database.Path, v.Database.Exists, v.Database.Bytes, v.Database.JournalMode,
+			v.Database.SchemaVersion,
+			v.Database.WAL.Path, v.Database.WAL.Exists, v.Database.WAL.Bytes, v.Database.Integrity,
+			v.SyncLock.Path, v.SyncLock.Held, v.SyncLock.State, v.SafeForReadOnlyInspection)
+		if err != nil {
+			return err
+		}
+		if v.SyncLock.Owner != nil {
+			_, err = fmt.Fprintf(w, "writer_pid=%d\nwriter_alive=%t\nwriter_operation=%s\nwriter_phase=%s\nwriter_started_at=%s\nwriter_updated_at=%s\n",
+				v.SyncLock.Owner.PID, v.SyncLock.Owner.Alive, v.SyncLock.Owner.Operation,
+				v.SyncLock.Owner.Phase, v.SyncLock.Owner.StartedAt, v.SyncLock.Owner.UpdatedAt)
+		}
+		if err == nil && v.Freshness.LastSyncAt != "" {
+			_, err = fmt.Fprintf(w, "last_sync_at=%s\n", v.Freshness.LastSyncAt)
+		}
+		if err == nil && v.Freshness.LastTailEventAt != "" {
+			_, err = fmt.Fprintf(w, "last_tail_event_at=%s\n", v.Freshness.LastTailEventAt)
+		}
+		for _, warning := range v.Warnings {
+			if err == nil {
+				_, err = fmt.Fprintf(w, "warning=%s\n", warning)
+			}
+		}
 		return err
 	case share.PublishScopePreflight:
 		_, err := fmt.Fprintf(w, "ready=%t\npublic_only=%t\nchannels_candidate=%d\nchannels_allowed=%d\nchannels_excluded=%d\nmessages_candidate=%d\nmessages_allowed=%d\nmessages_excluded=%d\nempty=%t\n",

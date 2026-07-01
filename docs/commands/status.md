@@ -22,6 +22,7 @@ discrawl status
 
 ## See also
 
+- [`diagnostics`](diagnostics.html) - read-only SQLite, WAL, freshness, and writer-lock checks
 - [`doctor`](doctor.html) - liveness check (config, auth, DB, FTS wiring)
 - [`remote`](remote.html) - direct Cloudflare remote archive checks
 - [`report`](report.html) - Markdown activity block for the shared backup README

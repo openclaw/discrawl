@@ -26,7 +26,7 @@ Wiretap DMs stay local and are never exported to the Git-backed snapshot mirror.
 - imports classifiable Discord Desktop cache messages with `wiretap`, including proven DMs under `@me`
 - publishes and imports private Git-backed archive snapshots for org-wide read access
 - browses stored messages and local DMs in a terminal archive UI
-- exposes `metadata --json`, `status --json`, and `doctor --json` for local
+- exposes `metadata --json`, `status --json`, `diagnostics --json`, and `doctor --json` for local
   launchers, automation, and CI
 - reports Worker-fronted cloud archive status in read-only mode without
   touching local SQLite
@@ -515,6 +515,21 @@ Shows local archive status.
 ```bash
 discrawl status
 ```
+
+### `diagnostics`
+
+Inspects the local archive without authenticating to Discord or running a sync.
+It reports the active database path, SQLite integrity and journal mode, WAL
+presence/size, last sync/tail timestamps, and the sync-lock owner when a
+Discrawl writer is active.
+
+```bash
+discrawl diagnostics
+discrawl diagnostics --json
+```
+
+The lock probe verifies the operating-system file lock. Leftover lock metadata
+is reported as stale rather than mistaken for an active writer.
 
 ### Git-backed sharing
 

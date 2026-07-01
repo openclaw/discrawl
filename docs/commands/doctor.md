@@ -33,3 +33,4 @@ discrawl doctor
 - [Bot setup](../bot-setup.html)
 - [Configuration](../configuration.html)
 - [`status`](status.html)
+- [`diagnostics`](diagnostics.html) - local archive integrity and writer state without Discord auth
