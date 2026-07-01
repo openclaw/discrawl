@@ -150,6 +150,14 @@ func TestOutputBranches(t *testing.T) {
 		},
 		syncer.SyncStats{Guilds: 1, Channels: 2, Threads: 3, Members: 4, Messages: 5},
 		discorddesktop.Stats{Path: "/tmp/discord", FilesVisited: 1, FullCache: true, DryRun: true},
+		share.PublishScopePreflight{
+			Ready: false, PublicOnly: true,
+			Channels:      share.PublishScopeCount{Candidate: 2, Allowed: 1, Excluded: 1},
+			Messages:      share.PublishScopeCount{Candidate: 3, Allowed: 1, Excluded: 2},
+			Empty:         true,
+			EmptyReason:   "metadata_incomplete",
+			RepairCommand: "discrawl sync --source discord",
+		},
 		store.EmbeddingDrainStats{
 			Processed:        3,
 			Succeeded:        2,

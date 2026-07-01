@@ -143,91 +143,15 @@ func PreflightPublishScope(ctx context.Context, s *store.Store, opts FilterOptio
 		ExcludeChannelIDs: slices.Sorted(maps.Keys(stringSet(opts.ExcludeChannelIDs))),
 		Guilds:            []PublishScopeGuild{},
 	}
-	guilds := map[string]*PublishScopeGuild{}
-	rows, err := s.DB().QueryContext(ctx, `select id, name, raw_json from guilds where id != ? order by id`, directMessageGuildID)
+	guilds, err := loadPublishScopeGuilds(ctx, s.DB())
 	if err != nil {
-		return PublishScopePreflight{}, fmt.Errorf("query guild publish preflight: %w", err)
-	}
-	for rows.Next() {
-		var id, name, raw string
-		if err := rows.Scan(&id, &name, &raw); err != nil {
-			_ = rows.Close()
-			return PublishScopePreflight{}, fmt.Errorf("scan guild publish preflight: %w", err)
-		}
-		_, metadataReady := everyoneGuildPermissions(raw, id)
-		guilds[id] = &PublishScopeGuild{
-			GuildID:       id,
-			GuildName:     name,
-			SourceHint:    publishSourceHint(raw, metadataReady),
-			MetadataReady: metadataReady,
-		}
-	}
-	if err := rows.Close(); err != nil {
 		return PublishScopePreflight{}, err
 	}
-	if err := rows.Err(); err != nil {
-		return PublishScopePreflight{}, err
-	}
-
-	channelGuilds := map[string]string{}
-	rows, err = s.DB().QueryContext(ctx, `select id, guild_id from channels where guild_id != ?`, directMessageGuildID)
+	channelGuilds, err := countPublishScopeChannels(ctx, s.DB(), candidateFilter, selectedFilter, guilds, &report)
 	if err != nil {
-		return PublishScopePreflight{}, fmt.Errorf("query channel publish preflight: %w", err)
-	}
-	for rows.Next() {
-		var channelID, guildID string
-		if err := rows.Scan(&channelID, &guildID); err != nil {
-			_ = rows.Close()
-			return PublishScopePreflight{}, fmt.Errorf("scan channel publish preflight: %w", err)
-		}
-		channelGuilds[channelID] = guildID
-		if !candidateFilter.allowChannelID(channelID) {
-			continue
-		}
-		report.Channels.Candidate++
-		guild := ensurePublishScopeGuild(guilds, guildID)
-		guild.CandidateChannels++
-		if selectedFilter.allowChannelID(channelID) {
-			report.Channels.Allowed++
-			guild.AllowedChannels++
-		}
-	}
-	if err := rows.Close(); err != nil {
 		return PublishScopePreflight{}, err
 	}
-	if err := rows.Err(); err != nil {
-		return PublishScopePreflight{}, err
-	}
-
-	rows, err = s.DB().QueryContext(ctx, `select id, guild_id, channel_id from messages where guild_id != ?`, directMessageGuildID)
-	if err != nil {
-		return PublishScopePreflight{}, fmt.Errorf("query message publish preflight: %w", err)
-	}
-	for rows.Next() {
-		var messageID, messageGuildID, channelID string
-		if err := rows.Scan(&messageID, &messageGuildID, &channelID); err != nil {
-			_ = rows.Close()
-			return PublishScopePreflight{}, fmt.Errorf("scan message publish preflight: %w", err)
-		}
-		if !candidateFilter.allowChannelID(channelID) {
-			continue
-		}
-		guildID := messageGuildID
-		if channelGuildID, ok := channelGuilds[channelID]; ok {
-			guildID = channelGuildID
-		}
-		report.Messages.Candidate++
-		guild := ensurePublishScopeGuild(guilds, guildID)
-		guild.CandidateMessages++
-		if selectedFilter.allowedMessageIDs[messageID] || selectedFilter.allowChannelID(channelID) {
-			report.Messages.Allowed++
-			guild.AllowedMessages++
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return PublishScopePreflight{}, err
-	}
-	if err := rows.Err(); err != nil {
+	if err := countPublishScopeMessages(ctx, s.DB(), candidateFilter, selectedFilter, guilds, channelGuilds, &report); err != nil {
 		return PublishScopePreflight{}, err
 	}
 
@@ -258,6 +182,98 @@ func PreflightPublishScope(ctx context.Context, s *store.Store, opts FilterOptio
 		}
 	}
 	return report, nil
+}
+
+func loadPublishScopeGuilds(ctx context.Context, db *sql.DB) (map[string]*PublishScopeGuild, error) {
+	rows, err := db.QueryContext(ctx, `select id, name, raw_json from guilds where id != ? order by id`, directMessageGuildID)
+	if err != nil {
+		return nil, fmt.Errorf("query guild publish preflight: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	guilds := map[string]*PublishScopeGuild{}
+	for rows.Next() {
+		var id, name, raw string
+		if err := rows.Scan(&id, &name, &raw); err != nil {
+			return nil, fmt.Errorf("scan guild publish preflight: %w", err)
+		}
+		_, metadataReady := everyoneGuildPermissions(raw, id)
+		guilds[id] = &PublishScopeGuild{
+			GuildID:       id,
+			GuildName:     name,
+			SourceHint:    publishSourceHint(raw, metadataReady),
+			MetadataReady: metadataReady,
+		}
+	}
+	return guilds, rows.Err()
+}
+
+func countPublishScopeChannels(
+	ctx context.Context,
+	db *sql.DB,
+	candidateFilter, selectedFilter *snapshotFilter,
+	guilds map[string]*PublishScopeGuild,
+	report *PublishScopePreflight,
+) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `select id, guild_id from channels where guild_id != ?`, directMessageGuildID)
+	if err != nil {
+		return nil, fmt.Errorf("query channel publish preflight: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	channelGuilds := map[string]string{}
+	for rows.Next() {
+		var channelID, guildID string
+		if err := rows.Scan(&channelID, &guildID); err != nil {
+			return nil, fmt.Errorf("scan channel publish preflight: %w", err)
+		}
+		channelGuilds[channelID] = guildID
+		if !candidateFilter.allowChannelID(channelID) {
+			continue
+		}
+		report.Channels.Candidate++
+		guild := ensurePublishScopeGuild(guilds, guildID)
+		guild.CandidateChannels++
+		if selectedFilter.allowChannelID(channelID) {
+			report.Channels.Allowed++
+			guild.AllowedChannels++
+		}
+	}
+	return channelGuilds, rows.Err()
+}
+
+func countPublishScopeMessages(
+	ctx context.Context,
+	db *sql.DB,
+	candidateFilter, selectedFilter *snapshotFilter,
+	guilds map[string]*PublishScopeGuild,
+	channelGuilds map[string]string,
+	report *PublishScopePreflight,
+) error {
+	rows, err := db.QueryContext(ctx, `select id, guild_id, channel_id from messages where guild_id != ?`, directMessageGuildID)
+	if err != nil {
+		return fmt.Errorf("query message publish preflight: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var messageID, messageGuildID, channelID string
+		if err := rows.Scan(&messageID, &messageGuildID, &channelID); err != nil {
+			return fmt.Errorf("scan message publish preflight: %w", err)
+		}
+		if !candidateFilter.allowChannelID(channelID) {
+			continue
+		}
+		guildID := messageGuildID
+		if channelGuildID, ok := channelGuilds[channelID]; ok {
+			guildID = channelGuildID
+		}
+		report.Messages.Candidate++
+		guild := ensurePublishScopeGuild(guilds, guildID)
+		guild.CandidateMessages++
+		if selectedFilter.allowedMessageIDs[messageID] || selectedFilter.allowChannelID(channelID) {
+			report.Messages.Allowed++
+			guild.AllowedMessages++
+		}
+	}
+	return rows.Err()
 }
 
 func ensurePublishScopeGuild(guilds map[string]*PublishScopeGuild, guildID string) *PublishScopeGuild {

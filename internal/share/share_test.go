@@ -724,6 +724,12 @@ func TestPreflightPublishScopeDistinguishesMissingMetadataFromEmptyScope(t *test
 	require.Equal(t, "no_matching_messages", report.EmptyReason)
 	require.Empty(t, report.RepairCommand)
 
+	report, err = PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true, IncludeChannelIDs: []string{"c-private"}})
+	require.NoError(t, err)
+	require.True(t, report.Ready)
+	require.True(t, report.Empty)
+	require.Equal(t, "filters_match_no_publishable_messages", report.EmptyReason)
+
 	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-orphan", GuildID: "g-missing", Kind: "text", Name: "orphan", RawJSON: `{}`})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
