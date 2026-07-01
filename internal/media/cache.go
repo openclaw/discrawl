@@ -220,15 +220,22 @@ func fetchURL(ctx context.Context, opts FetchOptions, attachment store.Attachmen
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fetchResult{}, err
+		return fetchResult{}, errors.New("build attachment fetch request")
 	}
 	resp, err := opts.HTTPClient.Do(req)
 	if err != nil {
-		return fetchResult{}, err
+		switch {
+		case errors.Is(err, context.Canceled):
+			return fetchResult{}, context.Canceled
+		case errors.Is(err, context.DeadlineExceeded):
+			return fetchResult{}, context.DeadlineExceeded
+		default:
+			return fetchResult{}, errors.New("attachment fetch request failed")
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fetchResult{}, fmt.Errorf("GET %s returned HTTP %d", url, resp.StatusCode)
+		return fetchResult{}, fmt.Errorf("attachment fetch returned HTTP %d", resp.StatusCode)
 	}
 	if resp.ContentLength > opts.MaxBytes {
 		return fetchResult{status: "skipped", reason: "too_large"}, nil

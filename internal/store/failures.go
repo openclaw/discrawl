@@ -18,6 +18,7 @@ const (
 )
 
 var (
+	failureURLPattern    = regexp.MustCompile(`(?i)\bhttps?://[^\s,;]+`)
 	failureBearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;]+`)
 	failureHeaderPattern = regexp.MustCompile(`(?i)(\b[a-z0-9_.-]*(?:token|key|secret|authorization)[a-z0-9_.-]*\s*:\s*)(?:(?:bearer|basic)\s+)?[^\s,;]+`)
 	failureSecretPattern = regexp.MustCompile(`(?i)([?&]?[a-z0-9_.-]*(?:token|key|secret|authorization)[a-z0-9_.-]*=)[^&\s,;]+`)
@@ -156,6 +157,24 @@ func (s *Store) ResolveFailures(ctx context.Context, ref FailureRef) error {
 	query := `update failure_ledger set resolved_at = ? where ` + strings.Join(clauses, " and ")
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("resolve %s/%s failures: %w", ref.Source, ref.Operation, err)
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
+// ResolveFailureIdentity resolves only the exact failure identity, including empty scope fields.
+func (s *Store) ResolveFailureIdentity(ctx context.Context, ref FailureRef) error {
+	ref = normalizeFailureRef(ref)
+	if ref.Operation == "" || ref.Source == "" {
+		return errors.New("failure operation and source are required")
+	}
+	now := time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `
+		update failure_ledger set resolved_at = ?
+		where resolved_at is null and operation = ? and source = ?
+		  and guild_id = ? and channel_id = ? and message_id = ?
+		  and related_kind = ? and related_id = ?
+	`, now.Format(timeLayout), ref.Operation, ref.Source, ref.GuildID, ref.ChannelID, ref.MessageID, ref.RelatedKind, ref.RelatedID); err != nil {
+		return fmt.Errorf("resolve exact %s/%s failure: %w", ref.Source, ref.Operation, err)
 	}
 	return s.pruneResolvedFailures(ctx, now)
 }
@@ -358,6 +377,7 @@ func failureClass(err error) string {
 func sanitizeFailureMessage(message string) string {
 	message = strings.ToValidUTF8(message, "")
 	message = strings.Join(strings.Fields(message), " ")
+	message = failureURLPattern.ReplaceAllString(message, "[redacted-url]")
 	message = failureHeaderPattern.ReplaceAllString(message, `${1}[redacted]`)
 	message = failureBearerPattern.ReplaceAllString(message, `${1}[redacted]`)
 	message = failureSecretPattern.ReplaceAllString(message, `${1}[redacted]`)

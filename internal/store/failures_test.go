@@ -21,7 +21,7 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	ref := FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}
-	failure := errors.New(`request failed: Bearer abc123 https://example.test/?api_key=api-value&access_token=access-value {"authorization":"hidden","refresh_token":"refresh-value","client_secret":"client-value"} X-API-Key: header-value Authorization: Basic basic-value`)
+	failure := errors.New(`request failed: Bearer abc123 https://example.test/private?hm=signed-value api_key=api-value&access_token=access-value {"authorization":"hidden","refresh_token":"refresh-value","client_secret":"client-value"} X-API-Key: header-value Authorization: Basic basic-value`)
 	require.NoError(t, s.RecordFailure(ctx, ref, failure))
 	require.NoError(t, s.RecordFailure(ctx, ref, failure))
 
@@ -32,6 +32,8 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	require.Equal(t, 1, report.Failures[0].RetryCount)
 	require.Contains(t, report.Failures[0].ErrorMessage, "[redacted]")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "abc123")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "example.test")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "signed-value")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "api-value")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "hidden")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "access-value")
@@ -183,6 +185,26 @@ func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {
 	var oldCount int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from failure_ledger where message_id = 'old'`).Scan(&oldCount))
 	require.Zero(t, oldCount)
+}
+
+func TestResolveFailureIdentityDoesNotClearScopedFailures(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	unscoped := FailureRef{Operation: "import_messages", Source: "wiretap"}
+	scoped := FailureRef{Operation: "import_messages", Source: "wiretap", MessageID: "m1"}
+	require.NoError(t, s.RecordFailure(ctx, unscoped, errors.New("transaction failed")))
+	require.NoError(t, s.RecordFailure(ctx, scoped, errors.New("row failed")))
+	require.NoError(t, s.ResolveFailureIdentity(ctx, unscoped))
+
+	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "m1", report.Failures[0].MessageID)
 }
 
 func TestFailureHelpersHandleNilContextsAndBounds(t *testing.T) {

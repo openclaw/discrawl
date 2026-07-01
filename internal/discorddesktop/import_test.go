@@ -229,6 +229,18 @@ func TestImportFailureLedgerHelpersRecordAndResolve(t *testing.T) {
 
 	require.ErrorIs(t, recordImportFailure(ctx, st, ref, original), original)
 	require.NoError(t, resolveImportFailures(ctx, st, ref))
+
+	unscoped := store.FailureRef{Operation: "import_messages", Source: "wiretap"}
+	remaining := unscoped
+	remaining.MessageID = "m2"
+	require.ErrorIs(t, recordImportFailure(ctx, st, unscoped, original), original)
+	require.ErrorIs(t, recordImportFailure(ctx, st, remaining, original), original)
+	require.NoError(t, resolveImportFailureIdentity(ctx, st, unscoped))
+	report, err = st.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "m2", report.Failures[0].MessageID)
+	require.NoError(t, resolveImportMessageFailures(ctx, st, []string{"m2"}))
 }
 
 func TestImportExtractsCompressedUnknownMessageArrayFromChromiumCache(t *testing.T) {

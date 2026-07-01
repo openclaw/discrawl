@@ -258,7 +258,7 @@ func TestFetchRecordsSkippedAndFailedStatuses(t *testing.T) {
 	rows, err = s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m2"})
 	require.NoError(t, err)
 	require.Equal(t, "failed", rows[0].FetchStatus)
-	require.Len(t, rows[0].FetchError, 512)
+	require.Equal(t, "attachment fetch request failed", rows[0].FetchError)
 
 	failures, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
@@ -280,6 +280,39 @@ func TestFetchRecordsSkippedAndFailedStatuses(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, failures.Failures, 1)
 	require.False(t, failures.Failures[0].ResolvedAt.IsZero())
+}
+
+func TestFetchHTTPFailureDoesNotPersistSignedURL(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	signedURL := "https://cdn.discordapp.com/attachments/c1/private.png?ex=one&is=two&hm=signed-value"
+	require.NoError(t, seedAttachment(ctx, s, signedURL))
+
+	stats, err := Fetch(ctx, s, FetchOptions{
+		CacheDir: t.TempDir(),
+		MaxBytes: 1024,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		})},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Failed)
+
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Contains(t, report.Failures[0].ErrorMessage, "HTTP 403")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "cdn.discordapp.com")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "signed-value")
 }
 
 func TestFetchRejectsNonDiscordAttachmentURL(t *testing.T) {

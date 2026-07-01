@@ -847,6 +847,12 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 	for _, message := range messages {
 		messageIDs = append(messageIDs, message.Record.ID)
 	}
+	if err := resolveImportFailureIdentity(ctx, st, store.FailureRef{
+		Operation: "import_messages",
+		Source:    "wiretap",
+	}); err != nil {
+		return err
+	}
 	if err := resolveImportMessageFailures(ctx, st, messageIDs); err != nil {
 		return err
 	}
@@ -871,6 +877,12 @@ func resolveImportFailures(ctx context.Context, st *store.Store, ref store.Failu
 	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return st.ResolveFailures(ledgerCtx, ref)
+}
+
+func resolveImportFailureIdentity(ctx context.Context, st *store.Store, ref store.FailureRef) error {
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return st.ResolveFailureIdentity(ledgerCtx, ref)
 }
 
 func resolveImportMessageFailures(ctx context.Context, st *store.Store, messageIDs []string) error {
