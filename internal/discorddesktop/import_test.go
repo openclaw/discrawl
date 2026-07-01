@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -202,6 +203,32 @@ func TestImportMissingDesktopPathIsEmpty(t *testing.T) {
 	require.Zero(t, stats.FilesScanned)
 	require.Zero(t, stats.Messages)
 	require.False(t, stats.FinishedAt.IsZero())
+}
+
+func TestImportFailureLedgerHelpersRecordAndResolve(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	ref := store.FailureRef{
+		Operation: "import_messages", Source: "wiretap", GuildID: "g1", ChannelID: "c1", MessageID: "m1",
+	}
+	original := errors.New("forced import failure")
+	require.ErrorIs(t, recordImportFailure(ctx, st, ref, original), original)
+	report, err := st.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "m1", report.Failures[0].MessageID)
+
+	require.NoError(t, resolveImportMessageFailures(ctx, st, []string{"m1"}))
+	report, err = st.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, report.Failures)
+
+	require.ErrorIs(t, recordImportFailure(ctx, st, ref, original), original)
+	require.NoError(t, resolveImportFailures(ctx, st, ref))
 }
 
 func TestImportExtractsCompressedUnknownMessageArrayFromChromiumCache(t *testing.T) {
