@@ -19,8 +19,9 @@ const (
 
 var (
 	failureBearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;]+`)
-	failureSecretPattern = regexp.MustCompile(`(?i)([?&](?:token|key|secret|authorization)=)[^&\s]+`)
-	failureJSONPattern   = regexp.MustCompile(`(?i)("(?:token|key|secret|authorization)"\s*:\s*")[^"]+`)
+	failureHeaderPattern = regexp.MustCompile(`(?i)(\b[a-z0-9_.-]*(?:token|key|secret|authorization)[a-z0-9_.-]*\s*:\s*)(?:(?:bearer|basic)\s+)?[^\s,;]+`)
+	failureSecretPattern = regexp.MustCompile(`(?i)([?&]?[a-z0-9_.-]*(?:token|key|secret|authorization)[a-z0-9_.-]*=)[^&\s,;]+`)
+	failureJSONPattern   = regexp.MustCompile(`(?i)("[a-z0-9_.-]*(?:token|key|secret|authorization)[a-z0-9_.-]*"\s*:\s*")[^"]+`)
 )
 
 type FailureRef struct {
@@ -357,6 +358,7 @@ func failureClass(err error) string {
 func sanitizeFailureMessage(message string) string {
 	message = strings.ToValidUTF8(message, "")
 	message = strings.Join(strings.Fields(message), " ")
+	message = failureHeaderPattern.ReplaceAllString(message, `${1}[redacted]`)
 	message = failureBearerPattern.ReplaceAllString(message, `${1}[redacted]`)
 	message = failureSecretPattern.ReplaceAllString(message, `${1}[redacted]`)
 	message = failureJSONPattern.ReplaceAllString(message, `${1}[redacted]`)

@@ -21,7 +21,7 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	ref := FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}
-	failure := errors.New(`request failed: Bearer abc123 https://example.test/?token=secret {"authorization":"hidden"}`)
+	failure := errors.New(`request failed: Bearer abc123 https://example.test/?api_key=api-value&access_token=access-value {"authorization":"hidden","refresh_token":"refresh-value","client_secret":"client-value"} X-API-Key: header-value Authorization: Basic basic-value`)
 	require.NoError(t, s.RecordFailure(ctx, ref, failure))
 	require.NoError(t, s.RecordFailure(ctx, ref, failure))
 
@@ -32,8 +32,13 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	require.Equal(t, 1, report.Failures[0].RetryCount)
 	require.Contains(t, report.Failures[0].ErrorMessage, "[redacted]")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "abc123")
-	require.NotContains(t, report.Failures[0].ErrorMessage, "secret")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "api-value")
 	require.NotContains(t, report.Failures[0].ErrorMessage, "hidden")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "access-value")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "refresh-value")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "client-value")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "header-value")
+	require.NotContains(t, report.Failures[0].ErrorMessage, "basic-value")
 	firstSeen := report.Failures[0].FirstSeenAt
 
 	require.NoError(t, s.ResolveFailures(ctx, ref))
