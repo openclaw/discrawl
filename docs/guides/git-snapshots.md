@@ -56,16 +56,18 @@ discrawl messages --channel general --hours 24
 
 ## Auto-update
 
-Once `share.remote` is configured, read commands auto-fetch and import when the local share import is older than `share.stale_after` (default `15m`):
+Once `share.remote` is configured, read commands auto-fetch and import when the last share check is older than `share.stale_after` (default `15m`):
 
 ```bash
 discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.git
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 ```
 
-`discrawl update` forces the same pull/import step manually. `discrawl update --ref <tag-or-commit>` reads the historical Git objects directly and leaves the share checkout unchanged. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports the changed message tail shard plus small cursor tables. Unsafe table-shape changes still fall back to a full import.
+`discrawl update` runs the same safe pull/merge step manually. `discrawl update --force --ref <tag-or-commit>` reads historical Git objects directly and leaves the share checkout unchanged. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports changed canonical shards. Routine merges preserve destination-only rows and do not replay generated event history or remote sync cursors.
 
-`discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
+Discrawl does not silently fall back to a full import. Removed shards and incompatible table changes leave the current database intact and require `discrawl update --force`. Forced updates replace public snapshot tables and rebuild search indexes; local DM rows remain untouched.
+
+`discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided. Auto mode uses the safe merge; force mode performs exact replacement before live deltas.
 
 ## Hybrid mode
 

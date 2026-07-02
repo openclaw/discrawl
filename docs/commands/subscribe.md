@@ -14,6 +14,7 @@ discrawl subscribe --branch main https://github.com/example/discord-archive.git
 discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.git
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 discrawl subscribe --no-import https://github.com/example/discord-archive.git
+discrawl subscribe --force https://github.com/example/discord-archive.git
 discrawl subscribe --with-embeddings https://github.com/example/discord-archive.git
 discrawl subscribe --no-media https://github.com/example/discord-archive.git
 ```
@@ -21,7 +22,7 @@ discrawl subscribe --no-media https://github.com/example/discord-archive.git
 ## What it does
 
 - writes a config with `discord.token_source = "none"` (so no bot token is required)
-- imports the latest snapshot into the local SQLite archive
+- safely merges the latest snapshot into the local SQLite archive without deleting destination-only rows
 - enables auto-refresh: read commands fetch and import when the local share import is older than `share.stale_after` (default `15m`)
 
 ## Flags
@@ -31,6 +32,7 @@ discrawl subscribe --no-media https://github.com/example/discord-archive.git
 - `--stale-after <duration>` - how stale the local import can get before read commands auto-refresh
 - `--no-auto-update` - disable auto-refresh (use [`update`](update.html) manually)
 - `--no-import` - write config only; skip the initial pull/import
+- `--force` - replace public snapshot tables so the local database exactly matches the snapshot
 - `--with-embeddings` - import vectors that match your local `[search.embeddings]` identity
 - `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 

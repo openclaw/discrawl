@@ -585,39 +585,9 @@ func applyImportPragmas(ctx context.Context, db *sql.DB) (func(context.Context) 
 	}, nil
 }
 
-func ImportIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifest, bool, error) {
-	manifest, err := ReadManifest(opts.RepoPath)
-	if err != nil {
-		return Manifest{}, false, err
-	}
-	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
-	if ManifestAlreadyImported(ctx, s, manifest) {
-		if opts.IncludeEmbeddings {
-			if err := ImportEmbeddings(ctx, s, opts, manifest); err != nil {
-				return Manifest{}, false, err
-			}
-		}
-		if opts.IncludeMedia {
-			copied, err := importMedia(ctx, opts, manifest.Media)
-			if err != nil {
-				return Manifest{}, false, err
-			}
-			if err := MarkImported(ctx, s, manifest); err != nil {
-				return Manifest{}, false, err
-			}
-			return manifest, copied > 0, nil
-		}
-		if err := MarkImported(ctx, s, manifest); err != nil {
-			return Manifest{}, false, err
-		}
-		return manifest, false, nil
-	}
-	if previous, ok := PreviousImportedManifest(ctx, s, opts); ok {
-		imported, changed, err := ImportIncremental(ctx, s, opts, previous, manifest)
-		if err == nil || !errors.Is(err, errIncrementalUnsupported) {
-			return imported, changed, err
-		}
-	}
+// Replace makes the local public archive exactly match the snapshot. It always
+// reconciles the database, even when the manifest itself has not changed.
+func Replace(ctx context.Context, s *store.Store, opts Options) (Manifest, bool, error) {
 	imported, err := Import(ctx, s, opts)
 	if err != nil {
 		return Manifest{}, false, err
@@ -625,15 +595,20 @@ func ImportIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifes
 	return imported, true, nil
 }
 
-var errIncrementalUnsupported = errors.New("incremental share import unsupported")
-
-func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previous, manifest Manifest) (Manifest, bool, error) {
-	plan := snapshot.PlanIncrementalImport(snapshotManifest(previous), snapshotManifest(manifest))
-	plan, supported := shareIncrementalPlan(plan)
-	if !supported {
-		return Manifest{}, false, errIncrementalUnsupported
-	}
+func importMergePlan(
+	ctx context.Context,
+	s *store.Store,
+	opts Options,
+	previous Manifest,
+	manifest Manifest,
+	plan snapshot.ImportPlan,
+) (Manifest, bool, error) {
 	if !plan.Changed() {
+		if opts.IncludeEmbeddings {
+			if err := ImportEmbeddings(ctx, s, opts, manifest); err != nil {
+				return Manifest{}, false, err
+			}
+		}
 		copied := 0
 		if opts.IncludeMedia {
 			var err error
@@ -642,7 +617,7 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 				return Manifest{}, false, err
 			}
 		}
-		if err := MarkImported(ctx, s, manifest); err != nil {
+		if err := MarkMerged(ctx, s, manifest); err != nil {
 			return Manifest{}, false, err
 		}
 		return manifest, copied > 0, nil
@@ -660,10 +635,11 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 		}
 	}()
 	if _, _, err := snapshot.ImportIncremental(ctx, snapshot.IncrementalImportOptions{
-		DB:      s.DB(),
-		RootDir: opts.RepoPath,
-		Current: snapshotManifest(manifest),
-		Plan:    plan,
+		DB:       s.DB(),
+		RootDir:  opts.RepoPath,
+		Previous: snapshotManifest(previous),
+		Current:  snapshotManifest(manifest),
+		Plan:     plan,
 		Progress: func(progress snapshot.ImportProgress) {
 			opts.reportProgress(ImportProgress{
 				Phase:     progress.Phase,
@@ -690,7 +666,7 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 			}
 			return nil
 		},
-		ImportRow: importIncrementalSnapshotRow,
+		ImportRow: importMergeSnapshotRow,
 		AfterImport: func(ctx context.Context, tx *sql.Tx) error {
 			if err := repairImportedGuildIDs(ctx, tx); err != nil {
 				return err
@@ -706,7 +682,7 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 	}); err != nil {
 		return Manifest{}, false, err
 	}
-	rebuildMessageFTS, rebuildMemberFTS := importPlanSearchRebuilds(plan)
+	rebuildMessageFTS, rebuildMemberFTS := mergePlanSearchRebuilds(plan)
 	if rebuildMessageFTS {
 		opts.reportProgress(ImportProgress{Phase: "rebuild_fts"})
 		if err := s.RebuildMessageSearchIndex(ctx); err != nil {
@@ -724,7 +700,7 @@ func ImportIncremental(ctx context.Context, s *store.Store, opts Options, previo
 			return Manifest{}, false, err
 		}
 	}
-	if err := MarkImported(ctx, s, manifest); err != nil {
+	if err := MarkMerged(ctx, s, manifest); err != nil {
 		return Manifest{}, false, err
 	}
 	if err := restorePragmas(ctx); err != nil {
@@ -773,27 +749,6 @@ func importPlanRowCount(plan snapshot.ImportPlan) int {
 	return total
 }
 
-func importPlanSearchRebuilds(plan snapshot.ImportPlan) (bool, bool) {
-	rebuildMessageFTS := false
-	rebuildMemberFTS := false
-	for _, tablePlan := range plan.Tables {
-		if tablePlan.Mode == snapshot.TableImportSkip {
-			continue
-		}
-		switch tablePlan.Table.Name {
-		case "channels":
-			rebuildMessageFTS = true
-		case "messages":
-			if tablePlan.Mode == snapshot.TableImportReplace {
-				rebuildMessageFTS = true
-			}
-		case "members":
-			rebuildMemberFTS = true
-		}
-	}
-	return rebuildMessageFTS, rebuildMemberFTS
-}
-
 func ImportEmbeddings(ctx context.Context, s *store.Store, opts Options, manifest Manifest) error {
 	tx, err := s.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -835,7 +790,7 @@ func MarkImported(ctx context.Context, s *store.Store, manifest Manifest) error 
 		return err
 	}
 	if manifest.GeneratedAt.IsZero() {
-		return nil
+		return MarkMerged(ctx, s, manifest)
 	}
 	if err := s.SetSyncState(ctx, LastImportManifestSyncScope, manifest.GeneratedAt.Format(time.RFC3339Nano)); err != nil {
 		return err
@@ -844,7 +799,10 @@ func MarkImported(ctx context.Context, s *store.Store, manifest Manifest) error 
 	if err != nil {
 		return fmt.Errorf("marshal imported manifest state: %w", err)
 	}
-	return s.SetSyncState(ctx, LastImportManifestJSONScope, string(body))
+	if err := s.SetSyncState(ctx, LastImportManifestJSONScope, string(body)); err != nil {
+		return err
+	}
+	return MarkMerged(ctx, s, manifest)
 }
 
 func PreviousImportedManifest(ctx context.Context, s *store.Store, opts Options) (Manifest, bool) {
@@ -962,41 +920,6 @@ func snapshotManifest(manifest Manifest) snapshot.Manifest {
 		Tables:      manifest.Tables,
 		Files:       manifest.Files,
 	}
-}
-
-func shareIncrementalPlan(plan snapshot.ImportPlan) (snapshot.ImportPlan, bool) {
-	if plan.Full {
-		return plan, false
-	}
-	out := snapshot.ImportPlan{Tables: make([]snapshot.TableImportPlan, 0, len(plan.Tables))}
-	for _, tablePlan := range plan.Tables {
-		switch tablePlan.Mode {
-		case snapshot.TableImportSkip:
-			out.Tables = append(out.Tables, tablePlan)
-		case snapshot.TableImportFiles:
-			switch tablePlan.Table.Name {
-			case "messages":
-				out.Tables = append(out.Tables, tablePlan)
-			case "guilds", "channels", "members", "message_events", "message_attachments", "mention_events", "sync_state":
-				tablePlan.Mode = snapshot.TableImportReplace
-				tablePlan.Files = nil
-				tablePlan.Reason = "replace changed " + tablePlan.Table.Name + " snapshot table"
-				out.Tables = append(out.Tables, tablePlan)
-			default:
-				return plan, false
-			}
-		case snapshot.TableImportReplace:
-			switch tablePlan.Table.Name {
-			case "guilds", "channels", "members", "messages", "message_events", "message_attachments", "mention_events", "sync_state":
-				out.Tables = append(out.Tables, tablePlan)
-			default:
-				return plan, false
-			}
-		default:
-			return plan, false
-		}
-	}
-	return out, true
 }
 
 func ReadManifest(repoPath string) (Manifest, error) {
@@ -1121,7 +1044,10 @@ func NeedsImport(ctx context.Context, s *store.Store, staleAfter time.Duration) 
 	if staleAfter <= 0 {
 		staleAfter = 15 * time.Minute
 	}
-	last, err := s.GetSyncState(ctx, LastImportSyncScope)
+	last, err := s.GetSyncState(ctx, LastCheckSyncScope)
+	if err != nil || strings.TrimSpace(last) == "" {
+		last, err = s.GetSyncState(ctx, LastImportSyncScope)
+	}
 	if err != nil || strings.TrimSpace(last) == "" {
 		return true
 	}
@@ -2473,6 +2399,7 @@ func importValue(value any) any {
 }
 
 type attachmentMediaRecord struct {
+	TextContent   string
 	MediaPath     string
 	ContentSHA256 string
 	ContentSize   int64
@@ -2533,77 +2460,85 @@ func nullableString(v string) any {
 	return v
 }
 
-func importIncrementalSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {
+func upsertMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) (bool, error) {
 	if table == "message_events" || table == "mention_events" {
 		delete(row, "event_id")
 	}
 	if table == "message_attachments" {
-		if err := preserveIncrementalAttachmentMedia(ctx, tx, row); err != nil {
-			return err
+		if err := preserveIncrementalAttachmentState(ctx, tx, row); err != nil {
+			return false, err
 		}
 	}
-	if err := insertOrReplaceSnapshotRow(ctx, tx, table, row); err != nil {
-		return err
-	}
-	if table != "messages" {
-		return nil
-	}
-	messageID := stringValue(row["id"])
-	if messageID == "" {
-		return nil
-	}
-	return upsertMessageFTSRow(ctx, tx, messageID)
+	protectNewer := slices.Contains([]string{"guilds", "channels", "members", "messages"}, table)
+	return upsertSnapshotRow(ctx, tx, table, row, protectNewer)
 }
 
-func preserveIncrementalAttachmentMedia(ctx context.Context, tx *sql.Tx, row map[string]any) error {
-	if stringValue(row["media_path"]) != "" {
-		return nil
-	}
+func preserveIncrementalAttachmentState(ctx context.Context, tx *sql.Tx, row map[string]any) error {
 	attachmentID := stringValue(row["attachment_id"])
 	if attachmentID == "" {
 		return nil
 	}
 	var record attachmentMediaRecord
 	err := tx.QueryRowContext(ctx, `
-		select coalesce(media_path, ''), coalesce(content_sha256, ''), content_size,
+		select coalesce(text_content, ''), coalesce(media_path, ''), coalesce(content_sha256, ''), content_size,
 		       coalesce(fetched_at, ''), coalesce(fetch_status, ''), coalesce(fetch_error, '')
 		from message_attachments
-		where attachment_id = ? and coalesce(media_path, '') <> ''
-	`, attachmentID).Scan(&record.MediaPath, &record.ContentSHA256, &record.ContentSize, &record.FetchedAt, &record.FetchStatus, &record.FetchError)
+		where attachment_id = ?
+	`, attachmentID).Scan(&record.TextContent, &record.MediaPath, &record.ContentSHA256, &record.ContentSize, &record.FetchedAt, &record.FetchStatus, &record.FetchError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("query existing attachment media %s: %w", attachmentID, err)
 	}
-	row["media_path"] = record.MediaPath
-	row["content_sha256"] = record.ContentSHA256
-	row["content_size"] = record.ContentSize
-	row["fetched_at"] = record.FetchedAt
-	row["fetch_status"] = record.FetchStatus
-	row["fetch_error"] = record.FetchError
+	if stringValue(row["text_content"]) == "" {
+		row["text_content"] = record.TextContent
+	}
+	if stringValue(row["media_path"]) == "" {
+		row["media_path"] = record.MediaPath
+		row["content_sha256"] = record.ContentSHA256
+		row["content_size"] = record.ContentSize
+		row["fetched_at"] = record.FetchedAt
+		row["fetch_status"] = record.FetchStatus
+		row["fetch_error"] = record.FetchError
+	}
 	return nil
 }
 
-func insertOrReplaceSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) error {
+func upsertSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any, protectNewer bool) (bool, error) {
 	cols := make([]string, 0, len(row))
 	for col := range row {
 		cols = append(cols, col)
 	}
 	sort.Strings(cols)
 	quoted := make([]string, 0, len(cols))
+	updates := make([]string, 0, len(cols))
 	placeholders := make([]string, 0, len(cols))
 	args := make([]any, 0, len(cols))
 	for _, col := range cols {
-		quoted = append(quoted, quoteIdent(col))
+		quotedCol := quoteIdent(col)
+		quoted = append(quoted, quotedCol)
+		updates = append(updates, quotedCol+" = excluded."+quotedCol)
 		placeholders = append(placeholders, "?")
 		args = append(args, importValue(row[col]))
 	}
-	stmt := "insert or replace into " + quoteIdent(table) + "(" + strings.Join(quoted, ",") + ") values(" + strings.Join(placeholders, ",") + ")"
-	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
-		return fmt.Errorf("insert %s: %w", table, err)
+	verb := "insert or replace into "
+	suffix := ""
+	if protectNewer {
+		verb = "insert into "
+		suffix = " on conflict do update set " + strings.Join(updates, ",") +
+			" where coalesce(julianday(excluded.\"updated_at\"), 0) >= coalesce(julianday(" + quoteIdent(table) + ".\"updated_at\"), 0)"
 	}
-	return nil
+	stmt := verb + quoteIdent(table) + "(" + strings.Join(quoted, ",") + ") values(" + strings.Join(placeholders, ",") + ")" + suffix
+	result, err := tx.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return false, fmt.Errorf("insert %s: %w", table, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("check inserted %s row: %w", table, err)
+	}
+	return changed > 0, nil
 }
 
 func upsertMessageFTSRow(ctx context.Context, tx *sql.Tx, messageID string) error {

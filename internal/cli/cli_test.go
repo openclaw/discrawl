@@ -1034,7 +1034,7 @@ func TestReadCommandsAutoImportStaleShare(t *testing.T) {
 	reader, err := store.Open(ctx, cfg.DBPath)
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
-	lastImport, err := reader.GetSyncState(ctx, share.LastImportSyncScope)
+	lastImport, err := reader.GetSyncState(ctx, share.LastMergeSyncScope)
 	require.NoError(t, err)
 	require.NotEmpty(t, lastImport)
 }
@@ -1258,7 +1258,7 @@ func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
 	reader, err = store.Open(ctx, cfg.DBPath)
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
-	lastImport, err := reader.GetSyncState(ctx, share.LastImportSyncScope)
+	lastImport, err := reader.GetSyncState(ctx, share.LastMergeSyncScope)
 	require.NoError(t, err)
 	require.Empty(t, lastImport)
 }
@@ -1998,7 +1998,7 @@ func TestShareCommandsPublishSubscribeAndUpdate(t *testing.T) {
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "generated_at")
 	out.Reset()
-	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update", "--ref", "test-snapshot"}, &out, &bytes.Buffer{}))
+	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update", "--force", "--ref", "test-snapshot"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "test-snapshot")
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "automatic"}, &out, &bytes.Buffer{}))
@@ -2273,6 +2273,22 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "automatic"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "automatic updates work")
 
+	reader, err := store.Open(ctx, readerCfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, reader.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "local-only",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "local",
+		AuthorName:        "Local",
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		Content:           "local cache row",
+		NormalizedContent: "local cache row",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, reader.Close())
+
 	require.NoError(t, publisher.UpsertMessage(ctx, store.MessageRecord{
 		ID:                "m200",
 		GuildID:           "g1",
@@ -2291,9 +2307,25 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "imported=true")
+	reader, err = store.Open(ctx, readerCfg.DBPath)
+	require.NoError(t, err)
+	_, rows, err := reader.ReadOnlyQuery(ctx, `select count(*) from messages where id = 'local-only'`)
+	require.NoError(t, err)
+	require.Equal(t, "1", rows[0][0], "routine update must preserve local cache rows")
+	require.NoError(t, reader.Close())
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "newer snapshot"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "newer git snapshot arrived")
+
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update", "--force"}, &out, &bytes.Buffer{}))
+	require.Contains(t, out.String(), "forced=true")
+	reader, err = store.Open(ctx, readerCfg.DBPath)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	_, rows, err = reader.ReadOnlyQuery(ctx, `select count(*) from messages where id = 'local-only'`)
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0], "forced update must reconcile exactly")
 }
 
 func TestSyncSkipsGitShareByDefaultAndCanImportBeforeLiveDiscord(t *testing.T) {
@@ -4003,6 +4035,7 @@ func TestCommandUsageBranches(t *testing.T) {
 		{[]string{"--config", cfgPath, "embed", "--batch-size", "0"}, "--batch-size must be positive"},
 		{[]string{"--config", cfgPath, "publish", "extra"}, "publish takes no positional arguments"},
 		{[]string{"--config", cfgPath, "update", "extra"}, "update takes no positional arguments"},
+		{[]string{"--config", cfgPath, "update", "--ref", "HEAD"}, "update --ref requires --force"},
 		{[]string{"--config", cfgPath, "subscribe"}, "subscribe requires one remote"},
 		{[]string{"--config", cfgPath, "subscribe", "one", "two"}, "subscribe requires one remote"},
 	}

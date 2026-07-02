@@ -172,6 +172,7 @@ func (r *runtime) runSubscribe(args []string) error {
 	staleAfter := fs.String("stale-after", "15m", "")
 	noAutoUpdate := fs.Bool("no-auto-update", false, "")
 	noImport := fs.Bool("no-import", false, "")
+	force := fs.Bool("force", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", false, "")
 	if err := fs.Parse(args); err != nil {
@@ -232,8 +233,17 @@ func (r *runtime) runSubscribe(args []string) error {
 			return err
 		}
 		r.setSyncLockPhase("share import")
-		manifest, imported, err := share.ImportIfChanged(r.ctx, s, opts)
+		var manifest share.Manifest
+		var imported bool
+		if *force {
+			manifest, imported, err = share.Replace(r.ctx, s, opts)
+		} else {
+			manifest, imported, err = share.MergeIfChanged(r.ctx, s, opts)
+		}
 		if err != nil {
+			if errors.Is(err, share.ErrReplacementRequired) {
+				return fmt.Errorf("%w; rerun subscribe with --force to reconcile exactly", err)
+			}
 			return err
 		}
 		return r.print(map[string]any{
@@ -245,6 +255,7 @@ func (r *runtime) runSubscribe(args []string) error {
 			"media":        manifest.Media,
 			"embeddings":   manifest.Embeddings,
 			"imported":     imported,
+			"forced":       *force,
 		})
 	})
 }
@@ -256,6 +267,7 @@ func (r *runtime) runUpdate(args []string) error {
 	remote := fs.String("remote", r.cfg.Share.Remote, "")
 	branch := fs.String("branch", r.cfg.Share.Branch, "")
 	ref := fs.String("ref", "", "")
+	force := fs.Bool("force", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
 	if err := fs.Parse(args); err != nil {
@@ -263,6 +275,9 @@ func (r *runtime) runUpdate(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("update takes no positional arguments"))
+	}
+	if strings.TrimSpace(*ref) != "" && !*force {
+		return usageErr(errors.New("update --ref requires --force because historical imports replace local cache rows"))
 	}
 	opts, err := shareOptionsFromFlags(*repoPath, *remote, *branch)
 	if err != nil {
@@ -283,8 +298,15 @@ func (r *runtime) runUpdate(args []string) error {
 			return err
 		}
 		r.setSyncLockPhase("share import")
-		manifest, imported, err = share.ImportIfChanged(r.ctx, r.store, opts)
+		if *force {
+			manifest, imported, err = share.Replace(r.ctx, r.store, opts)
+		} else {
+			manifest, imported, err = share.MergeIfChanged(r.ctx, r.store, opts)
+		}
 		if err != nil {
+			if errors.Is(err, share.ErrReplacementRequired) {
+				return fmt.Errorf("%w; rerun update with --force to reconcile exactly", err)
+			}
 			return err
 		}
 	} else {
@@ -304,6 +326,7 @@ func (r *runtime) runUpdate(args []string) error {
 		"embeddings":   manifest.Embeddings,
 		"imported":     imported,
 		"ref":          strings.TrimSpace(*ref),
+		"forced":       *force,
 	})
 }
 

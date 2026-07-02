@@ -451,7 +451,7 @@ func (r *runtime) runStatus(args []string) error {
 		needsUpdate := false
 		if r.store != nil && r.cfg.ShareEnabled() {
 			if staleAfter, err := time.ParseDuration(r.cfg.Share.StaleAfter); err == nil {
-				needsUpdate = share.NeedsImport(r.ctx, r.store, staleAfter)
+				needsUpdate = share.NeedsImport(r.ctx, r.store, staleAfter) || share.HasPendingReplacement(r.ctx, r.store)
 			}
 		}
 		return r.print(controlStatus(r.configPath, r.cfg, status, needsUpdate))

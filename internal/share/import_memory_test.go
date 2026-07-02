@@ -28,7 +28,7 @@ func TestImportRealSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
 
-	_, changed, err := ImportIfChanged(ctx, dst, Options{
+	_, changed, err := MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) {
@@ -66,14 +66,14 @@ func TestImportMemoryBounded(t *testing.T) {
 	defer func() { _ = dst.Close() }()
 
 	var progress []ImportProgress
-	_, changed, err := ImportIfChanged(ctx, dst, Options{
+	_, changed, err := MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) { progress = append(progress, p) },
 	})
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Contains(t, progressPhases(progress), "rebuild_fts")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
 
 	needle := "oomunique000042"
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: needle, Limit: 10})

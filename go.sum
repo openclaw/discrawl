@@ -71,8 +71,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/openclaw/crawlkit v0.13.1 h1:an4RNC9IhaGtwGUGFJWVlIydmu5SmZEWRCzLOXWBbgA=
-github.com/openclaw/crawlkit v0.13.1/go.mod h1:zOJv5WPWO1AuuXO7zW8NRTxb/ZTkIQXYPrx3StmnMUI=
+github.com/openclaw/crawlkit v0.13.2 h1:ZFWe24XvenYhMKNBuLfwBk7AcZ5Pay57ACipiXBsDc4=
+github.com/openclaw/crawlkit v0.13.2/go.mod h1:NUzZ6yJnY23DHv9MAowbUGA5k7ox2nbvBGkSQRExocE=
 github.com/pelletier/go-toml/v2 v2.4.2 h1:M2fKKbmyvI+hGId/D0W64qDBMVhJnNR10O5gIbMc//Q=
 github.com/pelletier/go-toml/v2 v2.4.2/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/pkg/diff v0.0.0-20210226163009-20ebb0f2a09e/go.mod h1:pJLUxLENpZxwdsKMEsNbx1VGcRFpLqf3715MtcvvzbA=

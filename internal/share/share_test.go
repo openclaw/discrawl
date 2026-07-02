@@ -42,7 +42,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	defer func() { _ = dst.Close() }()
 
 	var progress []ImportProgress
-	imported, changed, err := ImportIfChanged(ctx, dst, Options{
+	imported, changed, err := MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) { progress = append(progress, p) },
@@ -53,7 +53,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	require.Contains(t, progressPhases(progress), "start")
 	require.Contains(t, progressPhases(progress), "table_start")
 	require.Contains(t, progressPhases(progress), "file_done")
-	require.Contains(t, progressPhases(progress), "rebuild_fts")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
 	require.Contains(t, progressPhases(progress), "done")
 
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "launch", Limit: 10})
@@ -65,15 +65,15 @@ func TestExportImportRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, mentions, 1)
 
-	lastImport, err := dst.GetSyncState(ctx, LastImportSyncScope)
+	lastImport, err := dst.GetSyncState(ctx, LastMergeSyncScope)
 	require.NoError(t, err)
 	require.NotEmpty(t, lastImport)
-	lastManifest, err := dst.GetSyncState(ctx, LastImportManifestSyncScope)
+	lastManifest, err := dst.GetSyncState(ctx, LastMergeManifestSyncScope)
 	require.NoError(t, err)
 	require.Equal(t, manifest.GeneratedAt.Format(time.RFC3339Nano), lastManifest)
 	require.False(t, NeedsImport(ctx, dst, 15*time.Minute))
 
-	imported, changed, err = ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	imported, changed, err = MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.Equal(t, manifest.GeneratedAt, imported.GeneratedAt)
@@ -122,7 +122,7 @@ func TestExportImportRestoresMediaFiles(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
 	dstCache := filepath.Join(dir, "dst-cache")
-	imported, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true})
+	imported, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true})
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.NotNil(t, imported.Media)
@@ -137,7 +137,7 @@ func TestExportImportRestoresMediaFiles(t *testing.T) {
 	require.Equal(t, mediaPath, rows[0].MediaPath)
 
 	require.NoError(t, os.Remove(dstFile))
-	imported, changed, err = ImportIfChanged(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true})
+	imported, changed, err = MergeIfChanged(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true})
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.NotNil(t, imported.Media)
@@ -272,7 +272,7 @@ func TestImportPreservesLocalAttachmentMediaMetadata(t *testing.T) {
 	require.Equal(t, "fetched", rows[0].FetchStatus)
 }
 
-func TestIncrementalImportPreservesLocalAttachmentMediaMetadata(t *testing.T) {
+func TestMergeImportPreservesLocalAttachmentState(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	dst := seedStore(t, filepath.Join(dir, "dst.db"))
@@ -282,6 +282,8 @@ func TestIncrementalImportPreservesLocalAttachmentMediaMetadata(t *testing.T) {
 	hash := hex.EncodeToString(sum[:])
 	mediaPath := filepath.ToSlash(filepath.Join("attachments", hash[:2], hash+"-file.png"))
 	require.NoError(t, addCachedAttachment(ctx, dst, mediaPath, hash, int64(len(body))))
+	_, err := dst.DB().ExecContext(ctx, `update message_attachments set text_content = 'local extracted text' where attachment_id = 'a1'`)
+	require.NoError(t, err)
 
 	tx, err := dst.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
@@ -305,7 +307,9 @@ func TestIncrementalImportPreservesLocalAttachmentMediaMetadata(t *testing.T) {
 		"fetch_error":    "",
 		"updated_at":     time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	require.NoError(t, importIncrementalSnapshotRow(ctx, tx, "message_attachments", row))
+	applied, err := upsertMergeSnapshotRow(ctx, tx, "message_attachments", row)
+	require.NoError(t, err)
+	require.True(t, applied)
 	require.NoError(t, tx.Commit())
 
 	rows, err := dst.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m1"})
@@ -315,6 +319,7 @@ func TestIncrementalImportPreservesLocalAttachmentMediaMetadata(t *testing.T) {
 	require.Equal(t, hash, rows[0].ContentSHA256)
 	require.Equal(t, int64(len(body)), rows[0].ContentSize)
 	require.Equal(t, "fetched", rows[0].FetchStatus)
+	require.Equal(t, "local extracted text", rows[0].TextContent)
 }
 
 func TestImportMediaRejectsSymlinkedFiles(t *testing.T) {
@@ -450,7 +455,7 @@ func TestImportMediaRejectsInvalidAndMismatchedFiles(t *testing.T) {
 	require.Contains(t, err.Error(), "media hash mismatch")
 }
 
-func TestImportIncrementalRestoresMediaWhenTablesUnchanged(t *testing.T) {
+func TestMergeIfChangedRestoresMediaWhenTablesUnchanged(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	src := seedStore(t, filepath.Join(dir, "src.db"))
@@ -476,7 +481,7 @@ func TestImportIncrementalRestoresMediaWhenTablesUnchanged(t *testing.T) {
 	require.NoError(t, err)
 
 	dstCache := filepath.Join(dir, "dst-cache")
-	imported, changed, err := ImportIncremental(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true}, manifest, manifest)
+	imported, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, CacheDir: dstCache, Branch: "main", IncludeMedia: true})
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, manifest.GeneratedAt, imported.GeneratedAt)
@@ -485,34 +490,6 @@ func TestImportIncrementalRestoresMediaWhenTablesUnchanged(t *testing.T) {
 	got, err := os.ReadFile(dstFile)
 	require.NoError(t, err)
 	require.Equal(t, body, got)
-}
-
-func TestShareIncrementalPlanHandlesSupportedModesAndRejectsOthers(t *testing.T) {
-	_, supported := shareIncrementalPlan(snapshot.ImportPlan{Full: true, Reason: "schema changed"})
-	require.False(t, supported)
-
-	_, supported = shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{
-		Table: snapshot.TableManifest{Name: "custom"},
-		Mode:  snapshot.TableImportFiles,
-	}}})
-	require.False(t, supported)
-
-	plan, supported := shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{
-		Table: snapshot.TableManifest{Name: "messages"},
-		Mode:  snapshot.TableImportReplace,
-	}}})
-	require.True(t, supported)
-	require.Equal(t, snapshot.TableImportReplace, plan.Tables[0].Mode)
-
-	plan, supported = shareIncrementalPlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{
-		{Table: snapshot.TableManifest{Name: "messages"}, Mode: snapshot.TableImportFiles},
-		{Table: snapshot.TableManifest{Name: "guilds"}, Mode: snapshot.TableImportFiles},
-		{Table: snapshot.TableManifest{Name: "channels"}, Mode: snapshot.TableImportReplace},
-		{Table: snapshot.TableManifest{Name: "sync_state"}, Mode: snapshot.TableImportSkip},
-	}})
-	require.True(t, supported)
-	require.Len(t, plan.Tables, 4)
-	require.Equal(t, snapshot.TableImportReplace, plan.Tables[1].Mode)
 }
 
 func TestMessageFTSHelpers(t *testing.T) {
@@ -526,17 +503,6 @@ func TestMessageFTSHelpers(t *testing.T) {
 	require.False(t, ok)
 	require.Nil(t, nullIfEmpty(""))
 	require.Equal(t, "value", nullIfEmpty("value"))
-}
-
-func TestImportPlanSearchRebuildsKeepsEarlierChannelRebuild(t *testing.T) {
-	rebuildMessages, rebuildMembers := importPlanSearchRebuilds(snapshot.ImportPlan{
-		Tables: []snapshot.TableImportPlan{
-			{Table: snapshot.TableManifest{Name: "channels"}, Mode: snapshot.TableImportReplace},
-			{Table: snapshot.TableManifest{Name: "messages"}, Mode: snapshot.TableImportFiles},
-		},
-	})
-	require.True(t, rebuildMessages)
-	require.False(t, rebuildMembers)
 }
 
 func TestPreviousImportedManifestFallsBackToGitHistory(t *testing.T) {
@@ -913,7 +879,7 @@ func TestExportSkipsSymlinkedMediaDirectories(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
-func TestImportIfChangedUsesIncrementalTailImport(t *testing.T) {
+func TestMergeIfChangedUsesIncrementalTailImport(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -926,7 +892,7 @@ func TestImportIfChangedUsesIncrementalTailImport(t *testing.T) {
 	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
-	_, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -951,7 +917,7 @@ func TestImportIfChangedUsesIncrementalTailImport(t *testing.T) {
 	require.NotEqual(t, manifest.GeneratedAt, updated.GeneratedAt)
 
 	var progress []ImportProgress
-	imported, changed, err := ImportIfChanged(ctx, dst, Options{
+	imported, changed, err := MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) { progress = append(progress, p) },
@@ -960,18 +926,18 @@ func TestImportIfChangedUsesIncrementalTailImport(t *testing.T) {
 	require.True(t, changed)
 	require.Equal(t, updated.GeneratedAt, imported.GeneratedAt)
 	require.Contains(t, progressPhases(progress), "table_start")
-	require.Contains(t, progressPhases(progress), "rebuild_fts")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
 
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "delta landed", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "m2", results[0].MessageID)
-	state, err := dst.GetSyncState(ctx, LastImportManifestJSONScope)
+	state, err := dst.GetSyncState(ctx, LastMergeManifestJSONScope)
 	require.NoError(t, err)
 	require.Contains(t, state, `"file_manifests"`)
 }
 
-func TestImportIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T) {
+func TestMergeIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -983,7 +949,7 @@ func TestImportIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T)
 	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
-	_, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -1038,19 +1004,19 @@ func TestImportIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T)
 	require.NoError(t, err)
 	require.NotEqual(t, manifest.GeneratedAt, updated.GeneratedAt)
 
-	previous, ok := PreviousImportedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	previous, ok := PreviousMergedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.True(t, ok)
-	planned, supported := shareIncrementalPlan(snapshot.PlanIncrementalImport(snapshotManifest(previous), snapshotManifest(updated)))
-	require.True(t, supported, "%+v", planned)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "channels").Mode)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "members").Mode)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "messages").Mode)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "message_events").Mode)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "message_attachments").Mode)
-	require.Equal(t, snapshot.TableImportReplace, importPlanTable(t, planned, "mention_events").Mode)
+	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(updated)), false)
+	require.NoError(t, err)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "channels").Mode)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "members").Mode)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "messages").Mode)
+	require.Equal(t, snapshot.TableImportSkip, importPlanTable(t, planned, "message_events").Mode)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "message_attachments").Mode)
+	require.Equal(t, snapshot.TableImportSkip, importPlanTable(t, planned, "mention_events").Mode)
 
 	var progress []ImportProgress
-	imported, changed, err := ImportIfChanged(ctx, dst, Options{
+	imported, changed, err := MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) { progress = append(progress, p) },
@@ -1058,7 +1024,7 @@ func TestImportIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, updated.GeneratedAt, imported.GeneratedAt)
-	require.Contains(t, progressPhases(progress), "rebuild_fts")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
 	require.Contains(t, progressPhases(progress), "rebuild_member_fts")
 	require.Equal(t, importPlanRowCount(planned), progressTotalRows(t, progress, "start"))
 	require.Positive(t, progressTotalRows(t, progress, "start"))
@@ -1077,16 +1043,16 @@ func TestImportIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T)
 	require.Equal(t, "launch", rows[0][0])
 	_, rows, err = dst.ReadOnlyQuery(ctx, "select count(*) from mention_events")
 	require.NoError(t, err)
-	require.Equal(t, "2", rows[0][0])
+	require.Equal(t, "1", rows[0][0])
 	_, rows, err = dst.ReadOnlyQuery(ctx, "select count(*) from message_events")
 	require.NoError(t, err)
-	require.Equal(t, "2", rows[0][0])
+	require.Equal(t, "1", rows[0][0])
 	_, rows, err = dst.ReadOnlyQuery(ctx, "select count(*) from member_fts where member_fts match 'delta'")
 	require.NoError(t, err)
 	require.Equal(t, "1", rows[0][0])
 }
 
-func TestImportIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
+func TestMergeIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -1103,7 +1069,7 @@ func TestImportIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
 	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
-	_, changed, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -1129,21 +1095,21 @@ func TestImportIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
 	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "add", ".").Run())
 	require.NoError(t, exec.CommandContext(ctx, "git", "-C", repo, "commit", "-m", "tail snapshot").Run())
 
-	previous, ok := PreviousImportedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	previous, ok := PreviousMergedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.True(t, ok)
-	planned, supported := shareIncrementalPlan(snapshot.PlanIncrementalImport(snapshotManifest(previous), snapshotManifest(enrichManifestFromGit(ctx, repo, "HEAD", stripFileManifests(updated)))))
-	require.True(t, supported, "%+v", planned)
+	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(enrichManifestFromGit(ctx, repo, "HEAD", stripFileManifests(updated)))), false)
+	require.NoError(t, err)
 	require.True(t, planned.Changed(), "%+v", planned)
 
 	var progress []ImportProgress
-	_, changed, err = ImportIfChanged(ctx, dst, Options{
+	_, changed, err = MergeIfChanged(ctx, dst, Options{
 		RepoPath: repo,
 		Branch:   "main",
 		Progress: func(p ImportProgress) { progress = append(progress, p) },
 	})
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Contains(t, progressPhases(progress), "rebuild_fts")
+	require.NotContains(t, progressPhases(progress), "rebuild_fts")
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "legacy git delta", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
@@ -1569,7 +1535,7 @@ func TestImportEmbeddingsFiltersByConfiguredIdentity(t *testing.T) {
 	require.Equal(t, "0", rows[0][0])
 }
 
-func TestImportIfChangedSkipsSameManifest(t *testing.T) {
+func TestMergeIfChangedSkipsSameManifest(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -1582,7 +1548,7 @@ func TestImportIfChangedSkipsSameManifest(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = dst.Close() }()
 
-	importedManifest, imported, err := ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	importedManifest, imported, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.True(t, imported)
 	require.Equal(t, manifest.GeneratedAt, importedManifest.GeneratedAt)
@@ -1601,7 +1567,7 @@ func TestImportIfChangedSkipsSameManifest(t *testing.T) {
 		RawJSON:           `{}`,
 	}))
 
-	_, imported, err = ImportIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	_, imported, err = MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.False(t, imported)
 	results, err := dst.SearchMessages(ctx, store.SearchOptions{Query: "live delta", Limit: 10})
@@ -2086,11 +2052,11 @@ func TestManifestStateAndReadEdges(t *testing.T) {
 	require.True(t, ManifestAlreadyImported(ctx, s, manifest))
 
 	require.False(t, NeedsImport(ctx, s, 15*time.Minute))
-	require.NoError(t, s.SetSyncState(ctx, LastImportSyncScope, "bad-time"))
+	require.NoError(t, s.SetSyncState(ctx, LastCheckSyncScope, "bad-time"))
 	require.True(t, NeedsImport(ctx, s, 15*time.Minute))
-	require.NoError(t, s.SetSyncState(ctx, LastImportSyncScope, time.Now().UTC().Add(-20*time.Minute).Format(time.RFC3339Nano)))
+	require.NoError(t, s.SetSyncState(ctx, LastCheckSyncScope, time.Now().UTC().Add(-20*time.Minute).Format(time.RFC3339Nano)))
 	require.True(t, NeedsImport(ctx, s, 15*time.Minute))
-	require.NoError(t, s.SetSyncState(ctx, LastImportSyncScope, time.Now().UTC().Format(time.RFC3339Nano)))
+	require.NoError(t, s.SetSyncState(ctx, LastCheckSyncScope, time.Now().UTC().Format(time.RFC3339Nano)))
 	require.False(t, NeedsImport(ctx, s, 0))
 }
 

@@ -12,6 +12,10 @@
 - Add a local-only failure ledger with row-level write context, retry/resolution tracking, JSON queries, and known-failure coverage counts.
 - Add a local-first maintainer archive workflow guide covering health, coverage, wiretap, stable queries, and privacy-safe publish preflight. Thanks @joshka.
 
+### Fixes
+
+- Prevent routine Git snapshot updates from clearing locally crawled cache rows: changed shards now merge monotonically, while removed shards, schema changes, historical restores, and exact reconciliation require explicit `--force`; upgrade Crawlkit to v0.13.2.
+
 ### Maintenance
 
 - Refresh stable Go modules and CI/release tooling, including SQLite, `go-toml`, Go analyzers, GitHub Actions, GoReleaser, and TruffleHog.

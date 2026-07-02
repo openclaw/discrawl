@@ -16,7 +16,7 @@ discrawl status
 - channel and thread counts
 - message totals
 - latest archived message time
-- whether the Git share is configured and how stale the local import is
+- whether the Git share is configured, whether its last check is stale, and whether an exact replacement is pending (`--json`)
 - remote endpoint/archive metadata when `remote.mode = "cloud"`
 - embeddings status if `[search.embeddings]` is enabled
 

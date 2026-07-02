@@ -240,7 +240,7 @@ By default, `sync` runs both live/local sources and does not import the Git snap
 - Discord bot-token sync for bot-visible guild data
 - local Discord Desktop cache import for classifiable cached messages and proven DMs
 
-Use `discrawl update` when you want to pull/import the shared Git snapshot. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` to import only when stale or `--update=force` to pull/import before syncing. `--no-update` is accepted as an explicit no-op alias for the default.
+Use `discrawl update` when you want to pull/import the shared Git snapshot. Routine updates merge changed shards without deleting local cache rows. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` for a stale safe merge or `--update=force` for an exact replacement. `--no-update` is accepted as an explicit no-op alias for the default.
 
 Run one explicit `--full` pass when you want a complete historical guild archive. Use plain `sync` afterward for frequent latest-message and desktop-cache refreshes.
 
@@ -592,7 +592,7 @@ Subscriber:
 discrawl subscribe https://github.com/example/discord-archive.git
 discrawl search "launch checklist"
 discrawl messages --channel general --hours 24
-discrawl update --ref backup-2026-06-19
+discrawl update --force --ref backup-2026-06-19
 ```
 
 `subscribe` is the Git-only setup path. It writes a config with `discord.token_source = "none"`, imports the snapshot, and does not require a Discord bot token. `sync` and `tail` remain disabled in this mode because they need live Discord access.
@@ -639,9 +639,9 @@ discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 ```
 
-Once `share.remote` is configured, read commands auto-fetch and import when the local share import is older than `share.stale_after` (default `15m`). Imports are planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests, so routine updates normally read only changed tail shards and preserve local FTS rows instead of rebuilding the whole archive. `discrawl update` forces the same pull/import step manually; `update --ref <tag-or-commit>` restores that historical snapshot without moving the share checkout. `discrawl sync` does not auto-import the share unless `--update=auto` or `--update=force` is provided, so routine live refreshes stay fast.
+Once `share.remote` is configured, read commands auto-fetch and import when the last share check is older than `share.stale_after` (default `15m`). Imports are planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests, so routine updates normally read only changed canonical shards, preserve destination-only cache rows, and avoid rebuilding message FTS. `discrawl update` runs the same safe merge manually. Removed shards or incompatible table changes keep the database untouched and require `discrawl update --force`; historical restores require `update --force --ref <tag-or-commit>`. `discrawl sync` does not auto-import the share unless `--update=auto` or `--update=force` is provided.
 
-Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` import the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. Use `sync --all-channels` or `sync --full` when you intentionally want a broader live repair/backfill pass.
+Hybrid mode is supported too: keep normal Discord credentials configured and set `share.remote`. `discrawl sync --update=auto` and `discrawl messages --sync` safely merge the Git snapshot first, usually as a changed-shard delta, then use live Discord for latest-message deltas. `discrawl sync --update=force` intentionally replaces public snapshot tables before live sync. Use `sync --all-channels` or `sync --full` when you want a broader live repair/backfill pass.
 
 Git snapshots publish non-DM archive tables and cached non-DM attachment media by default. Cached media is written as gzip-compressed files under `media/` and restored to raw local cache files on import. Older snapshots that contain raw media files still import, and the next media-enabled `publish` rewrites the media tree into gzip form. DMs, desktop wiretap rows, DM media, and local secrets are never exported. Use `publish --no-media` to omit cached media files.
 Subscribers can use `subscribe --no-media` or `update --no-media` to import only SQLite rows and skip restoring cached files.

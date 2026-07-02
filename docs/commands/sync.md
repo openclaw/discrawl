@@ -7,7 +7,7 @@ By default, `sync` runs both live/local sources and does **not** import the Git 
 - Discord bot-token sync for bot-visible guild data
 - local Discord Desktop cache import for classifiable cached messages and proven DMs
 
-Use [`update`](update.html) when you want to pull/import the shared Git snapshot. Snapshot imports normally use changed-shard deltas, but unsafe table changes fall back to a full import. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` (only when stale) or `--update=force` (always). `--no-update` is accepted as an explicit no-op alias for the default.
+Use [`update`](update.html) when you want to pull/import the shared Git snapshot. Routine imports upsert changed shards without deleting local cache rows. If you intentionally want a sync run to import the snapshot before live deltas, pass `--update=auto` for a stale safe merge or `--update=force` for an exact replacement. `--no-update` is accepted as an explicit no-op alias for the default.
 
 Run one explicit `--full` pass when you want a complete historical guild archive. Use plain `sync` afterward for frequent latest-message and desktop-cache refreshes.
 
@@ -44,14 +44,15 @@ discrawl sync --with-media
 | Command | Use when | Behavior |
 | --- | --- | --- |
 | `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, only fetches new messages for channels with a stored cursor |
-| `discrawl sync --update=auto` | hybrid Git/live refresh | imports a stale Git snapshot first, then runs the routine live refresh |
+| `discrawl sync --update=auto` | hybrid Git/live refresh | safely merges a stale Git snapshot first, then runs the routine live refresh |
+| `discrawl sync --update=force` | intentional exact reconciliation | replaces public snapshot tables first, then runs the routine live refresh |
 | `discrawl sync --all-channels` | repair pass | broad incremental sweep across every stored channel/thread, including archived threads |
 | `discrawl sync --full` | historical backfill | crawls older history until channels are complete |
 
 ## Flags
 
 - `--source <both|discord|wiretap>` - which archive sources to read
-- `--update <auto|force|none>` - whether to import the Git snapshot before live deltas
+- `--update <auto|force|none>` - safe-merge a stale snapshot, force an exact replacement, or skip snapshot import before live deltas
 - `--full` - historical backfill (slow on large guilds)
 - `--all-channels` - broader incremental sweep across every stored channel/thread
 - `--latest-only` - explicit latest-only run (also the default for untargeted `sync`)
