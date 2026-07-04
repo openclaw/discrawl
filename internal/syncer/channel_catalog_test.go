@@ -123,6 +123,76 @@ func TestSyncChannelSubsetExpandsRequestedForumThreads(t *testing.T) {
 	require.Equal(t, "t1", results[0].ChannelID)
 }
 
+func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+
+	archiveAt := time.Now().UTC().Add(-time.Hour)
+	client := &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+		channels: map[string][]*discordgo.Channel{
+			"g1": {
+				{ID: "f1", GuildID: "g1", Name: "support", Type: discordgo.ChannelTypeGuildForum},
+				{ID: "c2", GuildID: "g1", Name: "random", Type: discordgo.ChannelTypeGuildText},
+			},
+		},
+		channelByID: map[string]*discordgo.Channel{
+			"t-archived": {
+				ID:       "t-archived",
+				GuildID:  "g1",
+				ParentID: "f1",
+				Name:     "archived support thread",
+				Type:     discordgo.ChannelTypeGuildPublicThread,
+				ThreadMetadata: &discordgo.ThreadMetadata{
+					Archived:         true,
+					ArchiveTimestamp: archiveAt,
+				},
+				LastMessageID: "10",
+			},
+		},
+		messages: map[string][]*discordgo.Message{
+			"t-archived": {{
+				ID:        "10",
+				GuildID:   "g1",
+				ChannelID: "t-archived",
+				Content:   "archived support body",
+				Timestamp: archiveAt,
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			}},
+		},
+	}
+
+	svc := New(client, s, nil)
+	stats, err := svc.Sync(ctx, SyncOptions{
+		Full:       true,
+		GuildIDs:   []string{"g1"},
+		ChannelIDs: []string{"t-archived"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Channels)
+	require.Equal(t, 1, stats.Threads)
+	require.Equal(t, 1, stats.Messages)
+	require.Equal(t, 1, client.guildChanCalls)
+	require.Equal(t, 1, client.channelCalls["t-archived"])
+	require.Zero(t, client.threadCalls)
+	require.Empty(t, client.archivedCalls)
+	require.Equal(t, 1, client.messageCalls["t-archived"])
+
+	results, err := s.SearchMessages(ctx, store.SearchOptions{Query: "archived support"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "t-archived", results[0].ChannelID)
+}
+
 func TestSyncToleratesArchivedThread403(t *testing.T) {
 	t.Parallel()
 

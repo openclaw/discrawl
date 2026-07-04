@@ -18,6 +18,7 @@ import (
 type fakeClient struct {
 	guilds            []*discordgo.UserGuild
 	guildByID         map[string]*discordgo.Guild
+	channelByID       map[string]*discordgo.Channel
 	channels          map[string][]*discordgo.Channel
 	activeThreads     map[string][]*discordgo.Channel
 	guildThreads      map[string][]*discordgo.Channel
@@ -41,6 +42,7 @@ type fakeClient struct {
 	tailCalls         int
 	tailHandled       chan struct{}
 	messageDelay      time.Duration
+	channelCalls      map[string]int
 	guildChanCalls    int
 	threadCalls       int
 	guildThreadCalls  int
@@ -66,6 +68,14 @@ func (f *fakeClient) Guilds(context.Context) ([]*discordgo.UserGuild, error) {
 
 func (f *fakeClient) Guild(_ context.Context, guildID string) (*discordgo.Guild, error) {
 	return f.guildByID[guildID], nil
+}
+
+func (f *fakeClient) Channel(_ context.Context, channelID string) (*discordgo.Channel, error) {
+	if f.channelCalls == nil {
+		f.channelCalls = make(map[string]int)
+	}
+	f.channelCalls[channelID]++
+	return f.channelByID[channelID], nil
 }
 
 func (f *fakeClient) GuildChannels(_ context.Context, guildID string) ([]*discordgo.Channel, error) {

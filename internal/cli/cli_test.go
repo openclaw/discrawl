@@ -3616,6 +3616,10 @@ func (f *fakeDiscordClient) Guild(context.Context, string) (*discordgo.Guild, er
 	return &discordgo.Guild{}, nil
 }
 
+func (f *fakeDiscordClient) Channel(context.Context, string) (*discordgo.Channel, error) {
+	return nil, nil
+}
+
 func (f *fakeDiscordClient) GuildChannels(context.Context, string) ([]*discordgo.Channel, error) {
 	return nil, nil
 }

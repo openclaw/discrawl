@@ -63,6 +63,13 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 	}
 
 	if unresolvedRequestedIDs(selected, requestedSet) > 0 {
+		if err := s.appendDirectRequestedChannels(ctx, guildID, allChannels, requestedSet); err != nil {
+			return nil, false, err
+		}
+		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
+	}
+
+	if unresolvedRequestedIDs(selected, requestedSet) > 0 {
 		if err := s.appendThreadCatalog(ctx, allChannels, threadParentIDs(topLevel)); err != nil {
 			return nil, false, err
 		}
@@ -73,6 +80,31 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 		mergedChannelCatalog(storedCatalog, allChannels),
 		exclusions,
 	), true, nil
+}
+
+func (s *Syncer) appendDirectRequestedChannels(
+	ctx context.Context,
+	guildID string,
+	allChannels map[string]*discordgo.Channel,
+	requested map[string]struct{},
+) error {
+	for requestedID := range requested {
+		if _, ok := allChannels[requestedID]; ok {
+			continue
+		}
+		channel, err := s.client.Channel(ctx, requestedID)
+		if err != nil {
+			return fmt.Errorf("fetch requested channel %s: %w", requestedID, err)
+		}
+		if channel == nil || channel.ID == "" {
+			continue
+		}
+		if channel.GuildID != "" && guildID != "" && channel.GuildID != guildID {
+			return fmt.Errorf("requested channel %s belongs to guild %s, not %s", channel.ID, channel.GuildID, guildID)
+		}
+		allChannels[channel.ID] = channel
+	}
+	return nil
 }
 
 func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, error) {

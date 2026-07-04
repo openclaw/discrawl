@@ -293,6 +293,12 @@ func (c *Client) Guild(ctx context.Context, guildID string) (*discordgo.Guild, e
 	return c.session.Guild(guildID, discordgo.WithContext(reqCtx))
 }
 
+func (c *Client) Channel(ctx context.Context, channelID string) (*discordgo.Channel, error) {
+	reqCtx, cancel := c.requestContext(ctx)
+	defer cancel()
+	return c.session.Channel(channelID, discordgo.WithContext(reqCtx))
+}
+
 func (c *Client) GuildChannels(ctx context.Context, guildID string) ([]*discordgo.Channel, error) {
 	reqCtx, cancel := c.requestContext(ctx)
 	defer cancel()
