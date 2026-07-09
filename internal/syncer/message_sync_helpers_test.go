@@ -40,14 +40,25 @@ func TestMessageChannelSelectionAndTimeoutHelpers(t *testing.T) {
 	_, ok := ctx.Deadline()
 	require.True(t, ok)
 
-	parentCtx, parentCancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	startedAt := time.Now()
+	parentCtx, parentCancel := context.WithDeadline(context.Background(), startedAt.Add(time.Hour))
 	defer parentCancel()
 	ctx, cancel = svc.messageChannelContext(parentCtx, SyncOptions{MessageChannelTimeout: 2 * time.Second})
 	defer cancel()
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)
 	parentDeadline, _ := parentCtx.Deadline()
-	require.Equal(t, parentDeadline, deadline)
+	require.WithinDuration(t, startedAt.Add(2*time.Second), deadline, 100*time.Millisecond)
+	require.True(t, deadline.Before(parentDeadline))
+
+	shortParentCtx, shortParentCancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+	defer shortParentCancel()
+	ctx, cancel = svc.messageChannelContext(shortParentCtx, SyncOptions{MessageChannelTimeout: time.Hour})
+	defer cancel()
+	deadline, ok = ctx.Deadline()
+	require.True(t, ok)
+	shortParentDeadline, _ := shortParentCtx.Deadline()
+	require.Equal(t, shortParentDeadline, deadline)
 }
 
 func TestChannelSyncStateHelpers(t *testing.T) {

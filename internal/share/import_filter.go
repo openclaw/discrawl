@@ -3,6 +3,7 @@ package share
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -19,11 +20,15 @@ type mergeImportFilter struct {
 	decisions     map[string]bool
 }
 
+type mergeImportQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func newMergeImportFilter(
 	ctx context.Context,
-	db *sql.DB,
+	db mergeImportQuerier,
 	opts Options,
-) (func(string, map[string]any) (bool, error), error) {
+) (*mergeImportFilter, error) {
 	filter := &mergeImportFilter{
 		excludedIDs:   normalizedImportSet(opts.MergeExcludeChannelIDs, false),
 		excludedKinds: normalizedImportSet(opts.MergeExcludeChannelKinds, true),
@@ -35,10 +40,10 @@ func newMergeImportFilter(
 			return nil, err
 		}
 	}
-	return filter.allow, nil
+	return filter, nil
 }
 
-func (f *mergeImportFilter) loadChannels(ctx context.Context, db *sql.DB) error {
+func (f *mergeImportFilter) loadChannels(ctx context.Context, db mergeImportQuerier) error {
 	rows, err := db.QueryContext(ctx, `
 		select id, coalesce(parent_id, ''), coalesce(thread_parent_id, ''), kind
 		from channels
@@ -61,6 +66,21 @@ func (f *mergeImportFilter) loadChannels(ctx context.Context, db *sql.DB) error 
 		return fmt.Errorf("iterate channels for snapshot merge exclusions: %w", err)
 	}
 	return nil
+}
+
+func (f *mergeImportFilter) allowMessageID(ctx context.Context, lookup *sql.Stmt, messageID string) (bool, error) {
+	var guildID, channelID string
+	err := lookup.QueryRowContext(ctx, messageID).Scan(&guildID, &channelID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load embedding message %s: %w", messageID, err)
+	}
+	return f.allow("messages", map[string]any{
+		"guild_id":   guildID,
+		"channel_id": channelID,
+	})
 }
 
 func (f *mergeImportFilter) allow(table string, row map[string]any) (bool, error) {

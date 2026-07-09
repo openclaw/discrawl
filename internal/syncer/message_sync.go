@@ -217,9 +217,6 @@ func (s *Syncer) messageChannelContext(ctx context.Context, opts SyncOptions) (c
 	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
 	return context.WithTimeout(ctx, timeout)
 }
 

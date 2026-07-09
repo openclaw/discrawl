@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	LastCheckSyncScope          = "share:last_check_at"
-	LastMergeSyncScope          = "share:last_merge_at"
-	LastMergeManifestSyncScope  = "share:last_merge_manifest_generated_at"
-	LastMergeManifestJSONScope  = "share:last_merge_manifest_json"
-	PendingReplacementSyncScope = "share:pending_replacement"
+	LastCheckSyncScope           = "share:last_check_at"
+	LastMergeSyncScope           = "share:last_merge_at"
+	LastMergeManifestSyncScope   = "share:last_merge_manifest_generated_at"
+	LastMergeManifestJSONScope   = "share:last_merge_manifest_json"
+	LastMergeEmbeddingsSyncScope = "share:last_merge_embeddings_state_v1"
+	PendingReplacementSyncScope  = "share:pending_replacement"
 )
 
 var ErrReplacementRequired = errors.New("share snapshot replacement required")
@@ -190,6 +191,73 @@ func PreviousMergedManifest(ctx context.Context, s *store.Store, opts Options) (
 		}
 	}
 	return PreviousImportedManifest(ctx, s, opts)
+}
+
+type mergeEmbeddingsState struct {
+	Version             int                 `json:"version"`
+	GeneratedAt         string              `json:"generated_at"`
+	Provider            string              `json:"provider"`
+	Model               string              `json:"model"`
+	InputVersion        string              `json:"input_version"`
+	ExcludeChannelIDs   []string            `json:"exclude_channel_ids"`
+	ExcludeChannelKinds []string            `json:"exclude_channel_kinds"`
+	Manifests           []EmbeddingManifest `json:"manifests"`
+}
+
+func mergedEmbeddingsStateValue(manifest Manifest, opts Options) (string, error) {
+	inputVersion := strings.TrimSpace(opts.EmbeddingInputVersion)
+	if inputVersion == "" {
+		inputVersion = store.EmbeddingInputVersion
+	}
+	state := mergeEmbeddingsState{
+		Version:             1,
+		GeneratedAt:         manifest.GeneratedAt.Format(time.RFC3339Nano),
+		Provider:            strings.ToLower(strings.TrimSpace(opts.EmbeddingProvider)),
+		Model:               strings.TrimSpace(opts.EmbeddingModel),
+		InputVersion:        inputVersion,
+		ExcludeChannelIDs:   sortedNormalizedImportValues(opts.MergeExcludeChannelIDs, false),
+		ExcludeChannelKinds: sortedNormalizedImportValues(opts.MergeExcludeChannelKinds, true),
+		Manifests:           []EmbeddingManifest{},
+	}
+	for _, embeddingManifest := range manifest.Embeddings {
+		if embeddingManifestMatches(opts, embeddingManifest) {
+			state.Manifests = append(state.Manifests, embeddingManifest)
+		}
+	}
+	body, err := json.Marshal(state)
+	if err != nil {
+		return "", fmt.Errorf("marshal merged embedding state: %w", err)
+	}
+	return string(body), nil
+}
+
+func sortedNormalizedImportValues(values []string, lower bool) []string {
+	set := normalizedImportSet(values, lower)
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergedEmbeddingsNeedImport(ctx context.Context, s *store.Store, manifest Manifest, opts Options) (string, bool, error) {
+	state, err := mergedEmbeddingsStateValue(manifest, opts)
+	if err != nil {
+		return "", false, err
+	}
+	previous, err := s.GetSyncState(ctx, LastMergeEmbeddingsSyncScope)
+	if err != nil {
+		return "", false, fmt.Errorf("read merged embedding state: %w", err)
+	}
+	return state, strings.TrimSpace(previous) != state, nil
+}
+
+func markMergedEmbeddings(ctx context.Context, s *store.Store, state string) error {
+	if err := s.SetSyncState(ctx, LastMergeEmbeddingsSyncScope, state); err != nil {
+		return fmt.Errorf("write merged embedding state: %w", err)
+	}
+	return nil
 }
 
 func MarkChecked(ctx context.Context, s *store.Store) error {

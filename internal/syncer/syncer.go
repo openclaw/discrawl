@@ -43,9 +43,10 @@ type Syncer struct {
 	messageSyncLogEvery   time.Duration
 	messageSyncWaitEvery  time.Duration
 	tailReady             func(context.Context) error
+	tailShutdownTimeout   time.Duration
 	tailRepair            func(context.Context, SyncOptions) (SyncStats, error)
 	tailRepairJoinTimeout time.Duration
-	tailRepairMu          sync.Mutex
+	tailRepairRunMu       sync.Mutex
 	tailRepairOffsetMu    sync.RWMutex
 	tailRepairOffset      time.Duration
 	channelExclusions     channelExclusions
@@ -90,6 +91,7 @@ const (
 	defaultMessageChannelTimeout = 5 * time.Minute
 	defaultMessageSyncLogEvery   = 15 * time.Second
 	defaultMessageSyncWaitEvery  = 30 * time.Second
+	defaultTailShutdownTimeout   = 90 * time.Second
 )
 
 func New(client Client, store *store.Store, logger *slog.Logger) *Syncer {
@@ -106,6 +108,7 @@ func New(client Client, store *store.Store, logger *slog.Logger) *Syncer {
 		messageChannelTimeout: defaultMessageChannelTimeout,
 		messageSyncLogEvery:   defaultMessageSyncLogEvery,
 		messageSyncWaitEvery:  defaultMessageSyncWaitEvery,
+		tailShutdownTimeout:   defaultTailShutdownTimeout,
 	}
 }
 
@@ -169,7 +172,13 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 			catalogMode = channelCatalogIncremental
 		}
 	}
-	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode)
+	channelList, targeted, err := s.channelList(
+		ctx,
+		guildID,
+		opts.ChannelIDs,
+		catalogMode,
+		s.effectiveChannelExclusions(opts),
+	)
 	if err != nil {
 		return stats, err
 	}

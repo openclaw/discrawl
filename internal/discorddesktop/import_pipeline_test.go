@@ -363,6 +363,171 @@ func TestImportFastCachePreservesKnownChannelMetadataAcrossBatches(t *testing.T)
 	require.Contains(t, rows[0][0], `"type":11`)
 }
 
+func TestImportExcludesCachedThreadRowsThroughParent(t *testing.T) {
+	ctx := context.Background()
+	guildID := "999999999999999996"
+	parentID := "111111111111111120"
+	threadID := "111111111111111121"
+
+	tests := []struct {
+		name       string
+		parentType int
+		options    Options
+	}{
+		{
+			name:       "parent id",
+			parentType: 0,
+			options:    Options{ExcludeChannelIDs: []string{parentID}},
+		},
+		{
+			name:       "parent kind",
+			parentType: 5,
+			options:    Options{ExcludeChannelKinds: []string{"announcement"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+			require.NoError(t, os.MkdirAll(cachePath, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_0"), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","guild_id":"%s","type":%d,"name":"excluded-parent"}
+{"id":"%s","guild_id":"%s","parent_id":"%s","type":11,"name":"cached-thread"}
+{"id":"333333333333333346","channel_id":"%s","content":"excluded cached thread payload","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"},"attachments":[{"id":"444444444444444445","filename":"trace.txt"}],"mentions":[{"id":"555555555555555556","username":"bob"}]}
+`, threadID, parentID, guildID, tt.parentType, threadID, guildID, parentID, threadID), 0o600))
+
+			st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+			require.NoError(t, err)
+			defer func() { _ = st.Close() }()
+
+			opts := tt.options
+			opts.Path = dir
+			stats, err := Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Zero(t, stats.Messages)
+			require.Equal(t, 1, stats.ExcludedMessages)
+			require.Equal(t, 1, stats.ExcludedChannels)
+			for _, table := range []string{"messages", "message_events", "message_attachments", "mention_events"} {
+				requireMessageCount(t, ctx, st, table, 0)
+			}
+
+			channels, err := st.Channels(ctx, guildID)
+			require.NoError(t, err)
+			channelsByID := make(map[string]store.ChannelRow, len(channels))
+			for _, channel := range channels {
+				channelsByID[channel.ID] = channel
+			}
+			require.Equal(t, parentID, channelsByID[threadID].ParentID)
+			require.Equal(t, parentID, channelsByID[threadID].ThreadParentID)
+		})
+	}
+}
+
+func TestImportDoesNotEraseStoredThreadParentFromPoorerCacheChannel(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+
+	guildID := "999999999999999996"
+	parentID := "111111111111111120"
+	threadID := "111111111111111121"
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_0"), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","guild_id":"%s","type":11,"name":"poorer-cached-thread"}
+{"id":"333333333333333346","channel_id":"%s","content":"stored parent must still exclude","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"},"attachments":[{"id":"444444444444444445","filename":"trace.txt"}],"mentions":[{"id":"555555555555555556","username":"bob"}]}
+`, threadID, threadID, guildID, threadID), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+	require.NoError(t, st.UpsertGuild(ctx, store.GuildRecord{ID: guildID, Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      parentID,
+		GuildID: guildID,
+		Kind:    "news",
+		Name:    "legacy-announcement",
+		RawJSON: `{}`,
+	}))
+	require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{
+		ID:             threadID,
+		GuildID:        guildID,
+		ParentID:       parentID,
+		Kind:           "thread_public",
+		Name:           "stored-thread",
+		ThreadParentID: parentID,
+		RawJSON:        `{}`,
+	}))
+
+	stats, err := Import(ctx, st, Options{
+		Path:                dir,
+		ExcludeChannelKinds: []string{"announcement"},
+	})
+	require.NoError(t, err)
+	require.Zero(t, stats.Messages)
+	require.Equal(t, 1, stats.ExcludedMessages)
+	require.Equal(t, 1, stats.ExcludedChannels)
+	for _, table := range []string{"messages", "message_events", "message_attachments", "mention_events"} {
+		requireMessageCount(t, ctx, st, table, 0)
+	}
+
+	channels, err := st.Channels(ctx, guildID)
+	require.NoError(t, err)
+	channelsByID := make(map[string]store.ChannelRow, len(channels))
+	for _, channel := range channels {
+		channelsByID[channel.ID] = channel
+	}
+	require.Equal(t, parentID, channelsByID[threadID].ParentID)
+	require.Equal(t, parentID, channelsByID[threadID].ThreadParentID)
+}
+
+func TestImportDryRunUsesStoredThreadParentForExclusions(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+
+	guildID := "999999999999999996"
+	parentID := "111111111111111120"
+	threadID := "111111111111111121"
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_0"), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","guild_id":"%s","type":11,"name":"poorer-cached-thread"}
+{"id":"333333333333333346","channel_id":"%s","content":"dry run must inherit stored parent","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"}}
+`, threadID, threadID, guildID, threadID), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+	require.NoError(t, st.UpsertGuild(ctx, store.GuildRecord{ID: guildID, Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      parentID,
+		GuildID: guildID,
+		Kind:    "news",
+		Name:    "legacy-announcement",
+		RawJSON: `{}`,
+	}))
+	require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{
+		ID:             threadID,
+		GuildID:        guildID,
+		ParentID:       parentID,
+		Kind:           "thread_public",
+		Name:           "stored-thread",
+		ThreadParentID: parentID,
+		RawJSON:        `{}`,
+	}))
+
+	stats, err := Import(ctx, st, Options{
+		Path:                dir,
+		DryRun:              true,
+		ExcludeChannelKinds: []string{"announcement"},
+	})
+	require.NoError(t, err)
+	require.True(t, stats.DryRun)
+	require.Zero(t, stats.Messages)
+	require.Equal(t, 1, stats.ExcludedMessages)
+	require.Equal(t, 1, stats.ExcludedChannels)
+	requireMessageCount(t, ctx, st, "messages", 0)
+}
+
 func TestImportFastCacheRouteFiltersServiceWorkerCacheStorage(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

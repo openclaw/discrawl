@@ -18,7 +18,13 @@ const (
 	channelCatalogIncremental
 )
 
-func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode) ([]*discordgo.Channel, bool, error) {
+func (s *Syncer) channelList(
+	ctx context.Context,
+	guildID string,
+	requested []string,
+	mode channelCatalogMode,
+	exclusions channelExclusions,
+) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
 		channels, err := s.liveChannelList(ctx, guildID, mode)
 		if err != nil {
@@ -33,6 +39,10 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 		rows, err := s.store.Channels(ctx, guildID)
 		if err != nil {
 			return nil, false, err
+		}
+		requestedSet = filterExcludedStoredTargets(rows, requestedSet, exclusions)
+		if len(requestedSet) == 0 {
+			return nil, true, nil
 		}
 		storedByID = selectStoredChannels(rows, requestedSet)
 		if canUseStoredTargets(storedByID, requestedSet) {
@@ -65,7 +75,52 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 		}
 		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	}
+	selected = filterExcludedDiscordTargets(selected, allChannels, exclusions)
 	return selected, true, nil
+}
+
+func filterExcludedStoredTargets(
+	rows []store.ChannelRow,
+	requested map[string]struct{},
+	exclusions channelExclusions,
+) map[string]struct{} {
+	if len(requested) == 0 || (len(exclusions.ids) == 0 && len(exclusions.kinds) == 0) {
+		return requested
+	}
+	channelByID := make(map[string]store.ChannelRow, len(rows))
+	for _, row := range rows {
+		channelByID[row.ID] = row
+	}
+	out := make(map[string]struct{}, len(requested))
+	for channelID := range requested {
+		channel, ok := channelByID[channelID]
+		if ok && exclusions.excludesStoredChannel(channel, channelByID) {
+			continue
+		}
+		if !ok && exclusions.excludesID(channelID) {
+			continue
+		}
+		out[channelID] = struct{}{}
+	}
+	return out
+}
+
+func filterExcludedDiscordTargets(
+	channels []*discordgo.Channel,
+	channelByID map[string]*discordgo.Channel,
+	exclusions channelExclusions,
+) []*discordgo.Channel {
+	if len(channels) == 0 || (len(exclusions.ids) == 0 && len(exclusions.kinds) == 0) {
+		return channels
+	}
+	out := make([]*discordgo.Channel, 0, len(channels))
+	for _, channel := range channels {
+		if exclusions.excludesDiscordChannel(channel, channelByID) {
+			continue
+		}
+		out = append(out, channel)
+	}
+	return out
 }
 
 func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode) ([]*discordgo.Channel, error) {
@@ -244,7 +299,7 @@ func channelFromRow(row store.ChannelRow) *discordgo.Channel {
 	return &discordgo.Channel{
 		ID:             row.ID,
 		GuildID:        row.GuildID,
-		ParentID:       row.ParentID,
+		ParentID:       storedChannelParentID(row),
 		Name:           row.Name,
 		Topic:          row.Topic,
 		Position:       row.Position,

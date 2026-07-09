@@ -1535,6 +1535,213 @@ func TestImportEmbeddingsFiltersByConfiguredIdentity(t *testing.T) {
 	require.Equal(t, "0", rows[0][0])
 }
 
+func TestMergeIfChangedFiltersExcludedFeedEmbeddings(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	require.NoError(t, src.UpsertChannel(ctx, store.ChannelRecord{
+		ID: "feed", GuildID: "g1", Kind: "announcement", Name: "feed", RawJSON: `{}`,
+	}))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessage(ctx, store.MessageRecord{
+		ID: "m-feed", GuildID: "g1", ChannelID: "feed", ChannelName: "feed",
+		AuthorID: "bot", AuthorName: "Bot", CreatedAt: now,
+		Content: "automated feed", NormalizedContent: "automated feed", RawJSON: `{}`,
+	}))
+	insertShareTestEmbedding(t, ctx, src, "m1", []float32{1, 0})
+	insertShareTestEmbedding(t, ctx, src, "m-feed", []float32{0, 1})
+
+	opts := Options{
+		RepoPath:              filepath.Join(t.TempDir(), "share"),
+		Branch:                "main",
+		IncludeEmbeddings:     true,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "text-embedding-3-small",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}
+	_, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	opts.MergeExcludeChannelKinds = []string{"announcement"}
+	_, changed, err := MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	_, rows, err := dst.ReadOnlyQuery(ctx, `select message_id from message_embeddings order by message_id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m1"}}, rows)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select id from messages order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m1"}}, rows)
+}
+
+func TestExactImportDoesNotApplySafeMergeEmbeddingExclusions(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	require.NoError(t, src.UpsertChannel(ctx, store.ChannelRecord{
+		ID: "feed", GuildID: "g1", Kind: "announcement", Name: "feed", RawJSON: `{}`,
+	}))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, src.UpsertMessage(ctx, store.MessageRecord{
+		ID: "m-feed", GuildID: "g1", ChannelID: "feed", ChannelName: "feed",
+		AuthorID: "bot", AuthorName: "Bot", CreatedAt: now,
+		Content: "exact feed row", NormalizedContent: "exact feed row", RawJSON: `{}`,
+	}))
+	insertShareTestEmbedding(t, ctx, src, "m-feed", []float32{0, 1})
+
+	opts := Options{
+		RepoPath:                 filepath.Join(t.TempDir(), "share"),
+		Branch:                   "main",
+		IncludeEmbeddings:        true,
+		EmbeddingProvider:        "openai",
+		EmbeddingModel:           "text-embedding-3-small",
+		EmbeddingInputVersion:    store.EmbeddingInputVersion,
+		MergeExcludeChannelKinds: []string{"announcement"},
+	}
+	_, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, err = Import(ctx, dst, opts)
+	require.NoError(t, err)
+
+	_, rows, err := dst.ReadOnlyQuery(ctx, `select id from messages where id = 'm-feed'`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m-feed"}}, rows)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select message_id from message_embeddings where message_id = 'm-feed'`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m-feed"}}, rows)
+}
+
+func TestImportEmbeddingsSkipsOrphans(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	insertShareTestEmbedding(t, ctx, src, "m1", []float32{1, 0})
+
+	opts := Options{
+		RepoPath:              filepath.Join(t.TempDir(), "share"),
+		Branch:                "main",
+		IncludeEmbeddings:     true,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "text-embedding-3-small",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}
+	manifest, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	validLine := strings.TrimSpace(snapshotFilesText(t, opts.RepoPath, manifest.Embeddings[0].Files))
+	var orphanRow map[string]any
+	require.NoError(t, json.Unmarshal([]byte(validLine), &orphanRow))
+	orphanRow["message_id"] = "orphan"
+	orphanLine, err := json.Marshal(orphanRow)
+	require.NoError(t, err)
+	writeGzipJSONLines(
+		t,
+		filepath.Join(opts.RepoPath, filepath.FromSlash(manifest.Embeddings[0].Files[0])),
+		[]string{validLine, string(orphanLine)},
+	)
+	manifest.Embeddings[0].Rows = 2
+	require.Equal(t, 2, manifest.Embeddings[0].Rows)
+
+	dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+	defer func() { _ = dst.Close() }()
+	require.NoError(t, ImportEmbeddings(ctx, dst, opts, manifest))
+	_, rows, err := dst.ReadOnlyQuery(ctx, `select message_id from message_embeddings order by message_id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m1"}}, rows)
+}
+
+func TestMergeIfChangedImportsEmbeddingsWhenCanonicalTablesUnchanged(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	insertShareTestEmbedding(t, ctx, src, "m1", []float32{1, 0})
+
+	opts := Options{
+		RepoPath:              filepath.Join(t.TempDir(), "share"),
+		Branch:                "main",
+		IncludeEmbeddings:     true,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "text-embedding-3-small",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}
+	manifest, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	canonicalOnly := opts
+	canonicalOnly.IncludeEmbeddings = false
+	_, changed, err := MergeIfChanged(ctx, dst, canonicalOnly)
+	require.NoError(t, err)
+	require.True(t, changed)
+	_, rows, err := dst.ReadOnlyQuery(ctx, `select count(*) from message_embeddings`)
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0])
+
+	_, changed, err = MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select message_id from message_embeddings`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m1"}}, rows)
+
+	require.NoError(t, dst.SetSyncState(ctx, LastMergeEmbeddingsSyncScope, ""))
+	_, changed, err = MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	require.NoError(t, os.Remove(filepath.Join(opts.RepoPath, filepath.FromSlash(manifest.Embeddings[0].Files[0]))))
+	_, changed, err = MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.False(t, changed)
+}
+
+func TestImportEmbeddingsPreservesLocalDirectMessageRows(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	require.NoError(t, src.UpsertMessage(ctx, store.MessageRecord{
+		ID: "dm1", GuildID: "g1", ChannelID: "c1", ChannelName: "general",
+		AuthorID: "u1", AuthorName: "Peter", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content: "public collision", NormalizedContent: "public collision", RawJSON: `{}`,
+	}))
+	insertShareTestEmbedding(t, ctx, src, "dm1", []float32{1, 0})
+	opts := Options{
+		RepoPath:              filepath.Join(t.TempDir(), "share"),
+		Branch:                "main",
+		IncludeEmbeddings:     true,
+		EmbeddingProvider:     "openai",
+		EmbeddingModel:        "text-embedding-3-small",
+		EmbeddingInputVersion: store.EmbeddingInputVersion,
+	}
+	manifest, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+
+	dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+	defer func() { _ = dst.Close() }()
+	seedDirectMessageData(t, ctx, dst)
+	insertShareTestEmbedding(t, ctx, dst, "dm1", []float32{9, 9})
+	require.NoError(t, ImportEmbeddings(ctx, dst, opts, manifest))
+
+	var blob []byte
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `
+		select embedding_blob
+		from message_embeddings
+		where message_id = 'dm1'
+	`).Scan(&blob))
+	vector, err := store.DecodeEmbeddingVector(blob)
+	require.NoError(t, err)
+	require.Equal(t, []float32{9, 9}, vector)
+}
+
 func TestMergeIfChangedSkipsSameManifest(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
@@ -2243,7 +2450,7 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	})
 	tx, err = s.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
-	require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+	_, err = importEmbeddings(ctx, tx, Options{
 		RepoPath:              repo,
 		EmbeddingProvider:     "openai",
 		EmbeddingModel:        "model",
@@ -2253,7 +2460,8 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 		Model:        "model",
 		InputVersion: store.EmbeddingInputVersion,
 		Files:        []string{embeddingRel},
-	}}), "decode dimensions")
+	}})
+	require.ErrorContains(t, err, "decode dimensions")
 	require.NoError(t, tx.Rollback())
 
 	writeGzipJSONLines(t, filepath.Join(repo, filepath.FromSlash(embeddingRel)), []string{
@@ -2261,7 +2469,7 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	})
 	tx, err = s.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
-	require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+	_, err = importEmbeddings(ctx, tx, Options{
 		RepoPath:              repo,
 		EmbeddingProvider:     "openai",
 		EmbeddingModel:        "model",
@@ -2271,7 +2479,8 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 		Model:        "model",
 		InputVersion: store.EmbeddingInputVersion,
 		Files:        []string{embeddingRel},
-	}}), "decode embedding blob")
+	}})
+	require.ErrorContains(t, err, "decode embedding blob")
 	require.NoError(t, tx.Rollback())
 }
 
@@ -2330,7 +2539,7 @@ func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
 	} {
 		tx, err := s.DB().BeginTx(ctx, nil)
 		require.NoError(t, err)
-		require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+		_, err = importEmbeddings(ctx, tx, Options{
 			RepoPath:              repo,
 			EmbeddingProvider:     "openai",
 			EmbeddingModel:        "model",
@@ -2340,7 +2549,8 @@ func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
 			Model:        "model",
 			InputVersion: store.EmbeddingInputVersion,
 			Files:        []string{rel},
-		}}), "invalid embedding manifest path")
+		}})
+		require.ErrorContains(t, err, "invalid embedding manifest path")
 		require.NoError(t, tx.Rollback())
 	}
 }
@@ -2364,7 +2574,7 @@ func TestImportEmbeddingsBoundsDecompressedInput(t *testing.T) {
 
 	tx, err := s.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
-	require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
+	_, err = importEmbeddings(ctx, tx, Options{
 		RepoPath:              repo,
 		EmbeddingProvider:     "openai",
 		EmbeddingModel:        "model",
@@ -2374,7 +2584,8 @@ func TestImportEmbeddingsBoundsDecompressedInput(t *testing.T) {
 		Model:        "model",
 		InputVersion: store.EmbeddingInputVersion,
 		Files:        []string{embeddingRel},
-	}}), "embedding decompressed size exceeds")
+	}})
+	require.ErrorContains(t, err, "embedding decompressed size exceeds")
 	require.NoError(t, tx.Rollback())
 }
 
@@ -2491,6 +2702,18 @@ func seedStore(t *testing.T, path string) *store.Store {
 		}},
 	}}))
 	return s
+}
+
+func insertShareTestEmbedding(t *testing.T, ctx context.Context, s *store.Store, messageID string, vector []float32) {
+	t.Helper()
+	blob, err := store.EncodeEmbeddingVector(vector)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_embeddings(
+			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
+		) values (?, 'openai', 'text-embedding-3-small', ?, ?, ?, ?)
+	`, messageID, store.EmbeddingInputVersion, len(vector), blob, time.Now().UTC().Format(time.RFC3339Nano))
+	require.NoError(t, err)
 }
 
 func addCachedAttachment(ctx context.Context, s *store.Store, mediaPath, hash string, size int64) error {

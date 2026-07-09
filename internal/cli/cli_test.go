@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2418,6 +2419,84 @@ func TestSyncSkipsGitShareByDefaultAndCanImportBeforeLiveDiscord(t *testing.T) {
 	require.Contains(t, contents, "live discord filled the delta")
 }
 
+func TestSyncUpdateUsesCommandExclusionsForPrecedingShareMerge(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	remoteRepo := filepath.Join(dir, "remote.git")
+	runGit(t, dir, "init", "--bare", remoteRepo)
+
+	publisher := seedCLIStore(t, filepath.Join(dir, "publisher.db"))
+	defer func() { _ = publisher.Close() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, channel := range []store.ChannelRecord{
+		{ID: "feed", GuildID: "g1", Kind: "text", Name: "feed", RawJSON: `{}`},
+		{ID: "announcements", GuildID: "g1", Kind: "announcement", Name: "announcements", RawJSON: `{}`},
+	} {
+		require.NoError(t, publisher.UpsertChannel(ctx, channel))
+	}
+	for _, message := range []store.MessageRecord{
+		{
+			ID: "m-feed", GuildID: "g1", ChannelID: "feed", ChannelName: "feed",
+			AuthorID: "bot", AuthorName: "Bot", CreatedAt: now,
+			Content: "command excluded feed", NormalizedContent: "command excluded feed", RawJSON: `{}`,
+		},
+		{
+			ID: "m-announcement", GuildID: "g1", ChannelID: "announcements", ChannelName: "announcements",
+			AuthorID: "bot", AuthorName: "Bot", CreatedAt: now,
+			Content: "command excluded announcement", NormalizedContent: "command excluded announcement", RawJSON: `{}`,
+		},
+	} {
+		require.NoError(t, publisher.UpsertMessage(ctx, message))
+	}
+	publisherOpts := share.Options{
+		RepoPath: filepath.Join(dir, "publisher-share"),
+		Remote:   remoteRepo,
+		Branch:   "main",
+	}
+	publishSnapshot(t, ctx, publisher, publisherOpts, "test: command exclusions")
+
+	cfgPath := filepath.Join(dir, "reader.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "reader.db")
+	cfg.Share.Remote = remoteRepo
+	cfg.Share.RepoPath = filepath.Join(dir, "reader-share")
+	cfg.Share.StaleAfter = "15m"
+	require.NoError(t, config.Write(cfgPath, cfg))
+
+	fakeSync := &fakeSyncService{}
+	rt := &runtime{
+		ctx:        ctx,
+		configPath: cfgPath,
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		openStore:  store.Open,
+		newDiscord: func(config.Config) (discordClient, error) {
+			return &fakeDiscordClient{guilds: []*discordgo.UserGuild{{ID: "g1"}}, self: &discordgo.User{ID: "bot"}}, nil
+		},
+		newSyncer: func(syncer.Client, *store.Store, *slog.Logger) syncService {
+			return fakeSync
+		},
+	}
+
+	require.NoError(t, rt.dispatch([]string{
+		"sync",
+		"--all",
+		"--update=auto",
+		"--exclude-channels", "feed",
+		"--exclude-channel-kinds", "announcement",
+	}))
+	require.Equal(t, []string{"feed"}, fakeSync.lastSync.ExcludeChannelIDs)
+	require.Equal(t, []string{"announcement"}, fakeSync.lastSync.ExcludeChannelKinds)
+
+	reader, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	_, rows, err := reader.ReadOnlyQuery(ctx, `select id from messages order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"m100"}}, rows)
+}
+
 func TestSyncLockSerializesConcurrentRuns(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("sync lock is currently a no-op on Windows")
@@ -2867,6 +2946,77 @@ func TestTailReadyPromotesOnceAndCleansUpOnCancellation(t *testing.T) {
 	require.Equal(t, "tail", owner.Operation)
 	require.False(t, rt.activeTailOwnsSyncLock(lockPath))
 	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+}
+
+func TestTailShutdownTimeoutDoesNotRecloseClientOrHoldWriterLock(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock is currently a no-op on Windows")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	client := &blockingCloseDiscordClient{
+		closeStarted:  make(chan struct{}),
+		closeRelease:  make(chan struct{}),
+		closeFinished: make(chan struct{}),
+	}
+	tailService := &boundaryTimeoutTailService{started: make(chan struct{})}
+	rt := &runtime{
+		ctx:        ctx,
+		configPath: cfgPath,
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		openStore:  store.Open,
+		newDiscord: func(config.Config) (discordClient, error) {
+			return client, nil
+		},
+		newSyncer: func(syncClient syncer.Client, _ *store.Store, _ *slog.Logger) syncService {
+			tailService.client = syncClient.(interface{ Close() error })
+			tailService.closeStarted = client.closeStarted
+			return tailService
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.dispatch([]string{"tail"})
+	}()
+
+	select {
+	case <-tailService.started:
+	case <-time.After(time.Second):
+		t.Fatal("tail did not start")
+	}
+	cancel()
+	select {
+	case <-client.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tail close did not start")
+	}
+	select {
+	case err := <-done:
+		require.ErrorContains(t, err, "tail shutdown timed out")
+	case <-time.After(time.Second):
+		t.Fatal("CLI cleanup repeated the blocked client close")
+	}
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	release, err := acquireSyncLock(context.Background(), lockPath)
+	require.NoError(t, err)
+	require.NoError(t, release())
+	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+
+	close(client.closeRelease)
+	select {
+	case <-client.closeFinished:
+	case <-time.After(time.Second):
+		t.Fatal("blocked client close did not finish")
+	}
 }
 
 func TestSyncLockHelperEdges(t *testing.T) {
@@ -3648,6 +3798,23 @@ func (f *fakeDiscordClient) Tail(context.Context, discordclient.EventHandler) er
 	return nil
 }
 
+type blockingCloseDiscordClient struct {
+	fakeDiscordClient
+	closeStarted  chan struct{}
+	closeRelease  chan struct{}
+	closeFinished chan struct{}
+	closeOnce     sync.Once
+}
+
+func (c *blockingCloseDiscordClient) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closeStarted)
+		<-c.closeRelease
+		close(c.closeFinished)
+	})
+	return nil
+}
+
 type fakeSyncService struct {
 	discovered            []*discordgo.UserGuild
 	lastSync              syncer.SyncOptions
@@ -3722,6 +3889,33 @@ func (f *fakeSyncService) SetAttachmentTextEnabled(enabled bool) {
 func (f *fakeSyncService) SetChannelExclusions(channelIDs, channelKinds []string) {
 	f.excludedChannelIDs = append([]string(nil), channelIDs...)
 	f.excludedChannelKinds = append([]string(nil), channelKinds...)
+}
+
+type boundaryTimeoutTailService struct {
+	fakeSyncService
+	client       interface{ Close() error }
+	started      chan struct{}
+	closeStarted <-chan struct{}
+}
+
+func (f *boundaryTimeoutTailService) RunTail(ctx context.Context, guildIDs []string, repairEvery time.Duration) error {
+	f.lastTail = guildIDs
+	f.lastRepair = repairEvery
+	if f.tailReady != nil {
+		f.tailReadyCalls++
+		if err := f.tailReady(ctx); err != nil {
+			return err
+		}
+	}
+	close(f.started)
+	<-ctx.Done()
+	go func() { _ = f.client.Close() }()
+	select {
+	case <-f.closeStarted:
+	case <-time.After(time.Second):
+		return errors.New("tail client close did not start")
+	}
+	return errors.New("tail shutdown timed out after 25ms")
 }
 
 type hybridSyncService struct {

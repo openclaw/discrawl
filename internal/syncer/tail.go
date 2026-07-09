@@ -46,93 +46,172 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		onReady:                s.tailReady,
 		logger:                 s.logger,
 		exclusions:             s.channelExclusions,
+		channels:               map[string]tailChannel{},
 		kindExcludedChannelIDs: map[string]struct{}{},
 	}
 	if err := handler.seedChannelExclusions(ctx); err != nil {
 		return fmt.Errorf("seed tail channel exclusions: %w", err)
 	}
-	if repairEvery <= 0 {
-		return s.client.Tail(ctx, handler)
-	}
 	tailCtx, cancelTail := context.WithCancel(ctx)
 	defer cancelTail()
-	var closeOnce sync.Once
-	closeClient := func() {
-		if closeable, ok := s.client.(closeableClient); ok {
-			_ = closeable.Close()
-		}
-	}
 	tailDone := make(chan error, 1)
 	go func() {
 		tailDone <- s.client.Tail(tailCtx, handler)
 	}()
-	repairOffset := s.repairOffset()
-	repairTimer := time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, repairOffset))
-	defer repairTimer.Stop()
-	repairC := repairTimer.C
-	var repairTicker *time.Ticker
+
+	var repairTimer *time.Timer
+	var repairC <-chan time.Time
 	defer func() {
-		if repairTicker != nil {
-			repairTicker.Stop()
+		if repairTimer != nil {
+			repairTimer.Stop()
 		}
 	}()
+	repairOffset := s.repairOffset()
+	scheduleRepair := func() {
+		if repairEvery <= 0 {
+			repairC = nil
+			return
+		}
+		delay := nextTailRepairDelay(time.Now(), repairEvery, repairOffset)
+		if repairTimer == nil {
+			repairTimer = time.NewTimer(delay)
+		} else {
+			if !repairTimer.Stop() {
+				select {
+				case <-repairTimer.C:
+				default:
+				}
+			}
+			repairTimer.Reset(delay)
+		}
+		repairC = repairTimer.C
+	}
+	scheduleRepair()
+
 	var activeRepair *tailRepairRun
 	var repairDone <-chan tailRepairResult
 	for {
 		select {
 		case <-ctx.Done():
-			cancelTail()
-			repairErr := s.joinTailRepair(activeRepair, "parent_shutdown")
-			closeOnce.Do(closeClient)
-			tailErr := <-tailDone
-			if discordclient.IsFatalTailError(tailErr) {
-				if repairErr != nil {
-					return errors.Join(tailErr, repairErr)
-				}
-				return tailErr
-			}
-			if repairErr != nil {
-				return repairErr
-			}
-			return nil
+			return s.finishTailRun(
+				cancelTail,
+				tailDone,
+				activeRepair,
+				nil,
+				false,
+				true,
+				"parent_shutdown",
+			)
 		case err := <-tailDone:
-			cancelTail()
-			repairErr := s.joinTailRepair(activeRepair, "tail_return")
-			closeOnce.Do(closeClient)
-			if repairErr != nil {
-				return errors.Join(err, repairErr)
+			return s.finishTailRun(
+				cancelTail,
+				nil,
+				activeRepair,
+				err,
+				true,
+				false,
+				"tail_return",
+			)
+		case <-repairC:
+			repairC = nil
+			activeRepair = s.startTailRepair(tailCtx, guildIDs)
+			if activeRepair == nil {
+				scheduleRepair()
+				continue
 			}
-			return err
+			repairDone = activeRepair.done
 		case result := <-repairDone:
 			s.logTailRepairResult(result)
 			activeRepair = nil
 			repairDone = nil
-			if repairOffset > 0 {
-				repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, repairOffset))
-				repairC = repairTimer.C
-			}
-		case <-repairC:
-			if repairOffset <= 0 && repairTicker == nil {
-				repairTicker = time.NewTicker(repairEvery)
-				repairC = repairTicker.C
-			}
-			if activeRepair != nil {
-				continue
-			}
-			activeRepair = s.startTailRepair(ctx, guildIDs)
-			if activeRepair != nil {
-				repairDone = activeRepair.done
-			}
-			if repairOffset > 0 {
-				if activeRepair == nil {
-					repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, repairOffset))
-					repairC = repairTimer.C
-				} else {
-					repairC = nil
-				}
-			}
+			// Schedule from completion so an overrun cannot immediately replay stale ticks.
+			scheduleRepair()
 		}
 	}
+}
+
+func (s *Syncer) finishTailRun(
+	cancelTail context.CancelFunc,
+	tailDone <-chan error,
+	repair *tailRepairRun,
+	tailErr error,
+	tailFinished bool,
+	requestedShutdown bool,
+	repairJoinReason string,
+) error {
+	cancelTail()
+
+	timeout := s.tailShutdownTimeout
+	if timeout <= 0 {
+		timeout = defaultTailShutdownTimeout
+	}
+	startedAt := time.Now()
+	repairErr := s.joinTailRepair(repair, repairJoinReason, timeout)
+
+	var closeDone <-chan error
+	if closeable, ok := s.client.(closeableClient); ok {
+		done := make(chan error, 1)
+		closeDone = done
+		go func() {
+			done <- closeable.Close()
+		}()
+	}
+
+	if tailFinished {
+		tailDone = nil
+	}
+	if tailDone == nil && closeDone == nil {
+		return tailRunResult(requestedShutdown, tailErr, repairErr, nil, nil)
+	}
+
+	remaining := timeout - time.Since(startedAt)
+	if remaining <= 0 {
+		return tailRunResult(
+			requestedShutdown,
+			tailErr,
+			repairErr,
+			nil,
+			fmt.Errorf("tail shutdown timed out after %s", timeout),
+		)
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	var closeErr error
+	for tailDone != nil || closeDone != nil {
+		select {
+		case err := <-tailDone:
+			if tailErr == nil {
+				tailErr = err
+			}
+			tailDone = nil
+		case err := <-closeDone:
+			closeErr = err
+			closeDone = nil
+		case <-timer.C:
+			return tailRunResult(
+				requestedShutdown,
+				tailErr,
+				repairErr,
+				closeErr,
+				fmt.Errorf("tail shutdown timed out after %s", timeout),
+			)
+		}
+	}
+	return tailRunResult(requestedShutdown, tailErr, repairErr, closeErr, nil)
+}
+
+func tailRunResult(
+	requestedShutdown bool,
+	tailErr error,
+	repairErr error,
+	closeErr error,
+	shutdownErr error,
+) error {
+	if requestedShutdown && !discordclient.IsFatalTailError(tailErr) {
+		tailErr = nil
+	}
+	return errors.Join(tailErr, repairErr, closeErr, shutdownErr)
 }
 
 const defaultTailRepairJoinTimeout = 5 * time.Second
@@ -162,7 +241,7 @@ func (s *Syncer) importTailMessageFailureFallbacks(ctx context.Context) error {
 }
 
 func (s *Syncer) startTailRepair(ctx context.Context, guildIDs []string) *tailRepairRun {
-	if s == nil || !s.tailRepairMu.TryLock() {
+	if s == nil || !s.tailRepairRunMu.TryLock() {
 		if s != nil && s.logger != nil {
 			s.logger.Warn("tail repair start skipped", "reason", "repair_already_running")
 		}
@@ -172,7 +251,7 @@ func (s *Syncer) startTailRepair(ctx context.Context, guildIDs []string) *tailRe
 	done := make(chan tailRepairResult, 1)
 	startedAt := time.Now()
 	go func() {
-		defer s.tailRepairMu.Unlock()
+		defer s.tailRepairRunMu.Unlock()
 		_, err := s.runTailRepair(repairCtx, tailRepairSyncOptions(guildIDs))
 		done <- tailRepairResult{err: err, elapsed: time.Since(startedAt)}
 	}()
@@ -186,7 +265,7 @@ func (s *Syncer) runTailRepair(ctx context.Context, opts SyncOptions) (SyncStats
 	return s.Sync(ctx, opts)
 }
 
-func (s *Syncer) joinTailRepair(repair *tailRepairRun, reason string) error {
+func (s *Syncer) joinTailRepair(repair *tailRepairRun, reason string, maxWait time.Duration) error {
 	if repair == nil {
 		return nil
 	}
@@ -195,6 +274,9 @@ func (s *Syncer) joinTailRepair(repair *tailRepairRun, reason string) error {
 	timeout := s.tailRepairJoinTimeout
 	if timeout <= 0 {
 		timeout = defaultTailRepairJoinTimeout
+	}
+	if maxWait > 0 && timeout > maxWait {
+		timeout = maxWait
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -300,7 +382,13 @@ type tailHandler struct {
 	logger                 *slog.Logger
 	exclusions             channelExclusions
 	exclusionMu            sync.RWMutex
+	channels               map[string]tailChannel
 	kindExcludedChannelIDs map[string]struct{}
+}
+
+type tailChannel struct {
+	parentID string
+	kind     string
 }
 
 func (t *tailHandler) OnTailReady(ctx context.Context) error {
@@ -521,20 +609,19 @@ func (t *tailHandler) seedChannelExclusions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	channelByID := make(map[string]store.ChannelRow, len(channels))
-	for _, channel := range channels {
-		channelByID[channel.ID] = channel
-	}
 	t.exclusionMu.Lock()
 	defer t.exclusionMu.Unlock()
+	t.channels = make(map[string]tailChannel, len(channels))
 	if t.kindExcludedChannelIDs == nil {
 		t.kindExcludedChannelIDs = map[string]struct{}{}
 	}
 	for _, channel := range channels {
-		if t.exclusions.excludesStoredChannel(channel, channelByID) {
-			t.kindExcludedChannelIDs[channel.ID] = struct{}{}
+		t.channels[channel.ID] = tailChannel{
+			parentID: storedChannelParentID(channel),
+			kind:     channel.Kind,
 		}
 	}
+	t.rebuildChannelExclusionsLocked()
 	return nil
 }
 
@@ -552,18 +639,61 @@ func (t *tailHandler) trackChannelExclusion(channel *discordgo.Channel) {
 	if channel == nil {
 		return
 	}
-	excluded := t.exclusions.excludesKind(channelKind(channel))
-	if !excluded && channel.ParentID != "" {
-		excluded = t.excludeChannel(channel.ParentID)
-	}
 	t.exclusionMu.Lock()
 	defer t.exclusionMu.Unlock()
+	if t.channels == nil {
+		t.channels = map[string]tailChannel{}
+	}
+	t.channels[channel.ID] = tailChannel{
+		parentID: channel.ParentID,
+		kind:     channelKind(channel),
+	}
+	t.rebuildChannelExclusionsLocked()
+}
+
+func (t *tailHandler) rebuildChannelExclusionsLocked() {
 	if t.kindExcludedChannelIDs == nil {
 		t.kindExcludedChannelIDs = map[string]struct{}{}
 	}
-	if excluded {
-		t.kindExcludedChannelIDs[channel.ID] = struct{}{}
-		return
+	clear(t.kindExcludedChannelIDs)
+	decisions := make(map[string]bool, len(t.channels))
+	var excludes func(string, map[string]struct{}) bool
+	excludes = func(channelID string, visiting map[string]struct{}) bool {
+		if decision, ok := decisions[channelID]; ok {
+			return decision
+		}
+		if t.exclusions.excludesID(channelID) {
+			decisions[channelID] = true
+			return true
+		}
+		channel, ok := t.channels[channelID]
+		if !ok {
+			decisions[channelID] = false
+			return false
+		}
+		if t.exclusions.excludesKind(channel.kind) {
+			decisions[channelID] = true
+			return true
+		}
+		if channel.parentID == "" {
+			decisions[channelID] = false
+			return false
+		}
+		if visiting == nil {
+			visiting = map[string]struct{}{}
+		}
+		if _, ok := visiting[channelID]; ok {
+			return false
+		}
+		visiting[channelID] = struct{}{}
+		excluded := excludes(channel.parentID, visiting)
+		delete(visiting, channelID)
+		decisions[channelID] = excluded
+		return excluded
 	}
-	delete(t.kindExcludedChannelIDs, channel.ID)
+	for channelID := range t.channels {
+		if excludes(channelID, nil) {
+			t.kindExcludedChannelIDs[channelID] = struct{}{}
+		}
+	}
 }

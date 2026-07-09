@@ -65,14 +65,24 @@ func (e channelExclusions) excludesKind(kind string) bool {
 	if _, ok := e.kinds[kind]; ok {
 		return true
 	}
-	if kind == "thread_announcement" {
+	switch kind {
+	case "news", "thread_news", "thread_announcement":
 		_, ok := e.kinds["announcement"]
 		return ok
+	default:
+		return false
 	}
-	return false
 }
 
 func (e channelExclusions) excludesDiscordChannel(channel *discordgo.Channel, channelByID map[string]*discordgo.Channel) bool {
+	return e.excludesDiscordChannelID(channel, channelByID, nil)
+}
+
+func (e channelExclusions) excludesDiscordChannelID(
+	channel *discordgo.Channel,
+	channelByID map[string]*discordgo.Channel,
+	visiting map[string]struct{},
+) bool {
 	if channel == nil {
 		return false
 	}
@@ -85,22 +95,54 @@ func (e channelExclusions) excludesDiscordChannel(channel *discordgo.Channel, ch
 	if e.excludesID(channel.ParentID) {
 		return true
 	}
+	if visiting == nil {
+		visiting = map[string]struct{}{}
+	}
+	if _, ok := visiting[channel.ID]; ok {
+		return false
+	}
+	visiting[channel.ID] = struct{}{}
+	defer delete(visiting, channel.ID)
 	parent := channelByID[channel.ParentID]
-	return parent != nil && e.excludesKind(channelKind(parent))
+	return parent != nil && e.excludesDiscordChannelID(parent, channelByID, visiting)
 }
 
 func (e channelExclusions) excludesStoredChannel(channel store.ChannelRow, channelByID map[string]store.ChannelRow) bool {
+	return e.excludesStoredChannelID(channel, channelByID, nil)
+}
+
+func (e channelExclusions) excludesStoredChannelID(
+	channel store.ChannelRow,
+	channelByID map[string]store.ChannelRow,
+	visiting map[string]struct{},
+) bool {
 	if e.excludesID(channel.ID) || e.excludesKind(channel.Kind) {
 		return true
 	}
-	if channel.ParentID == "" {
+	parentID := storedChannelParentID(channel)
+	if parentID == "" {
 		return false
 	}
-	if e.excludesID(channel.ParentID) {
+	if e.excludesID(parentID) {
 		return true
 	}
-	parent, ok := channelByID[channel.ParentID]
-	return ok && e.excludesKind(parent.Kind)
+	if visiting == nil {
+		visiting = map[string]struct{}{}
+	}
+	if _, ok := visiting[channel.ID]; ok {
+		return false
+	}
+	visiting[channel.ID] = struct{}{}
+	defer delete(visiting, channel.ID)
+	parent, ok := channelByID[parentID]
+	return ok && e.excludesStoredChannelID(parent, channelByID, visiting)
+}
+
+func storedChannelParentID(channel store.ChannelRow) string {
+	if channel.ThreadParentID != "" {
+		return channel.ThreadParentID
+	}
+	return channel.ParentID
 }
 
 func (s *Syncer) effectiveChannelExclusions(opts SyncOptions) channelExclusions {

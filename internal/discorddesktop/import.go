@@ -209,16 +209,18 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		current:  map[string]fileFingerprint{},
 		channels: map[string]store.ChannelRecord{},
 	}
-	if st == nil || opts.DryRun {
+	if st == nil {
 		return state, nil
 	}
-	raw, err := st.GetSyncState(ctx, fileIndexScope(opts))
-	if err != nil {
-		return state, err
-	}
-	if strings.TrimSpace(raw) != "" {
-		if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
-			state.previous = map[string]fileFingerprint{}
+	if !opts.DryRun {
+		raw, err := st.GetSyncState(ctx, fileIndexScope(opts))
+		if err != nil {
+			return state, err
+		}
+		if strings.TrimSpace(raw) != "" {
+			if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
+				state.previous = map[string]fileFingerprint{}
+			}
 		}
 	}
 	channels, err := st.Channels(ctx, "")
@@ -227,10 +229,13 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 	}
 	for _, channel := range channels {
 		state.channels[channel.ID] = store.ChannelRecord{
-			ID:      channel.ID,
-			GuildID: channel.GuildID,
-			Kind:    channel.Kind,
-			Name:    channel.Name,
+			ID:              channel.ID,
+			GuildID:         channel.GuildID,
+			ParentID:        channel.ParentID,
+			Kind:            channel.Kind,
+			Name:            channel.Name,
+			IsPrivateThread: channel.IsPrivateThread,
+			ThreadParentID:  channel.ThreadParentID,
 		}
 	}
 	return state, nil
@@ -609,35 +614,53 @@ func filterExcludedMessages(snap snapshot, channelLookup map[string]store.Channe
 		if _, ok := excludedKinds[kind]; ok {
 			return true
 		}
-		if kind == "thread_announcement" {
+		switch kind {
+		case "news", "thread_news", "thread_announcement":
 			_, ok := excludedKinds["announcement"]
 			return ok
+		default:
+			return false
 		}
-		return false
 	}
-	excludesChannel := func(channelID string) bool {
+	decisions := map[string]bool{}
+	var excludesChannel func(string, map[string]struct{}) bool
+	excludesChannel = func(channelID string, visiting map[string]struct{}) bool {
+		if decision, ok := decisions[channelID]; ok {
+			return decision
+		}
 		if _, ok := excludedIDs[channelID]; ok {
+			decisions[channelID] = true
 			return true
 		}
 		channel, ok := channelByID(channelID)
 		if !ok {
+			decisions[channelID] = false
 			return false
 		}
 		if excludesKind(channel.Kind) {
+			decisions[channelID] = true
 			return true
 		}
-		if channel.ParentID == "" {
+		parentID := inheritedChannelParentID(channel)
+		if parentID == "" {
+			decisions[channelID] = false
 			return false
 		}
-		if _, ok := excludedIDs[channel.ParentID]; ok {
-			return true
+		if visiting == nil {
+			visiting = map[string]struct{}{}
 		}
-		parent, ok := channelByID(channel.ParentID)
-		return ok && excludesKind(parent.Kind)
+		if _, ok := visiting[channelID]; ok {
+			return false
+		}
+		visiting[channelID] = struct{}{}
+		excluded := excludesChannel(parentID, visiting)
+		delete(visiting, channelID)
+		decisions[channelID] = excluded
+		return excluded
 	}
 	for messageID, message := range snap.messages {
 		channelID := message.Record.ChannelID
-		if !excludesChannel(channelID) {
+		if !excludesChannel(channelID, nil) {
 			continue
 		}
 		totals.excludedMessages[messageID] = struct{}{}
@@ -646,6 +669,13 @@ func filterExcludedMessages(snap snapshot, channelLookup map[string]store.Channe
 	}
 	stats.ExcludedMessages = len(totals.excludedMessages)
 	stats.ExcludedChannels = len(totals.excludedChannels)
+}
+
+func inheritedChannelParentID(channel store.ChannelRecord) string {
+	if channel.ThreadParentID != "" {
+		return channel.ThreadParentID
+	}
+	return channel.ParentID
 }
 
 func normalizedCollectionSet(values []string, lower bool) map[string]struct{} {
@@ -980,6 +1010,9 @@ func collectValue(snap snapshot, channelLookup map[string]store.ChannelRecord, v
 		collectUserLabel(snap, typed)
 		collectSelectedDirectMessageRoutes(snap, typed)
 		if channel, ok := parseChannel(typed); ok {
+			if existing, exists := channelLookup[channel.ID]; exists {
+				channel = mergeCachedChannelParentMetadata(existing, channel, typed)
+			}
 			snap.channels[channel.ID] = channel
 			channelLookup[channel.ID] = channel
 			if channel.GuildID == DirectMessageGuildID {
@@ -1083,14 +1116,42 @@ func parseChannel(raw map[string]any) (store.ChannelRecord, bool) {
 			name = "channel-" + shortID(id)
 		}
 	}
-	rawJSON := channelRawJSON(raw, id, guildID, name, kindForChannelType(typeValue, isDM))
-	return store.ChannelRecord{
-		ID:      id,
-		GuildID: guildID,
-		Kind:    kindForChannelType(typeValue, isDM),
-		Name:    name,
-		RawJSON: rawJSON,
-	}, true
+	kind := kindForChannelType(typeValue, isDM)
+	parentID := stringField(raw, "parent_id")
+	channel := store.ChannelRecord{
+		ID:       id,
+		GuildID:  guildID,
+		ParentID: parentID,
+		Kind:     kind,
+		Name:     name,
+		RawJSON:  channelRawJSON(raw, id, guildID, name, kind),
+	}
+	if isThreadChannelKind(kind) {
+		channel.ThreadParentID = parentID
+		channel.IsPrivateThread = kind == "thread_private"
+	}
+	return channel, true
+}
+
+func mergeCachedChannelParentMetadata(existing, cached store.ChannelRecord, raw map[string]any) store.ChannelRecord {
+	if _, hasType := raw["type"]; !hasType && isThreadChannelKind(existing.Kind) {
+		cached.Kind = existing.Kind
+		cached.IsPrivateThread = existing.IsPrivateThread
+	}
+	if _, hasParentID := raw["parent_id"]; !hasParentID {
+		cached.ParentID = existing.ParentID
+	}
+	if cached.ThreadParentID == "" && (isThreadChannelKind(cached.Kind) || isThreadChannelKind(existing.Kind)) {
+		cached.ThreadParentID = firstNonEmpty(cached.ParentID, existing.ThreadParentID, existing.ParentID)
+	}
+	if cached.ParentID == "" && cached.ThreadParentID != "" {
+		cached.ParentID = cached.ThreadParentID
+	}
+	return cached
+}
+
+func isThreadChannelKind(kind string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(kind)), "thread_")
 }
 
 func parseMessage(raw map[string]any, fallbackTime time.Time, channels map[string]store.ChannelRecord) (store.MessageMutation, bool) {
@@ -1515,12 +1576,13 @@ func kindForChannelType(typeValue int, dm bool) string {
 
 func channelRawJSON(raw map[string]any, id, guildID, name, kind string) string {
 	return marshalJSONString(map[string]any{
-		"id":       id,
-		"guild_id": guildID,
-		"name":     name,
-		"kind":     kind,
-		"source":   "discord_desktop",
-		"type":     raw["type"],
+		"id":        id,
+		"guild_id":  guildID,
+		"parent_id": raw["parent_id"],
+		"name":      name,
+		"kind":      kind,
+		"source":    "discord_desktop",
+		"type":      raw["type"],
 	}, "{}")
 }
 

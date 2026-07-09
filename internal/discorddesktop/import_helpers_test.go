@@ -93,6 +93,28 @@ func TestFilterExcludedMessages(t *testing.T) {
 	require.Equal(t, 2, stats.ExcludedChannels)
 }
 
+func TestFilterExcludedMessagesInheritsLegacyAnnouncementExclusions(t *testing.T) {
+	snap := newSnapshot()
+	snap.messages["m-news"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-news", ChannelID: "news"}}
+	snap.messages["m-thread-news"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-thread-news", ChannelID: "thread-news"}}
+	snap.messages["m-child"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-child", ChannelID: "child"}}
+	lookup := map[string]store.ChannelRecord{
+		"news":        {ID: "news", Kind: "news"},
+		"thread-news": {ID: "thread-news", Kind: "thread_news"},
+		"child":       {ID: "child", Kind: "thread_public", ThreadParentID: "news"},
+	}
+	totals := newScanTotals()
+	stats := &Stats{}
+
+	filterExcludedMessages(snap, lookup, Options{
+		ExcludeChannelKinds: []string{"announcement"},
+	}, totals, stats)
+
+	require.Empty(t, snap.messages)
+	require.Equal(t, 3, stats.ExcludedMessages)
+	require.Equal(t, 3, stats.ExcludedChannels)
+}
+
 func TestRouteFilteredCacheHelpers(t *testing.T) {
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Cache/Cache_Data/entry", "Cache/Cache_Data/entry"))
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Service Worker/CacheStorage/cache/entry", "Service Worker/CacheStorage/cache/entry"))
@@ -151,11 +173,21 @@ func TestImportAndStateEdgeBranches(t *testing.T) {
 	require.True(t, stats.FullCache)
 
 	require.NoError(t, s.SetSyncState(ctx, fileIndexScope(Options{}), "{not-json"))
-	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:             "c1",
+		GuildID:        "g1",
+		ParentID:       "parent",
+		Kind:           "thread_public",
+		Name:           "general",
+		ThreadParentID: "parent",
+		RawJSON:        `{}`,
+	}))
 	state, err := loadScanState(ctx, s, Options{})
 	require.NoError(t, err)
 	require.Empty(t, state.previous)
 	require.Equal(t, "general", state.channels["c1"].Name)
+	require.Equal(t, "parent", state.channels["c1"].ParentID)
+	require.Equal(t, "parent", state.channels["c1"].ThreadParentID)
 }
 
 func TestSnapshotFinalizeAndCommitBranches(t *testing.T) {

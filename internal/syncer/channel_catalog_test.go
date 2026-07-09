@@ -396,6 +396,61 @@ func TestSyncChannelSubsetMergesStoredAndLiveTargets(t *testing.T) {
 	require.Equal(t, "20", latest)
 }
 
+func TestSyncTargetedStoredThreadInheritsExcludedParentKind(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      "news",
+		GuildID: "g1",
+		Kind:    "announcement",
+		Name:    "feed",
+		RawJSON: `{}`,
+	}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:             "thread",
+		GuildID:        "g1",
+		Kind:           "thread_public",
+		Name:           "feed-thread",
+		ThreadParentID: "news",
+		RawJSON:        `{}`,
+	}))
+
+	client := &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+		messages: map[string][]*discordgo.Message{
+			"thread": {{
+				ID:        "10",
+				GuildID:   "g1",
+				ChannelID: "thread",
+				Content:   "must remain excluded",
+				Timestamp: time.Now().UTC(),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			}},
+		},
+	}
+
+	svc := New(client, s, nil)
+	stats, err := svc.Sync(ctx, SyncOptions{
+		Full:                true,
+		GuildIDs:            []string{"g1"},
+		ChannelIDs:          []string{"thread"},
+		ExcludeChannelKinds: []string{"announcement"},
+	})
+	require.NoError(t, err)
+	require.Zero(t, stats.Messages)
+	require.Zero(t, client.guildChanCalls)
+	require.Zero(t, client.messageCalls["thread"])
+}
+
 func TestSyncSkipsUnchangedThreadsWhenHistoryComplete(t *testing.T) {
 	t.Parallel()
 

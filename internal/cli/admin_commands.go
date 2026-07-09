@@ -107,6 +107,10 @@ func (r *runtime) runInit(args []string) error {
 }
 
 func (r *runtime) runSync(args []string) error {
+	return r.runSyncWithShareUpdate(args, shareUpdateNever)
+}
+
+func (r *runtime) runSyncWithShareUpdate(args []string, shareUpdate shareUpdateMode) error {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	full := fs.Bool("full", false, "")
@@ -182,6 +186,14 @@ func (r *runtime) runSync(args []string) error {
 		ExcludeChannelKinds:   csvList(*excludeChannelKinds),
 	}
 	return r.withSyncLock(func() error {
+		if shareUpdate != shareUpdateNever && os.Getenv("DISCRAWL_NO_AUTO_UPDATE") != "1" {
+			if err := r.autoUpdateShareWithExclusions(shareUpdate, &shareMergeExclusions{
+				channelIDs:   opts.ExcludeChannelIDs,
+				channelKinds: opts.ExcludeChannelKinds,
+			}); err != nil {
+				return err
+			}
+		}
 		return r.runSyncLocked(sources, opts, *withMedia)
 	})
 }

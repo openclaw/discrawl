@@ -538,7 +538,11 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 				return err
 			}
 			if opts.IncludeEmbeddings {
-				return importEmbeddings(ctx, tx, opts, manifest.Embeddings)
+				embeddingOpts := opts
+				embeddingOpts.MergeExcludeChannelIDs = nil
+				embeddingOpts.MergeExcludeChannelKinds = nil
+				_, err := importEmbeddings(ctx, tx, embeddingOpts, manifest.Embeddings)
+				return err
 			}
 			return nil
 		},
@@ -551,6 +555,18 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	}
 	if opts.IncludeMedia {
 		if _, err := importMedia(ctx, opts, manifest.Media); err != nil {
+			return Manifest{}, err
+		}
+	}
+	if opts.IncludeEmbeddings {
+		embeddingOpts := opts
+		embeddingOpts.MergeExcludeChannelIDs = nil
+		embeddingOpts.MergeExcludeChannelKinds = nil
+		state, err := mergedEmbeddingsStateValue(manifest, embeddingOpts)
+		if err != nil {
+			return Manifest{}, err
+		}
+		if err := markMergedEmbeddings(ctx, s, state); err != nil {
 			return Manifest{}, err
 		}
 	}
@@ -612,9 +628,20 @@ func importMergePlan(
 	plan snapshot.ImportPlan,
 ) (Manifest, bool, error) {
 	if !plan.Changed() {
+		embeddingRows := 0
 		if opts.IncludeEmbeddings {
-			if err := ImportEmbeddings(ctx, s, opts, manifest); err != nil {
+			state, needed, err := mergedEmbeddingsNeedImport(ctx, s, manifest, opts)
+			if err != nil {
 				return Manifest{}, false, err
+			}
+			if needed {
+				embeddingRows, err = importEmbeddingsIntoStore(ctx, s, opts, manifest)
+				if err != nil {
+					return Manifest{}, false, err
+				}
+				if err := markMergedEmbeddings(ctx, s, state); err != nil {
+					return Manifest{}, false, err
+				}
 			}
 		}
 		copied := 0
@@ -628,7 +655,7 @@ func importMergePlan(
 		if err := MarkMerged(ctx, s, manifest); err != nil {
 			return Manifest{}, false, err
 		}
-		return manifest, copied > 0, nil
+		return manifest, embeddingRows > 0 || copied > 0, nil
 	}
 	rowFilter, err := newMergeImportFilter(ctx, s.DB(), opts)
 	if err != nil {
@@ -663,7 +690,7 @@ func importMergePlan(
 				TotalRows: progress.TotalRows,
 			})
 		},
-		Filter: rowFilter,
+		Filter: rowFilter.allow,
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			existingMedia, err = attachmentMediaByID(ctx, tx)
@@ -685,7 +712,8 @@ func importMergePlan(
 				return err
 			}
 			if opts.IncludeEmbeddings {
-				return importEmbeddings(ctx, tx, opts, manifest.Embeddings)
+				_, err := importEmbeddingsWithFilter(ctx, tx, opts, manifest.Embeddings, rowFilter)
+				return err
 			}
 			return nil
 		},
@@ -707,6 +735,15 @@ func importMergePlan(
 	}
 	if opts.IncludeMedia {
 		if _, err := importMedia(ctx, opts, manifest.Media); err != nil {
+			return Manifest{}, false, err
+		}
+	}
+	if opts.IncludeEmbeddings {
+		state, err := mergedEmbeddingsStateValue(manifest, opts)
+		if err != nil {
+			return Manifest{}, false, err
+		}
+		if err := markMergedEmbeddings(ctx, s, state); err != nil {
 			return Manifest{}, false, err
 		}
 	}
@@ -760,9 +797,21 @@ func importPlanRowCount(plan snapshot.ImportPlan) int {
 }
 
 func ImportEmbeddings(ctx context.Context, s *store.Store, opts Options, manifest Manifest) error {
-	tx, err := s.DB().BeginTx(ctx, nil)
+	_, err := importEmbeddingsIntoStore(ctx, s, opts, manifest)
 	if err != nil {
 		return err
+	}
+	state, err := mergedEmbeddingsStateValue(manifest, opts)
+	if err != nil {
+		return err
+	}
+	return markMergedEmbeddings(ctx, s, state)
+}
+
+func importEmbeddingsIntoStore(ctx context.Context, s *store.Store, opts Options, manifest Manifest) (int, error) {
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
 	}
 	committed := false
 	defer func() {
@@ -770,14 +819,15 @@ func ImportEmbeddings(ctx context.Context, s *store.Store, opts Options, manifes
 			_ = tx.Rollback()
 		}
 	}()
-	if err := importEmbeddings(ctx, tx, opts, manifest.Embeddings); err != nil {
-		return err
+	rows, err := importEmbeddings(ctx, tx, opts, manifest.Embeddings)
+	if err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
 	committed = true
-	return nil
+	return rows, nil
 }
 
 func ManifestAlreadyImported(ctx context.Context, s *store.Store, manifest Manifest) bool {
@@ -2201,9 +2251,28 @@ func isLocalOnlyGuildID(guildID string) bool {
 	return guildID == directMessageGuildID
 }
 
-func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests []EmbeddingManifest) error {
+func importEmbeddings(
+	ctx context.Context,
+	tx *sql.Tx,
+	opts Options,
+	manifests []EmbeddingManifest,
+) (int, error) {
+	filter, err := newMergeImportFilter(ctx, tx, opts)
+	if err != nil {
+		return 0, err
+	}
+	return importEmbeddingsWithFilter(ctx, tx, opts, manifests, filter)
+}
+
+func importEmbeddingsWithFilter(
+	ctx context.Context,
+	tx *sql.Tx,
+	opts Options,
+	manifests []EmbeddingManifest,
+	filter *mergeImportFilter,
+) (int, error) {
 	if len(manifests) == 0 {
-		return nil
+		return 0, nil
 	}
 	stmt, err := tx.PrepareContext(ctx, `
 		insert into message_embeddings(
@@ -2213,50 +2282,72 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 			dimensions = excluded.dimensions,
 			embedding_blob = excluded.embedding_blob,
 			embedded_at = excluded.embedded_at
+		where message_embeddings.dimensions is not excluded.dimensions
+			or message_embeddings.embedding_blob is not excluded.embedding_blob
+			or message_embeddings.embedded_at is not excluded.embedded_at
 	`)
 	if err != nil {
-		return fmt.Errorf("prepare import message_embeddings: %w", err)
+		return 0, fmt.Errorf("prepare import message_embeddings: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
+	messageLookup, err := tx.PrepareContext(ctx, `
+		select guild_id, channel_id
+		from messages
+		where id = ?
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare embedding message lookup: %w", err)
+	}
+	defer func() { _ = messageLookup.Close() }()
+	changed := 0
 	for _, manifest := range manifests {
 		if err := ctx.Err(); err != nil {
-			return err
+			return 0, err
 		}
 		if !embeddingManifestMatches(opts, manifest) {
 			continue
 		}
 		files := manifest.Files
 		if len(files) == 0 {
-			return fmt.Errorf("embedding manifest %s/%s/%s has no files", manifest.Provider, manifest.Model, manifest.InputVersion)
+			return 0, fmt.Errorf("embedding manifest %s/%s/%s has no files", manifest.Provider, manifest.Model, manifest.InputVersion)
 		}
 		for _, rel := range files {
 			if err := ctx.Err(); err != nil {
-				return err
+				return 0, err
 			}
-			if err := importEmbeddingFile(ctx, stmt, opts.RepoPath, rel); err != nil {
-				return err
+			rows, err := importEmbeddingFile(ctx, stmt, messageLookup, filter, opts.RepoPath, rel)
+			if err != nil {
+				return 0, err
 			}
+			changed += rows
 		}
 	}
-	return nil
+	return changed, nil
 }
 
-func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string) error {
+func importEmbeddingFile(
+	ctx context.Context,
+	stmt *sql.Stmt,
+	messageLookup *sql.Stmt,
+	filter *mergeImportFilter,
+	repoPath,
+	rel string,
+) (int, error) {
 	path, err := embeddingRepoPath(repoPath, rel)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := regularFileInRoot(filepath.Join(repoPath, "embeddings"), path, rel, "embedding"); err != nil {
-		return err
+		return 0, err
 	}
 	file, err := os.Open(path) // #nosec G304 -- path is confined by embeddingRepoPath and regularFileInRoot.
 	if err != nil {
-		return fmt.Errorf("open %s: %w", rel, err)
+		return 0, fmt.Errorf("open %s: %w", rel, err)
 	}
 	defer func() { _ = file.Close() }()
 	gz, err := gzip.NewReader(file)
 	if err != nil {
-		return fmt.Errorf("read gzip %s: %w", rel, err)
+		return 0, fmt.Errorf("read gzip %s: %w", rel, err)
 	}
 	defer func() { _ = gz.Close() }()
 	dec := json.NewDecoder(&limitedReader{
@@ -2265,9 +2356,10 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 		label: "embedding",
 	})
 	dec.UseNumber()
+	changed := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return 0, err
 		}
 		var row struct {
 			MessageID     string      `json:"message_id"`
@@ -2283,21 +2375,34 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("decode %s: %w", rel, err)
+			return 0, fmt.Errorf("decode %s: %w", rel, err)
 		}
 		dimensions, err := strconv.Atoi(row.Dimensions.String())
 		if err != nil {
-			return fmt.Errorf("decode dimensions in %s: %w", rel, err)
+			return 0, fmt.Errorf("decode dimensions in %s: %w", rel, err)
 		}
 		blob, err := base64.StdEncoding.DecodeString(row.EmbeddingBlob)
 		if err != nil {
-			return fmt.Errorf("decode embedding blob in %s: %w", rel, err)
+			return 0, fmt.Errorf("decode embedding blob in %s: %w", rel, err)
 		}
-		if _, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt); err != nil {
-			return fmt.Errorf("insert message_embeddings: %w", err)
+		allowed, err := filter.allowMessageID(ctx, messageLookup, row.MessageID)
+		if err != nil {
+			return 0, err
 		}
+		if !allowed {
+			continue
+		}
+		result, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt)
+		if err != nil {
+			return 0, fmt.Errorf("insert message_embeddings: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("count imported message_embeddings: %w", err)
+		}
+		changed += int(rows)
 	}
-	return nil
+	return changed, nil
 }
 
 func embeddingRepoPath(repoPath, rel string) (string, error) {

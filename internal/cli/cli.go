@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -290,6 +291,48 @@ type discordClient interface {
 	Guilds(context.Context) ([]*discordgo.UserGuild, error)
 }
 
+// coordinatedDiscordClient lets the tail shutdown path own the first Close
+// while making outer service cleanup idempotent and non-blocking if that close
+// is still in progress.
+type coordinatedDiscordClient struct {
+	discordClient
+	closeMu      sync.Mutex
+	closeStarted bool
+	closeDone    chan struct{}
+	closeErr     error
+}
+
+func (c *coordinatedDiscordClient) Close() error {
+	if c == nil || c.discordClient == nil {
+		return nil
+	}
+	c.closeMu.Lock()
+	if c.closeStarted {
+		done := c.closeDone
+		c.closeMu.Unlock()
+		select {
+		case <-done:
+			c.closeMu.Lock()
+			err := c.closeErr
+			c.closeMu.Unlock()
+			return err
+		default:
+			return nil
+		}
+	}
+	c.closeStarted = true
+	c.closeDone = make(chan struct{})
+	done := c.closeDone
+	c.closeMu.Unlock()
+
+	err := c.discordClient.Close()
+	c.closeMu.Lock()
+	c.closeErr = err
+	close(done)
+	c.closeMu.Unlock()
+	return err
+}
+
 type syncService interface {
 	DiscoverGuilds(context.Context) ([]*discordgo.UserGuild, error)
 	Sync(context.Context, syncer.SyncOptions) (syncer.SyncStats, error)
@@ -329,7 +372,9 @@ func (r *runtime) dispatch(rest []string) error {
 		if err != nil {
 			return usageErr(err)
 		}
-		return r.withLocalStoreUpdateLocked(updateMode, true, func() error { return r.runSync(rest[1:]) })
+		return r.withLocalStoreUpdateLocked(shareUpdateNever, true, func() error {
+			return r.runSyncWithShareUpdate(rest[1:], updateMode)
+		})
 	case "tail":
 		operation := "tail-starting"
 		if tailReplayOnlyEnabled(rest[1:]) {
@@ -763,7 +808,7 @@ func (r *runtime) ensureDiscordServices() error {
 	if err != nil {
 		return authErr(err)
 	}
-	r.client = client
+	r.client = &coordinatedDiscordClient{discordClient: client}
 	syncerFactory := r.newSyncer
 	if syncerFactory == nil {
 		syncerFactory = func(client syncer.Client, s *store.Store, logger *slog.Logger) syncService {
@@ -780,7 +825,16 @@ func (r *runtime) ensureDiscordServices() error {
 	return nil
 }
 
+type shareMergeExclusions struct {
+	channelIDs   []string
+	channelKinds []string
+}
+
 func (r *runtime) autoUpdateShare(mode shareUpdateMode) error {
+	return r.autoUpdateShareWithExclusions(mode, nil)
+}
+
+func (r *runtime) autoUpdateShareWithExclusions(mode shareUpdateMode, exclusions *shareMergeExclusions) error {
 	if !r.cfg.ShareEnabled() || (mode == shareUpdateConfigured && !r.cfg.Share.AutoUpdate) {
 		return nil
 	}
@@ -794,6 +848,10 @@ func (r *runtime) autoUpdateShare(mode shareUpdateMode) error {
 	opts, err := r.shareOptions()
 	if err != nil {
 		return err
+	}
+	if exclusions != nil {
+		opts.MergeExcludeChannelIDs = append([]string(nil), exclusions.channelIDs...)
+		opts.MergeExcludeChannelKinds = append([]string(nil), exclusions.channelKinds...)
 	}
 	r.setSyncLockPhase("share pull")
 	r.logger.Info("share update pulling", "repo_path", opts.RepoPath, "remote", opts.Remote)
