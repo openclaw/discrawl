@@ -222,6 +222,7 @@ func (r *runtime) runSubscribe(args []string) error {
 			return configErr(err)
 		}
 		opts := share.Options{RepoPath: expandedRepo, Remote: cfg.Share.Remote, Branch: cfg.Share.Branch, Progress: r.shareProgress}
+		applyCollectionExclusionsToShareMerge(&opts, cfg)
 		if err := applyMediaShareOptions(&opts, cfg, cfg.ShareMediaEnabled() && !*noMedia); err != nil {
 			return err
 		}
@@ -283,6 +284,7 @@ func (r *runtime) runUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
+	applyCollectionExclusionsToShareMerge(&opts, r.cfg)
 	opts.Progress = r.shareProgress
 	if *withEmbeddings {
 		applyEmbeddingShareOptions(&opts, r.cfg)
@@ -342,6 +344,14 @@ func shareOptionsFromFlags(repoPath, remote, branch string) (share.Options, erro
 		branch = "main"
 	}
 	return share.Options{RepoPath: expandedRepo, Remote: remote, Branch: branch}, nil
+}
+
+func applyCollectionExclusionsToShareMerge(opts *share.Options, cfg config.Config) {
+	if opts == nil {
+		return
+	}
+	opts.MergeExcludeChannelIDs = append([]string(nil), cfg.Sync.ExcludeChannelIDs...)
+	opts.MergeExcludeChannelKinds = append([]string(nil), cfg.Sync.ExcludeChannelKinds...)
 }
 
 func applyEmbeddingShareOptions(opts *share.Options, cfg config.Config) {

@@ -114,6 +114,8 @@ func (r *runtime) runSync(args []string) error {
 	allChannels := fs.Bool("all-channels", false, "")
 	since := fs.String("since", "", "")
 	channels := fs.String("channels", "", "")
+	excludeChannels := fs.String("exclude-channels", strings.Join(r.cfg.Sync.ExcludeChannelIDs, ","), "")
+	excludeChannelKinds := fs.String("exclude-channel-kinds", strings.Join(r.cfg.Sync.ExcludeChannelKinds, ","), "")
 	concurrency := fs.Int("concurrency", r.cfg.Sync.Concurrency, "")
 	source := fs.String("source", r.cfg.Sync.Source, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
@@ -121,6 +123,7 @@ func (r *runtime) runSync(args []string) error {
 	skipMembers := fs.Bool("skip-members", false, "")
 	withMembers := fs.Bool("with-members", false, "")
 	latestOnly := fs.Bool("latest-only", false, "")
+	channelTimeout := fs.String("channel-timeout", "", "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
 	updateMode := fs.String("update", "", "")
@@ -151,21 +154,32 @@ func (r *runtime) runSync(args []string) error {
 		}
 		sinceTime = parsed
 	}
+	var messageChannelTimeout time.Duration
+	if strings.TrimSpace(*channelTimeout) != "" {
+		parsed, err := time.ParseDuration(strings.TrimSpace(*channelTimeout))
+		if err != nil || parsed <= 0 {
+			return usageErr(fmt.Errorf("invalid --channel-timeout %q", *channelTimeout))
+		}
+		messageChannelTimeout = parsed
+	}
 	guildIDs, err := r.resolveSyncGuildsAll(*guildFlag, *guildsFlag, *all)
 	if err != nil {
 		return usageErr(err)
 	}
 	defaultLatest := defaultLatestSyncMode(*full, *allChannels, *since, *channels)
 	opts := syncer.SyncOptions{
-		Full:           *full,
-		GuildIDs:       guildIDs,
-		ChannelIDs:     csvList(*channels),
-		Concurrency:    *concurrency,
-		Since:          sinceTime,
-		Embeddings:     *withEmbeddings,
-		SkipMembers:    syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
-		RequireMembers: *withMembers,
-		LatestOnly:     syncLatestOnly(*latestOnly, defaultLatest),
+		Full:                  *full,
+		GuildIDs:              guildIDs,
+		ChannelIDs:            csvList(*channels),
+		Concurrency:           *concurrency,
+		Since:                 sinceTime,
+		Embeddings:            *withEmbeddings,
+		SkipMembers:           syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
+		RequireMembers:        *withMembers,
+		LatestOnly:            syncLatestOnly(*latestOnly, defaultLatest),
+		MessageChannelTimeout: messageChannelTimeout,
+		ExcludeChannelIDs:     csvList(*excludeChannels),
+		ExcludeChannelKinds:   csvList(*excludeChannelKinds),
 	}
 	return r.withSyncLock(func() error {
 		return r.runSyncLocked(sources, opts, *withMedia)
@@ -193,10 +207,12 @@ func (r *runtime) runSyncLocked(sources syncSources, opts syncer.SyncOptions, wi
 	if sources.wiretap {
 		r.setSyncLockPhase("wiretap import")
 		stats, err := discorddesktop.Import(r.ctx, r.store, discorddesktop.Options{
-			Path:         r.cfg.Desktop.Path,
-			MaxFileBytes: r.cfg.Desktop.MaxFileBytes,
-			FullCache:    r.cfg.Desktop.FullCache,
-			Now:          r.now,
+			Path:                r.cfg.Desktop.Path,
+			MaxFileBytes:        r.cfg.Desktop.MaxFileBytes,
+			FullCache:           r.cfg.Desktop.FullCache,
+			ExcludeChannelIDs:   opts.ExcludeChannelIDs,
+			ExcludeChannelKinds: opts.ExcludeChannelKinds,
+			Now:                 r.now,
 		})
 		if err != nil {
 			return err
@@ -332,6 +348,15 @@ func (r *runtime) runTail(args []string) error {
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
 	replayLimit := fs.Int("replay-limit", syncer.TailMessageReplayLimit, "")
+	repairOffsetDefault := time.Duration(0)
+	if raw := strings.TrimSpace(r.cfg.Sync.RepairOffset); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return configErr(fmt.Errorf("parse sync.repair_offset: %w", err))
+		}
+		repairOffsetDefault = parsed
+	}
+	repairOffset := fs.Duration("repair-offset", repairOffsetDefault, "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
 	if err := fs.Parse(args); err != nil {
@@ -368,6 +393,9 @@ func (r *runtime) runTail(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(r.ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if configurable, ok := r.syncer.(repairOffsetConfigurer); ok {
+		configurable.SetRepairOffset(*repairOffset)
+	}
 	if configurable, ok := r.syncer.(tailReadyConfigurer); ok {
 		configurable.SetTailReadyCallback(func(context.Context) error {
 			return r.activateTailSyncLock()
@@ -402,11 +430,13 @@ func (r *runtime) runWiretap(args []string) error {
 	var previousCoverage *store.CoverageReport
 	runOnce := func(ctx context.Context) error {
 		stats, err := discorddesktop.Import(ctx, r.store, discorddesktop.Options{
-			Path:         *path,
-			MaxFileBytes: *maxFileBytes,
-			FullCache:    *fullCache,
-			DryRun:       *dryRun,
-			Now:          r.now,
+			Path:                *path,
+			MaxFileBytes:        *maxFileBytes,
+			FullCache:           *fullCache,
+			DryRun:              *dryRun,
+			ExcludeChannelIDs:   r.cfg.Sync.ExcludeChannelIDs,
+			ExcludeChannelKinds: r.cfg.Sync.ExcludeChannelKinds,
+			Now:                 r.now,
 		})
 		if err != nil {
 			return err

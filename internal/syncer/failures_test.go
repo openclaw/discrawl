@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -366,4 +367,55 @@ func TestRecordTailFailureRejectsInvalidMessageMetadata(t *testing.T) {
 		Kind:      "panic",
 		MessageID: "m1",
 	}), "missing store")
+}
+
+func TestChannelFailureLedgerIgnoresOnlyParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	svc := &Syncer{store: st}
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	require.NoError(t, svc.recordChannelFailure(
+		canceledCtx,
+		"g1",
+		"shutdown",
+		fmt.Errorf("request interrupted: %w", context.Canceled),
+	))
+	require.NoError(t, svc.recordChannelFailure(
+		canceledCtx,
+		"g1",
+		"real-error",
+		errors.New("discord request failed"),
+	))
+	require.NoError(t, svc.recordChannelFailure(
+		ctx,
+		"g1",
+		"unexpected-cancel",
+		context.Canceled,
+	))
+	require.NoError(t, svc.recordChannelFailure(
+		ctx,
+		"g1",
+		"timeout",
+		context.DeadlineExceeded,
+	))
+
+	report, err := st.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 3)
+
+	channelIDs := make(map[string]string, len(report.Failures))
+	for _, failure := range report.Failures {
+		channelIDs[failure.ChannelID] = failure.ErrorClass
+	}
+	require.NotContains(t, channelIDs, "shutdown")
+	require.Equal(t, "errors.errorString", channelIDs["real-error"])
+	require.Equal(t, "context_canceled", channelIDs["unexpected-cancel"])
+	require.Equal(t, "deadline_exceeded", channelIDs["timeout"])
 }

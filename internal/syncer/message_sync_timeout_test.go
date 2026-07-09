@@ -42,8 +42,7 @@ func TestSyncDefersSlowChannelAfterChannelTimeout(t *testing.T) {
 	}
 
 	svc := New(client, s, nil)
-	svc.messageChannelTimeout = 20 * time.Millisecond
-	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 1})
+	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 1, MessageChannelTimeout: 20 * time.Millisecond})
 	require.NoError(t, err)
 	require.Equal(t, 0, stats.Messages)
 

@@ -51,9 +51,27 @@ func TestFilterMessageChannelsHonorsRequestedIDs(t *testing.T) {
 		{ID: "t1", Type: discordgo.ChannelTypeGuildPublicThread},
 	}
 
-	filtered := filterMessageChannels(channels, []string{"t1"})
+	filtered := filterMessageChannels(channels, []string{"t1"}, channelExclusions{})
 	require.Len(t, filtered, 1)
 	require.Equal(t, "t1", filtered[0].ID)
+}
+
+func TestFilterMessageChannelsHonorsCollectionExclusions(t *testing.T) {
+	t.Parallel()
+
+	channels := []*discordgo.Channel{
+		{ID: "general", Type: discordgo.ChannelTypeGuildText},
+		{ID: "logs", Type: discordgo.ChannelTypeGuildText},
+		{ID: "news", Type: discordgo.ChannelTypeGuildNews},
+		{ID: "news-thread", ParentID: "news", Type: discordgo.ChannelTypeGuildPublicThread},
+	}
+	exclusions := newChannelExclusions([]string{"logs"}, []string{"announcement"})
+
+	filtered := filterMessageChannels(channels, nil, exclusions)
+	require.Equal(t, []string{"general"}, channelIDs(filtered))
+
+	filtered = filterMessageChannels(channels, []string{"logs", "news"}, exclusions)
+	require.Empty(t, filtered)
 }
 
 func TestSeedChannelSyncStateUsesStoredBounds(t *testing.T) {

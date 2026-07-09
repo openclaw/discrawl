@@ -35,7 +35,15 @@ Run one explicit `--full` pass when you want a complete historical guild archive
 - `--guilds 123,456` runs an explicit set
 - `--all` ignores `default_guild_id` and fans out across every discovered guild
 - `--channels 111,222` targets specific channels (forum ids expand to their threads)
+- `--exclude-channels 333,444` omits specific channel messages
+- `--exclude-channel-kinds announcement` omits message channels by Discord kind
 - `--since <RFC3339>` limits initial history and `--full` backfill to messages at or after the timestamp; older history is not marked complete, so a later `sync --full` without `--since` can continue the backfill
+
+The same exclusions apply to routine sync, historical backfill, live tail,
+periodic tail repair, Discord Desktop cache import, and safe upstream snapshot
+merges. Exclusions win over explicit channel targets. Safe merges retain channel
+metadata and existing local rows while omitting new message-scoped rows for
+excluded channels.
 
 ## Performance and resilience
 

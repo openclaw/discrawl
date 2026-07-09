@@ -31,6 +31,9 @@ func (s *Syncer) recordChannelFailure(ctx context.Context, guildID, channelID st
 	if s == nil || s.store == nil || failure == nil {
 		return nil
 	}
+	if errors.Is(failure, context.Canceled) && ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return nil
+	}
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
 	return s.store.RecordFailure(ledgerCtx, store.FailureRef{

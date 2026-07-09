@@ -37,6 +37,12 @@ discrawl update --force --ref backup-2026-06-19
 
 Normal updates preserve rows learned from live Discord or the desktop cache, even when those rows are absent from the Git snapshot. Generated event history and local sync cursors are not replayed during routine merges. If a safe merge is impossible, Discrawl keeps the current database, marks the snapshot as needing attention in `status --json`, and asks you to rerun with `--force`.
 
+Routine safe merges also honor `[sync].exclude_channel_ids` and
+`[sync].exclude_channel_kinds`. Excluded channel metadata and existing local
+rows remain in place, while new message-scoped snapshot rows for those channels
+are skipped. `--force` is still an explicit exact-reconciliation path and does
+not provide this preservation guarantee.
+
 ## How `sync` interacts
 
 `discrawl sync` does **not** auto-import the share unless `--update=auto` (safe merge when stale) or `--update=force` (exact replacement before live deltas). Routine live refreshes stay fast; explicit imports happen via `update`.

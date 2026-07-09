@@ -69,6 +69,30 @@ func TestSnapshotWithoutMessageEvents(t *testing.T) {
 	require.True(t, snap.messages["333333333333333346"].Options.AppendEvent)
 }
 
+func TestFilterExcludedMessages(t *testing.T) {
+	snap := newSnapshot()
+	snap.messages["m-news"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-news", ChannelID: "news"}}
+	snap.messages["m-logs"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-logs", ChannelID: "logs"}}
+	snap.messages["m-general"] = store.MessageMutation{Record: store.MessageRecord{ID: "m-general", ChannelID: "general"}}
+	lookup := map[string]store.ChannelRecord{
+		"news":    {ID: "news", Kind: "announcement"},
+		"logs":    {ID: "logs", Kind: "text"},
+		"general": {ID: "general", Kind: "text"},
+	}
+	totals := newScanTotals()
+	stats := &Stats{}
+
+	filterExcludedMessages(snap, lookup, Options{
+		ExcludeChannelIDs:   []string{"logs"},
+		ExcludeChannelKinds: []string{"announcement"},
+	}, totals, stats)
+
+	require.Len(t, snap.messages, 1)
+	require.Contains(t, snap.messages, "m-general")
+	require.Equal(t, 2, stats.ExcludedMessages)
+	require.Equal(t, 2, stats.ExcludedChannels)
+}
+
 func TestRouteFilteredCacheHelpers(t *testing.T) {
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Cache/Cache_Data/entry", "Cache/Cache_Data/entry"))
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Service Worker/CacheStorage/cache/entry", "Service Worker/CacheStorage/cache/entry"))

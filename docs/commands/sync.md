@@ -27,6 +27,7 @@ discrawl sync --source discord   # bot API only; aliases: key, bot, api
 discrawl sync --source wiretap   # desktop cache only; aliases: desktop, cache
 discrawl sync --guild 123456789012345678 --all-channels
 discrawl sync --channels 111,222 --since 2026-03-01T00:00:00Z
+discrawl sync --exclude-channels 333,444 --exclude-channel-kinds announcement
 discrawl sync --with-embeddings
 discrawl sync --with-media
 ```
@@ -59,6 +60,8 @@ discrawl sync --with-media
 - `--all` - ignore `default_guild_id` and fan out across every discovered guild
 - `--guild <id>` / `--guilds <id,id>` - target specific guilds
 - `--channels <id,id>` - target specific channels (forum ids expand to threads)
+- `--exclude-channels <id,id>` - omit channel messages even if a target or repair would otherwise select them
+- `--exclude-channel-kinds <kind,kind>` - omit message channels by stored Discord kind, such as `announcement`
 - `--since <RFC3339>` - limit initial history and `--full` backfill to messages at or after this timestamp
 - `--concurrency <n>` - override worker count (default auto-sized: floor 8, cap 32)
 - `--skip-members` - refresh guild/channel/message data without crawling members
@@ -69,6 +72,8 @@ discrawl sync --with-media
 ## Notes
 
 - `--latest-only` is the default for untargeted `sync`. Use `--all-channels` to opt out without doing a full historical crawl.
+- Collection exclusions apply to Discord API sync and the wiretap portion of `source=both`; exclusions win over explicit targets.
+- With `--update=auto`, the same exclusions filter message-scoped rows from the safe upstream merge while retaining channel metadata and existing local rows.
 - `--with-media` records expired or removed Discord CDN URLs as failed fetches with the HTTP status, commonly `404`.
 - `--with-media` updates the local cache only; run `publish --push` afterward to include cached non-DM media in the Git backup as gzip-compressed files.
 - `--since` does not mark older history as complete, so a later `sync --full` without `--since` can continue the backfill.

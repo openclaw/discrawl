@@ -227,6 +227,7 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 	require.Error(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1"}))
 	require.Error(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1"}))
 	require.Error(t, s.ReplaceMembers(ctx, "g1", nil))
+	require.Error(t, s.MergeMembers(ctx, nil))
 	require.Error(t, s.UpsertMember(ctx, MemberRecord{GuildID: "g1", UserID: "u1"}))
 	require.Error(t, s.DeleteMember(ctx, "g1", "u1"))
 	require.Error(t, s.UpsertMessageWithOptions(ctx, MessageRecord{ID: "m1"}, WriteOptions{}))
@@ -1647,6 +1648,38 @@ func TestUpsertAndDeleteMember(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "u2", rows[0].UserID)
 	require.Equal(t, "Other bio", rows[0].Bio)
+}
+
+func TestMergeMembersPreservesExistingRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.ReplaceMembers(ctx, "g1", []MemberRecord{{
+		GuildID:     "g1",
+		UserID:      "stale",
+		Username:    "stale-user",
+		RoleIDsJSON: `[]`,
+		RawJSON:     `{"source":"preserved"}`,
+	}}))
+	require.NoError(t, s.MergeMembers(ctx, []MemberRecord{{
+		GuildID:     "g1",
+		UserID:      "live",
+		Username:    "live-user",
+		RoleIDsJSON: `[]`,
+		RawJSON:     `{"source":"live"}`,
+	}}))
+
+	rows, err := s.Members(ctx, "g1", "", 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	ids := []string{rows[0].UserID, rows[1].UserID}
+	require.Contains(t, ids, "stale")
+	require.Contains(t, ids, "live")
 }
 
 func TestOpenTightensDBFilePerms(t *testing.T) {

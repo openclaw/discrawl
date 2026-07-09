@@ -24,6 +24,10 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, defaultSyncConcurrency(), cfg.Sync.Concurrency)
 	require.GreaterOrEqual(t, cfg.Sync.Concurrency, 8)
 	require.LessOrEqual(t, cfg.Sync.Concurrency, 32)
+	require.Equal(t, "6h", cfg.Sync.RepairEvery)
+	require.Equal(t, "0s", cfg.Sync.RepairOffset)
+	require.Empty(t, cfg.Sync.ExcludeChannelIDs)
+	require.Empty(t, cfg.Sync.ExcludeChannelKinds)
 	require.NotNil(t, cfg.Sync.AttachmentText)
 	require.True(t, *cfg.Sync.AttachmentText)
 	require.Equal(t, "fts", cfg.Search.DefaultMode)
@@ -325,6 +329,7 @@ func TestWriteAndLoadRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.DefaultGuildID = "g1"
 	cfg.GuildIDs = []string{"g1", "g2"}
+	cfg.Sync.RepairOffset = "15m"
 	require.NoError(t, Write(path, cfg))
 
 	loaded, err := Load(path)
@@ -332,8 +337,22 @@ func TestWriteAndLoadRoundTrip(t *testing.T) {
 	require.Equal(t, "g1", loaded.EffectiveDefaultGuildID())
 	require.Equal(t, []string{"g1", "g2"}, loaded.GuildIDs)
 	require.Equal(t, DefaultRemoteTokenEnv, loaded.Remote.TokenEnv)
+	require.Equal(t, "15m", loaded.Sync.RepairOffset)
 	require.NotNil(t, loaded.Sync.AttachmentText)
 	require.True(t, *loaded.Sync.AttachmentText)
+}
+
+func TestNormalizeRejectsInvalidRepairOffset(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Sync.RepairOffset = "not-a-duration"
+	require.ErrorContains(t, cfg.Normalize(), "parse sync.repair_offset")
+
+	cfg = Default()
+	cfg.Sync.RepairOffset = "-15m"
+	require.NoError(t, cfg.Normalize())
+	require.Equal(t, "-15m", cfg.Sync.RepairOffset)
 }
 
 func TestWriteRejectsNonPositiveEmbeddingTimeout(t *testing.T) {
@@ -489,9 +508,13 @@ func TestEffectiveDefaultGuildAndDirs(t *testing.T) {
 
 	cfg := Default()
 	cfg.GuildIDs = []string{"g1"}
+	cfg.Sync.ExcludeChannelIDs = []string{" c1 ", "", "c2", "c1"}
+	cfg.Sync.ExcludeChannelKinds = []string{" Announcement ", "announcement", "TEXT"}
 	cfg.Share.Filter.IncludeChannelIDs = []string{" c1 ", "", "c2", "c1"}
 	cfg.Share.Filter.ExcludeChannelIDs = []string{" c3 ", "c3"}
 	require.NoError(t, cfg.Normalize())
+	require.Equal(t, []string{"c1", "c2"}, cfg.Sync.ExcludeChannelIDs)
+	require.Equal(t, []string{"announcement", "text"}, cfg.Sync.ExcludeChannelKinds)
 	require.Equal(t, []string{"c1", "c2"}, cfg.Share.Filter.IncludeChannelIDs)
 	require.Equal(t, []string{"c3"}, cfg.Share.Filter.ExcludeChannelIDs)
 	require.Equal(t, "g1", cfg.EffectiveDefaultGuildID())

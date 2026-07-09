@@ -134,6 +134,81 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	require.Equal(t, "10", cursor)
 }
 
+func TestTailHandlerDoesNotRecordOrderlyShutdownCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	handler := &tailHandler{store: s}
+	err = handler.OnMessageCreate(canceledCtx, &discordgo.Message{
+		ID:        "shutdown",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "tail event",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "peter"},
+	})
+	require.ErrorIs(t, err, context.Canceled)
+
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, report.Failures)
+}
+
+func TestTailHandlerExcludesConfiguredFeedChannels(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      "news",
+		GuildID: "g1",
+		Kind:    "announcement",
+		Name:    "github",
+		RawJSON: `{}`,
+	}))
+	handler := &tailHandler{
+		store:                  s,
+		exclusions:             newChannelExclusions([]string{"logs"}, []string{"announcement"}),
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, handler.seedChannelExclusions(ctx))
+
+	message := func(id, channelID string) *discordgo.Message {
+		return &discordgo.Message{
+			ID:        id,
+			GuildID:   "g1",
+			ChannelID: channelID,
+			Content:   "event",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "bot", Bot: true},
+		}
+	}
+	require.NoError(t, handler.OnMessageCreate(ctx, message("1", "news")))
+	require.NoError(t, handler.OnMessageCreate(ctx, message("2", "logs")))
+	require.NoError(t, handler.OnMessageCreate(ctx, message("3", "general")))
+
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:      "future-news",
+		GuildID: "g1",
+		Name:    "future-feed",
+		Type:    discordgo.ChannelTypeGuildNews,
+	}))
+	require.NoError(t, handler.OnMessageCreate(ctx, message("4", "future-news")))
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Equal(t, 1, status.MessageCount)
+}
+
 func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	t.Parallel()
 
@@ -496,17 +571,48 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:         "archived",
+		GuildID:    "g1",
+		ParentID:   "c1",
+		Kind:       "thread_public",
+		Name:       "archived-thread",
+		IsArchived: true,
+		RawJSON:    `{"id":"archived"}`,
+	}))
+	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("active"), "200"))
+	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("archived"), "300"))
+
+	messageStarted := make(chan string, 4)
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
 		guildByID: map[string]*discordgo.Guild{
 			"g1": {ID: "g1", Name: "Guild"},
 		},
 		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+			"g1": {{
+				ID:            "c1",
+				GuildID:       "g1",
+				Name:          "general",
+				Type:          discordgo.ChannelTypeGuildText,
+				LastMessageID: "3",
+			}},
+		},
+		guildThreads: map[string][]*discordgo.Channel{
+			"g1": {{
+				ID:            "active",
+				GuildID:       "g1",
+				ParentID:      "c1",
+				Name:          "active-thread",
+				Type:          discordgo.ChannelTypeGuildPublicThread,
+				LastMessageID: "201",
+			}},
 		},
 		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "repair", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+			"active":   {{ID: "201", GuildID: "g1", ChannelID: "active", Content: "repair", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+			"archived": {{ID: "301", GuildID: "g1", ChannelID: "archived", Content: "old history", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 		},
+		messageStarted: messageStarted,
 	}
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
 		Operation: tailMessageFailureOperation,
@@ -516,16 +622,42 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 		MessageID: "5",
 	}, context.DeadlineExceeded))
 	svc := New(client, s, nil)
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(40 * time.Millisecond)
-		cancel()
+		done <- svc.RunTail(ctx, []string{"g1"}, 10*time.Millisecond)
 	}()
-	err = svc.RunTail(ctx, []string{"g1"}, 10*time.Millisecond)
+
+	select {
+	case channelID := <-messageStarted:
+		require.Equal(t, "active", channelID)
+	case <-time.After(time.Second):
+		t.Fatal("periodic repair did not request the active thread")
+	}
+	require.Eventually(t, func() bool {
+		lastSuccess, getErr := s.GetSyncState(ctx, "sync:last_success")
+		return getErr == nil && lastSuccess != ""
+	}, time.Second, 5*time.Millisecond)
+	cancel()
+	err = <-done
 	require.True(t, err == nil || errors.Is(err, context.Canceled))
+
+	client.mu.Lock()
+	messageCalls := make(map[string]int, len(client.messageCalls))
+	for channelID, calls := range client.messageCalls {
+		messageCalls[channelID] = calls
+	}
+	client.mu.Unlock()
+
+	require.GreaterOrEqual(t, client.guildThreadCalls, 1)
+	require.Zero(t, client.threadCalls)
+	require.Zero(t, client.memberCalls)
+	require.Zero(t, messageCalls["c1"])
+	require.Zero(t, messageCalls["archived"])
+	require.GreaterOrEqual(t, messageCalls["active"], 1)
 
 	status, err := s.Status(context.Background(), "db", "")
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, status.MessageCount, 1)
+	require.GreaterOrEqual(t, status.MessageCount, 2)
 	client.mu.Lock()
 	exactMessageCalls := client.exactMessageCalls
 	client.mu.Unlock()
@@ -914,6 +1046,86 @@ func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) 
 			var messageCount int
 			require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&messageCount))
 			require.Zero(t, messageCount)
+		})
+	}
+}
+
+func TestTailRepairSyncOptions(t *testing.T) {
+	t.Parallel()
+
+	guildIDs := []string{"g1", "g2"}
+	opts := tailRepairSyncOptions(guildIDs)
+	require.Equal(t, guildIDs, opts.GuildIDs)
+	require.False(t, opts.Full)
+	require.True(t, opts.LatestOnly)
+	require.True(t, opts.SkipMembers)
+	require.Equal(t, "tail_repair", opts.RepairReason)
+
+	guildIDs[0] = "changed"
+	require.Equal(t, []string{"g1", "g2"}, opts.GuildIDs)
+}
+
+func TestNextTailRepairDelayForInitialSchedule(t *testing.T) {
+	t.Parallel()
+
+	location := time.FixedZone("half-hour", 5*60*60+30*60)
+	now := time.Date(2026, 7, 9, 10, 10, 0, 0, location)
+
+	require.Equal(t, time.Hour, nextTailRepairDelay(now, time.Hour, 0))
+	require.Equal(t, time.Hour, nextTailRepairDelay(now, time.Hour, -15*time.Minute))
+	require.Equal(t, 5*time.Minute, nextTailRepairDelay(now, time.Hour, 15*time.Minute))
+	require.Equal(t, 5*time.Minute, nextTailRepairDelay(now, time.Hour, 75*time.Minute))
+	require.Equal(t, 50*time.Minute, nextTailRepairDelay(now, time.Hour, time.Hour))
+	require.Zero(t, nextTailRepairDelay(now, 0, 15*time.Minute))
+
+	onBoundary := time.Date(2026, 7, 9, 10, 15, 0, 0, location)
+	require.Equal(t, time.Hour, nextTailRepairDelay(onBoundary, time.Hour, 15*time.Minute))
+}
+
+func TestNextTailRepairDelayRealignsAfterRepair(t *testing.T) {
+	t.Parallel()
+
+	location := time.FixedZone("half-hour", 5*60*60+30*60)
+	firstCheck := time.Date(2026, 7, 9, 10, 10, 0, 0, location)
+	require.Equal(t, 5*time.Minute, nextTailRepairDelay(firstCheck, time.Hour, 15*time.Minute))
+
+	shortRepairFinished := time.Date(2026, 7, 9, 10, 17, 0, 0, location)
+	require.Equal(t, 58*time.Minute, nextTailRepairDelay(shortRepairFinished, time.Hour, 15*time.Minute))
+
+	longRepairFinished := time.Date(2026, 7, 9, 13, 20, 0, 0, location)
+	require.Equal(t, 55*time.Minute, nextTailRepairDelay(longRepairFinished, time.Hour, 15*time.Minute))
+}
+
+func TestNextTailRepairDelayKeepsEdmontonCivilPhaseAcrossDST(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Edmonton")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		now       time.Time
+		want      time.Time
+		wantDelay time.Duration
+	}{
+		{
+			name:      "spring forward",
+			now:       time.Date(2026, time.March, 8, 0, 15, 0, 0, location),
+			want:      time.Date(2026, time.March, 8, 6, 15, 0, 0, location),
+			wantDelay: 5 * time.Hour,
+		},
+		{
+			name:      "fall back",
+			now:       time.Date(2026, time.November, 1, 0, 15, 0, 0, location),
+			want:      time.Date(2026, time.November, 1, 6, 15, 0, 0, location),
+			wantDelay: 7 * time.Hour,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			delay := nextTailRepairDelay(test.now, 6*time.Hour, 15*time.Minute)
+			require.Equal(t, test.wantDelay, delay)
+			require.Equal(t, test.want, test.now.Add(delay))
 		})
 	}
 }
@@ -1393,6 +1605,59 @@ func TestReplayTailMessageFailuresKeepsIncompleteIdentityVisible(t *testing.T) {
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, errTailMessageReplayIncomplete.Error(), report.Failures[0].ErrorMessage)
 	require.Equal(t, 1, report.Failures[0].RetryCount)
+}
+
+func TestNextTailRepairDelaySkipsNonexistentCivilSlot(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Edmonton")
+	require.NoError(t, err)
+
+	now := time.Date(2026, time.March, 8, 1, 30, 0, 0, location)
+	delay := nextTailRepairDelay(now, time.Hour, 30*time.Minute)
+
+	require.Equal(t, time.Hour, delay)
+	require.Equal(t, time.Date(2026, time.March, 8, 3, 30, 0, 0, location), now.Add(delay))
+}
+
+func TestRepairOffsetIsPerSyncer(t *testing.T) {
+	t.Parallel()
+
+	first := New(&fakeClient{}, nil, nil)
+	second := New(&fakeClient{}, nil, nil)
+	first.SetRepairOffset(15 * time.Minute)
+	second.SetRepairOffset(45 * time.Minute)
+
+	require.Equal(t, 15*time.Minute, first.repairOffset())
+	require.Equal(t, 45*time.Minute, second.repairOffset())
+
+	first.SetRepairOffset(0)
+	require.Zero(t, first.repairOffset())
+	require.Equal(t, 45*time.Minute, second.repairOffset())
+}
+
+func TestRepairOffsetConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	svc := New(&fakeClient{}, nil, nil)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1_000; i++ {
+			svc.SetRepairOffset(time.Duration(i%5) * time.Minute)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1_000; i++ {
+			_ = svc.repairOffset()
+		}
+	}()
+	wg.Wait()
+
+	svc.SetRepairOffset(15 * time.Minute)
+	require.Equal(t, 15*time.Minute, svc.repairOffset())
 }
 
 func TestRunTailWithRepairLoopJoinsTailOnCancellation(t *testing.T) {

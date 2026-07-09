@@ -64,6 +64,7 @@ func (r *importRun) scanCacheBatches(candidates []fileCandidate) error {
 }
 
 func (r *importRun) finalizeAndCommit(candidates []fileCandidate, snap snapshot, recordSkipped bool) error {
+	filterExcludedMessages(snap, r.channelLookup, r.opts, r.totals, r.stats)
 	unresolved := finalizeSnapshot(snap, r.channelLookup, r.totals, r.stats, recordSkipped)
 	checkpoint := len(unresolved) == 0
 	if !checkpoint {
@@ -97,6 +98,7 @@ func (r *importRun) retryPending() error {
 	if err := scanCandidates(r.ctx, r.rootFS, r.opts, r.pending, retry, r.channelLookup, r.stats); err != nil {
 		return err
 	}
+	filterExcludedMessages(retry, r.channelLookup, r.opts, r.totals, r.stats)
 	unresolved := finalizeSnapshot(retry, r.channelLookup, r.totals, r.stats, true)
 	checkpoint := len(unresolved) == 0
 	if err := commitSnapshot(r.ctx, r.st, r.opts, r.state, r.pending, retry, checkpoint, r.stats); err != nil {

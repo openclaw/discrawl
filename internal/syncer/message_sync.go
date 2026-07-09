@@ -18,7 +18,7 @@ func (s *Syncer) syncMessageChannels(
 	channels []*discordgo.Channel,
 	opts SyncOptions,
 ) (int, error) {
-	messageChannels := filterMessageChannels(channels, opts.ChannelIDs)
+	messageChannels := filterMessageChannels(channels, opts.ChannelIDs, s.effectiveChannelExclusions(opts))
 	if len(messageChannels) == 0 {
 		return 0, nil
 	}
@@ -38,7 +38,7 @@ func (s *Syncer) syncMessageChannels(
 	return total, err
 }
 
-func filterMessageChannels(channels []*discordgo.Channel, requested []string) []*discordgo.Channel {
+func filterMessageChannels(channels []*discordgo.Channel, requested []string, exclusions channelExclusions) []*discordgo.Channel {
 	requestedSet := makeGuildSet(requested)
 	channelByID := make(map[string]*discordgo.Channel, len(channels))
 	for _, channel := range channels {
@@ -49,6 +49,9 @@ func filterMessageChannels(channels []*discordgo.Channel, requested []string) []
 	out := make([]*discordgo.Channel, 0, len(channels))
 	for _, channel := range channels {
 		if !isMessageChannel(channel) {
+			continue
+		}
+		if exclusions.excludesDiscordChannel(channel, channelByID) {
 			continue
 		}
 		if len(requestedSet) > 0 && !requestedMessageTarget(channel, channelByID, requestedSet) {
@@ -80,7 +83,7 @@ func (s *Syncer) syncMessageChannelsSerial(ctx context.Context, guildID string, 
 	total := 0
 	for _, channel := range channels {
 		progress.start(channel)
-		channelCtx, cancel := s.messageChannelContext(ctx)
+		channelCtx, cancel := s.messageChannelContext(ctx, opts)
 		count, err := s.syncChannelMessages(channelCtx, guildID, channel, opts.Full, opts.Embeddings, opts.Since, opts.LatestOnly, progress)
 		cancel()
 		total += count
@@ -135,7 +138,7 @@ func (s *Syncer) syncMessageChannelsConcurrent(
 					return
 				}
 				progress.start(channel)
-				channelCtx, cancelChannel := s.messageChannelContext(ctx)
+				channelCtx, cancelChannel := s.messageChannelContext(ctx, opts)
 				count, err := s.syncChannelMessages(channelCtx, guildID, channel, opts.Full, opts.Embeddings, opts.Since, opts.LatestOnly, progress)
 				cancelChannel()
 				succeeded := err == nil
@@ -209,14 +212,25 @@ func (s *Syncer) clearUnavailableChannel(ctx context.Context, channelID string) 
 	return s.store.DeleteSyncState(ctx, channelMessageUnavailableScope(channelID))
 }
 
-func (s *Syncer) messageChannelContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if s == nil || s.messageChannelTimeout <= 0 {
+func (s *Syncer) messageChannelContext(ctx context.Context, opts SyncOptions) (context.Context, context.CancelFunc) {
+	timeout := s.effectiveMessageChannelTimeout(opts)
+	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, s.messageChannelTimeout)
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (s *Syncer) effectiveMessageChannelTimeout(opts SyncOptions) time.Duration {
+	if opts.MessageChannelTimeout != 0 {
+		return opts.MessageChannelTimeout
+	}
+	if s == nil {
+		return 0
+	}
+	return s.messageChannelTimeout
 }
 
 func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channel *discordgo.Channel, full bool, embeddings bool, since time.Time, latestOnly bool, progress *messageSyncProgress) (int, error) {
@@ -605,7 +619,7 @@ func newMessageSyncProgress(s *Syncer, guildID string, totalChannels int, opts S
 		"channels", totalChannels,
 		"full", opts.Full,
 		"concurrency", max(1, opts.Concurrency),
-		"channel_timeout", timeoutLabel(s.messageChannelTimeout),
+		"channel_timeout", timeoutLabel(s.effectiveMessageChannelTimeout(opts)),
 	)
 	go progress.runWaitHeartbeat()
 	return progress

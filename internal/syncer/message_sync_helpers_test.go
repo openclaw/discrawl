@@ -22,27 +22,27 @@ func TestMessageChannelSelectionAndTimeoutHelpers(t *testing.T) {
 	text := &discordgo.Channel{ID: "text", GuildID: "g1", Name: "text", Type: discordgo.ChannelTypeGuildText}
 	voice := &discordgo.Channel{ID: "voice", GuildID: "g1", Name: "voice", Type: discordgo.ChannelTypeGuildVoice}
 
-	rows := filterMessageChannels([]*discordgo.Channel{nil, parent, thread, text, voice}, []string{"forum"})
+	rows := filterMessageChannels([]*discordgo.Channel{nil, parent, thread, text, voice}, []string{"forum"}, channelExclusions{})
 	require.Equal(t, []string{"thread"}, channelIDs(rows))
 	require.False(t, requestedMessageTarget(nil, nil, map[string]struct{}{}))
 	require.True(t, requestedMessageTarget(text, map[string]*discordgo.Channel{"text": text}, map[string]struct{}{"text": {}}))
 	require.False(t, requestedMessageTarget(thread, map[string]*discordgo.Channel{}, map[string]struct{}{"forum": {}}))
 
-	ctx, cancel := (*Syncer)(nil).messageChannelContext(context.Background())
+	ctx, cancel := (*Syncer)(nil).messageChannelContext(context.Background(), SyncOptions{})
 	require.NoError(t, ctx.Err())
 	cancel()
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 
 	svc := New(&fakeClient{}, nil, nil)
 	svc.messageChannelTimeout = time.Second
-	ctx, cancel = svc.messageChannelContext(context.Background())
+	ctx, cancel = svc.messageChannelContext(context.Background(), SyncOptions{})
 	defer cancel()
 	_, ok := ctx.Deadline()
 	require.True(t, ok)
 
 	parentCtx, parentCancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
 	defer parentCancel()
-	ctx, cancel = svc.messageChannelContext(parentCtx)
+	ctx, cancel = svc.messageChannelContext(parentCtx, SyncOptions{MessageChannelTimeout: 2 * time.Second})
 	defer cancel()
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)

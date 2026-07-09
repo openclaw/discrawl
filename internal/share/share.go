@@ -65,18 +65,20 @@ var SnapshotTables = []string{
 }
 
 type Options struct {
-	RepoPath              string
-	CacheDir              string
-	Remote                string
-	Branch                string
-	Tag                   string
-	Filter                FilterOptions
-	IncludeMedia          bool
-	IncludeEmbeddings     bool
-	EmbeddingProvider     string
-	EmbeddingModel        string
-	EmbeddingInputVersion string
-	Progress              func(ImportProgress)
+	RepoPath                 string
+	CacheDir                 string
+	Remote                   string
+	Branch                   string
+	Tag                      string
+	Filter                   FilterOptions
+	MergeExcludeChannelIDs   []string
+	MergeExcludeChannelKinds []string
+	IncludeMedia             bool
+	IncludeEmbeddings        bool
+	EmbeddingProvider        string
+	EmbeddingModel           string
+	EmbeddingInputVersion    string
+	Progress                 func(ImportProgress)
 }
 
 type FilterOptions struct {
@@ -628,6 +630,10 @@ func importMergePlan(
 		}
 		return manifest, copied > 0, nil
 	}
+	rowFilter, err := newMergeImportFilter(ctx, s.DB(), opts)
+	if err != nil {
+		return Manifest{}, false, err
+	}
 	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: importPlanRowCount(plan)})
 	restorePragmas, err := applyImportPragmas(ctx, s.DB())
 	if err != nil {
@@ -657,9 +663,7 @@ func importMergePlan(
 				TotalRows: progress.TotalRows,
 			})
 		},
-		Filter: func(table string, row map[string]any) (bool, error) {
-			return !isDirectMessageSnapshotRow(table, row), nil
-		},
+		Filter: rowFilter,
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			existingMedia, err = attachmentMediaByID(ctx, tx)

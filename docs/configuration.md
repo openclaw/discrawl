@@ -60,7 +60,10 @@ token_keyring_account = "discord_bot_token"
 source = "both" # "discord" for bot-only sync, "wiretap" for desktop-cache-only import
 concurrency = 16
 repair_every = "6h"
+repair_offset = "0s"
 full_history = true
+exclude_channel_ids = []
+exclude_channel_kinds = [] # for example, ["announcement"]
 attachment_text = true
 attachment_media = false
 max_attachment_bytes = 104857600
@@ -103,6 +106,13 @@ archive = ""
 token_env = "DISCRAWL_REMOTE_TOKEN"
 stale_after = ""
 ```
+
+`sync.exclude_channel_ids` and `sync.exclude_channel_kinds` apply to Discord API
+sync, live tail events, periodic tail repair, Discord Desktop cache import, and
+routine safe Git snapshot merges. Exclusions win over an explicit
+`sync --channels` target. Channel metadata and existing local rows are retained,
+but new message-scoped rows from excluded channels are omitted. Forced exact
+snapshot replacement remains a separate destructive operation.
 
 `concurrency` is auto-sized at `init` to `min(32, max(8, GOMAXPROCS*2))`.
 

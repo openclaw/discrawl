@@ -156,6 +156,25 @@ func (s *Store) ReplaceMembers(ctx context.Context, guildID string, members []Me
 	return tx.Commit()
 }
 
+func (s *Store) MergeMembers(ctx context.Context, members []MemberRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	qtx := s.q.WithTx(tx)
+	now := time.Now().UTC().Format(timeLayout)
+	for _, member := range members {
+		if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
+			return err
+		}
+		if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpsertMember(ctx context.Context, member MemberRecord) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

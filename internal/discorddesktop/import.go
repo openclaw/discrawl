@@ -38,11 +38,13 @@ var (
 )
 
 type Options struct {
-	Path         string
-	MaxFileBytes int64
-	DryRun       bool
-	FullCache    bool
-	Now          func() time.Time
+	Path                string
+	MaxFileBytes        int64
+	DryRun              bool
+	FullCache           bool
+	ExcludeChannelIDs   []string
+	ExcludeChannelKinds []string
+	Now                 func() time.Time
 }
 
 type Stats struct {
@@ -62,6 +64,8 @@ type Stats struct {
 	GuildMessages         int       `json:"guild_messages"`
 	SkippedMessages       int       `json:"skipped_messages"`
 	SkippedChannels       int       `json:"skipped_channels"`
+	ExcludedMessages      int       `json:"excluded_messages"`
+	ExcludedChannels      int       `json:"excluded_channels"`
 	Checkpoints           int       `json:"checkpoints"`
 	DryRun                bool      `json:"dry_run,omitempty"`
 	FullCache             bool      `json:"full_cache,omitempty"`
@@ -106,14 +110,16 @@ type fileCandidate struct {
 }
 
 type scanTotals struct {
-	guilds          map[string]struct{}
-	channels        map[string]struct{}
-	messages        map[string]struct{}
-	dmMessages      map[string]struct{}
-	guildMessages   map[string]struct{}
-	dmChannels      map[string]struct{}
-	skippedMessages map[string]struct{}
-	skippedChannels map[string]struct{}
+	guilds           map[string]struct{}
+	channels         map[string]struct{}
+	messages         map[string]struct{}
+	dmMessages       map[string]struct{}
+	guildMessages    map[string]struct{}
+	dmChannels       map[string]struct{}
+	skippedMessages  map[string]struct{}
+	skippedChannels  map[string]struct{}
+	excludedMessages map[string]struct{}
+	excludedChannels map[string]struct{}
 }
 
 type unresolvedMessages map[string]string
@@ -421,6 +427,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 		return stats, snap, err
 	}
 	totals := newScanTotals()
+	filterExcludedMessages(snap, state.channels, opts, totals, &stats)
 	finalizeSnapshot(snap, state.channels, totals, &stats, true)
 	stats.FinishedAt = now().UTC()
 	return stats, snap, nil
@@ -571,15 +578,88 @@ func collectCacheRouteHints(ctx context.Context, rootFS *os.Root, candidates []f
 
 func newScanTotals() scanTotals {
 	return scanTotals{
-		guilds:          map[string]struct{}{},
-		channels:        map[string]struct{}{},
-		messages:        map[string]struct{}{},
-		dmMessages:      map[string]struct{}{},
-		guildMessages:   map[string]struct{}{},
-		dmChannels:      map[string]struct{}{},
-		skippedMessages: map[string]struct{}{},
-		skippedChannels: map[string]struct{}{},
+		guilds:           map[string]struct{}{},
+		channels:         map[string]struct{}{},
+		messages:         map[string]struct{}{},
+		dmMessages:       map[string]struct{}{},
+		guildMessages:    map[string]struct{}{},
+		dmChannels:       map[string]struct{}{},
+		skippedMessages:  map[string]struct{}{},
+		skippedChannels:  map[string]struct{}{},
+		excludedMessages: map[string]struct{}{},
+		excludedChannels: map[string]struct{}{},
 	}
+}
+
+func filterExcludedMessages(snap snapshot, channelLookup map[string]store.ChannelRecord, opts Options, totals scanTotals, stats *Stats) {
+	excludedIDs := normalizedCollectionSet(opts.ExcludeChannelIDs, false)
+	excludedKinds := normalizedCollectionSet(opts.ExcludeChannelKinds, true)
+	if len(excludedIDs) == 0 && len(excludedKinds) == 0 {
+		return
+	}
+	channelByID := func(channelID string) (store.ChannelRecord, bool) {
+		if channel, ok := channelLookup[channelID]; ok && strings.TrimSpace(channel.Kind) != "" {
+			return channel, true
+		}
+		channel, ok := snap.channels[channelID]
+		return channel, ok
+	}
+	excludesKind := func(kind string) bool {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		if _, ok := excludedKinds[kind]; ok {
+			return true
+		}
+		if kind == "thread_announcement" {
+			_, ok := excludedKinds["announcement"]
+			return ok
+		}
+		return false
+	}
+	excludesChannel := func(channelID string) bool {
+		if _, ok := excludedIDs[channelID]; ok {
+			return true
+		}
+		channel, ok := channelByID(channelID)
+		if !ok {
+			return false
+		}
+		if excludesKind(channel.Kind) {
+			return true
+		}
+		if channel.ParentID == "" {
+			return false
+		}
+		if _, ok := excludedIDs[channel.ParentID]; ok {
+			return true
+		}
+		parent, ok := channelByID(channel.ParentID)
+		return ok && excludesKind(parent.Kind)
+	}
+	for messageID, message := range snap.messages {
+		channelID := message.Record.ChannelID
+		if !excludesChannel(channelID) {
+			continue
+		}
+		totals.excludedMessages[messageID] = struct{}{}
+		totals.excludedChannels[channelID] = struct{}{}
+		delete(snap.messages, messageID)
+	}
+	stats.ExcludedMessages = len(totals.excludedMessages)
+	stats.ExcludedChannels = len(totals.excludedChannels)
+}
+
+func normalizedCollectionSet(values []string, lower bool) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if lower {
+			value = strings.ToLower(value)
+		}
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
 }
 
 func finalizeSnapshot(snap snapshot, channelLookup map[string]store.ChannelRecord, totals scanTotals, stats *Stats, recordSkipped bool) unresolvedMessages {

@@ -132,6 +132,108 @@ func TestMergeIfChangedPreservesLocalRowsUntilForcedReplacement(t *testing.T) {
 	require.Equal(t, "0", rows[0][0], "force must reconcile even when the manifest is unchanged")
 }
 
+func TestMergeIfChangedExcludesConfiguredFeedChannelRows(t *testing.T) {
+	ctx := context.Background()
+	src, err := store.Open(ctx, filepath.Join(t.TempDir(), "src.db"))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+
+	require.NoError(t, src.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	for _, channel := range []store.ChannelRecord{
+		{ID: "general", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`},
+		{ID: "github", GuildID: "g1", Kind: "announcement", Name: "github", RawJSON: `{}`},
+		{ID: "github-thread", GuildID: "g1", ParentID: "github", Kind: "thread_public", Name: "thread", RawJSON: `{}`},
+		{ID: "logs", GuildID: "g1", Kind: "text", Name: "logs", RawJSON: `{}`},
+	} {
+		require.NoError(t, src.UpsertChannel(ctx, channel))
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	message := func(id, channelID, content string) store.MessageRecord {
+		return store.MessageRecord{
+			ID:                id,
+			GuildID:           "g1",
+			ChannelID:         channelID,
+			ChannelName:       channelID,
+			AuthorID:          "u1",
+			AuthorName:        "Bot",
+			CreatedAt:         now,
+			Content:           content,
+			NormalizedContent: content,
+			RawJSON:           `{}`,
+		}
+	}
+	require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{
+		{Record: message("m-general", "general", "human discussion")},
+		{
+			Record: message("m-github", "github", "automated feed"),
+			Attachments: []store.AttachmentRecord{{
+				AttachmentID: "a-github",
+				MessageID:    "m-github",
+				GuildID:      "g1",
+				ChannelID:    "github",
+				Filename:     "payload.json",
+			}},
+			Mentions: []store.MentionEventRecord{{
+				MessageID:  "m-github",
+				GuildID:    "g1",
+				ChannelID:  "github",
+				TargetType: "user",
+				TargetID:   "u2",
+				EventAt:    now,
+			}},
+		},
+		{Record: message("m-thread", "github-thread", "feed thread")},
+		{Record: message("m-logs", "logs", "automated logs")},
+	}))
+
+	repo := filepath.Join(t.TempDir(), "share")
+	_, err = Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	require.NoError(t, dst.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, dst.UpsertChannel(ctx, store.ChannelRecord{
+		ID: "github", GuildID: "g1", Kind: "announcement", Name: "github", RawJSON: `{}`,
+	}))
+	require.NoError(t, dst.UpsertMessage(ctx, message("local-feed", "github", "preserved existing feed row")))
+
+	opts := Options{
+		RepoPath:                 repo,
+		Branch:                   "main",
+		MergeExcludeChannelIDs:   []string{"logs"},
+		MergeExcludeChannelKinds: []string{"announcement"},
+	}
+	_, changed, err := MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	_, rows, err := dst.ReadOnlyQuery(ctx, `select id from messages order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"local-feed"}, {"m-general"}}, rows)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select id from channels order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"general"}, {"github"}, {"github-thread"}, {"logs"}}, rows)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select count(*) from message_attachments`)
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0])
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select count(*) from mention_events`)
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0])
+
+	require.NoError(t, src.UpsertMessage(ctx, message("m-general-2", "general", "new human discussion")))
+	require.NoError(t, src.UpsertMessage(ctx, message("m-github-2", "github", "new automated feed")))
+	_, err = Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	_, changed, err = MergeIfChanged(ctx, dst, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+	_, rows, err = dst.ReadOnlyQuery(ctx, `select id from messages order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"local-feed"}, {"m-general"}, {"m-general-2"}}, rows)
+}
+
 func TestMergeIfChangedMarksReplacementPendingWithoutChangingRows(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))

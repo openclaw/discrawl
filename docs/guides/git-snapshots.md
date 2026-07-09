@@ -65,6 +65,11 @@ discrawl subscribe --no-auto-update https://github.com/example/discord-archive.g
 
 `discrawl update` runs the same safe pull/merge step manually. `discrawl update --force --ref <tag-or-commit>` reads historical Git objects directly and leaves the share checkout unchanged. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports changed canonical shards. Routine merges preserve destination-only rows and do not replay generated event history or remote sync cursors.
 
+In hybrid mode, routine safe merges honor the collection exclusions under
+`[sync]`. They keep excluded channel metadata and previously stored local rows,
+but skip new message-scoped rows from excluded channels. Forced replacement is
+an explicit destructive exception.
+
 Discrawl does not silently fall back to a full import. Removed shards and incompatible table changes leave the current database intact and require `discrawl update --force`. Forced updates replace public snapshot tables and rebuild search indexes; local DM rows remain untouched.
 
 `discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided. Auto mode uses the safe merge; force mode performs exact replacement before live deltas.

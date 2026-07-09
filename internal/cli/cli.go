@@ -304,8 +304,16 @@ type tailMessageFailureReplayer interface {
 	ReplayTailMessageFailures(context.Context, []string, int) (syncer.TailMessageReplayStats, error)
 }
 
+type repairOffsetConfigurer interface {
+	SetRepairOffset(time.Duration)
+}
+
 type attachmentTextConfigurer interface {
 	SetAttachmentTextEnabled(bool)
+}
+
+type channelExclusionConfigurer interface {
+	SetChannelExclusions([]string, []string)
 }
 
 func (r *runtime) dispatch(rest []string) error {
@@ -766,6 +774,9 @@ func (r *runtime) ensureDiscordServices() error {
 	if configurable, ok := r.syncer.(attachmentTextConfigurer); ok {
 		configurable.SetAttachmentTextEnabled(r.cfg.AttachmentTextEnabled())
 	}
+	if configurable, ok := r.syncer.(channelExclusionConfigurer); ok {
+		configurable.SetChannelExclusions(r.cfg.Sync.ExcludeChannelIDs, r.cfg.Sync.ExcludeChannelKinds)
+	}
 	return nil
 }
 
@@ -815,11 +826,13 @@ func (r *runtime) shareOptions() (share.Options, error) {
 		return share.Options{}, configErr(err)
 	}
 	return share.Options{
-		RepoPath:     repoPath,
-		CacheDir:     cacheDir,
-		Remote:       r.cfg.Share.Remote,
-		Branch:       r.cfg.Share.Branch,
-		IncludeMedia: r.cfg.ShareMediaEnabled(),
-		Progress:     r.shareProgress,
+		RepoPath:                 repoPath,
+		CacheDir:                 cacheDir,
+		Remote:                   r.cfg.Share.Remote,
+		Branch:                   r.cfg.Share.Branch,
+		MergeExcludeChannelIDs:   append([]string(nil), r.cfg.Sync.ExcludeChannelIDs...),
+		MergeExcludeChannelKinds: append([]string(nil), r.cfg.Sync.ExcludeChannelKinds...),
+		IncludeMedia:             r.cfg.ShareMediaEnabled(),
+		Progress:                 r.shareProgress,
 	}, nil
 }

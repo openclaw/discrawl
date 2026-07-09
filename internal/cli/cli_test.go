@@ -3661,7 +3661,10 @@ type fakeSyncService struct {
 	replayHook            func()
 	replayStats           syncer.TailMessageReplayStats
 	replayErr             error
+	repairOffset          time.Duration
 	attachmentTextEnabled bool
+	excludedChannelIDs    []string
+	excludedChannelKinds  []string
 	callTailReady         bool
 	tailReadyCalls        int
 	tailReady             func(context.Context) error
@@ -3708,8 +3711,17 @@ func (f *fakeSyncService) SetTailReadyCallback(fn func(context.Context) error) {
 	f.tailReady = fn
 }
 
+func (f *fakeSyncService) SetRepairOffset(offset time.Duration) {
+	f.repairOffset = offset
+}
+
 func (f *fakeSyncService) SetAttachmentTextEnabled(enabled bool) {
 	f.attachmentTextEnabled = enabled
+}
+
+func (f *fakeSyncService) SetChannelExclusions(channelIDs, channelKinds []string) {
+	f.excludedChannelIDs = append([]string(nil), channelIDs...)
+	f.excludedChannelKinds = append([]string(nil), channelKinds...)
 }
 
 type hybridSyncService struct {
@@ -3797,6 +3809,9 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.Equal(t, "g2", cfg.DefaultGuildID)
 	require.True(t, cfg.Search.Embeddings.Enabled)
 	cfg.Desktop.Path = filepath.Join(dir, "empty-discord")
+	cfg.Sync.RepairOffset = "15m"
+	cfg.Sync.ExcludeChannelIDs = []string{"feed"}
+	cfg.Sync.ExcludeChannelKinds = []string{"announcement"}
 	require.NoError(t, os.MkdirAll(cfg.Desktop.Path, 0o755))
 	require.NoError(t, config.Write(cfgPath, cfg))
 
@@ -3806,6 +3821,10 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.True(t, fakeSync.lastSync.LatestOnly)
 	require.True(t, fakeSync.lastSync.SkipMembers)
 	require.True(t, fakeSync.attachmentTextEnabled)
+	require.Equal(t, []string{"feed"}, fakeSync.lastSync.ExcludeChannelIDs)
+	require.Equal(t, []string{"announcement"}, fakeSync.lastSync.ExcludeChannelKinds)
+	require.Equal(t, []string{"feed"}, fakeSync.excludedChannelIDs)
+	require.Equal(t, []string{"announcement"}, fakeSync.excludedChannelKinds)
 
 	rt = newRuntime()
 	require.NoError(t, rt.withServices(true, func() error { return rt.runSync([]string{"--guilds", "g2", "--with-members"}) }))
@@ -3827,9 +3846,24 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.False(t, fakeSync.lastSync.SkipMembers)
 
 	rt = newRuntime()
+	require.NoError(t, rt.withServices(true, func() error {
+		return rt.runSync([]string{"--guilds", "g2", "--channels", "c1", "--channel-timeout", "20m"})
+	}))
+	require.Equal(t, []string{"g2"}, fakeSync.lastSync.GuildIDs)
+	require.Equal(t, []string{"c1"}, fakeSync.lastSync.ChannelIDs)
+	require.Equal(t, 20*time.Minute, fakeSync.lastSync.MessageChannelTimeout)
+
+	rt = newRuntime()
 	require.NoError(t, rt.withServices(true, func() error { return rt.runTail([]string{"--repair-every", "30s"}) }))
 	require.Equal(t, []string{"g2"}, fakeSync.lastTail)
 	require.Equal(t, 30*time.Second, fakeSync.lastRepair)
+	require.Equal(t, 15*time.Minute, fakeSync.repairOffset)
+
+	rt = newRuntime()
+	require.NoError(t, rt.withServices(true, func() error {
+		return rt.runTail([]string{"--repair-every", "30s", "--repair-offset", "20m"})
+	}))
+	require.Equal(t, 20*time.Minute, fakeSync.repairOffset)
 
 	rt = newRuntime()
 	var out bytes.Buffer
@@ -4255,6 +4289,12 @@ func TestHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "git@example.com:org/archive.git", opts.Remote)
 	require.Equal(t, "main", opts.Branch)
+	cfg := config.Default()
+	cfg.Sync.ExcludeChannelIDs = []string{"feed"}
+	cfg.Sync.ExcludeChannelKinds = []string{"announcement"}
+	applyCollectionExclusionsToShareMerge(&opts, cfg)
+	require.Equal(t, []string{"feed"}, opts.MergeExcludeChannelIDs)
+	require.Equal(t, []string{"announcement"}, opts.MergeExcludeChannelKinds)
 	var out bytes.Buffer
 	require.NoError(t, printHuman(&out, syncer.SyncStats{Guilds: 1}))
 	require.Contains(t, out.String(), "guilds=1")
@@ -4737,6 +4777,8 @@ func TestCommandUsageErrors(t *testing.T) {
 	require.Equal(t, 2, ExitCode(rt.runSync([]string{"--all", "--guild", "g1"})))
 	require.Equal(t, 2, ExitCode(rt.runSync([]string{"--update", "bogus"})))
 	require.Equal(t, 2, ExitCode(rt.runSync([]string{"--update=force", "--no-update"})))
+	require.Equal(t, 2, ExitCode(rt.runSync([]string{"--channel-timeout", "0s"})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--repair-offset", "not-a-duration"})))
 	require.Equal(t, 2, ExitCode(rt.runChannels(nil)))
 	require.Equal(t, 2, ExitCode(rt.runStatus([]string{"extra"})))
 	require.NoError(t, (&runtime{stdout: &bytes.Buffer{}}).runDoctor(nil))

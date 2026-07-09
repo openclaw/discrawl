@@ -46,23 +46,33 @@ type Syncer struct {
 	tailRepair            func(context.Context, SyncOptions) (SyncStats, error)
 	tailRepairJoinTimeout time.Duration
 	tailRepairMu          sync.Mutex
+	tailRepairOffsetMu    sync.RWMutex
+	tailRepairOffset      time.Duration
+	channelExclusions     channelExclusions
 }
 
 type SyncOptions struct {
-	Full           bool
-	GuildIDs       []string
-	ChannelIDs     []string
-	Concurrency    int
-	Since          time.Time
-	Embeddings     bool
-	SkipMembers    bool
-	RequireMembers bool
-	LatestOnly     bool
-	RepairReason   string
+	Full                  bool
+	GuildIDs              []string
+	ChannelIDs            []string
+	Concurrency           int
+	Since                 time.Time
+	Embeddings            bool
+	SkipMembers           bool
+	RequireMembers        bool
+	LatestOnly            bool
+	MessageChannelTimeout time.Duration
+	ExcludeChannelIDs     []string
+	ExcludeChannelKinds   []string
+	RepairReason          string
 }
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
 	s.tailReady = fn
+}
+
+func (s *Syncer) SetChannelExclusions(channelIDs, channelKinds []string) {
+	s.channelExclusions = newChannelExclusions(channelIDs, channelKinds)
 }
 
 type SyncStats struct {
@@ -240,6 +250,10 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 	if err != nil {
 		return SyncStats{}, false, err
 	}
+	incomplete, err = s.filterExcludedStoredChannelIDs(ctx, guildID, incomplete, opts)
+	if err != nil {
+		return SyncStats{}, false, err
+	}
 	if len(incomplete) == 0 {
 		return SyncStats{}, false, nil
 	}
@@ -305,9 +319,9 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 	for _, member := range members {
 		converted = append(converted, toMemberRecord(guildID, member))
 	}
-	if err := s.store.ReplaceMembers(ctx, guildID, converted); err != nil {
-		s.logger.Warn("member replace failed", "guild_id", guildID, "err", err)
-		return 0, fmt.Errorf("replace guild members: %w", err)
+	if err := s.store.MergeMembers(ctx, converted); err != nil {
+		s.logger.Warn("member merge failed", "guild_id", guildID, "err", err)
+		return 0, fmt.Errorf("merge guild members: %w", err)
 	}
 	if s.store != nil {
 		if err := s.store.SetSyncState(ctx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
