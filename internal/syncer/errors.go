@@ -109,6 +109,19 @@ func isUnknownChannel(err error) bool {
 		(strings.Contains(msg, "http 404") && strings.Contains(msg, `"code": 10003`))
 }
 
+func isUnknownMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) && restErr != nil && restErr.Message != nil {
+		return restErr.Message.Code == discordgo.ErrCodeUnknownMessage
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") &&
+		(strings.Contains(msg, "unknown message") || strings.Contains(msg, `"code": 10008`))
+}
+
 func isMissingAccess(err error) bool {
 	if err == nil {
 		return false

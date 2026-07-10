@@ -33,6 +33,7 @@ type fakeClient struct {
 	members           map[string][]*discordgo.Member
 	messages          map[string][]*discordgo.Message
 	messageErrors     map[string]error
+	messageByIDErrs   map[string]error
 	messageCalls      map[string]int
 	exactMessageCalls int
 	messageRequests   []messageRequest
@@ -246,7 +247,11 @@ func (f *fakeClient) ChannelMessages(ctx context.Context, channelID string, limi
 func (f *fakeClient) ChannelMessage(_ context.Context, channelID, messageID string) (*discordgo.Message, error) {
 	f.mu.Lock()
 	f.exactMessageCalls++
+	err := f.messageByIDErrs[channelID+"/"+messageID]
 	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	for _, msg := range f.messages[channelID] {
 		if msg.ID == messageID {
 			return msg, nil

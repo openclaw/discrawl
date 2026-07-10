@@ -134,6 +134,131 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	require.Equal(t, "10", cursor)
 }
 
+func TestTailHandlerReconcilesUnknownMessageUpdateAsDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	message := &discordgo.Message{
+		ID:        "123",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "preserved before deletion",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "peter"},
+	}
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{
+			"c1": {
+				ID:      "c1",
+				GuildID: "g1",
+				Name:    "general",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
+		messages: map[string][]*discordgo.Message{
+			"c1": {message},
+		},
+		messageByIDErrs: map[string]error{
+			"c1/123": errors.New(`HTTP 404 Not Found, {"message": "Unknown Message", "code": 10008}`),
+		},
+	}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, handler.OnChannelUpsert(ctx, client.channelsByID["c1"]))
+	require.NoError(t, handler.OnMessageCreate(ctx, message))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("g1", "c1", "123", "update"),
+		errors.New("prior update failure"),
+	))
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        "123",
+		GuildID:   "g1",
+		ChannelID: "c1",
+	}))
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select coalesce(deleted_at, '') from messages where id = '123'`,
+	).Scan(&deletedAt))
+	require.NotEmpty(t, deletedAt)
+	var deleteEvents int
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select count(*) from message_events where message_id = '123' and event_type = 'delete'`,
+	).Scan(&deleteEvents))
+	require.Equal(t, 1, deleteEvents)
+	lastEvent, err := s.GetSyncState(ctx, "tail:last_event")
+	require.NoError(t, err)
+	require.Equal(t, "123", lastEvent)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+}
+
+func TestTailHandlerDropsUnknownUpdateForUnseenMessageWithoutOrphanEvent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{
+			"c1": {
+				ID:      "c1",
+				GuildID: "g1",
+				Name:    "general",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
+		messageByIDErrs: map[string]error{
+			"c1/124": errors.New(`HTTP 404 Not Found, {"message": "Unknown Message", "code": 10008}`),
+		},
+	}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, handler.OnChannelUpsert(ctx, client.channelsByID["c1"]))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("g1", "c1", "124", "update"),
+		errors.New("prior update failure"),
+	))
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        "124",
+		GuildID:   "g1",
+		ChannelID: "c1",
+	}))
+
+	var eventCount int
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select count(*) from message_events where message_id = '124'`,
+	).Scan(&eventCount))
+	require.Zero(t, eventCount)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+}
+
 func TestTailHandlerDoesNotRecordOrderlyShutdownCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -1125,6 +1250,16 @@ func TestHelpers(t *testing.T) {
 	require.Equal(t, "unknown_channel", unavailableReason(errors.New("HTTP 404 Not Found, {\"message\": \"Unknown Channel\", \"code\": 10003}")))
 	require.True(t, isUnknownChannel(errors.New("Unknown Channel")))
 	require.False(t, isUnknownChannel(errors.New("boom")))
+	require.True(t, isUnknownMessage(&discordgo.RESTError{
+		Response: &http.Response{Status: "404 Not Found"},
+		Message: &discordgo.APIErrorMessage{
+			Code:    discordgo.ErrCodeUnknownMessage,
+			Message: "localized or empty server text",
+		},
+	}))
+	require.True(t, isUnknownMessage(errors.New(`HTTP 404 Not Found, {"message": "Unknown Message", "code": 10008}`)))
+	require.False(t, isUnknownMessage(errors.New("unknown message encoding")))
+	require.False(t, isUnknownMessage(errors.New("boom")))
 	require.True(t, isRetryableSyncError(context.Background(), context.DeadlineExceeded))
 	require.True(t, isRetryableSyncError(context.Background(), errors.New("HTTP 503 Service Unavailable")))
 	require.True(t, isRetryableSyncError(context.Background(), errors.New("stream error: stream ID 1; INTERNAL_ERROR")))

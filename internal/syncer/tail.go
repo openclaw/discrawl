@@ -466,11 +466,14 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
 		return nil
 	}
-	guildID, channelID := msg.GuildID, msg.ChannelID
+	guildID, channelID, messageID := msg.GuildID, msg.ChannelID, msg.ID
 	if guildID == "" {
 		var err error
 		msg, err = t.messageUpdateSnapshot(ctx, msg)
 		if err != nil {
+			if isUnknownMessage(err) {
+				return t.reconcileUnknownMessageUpdate(ctx, messageID)
+			}
 			return err
 		}
 		if msg == nil || !t.allowGuild(msg.GuildID) {
@@ -486,6 +489,9 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 		}
 		msg, err = t.messageUpdateSnapshot(ctx, msg)
 		if err != nil {
+			if isUnknownMessage(err) {
+				return t.reconcileUnknownMessageUpdate(ctx, messageID)
+			}
 			return err
 		}
 	}
@@ -582,6 +588,42 @@ func validateMessageUpdateSnapshotIdentity(partial, full *discordgo.Message) err
 
 func isPartialMessageUpdate(msg *discordgo.Message) bool {
 	return msg == nil || msg.Author == nil || msg.Timestamp.IsZero()
+}
+
+func (t *tailHandler) reconcileUnknownMessageUpdate(
+	ctx context.Context,
+	messageID string,
+) error {
+	guildID, channelID, exists, err := t.store.MessageScope(ctx, messageID)
+	if err != nil {
+		return err
+	}
+	if !exists || !t.allowGuild(guildID) {
+		return t.resolveMessageUpdateFailuresByID(ctx, messageID)
+	}
+	excluded, err := t.ensureMessageChannel(ctx, guildID, channelID)
+	if err != nil {
+		return err
+	}
+	if excluded {
+		return t.resolveMessageUpdateFailuresByID(ctx, messageID)
+	}
+	payload := map[string]any{
+		"id":           messageID,
+		"guild_id":     guildID,
+		"channel_id":   channelID,
+		"reason":       "unknown_message_during_update_fetch",
+		"discord_code": 10008,
+	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalDelete)
+	if err := t.store.MarkMessageDeleted(ctx, guildID, channelID, messageID, payload); err != nil {
+		return err
+	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
+	if err := t.store.SetSyncState(ctx, "tail:last_event", messageID); err != nil {
+		return err
+	}
+	return t.resolveMessageUpdateFailuresByID(ctx, messageID)
 }
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {

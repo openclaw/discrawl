@@ -295,6 +295,22 @@ func (t *tailHandler) resolveMessageFailure(ctx context.Context, guildID, channe
 	)
 }
 
+func (t *tailHandler) resolveMessageUpdateFailuresByID(ctx context.Context, messageID string) error {
+	if t == nil || t.store == nil || messageID == "" {
+		return nil
+	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageFailureResolution)
+	ledgerCtx, cancel := failureLedgerContext(ctx)
+	defer cancel()
+	return t.store.ResolveFailures(ledgerCtx, store.FailureRef{
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		MessageID:   messageID,
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "update",
+	})
+}
+
 func (s *Syncer) resolveTailMessageCreateFailuresForMessages(ctx context.Context, messages []*discordgo.Message, fallbackGuildID string) error {
 	if s == nil || s.store == nil || len(messages) == 0 {
 		return nil

@@ -462,6 +462,23 @@ func (s *Store) markMessageDeleted(
 	return tx.Commit()
 }
 
+func (s *Store) MessageScope(ctx context.Context, messageID string) (string, string, bool, error) {
+	var guildID string
+	var channelID string
+	err := s.db.QueryRowContext(
+		ctx,
+		`select guild_id, channel_id from messages where id = ?`,
+		strings.TrimSpace(messageID),
+	).Scan(&guildID, &channelID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return guildID, channelID, true, nil
+}
+
 func (s *Store) AppendMessageEvent(ctx context.Context, guildID, channelID, messageID, eventType string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
