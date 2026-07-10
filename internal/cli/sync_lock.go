@@ -124,7 +124,20 @@ func (r *runtime) runWithHeldSyncLock(lockPath string, release func() error, ope
 		}
 		_ = release()
 	}()
+	if err := r.runPostLockGuard(); err != nil {
+		return err
+	}
 	return fn()
+}
+
+func (r *runtime) runPostLockGuard() error {
+	if r.postLockGuard != nil {
+		return r.postLockGuard()
+	}
+	if err := lockedResourceGuard(r.cfg.DBPath); err != nil {
+		return dbErr(fmt.Errorf("post-lock resource guard: %w", err))
+	}
+	return nil
 }
 
 func (r *runtime) activateTailSyncLock() error {

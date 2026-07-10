@@ -265,6 +265,7 @@ type runtime struct {
 	lockOperation string
 	lockToken     string
 	lockTokenFree func() error
+	postLockGuard func() error
 	openStore     func(context.Context, string) (*store.Store, error)
 	newDiscord    func(config.Config) (discordClient, error)
 	newRemote     func(config.Config) (remoteArchiveClient, error)

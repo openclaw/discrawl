@@ -2530,6 +2530,64 @@ func TestSyncLockSerializesConcurrentRuns(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+func TestPostLockGuardRunsWhileArchiveLockIsHeld(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	guardErr := errors.New("guard stopped writer")
+	callbackCalled := false
+	rt := &runtime{
+		ctx: ctx,
+		cfg: cfg,
+		postLockGuard: func() error {
+			held, known, err := syncLockState(lockPath)
+			require.NoError(t, err)
+			require.True(t, known)
+			require.True(t, held)
+			return guardErr
+		},
+	}
+
+	err := rt.withSyncLock(func() error {
+		callbackCalled = true
+		return nil
+	})
+
+	require.ErrorIs(t, err, guardErr)
+	require.False(t, callbackCalled)
+	held, known, err := syncLockState(lockPath)
+	require.NoError(t, err)
+	require.True(t, known)
+	require.False(t, held)
+}
+
+func TestLockedResourceGuardBlocksBeforeWriterCallback(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("locked free-space guard is unsupported on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	t.Setenv(lockedMinFreeKiBEnv, "18446744073709551615")
+	t.Setenv(lockedMaxWALBytesEnv, "4294967296")
+	callbackCalled := false
+	rt := &runtime{ctx: ctx, cfg: cfg}
+
+	err := rt.withSyncLock(func() error {
+		callbackCalled = true
+		return nil
+	})
+
+	require.ErrorContains(t, err, "free space at or below threshold")
+	require.False(t, callbackCalled)
+}
+
 func TestReadCommandsDoNotWaitForSyncLock(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("sync lock timing is flaky on Windows")
