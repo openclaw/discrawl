@@ -3770,6 +3770,10 @@ func (f *fakeDiscordClient) GuildChannels(context.Context, string) ([]*discordgo
 	return nil, nil
 }
 
+func (f *fakeDiscordClient) Channel(context.Context, string) (*discordgo.Channel, error) {
+	return nil, nil
+}
+
 func (f *fakeDiscordClient) ThreadsActive(context.Context, string) ([]*discordgo.Channel, error) {
 	return nil, nil
 }

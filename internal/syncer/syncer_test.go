@@ -19,6 +19,9 @@ type fakeClient struct {
 	guilds            []*discordgo.UserGuild
 	guildByID         map[string]*discordgo.Guild
 	channels          map[string][]*discordgo.Channel
+	channelsByID      map[string]*discordgo.Channel
+	channelErrors     map[string]error
+	channelCalls      map[string]int
 	activeThreads     map[string][]*discordgo.Channel
 	guildThreads      map[string][]*discordgo.Channel
 	threadErrors      map[string]error
@@ -71,6 +74,38 @@ func (f *fakeClient) Guild(_ context.Context, guildID string) (*discordgo.Guild,
 func (f *fakeClient) GuildChannels(_ context.Context, guildID string) ([]*discordgo.Channel, error) {
 	f.guildChanCalls++
 	return f.channels[guildID], nil
+}
+
+func (f *fakeClient) Channel(_ context.Context, channelID string) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.channelCalls == nil {
+		f.channelCalls = make(map[string]int)
+	}
+	f.channelCalls[channelID]++
+	if err := f.channelErrors[channelID]; err != nil {
+		return nil, err
+	}
+	if channel := f.channelsByID[channelID]; channel != nil {
+		return channel, nil
+	}
+	channelGroups := []map[string][]*discordgo.Channel{
+		f.channels,
+		f.activeThreads,
+		f.guildThreads,
+		f.publicArchived,
+		f.privateArchive,
+	}
+	for _, groups := range channelGroups {
+		for _, channels := range groups {
+			for _, channel := range channels {
+				if channel != nil && channel.ID == channelID {
+					return channel, nil
+				}
+			}
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeClient) ThreadsActive(_ context.Context, channelID string) ([]*discordgo.Channel, error) {

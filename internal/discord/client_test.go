@@ -34,6 +34,9 @@ func TestClientRESTWrappers(t *testing.T) {
 	mux.HandleFunc("/api/v10/guilds/g1/channels", writeJSON([]map[string]any{
 		{"id": "c1", "guild_id": "g1", "name": "general", "type": 0},
 	}))
+	mux.HandleFunc("/api/v10/channels/c1", writeJSON(map[string]any{
+		"id": "c1", "guild_id": "g1", "name": "general", "type": 0,
+	}))
 	mux.HandleFunc("/api/v10/guilds/g1/threads/active", writeJSON(map[string]any{
 		"threads": []map[string]any{
 			{"id": "tg1", "guild_id": "g1", "parent_id": "c1", "name": "guild-thread", "type": 11},
@@ -139,6 +142,10 @@ func TestClientRESTWrappers(t *testing.T) {
 	channels, err := client.GuildChannels(ctx, "g1")
 	require.NoError(t, err)
 	require.Len(t, channels, 1)
+
+	channel, err := client.Channel(ctx, "c1")
+	require.NoError(t, err)
+	require.Equal(t, "c1", channel.ID)
 
 	members, err := client.GuildMembers(ctx, "g1")
 	require.NoError(t, err)
@@ -1099,8 +1106,10 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 			{"op": 0, "t": "MESSAGE_UPDATE", "s": 3, "d": map[string]any{"id": "m1", "guild_id": "g1", "channel_id": "c1", "content": "hello 2", "timestamp": now, "author": map[string]any{"id": "u1", "username": "user"}}},
 			{"op": 0, "t": "MESSAGE_DELETE", "s": 4, "d": map[string]any{"id": "m1", "guild_id": "g1", "channel_id": "c1"}},
 			{"op": 0, "t": "CHANNEL_CREATE", "s": 5, "d": map[string]any{"id": "c1", "guild_id": "g1", "name": "general", "type": 0}},
-			{"op": 0, "t": "GUILD_MEMBER_ADD", "s": 6, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}, "roles": []string{}}},
-			{"op": 0, "t": "GUILD_MEMBER_REMOVE", "s": 7, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}}},
+			{"op": 0, "t": "THREAD_CREATE", "s": 6, "d": map[string]any{"id": "t1", "guild_id": "g1", "parent_id": "c1", "name": "thread", "type": 11, "newly_created": true}},
+			{"op": 0, "t": "THREAD_UPDATE", "s": 7, "d": map[string]any{"id": "t1", "guild_id": "g1", "parent_id": "c1", "name": "thread updated", "type": 11}},
+			{"op": 0, "t": "GUILD_MEMBER_ADD", "s": 8, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}, "roles": []string{}}},
+			{"op": 0, "t": "GUILD_MEMBER_REMOVE", "s": 9, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}}},
 		}
 		for _, event := range events {
 			if err := conn.WriteJSON(event); err != nil {
@@ -1120,6 +1129,7 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = client.Close() }()
 	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
 	require.Zero(t, discordSessionHandlerCount(client.session))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1133,7 +1143,7 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Equal(t, 1, handler.creates)
 	require.Equal(t, 1, handler.updates)
 	require.Equal(t, 1, handler.deletes)
-	require.Equal(t, 1, handler.channels)
+	require.Equal(t, 3, handler.channels)
 	require.Equal(t, 1, handler.memberUpserts)
 	require.Equal(t, 1, handler.memberDeletes)
 	require.Equal(t, 1, handler.ready)
@@ -2665,7 +2675,6 @@ func TestTailMessageUpdateRefetchTimeoutReportsRefetchStage(t *testing.T) {
 		},
 	)
 	defer server.Close()
-
 	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
 	defer restore()
 
@@ -3016,6 +3025,137 @@ func TestTailReadyHandlerFailureRemainsTerminal(t *testing.T) {
 	err = client.Tail(ctx, &readyFailureHandler{err: readyErr})
 	close(gatewayDone)
 	require.ErrorIs(t, err, readyErr)
+}
+
+func TestTailSerializesThreadEventsInGatewayOrder(t *testing.T) {
+	mux := http.NewServeMux()
+	upgrader := websocket.Upgrader{}
+	gatewayURL := ""
+	serverRelease := make(chan struct{})
+	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": gatewayURL})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	defer close(serverRelease)
+
+	gatewayURL = "ws" + server.URL[len("http"):] + "/gateway"
+	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 10,
+			"d":  map[string]any{"heartbeat_interval": 1000},
+		}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		events := []map[string]any{
+			{
+				"op": 0,
+				"t":  "READY",
+				"s":  1,
+				"d": map[string]any{
+					"session_id": "session",
+					"user":       map[string]any{"id": "bot", "username": "bot"},
+				},
+			},
+			{
+				"op": 0,
+				"t":  "THREAD_CREATE",
+				"s":  2,
+				"d": map[string]any{
+					"id": "t1", "guild_id": "g1", "parent_id": "c1",
+					"name": "created", "type": 11, "newly_created": true,
+				},
+			},
+			{
+				"op": 0,
+				"t":  "THREAD_UPDATE",
+				"s":  3,
+				"d": map[string]any{
+					"id": "t1", "guild_id": "g1", "parent_id": "c1",
+					"name": "updated", "type": 11,
+				},
+			},
+			{
+				"op": 0,
+				"t":  "MESSAGE_CREATE",
+				"s":  4,
+				"d": map[string]any{
+					"id": "m1", "guild_id": "g1", "channel_id": "t1",
+					"content": "after update", "timestamp": time.Now().UTC().Format(time.RFC3339),
+					"author": map[string]any{"id": "u1", "username": "user"},
+				},
+			},
+		}
+		for _, event := range events {
+			if err := conn.WriteJSON(event); err != nil {
+				t.Errorf("write event %v: %v", event["t"], err)
+				return
+			}
+		}
+		select {
+		case <-serverRelease:
+		case <-r.Context().Done():
+		}
+	}
+	mux.HandleFunc("/gateway", gatewayHandler)
+	mux.HandleFunc("/gateway/", gatewayHandler)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 4
+	client.tailQueueSize = 8
+
+	handler := newOrderedChannelHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	tailDone := make(chan error, 1)
+	go func() {
+		tailDone <- client.Tail(ctx, handler)
+	}()
+
+	select {
+	case <-handler.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first thread event did not start")
+	}
+	require.True(t, client.session.SyncEvents)
+	select {
+	case <-handler.secondStarted:
+		t.Fatal("second thread event overtook the first")
+	case <-time.After(50 * time.Millisecond):
+	}
+	select {
+	case <-handler.messageStarted:
+		t.Fatal("message event overtook preceding thread events")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(handler.releaseFirst)
+	select {
+	case <-handler.done:
+	case <-time.After(time.Second):
+		t.Fatal("ordered thread events did not complete")
+	}
+	cancel()
+	require.NoError(t, <-tailDone)
+	require.Equal(t, []string{"created", "updated", "message"}, handler.names())
+	require.True(t, client.session.SyncEvents)
 }
 
 func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
@@ -3996,4 +4136,82 @@ func (s *slowHandler) OnMemberUpsert(context.Context, string, *discordgo.Member)
 
 func (s *slowHandler) OnMemberDelete(context.Context, string, string) error {
 	return nil
+}
+
+type orderedChannelHandler struct {
+	mu             sync.Mutex
+	firstOnce      sync.Once
+	secondOnce     sync.Once
+	doneOnce       sync.Once
+	firstStarted   chan struct{}
+	secondStarted  chan struct{}
+	messageStarted chan struct{}
+	releaseFirst   chan struct{}
+	done           chan struct{}
+	channelNames   []string
+}
+
+func newOrderedChannelHandler() *orderedChannelHandler {
+	return &orderedChannelHandler{
+		firstStarted:   make(chan struct{}),
+		secondStarted:  make(chan struct{}),
+		messageStarted: make(chan struct{}),
+		releaseFirst:   make(chan struct{}),
+		done:           make(chan struct{}),
+	}
+}
+
+func (h *orderedChannelHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+	close(h.messageStarted)
+	h.record("message")
+	return nil
+}
+
+func (h *orderedChannelHandler) OnMessageUpdate(context.Context, *discordgo.Message) error {
+	return nil
+}
+
+func (h *orderedChannelHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
+	return nil
+}
+
+func (h *orderedChannelHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Channel) error {
+	switch channel.Name {
+	case "created":
+		h.firstOnce.Do(func() { close(h.firstStarted) })
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-h.releaseFirst:
+		}
+	case "updated":
+		h.secondOnce.Do(func() { close(h.secondStarted) })
+	}
+
+	h.record(channel.Name)
+	return nil
+}
+
+func (h *orderedChannelHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
+	return nil
+}
+
+func (h *orderedChannelHandler) OnMemberDelete(context.Context, string, string) error {
+	return nil
+}
+
+func (h *orderedChannelHandler) names() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.channelNames...)
+}
+
+func (h *orderedChannelHandler) record(name string) {
+	h.mu.Lock()
+	h.channelNames = append(h.channelNames, name)
+	count := len(h.channelNames)
+	h.mu.Unlock()
+	if count == 3 {
+		h.doneOnce.Do(func() { close(h.done) })
+	}
 }

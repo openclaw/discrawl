@@ -19,6 +19,7 @@ type Client interface {
 	Guilds(context.Context) ([]*discordgo.UserGuild, error)
 	Guild(context.Context, string) (*discordgo.Guild, error)
 	GuildChannels(context.Context, string) ([]*discordgo.Channel, error)
+	Channel(context.Context, string) (*discordgo.Channel, error)
 	ThreadsActive(context.Context, string) ([]*discordgo.Channel, error)
 	GuildThreadsActive(context.Context, string) ([]*discordgo.Channel, error)
 	ThreadsArchived(context.Context, string, bool) ([]*discordgo.Channel, error)

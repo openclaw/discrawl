@@ -381,6 +381,7 @@ type tailHandler struct {
 	onReady                func(context.Context) error
 	logger                 *slog.Logger
 	exclusions             channelExclusions
+	channelResolveMu       sync.Mutex
 	exclusionMu            sync.RWMutex
 	channels               map[string]tailChannel
 	kindExcludedChannelIDs map[string]struct{}
@@ -423,7 +424,14 @@ func (t *tailHandler) OnTailFailure(failure discordclient.TailFailure) {
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
+	if msg == nil || !t.allowGuild(msg.GuildID) {
+		return nil
+	}
+	excluded, err := t.ensureMessageChannel(ctx, msg.GuildID, msg.ChannelID)
+	if err != nil {
+		return err
+	}
+	if excluded {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -455,15 +463,40 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if msg == nil {
 		return nil
 	}
-	if t.excludeChannel(msg.ChannelID) || (msg.GuildID != "" && !t.allowGuild(msg.GuildID)) {
+	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
 		return nil
 	}
-	var err error
-	msg, err = t.messageUpdateSnapshot(ctx, msg)
+	guildID, channelID := msg.GuildID, msg.ChannelID
+	if guildID == "" {
+		var err error
+		msg, err = t.messageUpdateSnapshot(ctx, msg)
+		if err != nil {
+			return err
+		}
+		if msg == nil || !t.allowGuild(msg.GuildID) {
+			return nil
+		}
+	} else {
+		excluded, err := t.ensureMessageChannel(ctx, guildID, channelID)
+		if err != nil {
+			return err
+		}
+		if excluded {
+			return nil
+		}
+		msg, err = t.messageUpdateSnapshot(ctx, msg)
+		if err != nil {
+			return err
+		}
+	}
+	if msg == nil || !t.allowGuild(msg.GuildID) {
+		return nil
+	}
+	excluded, err := t.ensureMessageChannel(ctx, msg.GuildID, msg.ChannelID)
 	if err != nil {
 		return err
 	}
-	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
+	if excluded {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -553,7 +586,14 @@ func isPartialMessageUpdate(msg *discordgo.Message) bool {
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if evt == nil || !t.allowGuild(evt.GuildID) || t.excludeChannel(evt.ChannelID) {
+	if evt == nil || !t.allowGuild(evt.GuildID) {
+		return nil
+	}
+	excluded, err := t.ensureMessageChannel(ctx, evt.GuildID, evt.ChannelID)
+	if err != nil {
+		return err
+	}
+	if excluded {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalDelete)
@@ -571,8 +611,9 @@ func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Ch
 	if channel == nil || !t.allowGuild(channel.GuildID) {
 		return nil
 	}
-	t.trackChannelExclusion(channel)
-	return t.store.UpsertChannel(ctx, toChannelRecord(channel, marshalJSONString(channel, "{}")))
+	t.channelResolveMu.Lock()
+	defer t.channelResolveMu.Unlock()
+	return t.persistChannelHierarchyLocked(ctx, channel, map[string]struct{}{})
 }
 
 func (t *tailHandler) OnMemberUpsert(ctx context.Context, guildID string, member *discordgo.Member) error {
@@ -599,6 +640,131 @@ func (t *tailHandler) allowGuild(guildID string) bool {
 	}
 	_, ok := t.guilds[guildID]
 	return ok
+}
+
+func (t *tailHandler) ensureMessageChannel(ctx context.Context, guildID, channelID string) (bool, error) {
+	if channelID == "" {
+		return false, errors.New("message event missing channel id")
+	}
+	if t.channelHierarchyKnown(channelID) {
+		return t.excludeChannel(channelID), nil
+	}
+
+	t.channelResolveMu.Lock()
+	defer t.channelResolveMu.Unlock()
+	if t.channelHierarchyKnown(channelID) {
+		return t.excludeChannel(channelID), nil
+	}
+	if t.client == nil {
+		return false, fmt.Errorf("resolve unknown channel %s: missing discord client", channelID)
+	}
+	if err := t.resolveUnknownChannelLocked(ctx, guildID, channelID, map[string]struct{}{}); err != nil {
+		return false, err
+	}
+	return t.excludeChannel(channelID), nil
+}
+
+func (t *tailHandler) resolveUnknownChannelLocked(
+	ctx context.Context,
+	expectedGuildID string,
+	channelID string,
+	resolving map[string]struct{},
+) error {
+	if t.channelHierarchyKnown(channelID) {
+		return nil
+	}
+	if _, ok := resolving[channelID]; ok {
+		return fmt.Errorf("resolve channel hierarchy cycle at %s", channelID)
+	}
+	resolving[channelID] = struct{}{}
+	defer delete(resolving, channelID)
+
+	channel, err := t.client.Channel(ctx, channelID)
+	if err != nil {
+		return fmt.Errorf("fetch channel %s: %w", channelID, err)
+	}
+	if channel == nil {
+		return fmt.Errorf("fetch channel %s: empty response", channelID)
+	}
+	resolved := *channel
+	channel = &resolved
+	if channel.ID == "" {
+		channel.ID = channelID
+	}
+	if channel.ID != channelID {
+		return fmt.Errorf("fetch channel %s: received channel %s", channelID, channel.ID)
+	}
+	if channel.GuildID == "" {
+		channel.GuildID = expectedGuildID
+	}
+	if expectedGuildID != "" && channel.GuildID != expectedGuildID {
+		return fmt.Errorf(
+			"fetch channel %s: expected guild %s, received %s",
+			channelID,
+			expectedGuildID,
+			channel.GuildID,
+		)
+	}
+	if !t.allowGuild(channel.GuildID) {
+		return fmt.Errorf("fetch channel %s: guild %s is outside the tail scope", channelID, channel.GuildID)
+	}
+	return t.persistChannelHierarchyLocked(ctx, channel, resolving)
+}
+
+func (t *tailHandler) persistChannelHierarchyLocked(
+	ctx context.Context,
+	channel *discordgo.Channel,
+	resolving map[string]struct{},
+) error {
+	if channel == nil || !t.allowGuild(channel.GuildID) {
+		return nil
+	}
+	if channel.ID == "" {
+		return errors.New("channel event missing channel id")
+	}
+	resolveParent := channel.ParentID != "" && !t.channelHierarchyKnown(channel.ParentID)
+	if resolveParent {
+		if t.client == nil {
+			return fmt.Errorf(
+				"resolve parent channel %s for %s: missing discord client",
+				channel.ParentID,
+				channel.ID,
+			)
+		}
+		if err := t.resolveUnknownChannelLocked(ctx, channel.GuildID, channel.ParentID, resolving); err != nil {
+			return fmt.Errorf("resolve parent channel %s for %s: %w", channel.ParentID, channel.ID, err)
+		}
+	}
+	if err := t.store.UpsertChannel(ctx, toChannelRecord(channel, marshalJSONString(channel, "{}"))); err != nil {
+		return err
+	}
+	t.trackChannelExclusion(channel)
+	return nil
+}
+
+func (t *tailHandler) channelHierarchyKnown(channelID string) bool {
+	t.exclusionMu.RLock()
+	defer t.exclusionMu.RUnlock()
+	return t.channelHierarchyKnownLocked(channelID, nil)
+}
+
+func (t *tailHandler) channelHierarchyKnownLocked(channelID string, visiting map[string]struct{}) bool {
+	channel, ok := t.channels[channelID]
+	if !ok {
+		return false
+	}
+	if channel.parentID == "" {
+		return true
+	}
+	if visiting == nil {
+		visiting = map[string]struct{}{}
+	}
+	if _, ok := visiting[channelID]; ok {
+		return false
+	}
+	visiting[channelID] = struct{}{}
+	defer delete(visiting, channelID)
+	return t.channelHierarchyKnownLocked(channel.parentID, visiting)
 }
 
 func (t *tailHandler) seedChannelExclusions(ctx context.Context) error {

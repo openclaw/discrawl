@@ -90,6 +90,12 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 		Timestamp: time.Now().UTC(),
 		Author:    &discordgo.User{ID: "u1", Username: "peter"},
 	}
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:      "c1",
+		GuildID: "g1",
+		Name:    "general",
+		Type:    discordgo.ChannelTypeGuildText,
+	}))
 	require.NoError(t, handler.OnMessageCreate(ctx, msg))
 	require.NoError(t, handler.OnMessageUpdate(ctx, msg))
 	require.NoError(t, handler.OnMessageDelete(ctx, &discordgo.MessageDelete{Message: &discordgo.Message{
@@ -97,12 +103,6 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 		GuildID:   "g1",
 		ChannelID: "c1",
 	}}))
-	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
-		ID:      "c1",
-		GuildID: "g1",
-		Name:    "general",
-		Type:    discordgo.ChannelTypeGuildText,
-	}))
 	require.NoError(t, handler.OnMemberUpsert(ctx, "g1", &discordgo.Member{
 		GuildID: "g1",
 		Nick:    "Peter",
@@ -141,10 +141,18 @@ func TestTailHandlerDoesNotRecordOrderlyShutdownCancellation(t *testing.T) {
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:      "c1",
+		GuildID: "g1",
+		Kind:    "text",
+		Name:    "general",
+		RawJSON: `{}`,
+	}))
 
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
 	handler := &tailHandler{store: s}
+	require.NoError(t, handler.seedChannelExclusions(ctx))
 	err = handler.OnMessageCreate(canceledCtx, &discordgo.Message{
 		ID:        "shutdown",
 		GuildID:   "g1",
@@ -176,7 +184,21 @@ func TestTailHandlerExcludesConfiguredFeedChannels(t *testing.T) {
 		RawJSON: `{}`,
 	}))
 	handler := &tailHandler{
-		store:                  s,
+		store: s,
+		client: &fakeClient{channelsByID: map[string]*discordgo.Channel{
+			"logs": {
+				ID:      "logs",
+				GuildID: "g1",
+				Name:    "logs",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+			"general": {
+				ID:      "general",
+				GuildID: "g1",
+				Name:    "general",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		}},
 		exclusions:             newChannelExclusions([]string{"logs"}, []string{"announcement"}),
 		kindExcludedChannelIDs: map[string]struct{}{},
 	}
@@ -217,8 +239,17 @@ func TestTailHandlerReclassifiesDescendantsAfterParentUpdates(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"parent": {
+			ID:      "parent",
+			GuildID: "g1",
+			Name:    "feed",
+			Type:    discordgo.ChannelTypeGuildNews,
+		},
+	}}
 	handler := &tailHandler{
 		store:                  s,
+		client:                 client,
 		exclusions:             newChannelExclusions(nil, []string{"announcement"}),
 		channels:               map[string]tailChannel{},
 		kindExcludedChannelIDs: map[string]struct{}{},
@@ -320,6 +351,14 @@ func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	updated.Content = "edited <@u2>"
 
 	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{
+			"c1": {
+				ID:      "c1",
+				GuildID: "g1",
+				Name:    "general",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
 		messages: map[string][]*discordgo.Message{
 			"c1": {&updated},
 		},
@@ -490,6 +529,10 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 					store:                 tailStore,
 					client:                snapshotClient,
 					attachmentTextEnabled: false,
+					channels: map[string]tailChannel{
+						"c1": {kind: "text"},
+					},
+					kindExcludedChannelIDs: map[string]struct{}{},
 				},
 				cancel:        cancel,
 				failures:      make(chan discordclient.TailFailure, 1),
@@ -524,6 +567,480 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 			require.Zero(t, clientRefetches.Load())
 		})
 	}
+}
+
+func TestTailHandlerResolvesUnknownThreadAndParentBeforeExclusion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"thread": {
+			ID:       "thread",
+			GuildID:  "g1",
+			ParentID: "forum",
+			Name:     "feed thread",
+			Type:     discordgo.ChannelTypeGuildPublicThread,
+		},
+		"forum": {
+			ID:      "forum",
+			GuildID: "g1",
+			Name:    "feed",
+			Type:    discordgo.ChannelTypeGuildForum,
+		},
+	}}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		exclusions:             newChannelExclusions(nil, []string{"forum"}),
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+
+	const messageCount = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, messageCount)
+	for i := range messageCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- handler.OnMessageCreate(ctx, &discordgo.Message{
+				ID:        string(rune('a' + i)),
+				GuildID:   "g1",
+				ChannelID: "thread",
+				Content:   "must stay excluded",
+				Timestamp: time.Now().UTC(),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	client.mu.Lock()
+	threadCalls := client.channelCalls["thread"]
+	parentCalls := client.channelCalls["forum"]
+	client.mu.Unlock()
+	require.Equal(t, 1, threadCalls)
+	require.Equal(t, 1, parentCalls)
+
+	channels, err := s.Channels(ctx, "g1")
+	require.NoError(t, err)
+	require.Len(t, channels, 2)
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Zero(t, status.MessageCount)
+	require.True(t, handler.excludeChannel("thread"))
+}
+
+func TestTailHandlerResolvesUnknownChannelBeforeMessageWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"c1": {
+			ID:      "c1",
+			GuildID: "g1",
+			Name:    "general",
+			Type:    discordgo.ChannelTypeGuildText,
+		},
+	}}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+
+	require.NoError(t, handler.OnMessageCreate(ctx, &discordgo.Message{
+		ID:        "1",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "archived",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}))
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Equal(t, 1, status.ChannelCount)
+	require.Equal(t, 1, status.MessageCount)
+	client.mu.Lock()
+	channelCalls := client.channelCalls["c1"]
+	client.mu.Unlock()
+	require.Equal(t, 1, channelCalls)
+}
+
+func TestTailHandlerResolvesMissingSeededThreadParentBeforeExclusion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID:       "thread",
+		GuildID:  "g1",
+		ParentID: "forum",
+		Kind:     "thread_public",
+		Name:     "seeded thread",
+		RawJSON:  `{"id":"thread","parent_id":"forum"}`,
+	}))
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"thread": {
+			ID:       "thread",
+			GuildID:  "g1",
+			ParentID: "forum",
+			Name:     "seeded thread",
+			Type:     discordgo.ChannelTypeGuildPublicThread,
+		},
+		"forum": {
+			ID:      "forum",
+			GuildID: "g1",
+			Name:    "feed",
+			Type:    discordgo.ChannelTypeGuildForum,
+		},
+	}}
+	handler := &tailHandler{
+		guilds:     makeGuildSet([]string{"g1"}),
+		store:      s,
+		client:     client,
+		exclusions: newChannelExclusions(nil, []string{"forum"}),
+	}
+	require.NoError(t, handler.seedChannelExclusions(ctx))
+	require.False(t, handler.channelHierarchyKnown("thread"))
+
+	require.NoError(t, handler.OnMessageCreate(ctx, &discordgo.Message{
+		ID:        "1",
+		GuildID:   "g1",
+		ChannelID: "thread",
+		Content:   "must stay excluded",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}))
+
+	client.mu.Lock()
+	threadCalls := client.channelCalls["thread"]
+	parentCalls := client.channelCalls["forum"]
+	client.mu.Unlock()
+	require.Equal(t, 1, threadCalls)
+	require.Equal(t, 1, parentCalls)
+	require.True(t, handler.channelHierarchyKnown("thread"))
+	require.True(t, handler.excludeChannel("thread"))
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Equal(t, 2, status.ChannelCount)
+	require.Zero(t, status.MessageCount)
+}
+
+func TestTailHandlerPersistsExplicitlyExcludedUnknownAncestor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"feed": {
+			ID:      "feed",
+			GuildID: "g1",
+			Name:    "feed parent",
+			Type:    discordgo.ChannelTypeGuildText,
+		},
+	}}
+	handler := &tailHandler{
+		guilds:     makeGuildSet([]string{"g1"}),
+		store:      s,
+		client:     client,
+		exclusions: newChannelExclusions([]string{"feed"}, nil),
+	}
+
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:       "thread",
+		GuildID:  "g1",
+		ParentID: "feed",
+		Name:     "feed thread",
+		Type:     discordgo.ChannelTypeGuildPublicThread,
+	}))
+
+	client.mu.Lock()
+	parentCalls := client.channelCalls["feed"]
+	client.mu.Unlock()
+	require.Equal(t, 1, parentCalls)
+	require.True(t, handler.channelHierarchyKnown("thread"))
+	require.True(t, handler.excludeChannel("thread"))
+
+	channels, err := s.Channels(ctx, "g1")
+	require.NoError(t, err)
+	require.Len(t, channels, 2)
+}
+
+func TestTailHandlerResolvesUnknownChannelsForUpdateAndDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	now := time.Now().UTC()
+	updated := &discordgo.Message{
+		ID:        "update",
+		GuildID:   "g1",
+		ChannelID: "update-channel",
+		Content:   "updated content",
+		Timestamp: now,
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{
+			"update-channel": {
+				ID:      "update-channel",
+				GuildID: "g1",
+				Name:    "updates",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+			"delete-channel": {
+				ID:      "delete-channel",
+				GuildID: "g1",
+				Name:    "deletes",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
+		messages: map[string][]*discordgo.Message{
+			"update-channel": {updated},
+		},
+	}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        updated.ID,
+		ChannelID: updated.ChannelID,
+		Content:   updated.Content,
+	}))
+
+	deleted := &discordgo.Message{
+		ID:        "delete",
+		GuildID:   "g1",
+		ChannelID: "delete-channel",
+		Content:   "delete me",
+		Timestamp: now,
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	mutation, err := buildMessageMutation(ctx, deleted, "", "", false, false)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{mutation}))
+	require.NoError(t, handler.OnMessageDelete(ctx, &discordgo.MessageDelete{Message: deleted}))
+
+	var content string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select content from messages where id = ?`,
+		updated.ID,
+	).Scan(&content))
+	require.Equal(t, updated.Content, content)
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select coalesce(deleted_at, '') from messages where id = ?`,
+		deleted.ID,
+	).Scan(&deletedAt))
+	require.NotEmpty(t, deletedAt)
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Equal(t, 2, status.ChannelCount)
+	require.Equal(t, 2, status.MessageCount)
+	client.mu.Lock()
+	updateCalls := client.channelCalls["update-channel"]
+	deleteCalls := client.channelCalls["delete-channel"]
+	client.mu.Unlock()
+	require.Equal(t, 1, updateCalls)
+	require.Equal(t, 1, deleteCalls)
+}
+
+func TestTailHandlerIgnoresGuildlessPartialUpdateOutsideScope(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	full := &discordgo.Message{
+		ID:        "outside-message",
+		GuildID:   "g2",
+		ChannelID: "outside-channel",
+		Content:   "outside scope",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u2", Username: "outside"},
+	}
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{
+			"outside-channel": {
+				ID:      "outside-channel",
+				GuildID: "g2",
+				Name:    "outside",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
+		messages: map[string][]*discordgo.Message{
+			"outside-channel": {full},
+		},
+	}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        full.ID,
+		ChannelID: full.ChannelID,
+		Content:   full.Content,
+	}))
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Zero(t, status.ChannelCount)
+	require.Zero(t, status.MessageCount)
+	client.mu.Lock()
+	channelCalls := client.channelCalls["outside-channel"]
+	client.mu.Unlock()
+	require.Zero(t, channelCalls)
+}
+
+func TestTailHandlerPersistsThreadArchiveMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{channelsByID: map[string]*discordgo.Channel{
+		"parent": {
+			ID:      "parent",
+			GuildID: "g1",
+			Name:    "general",
+			Type:    discordgo.ChannelTypeGuildText,
+		},
+	}}
+	handler := &tailHandler{
+		guilds: makeGuildSet([]string{"g1"}),
+		store:  s,
+		client: client,
+	}
+	archivedAt := time.Now().UTC().Truncate(time.Microsecond)
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:       "thread",
+		GuildID:  "g1",
+		ParentID: "parent",
+		Name:     "archived thread",
+		Type:     discordgo.ChannelTypeGuildPrivateThread,
+		ThreadMetadata: &discordgo.ThreadMetadata{
+			Archived:         true,
+			Locked:           true,
+			ArchiveTimestamp: archivedAt,
+		},
+	}))
+
+	channels, err := s.Channels(ctx, "g1")
+	require.NoError(t, err)
+	require.Len(t, channels, 2)
+	var thread store.ChannelRow
+	for _, channel := range channels {
+		if channel.ID == "thread" {
+			thread = channel
+			break
+		}
+	}
+	require.Equal(t, "thread", thread.ID)
+	require.True(t, thread.IsArchived)
+	require.True(t, thread.IsLocked)
+	require.True(t, thread.IsPrivateThread)
+	require.Equal(t, "parent", thread.ThreadParentID)
+	require.Equal(t, archivedAt, thread.ArchiveTimestamp)
+}
+
+func TestTailHandlerConcurrentResolutionErrorsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &fakeClient{channelErrors: map[string]error{
+		"missing": errors.New("unavailable"),
+	}}
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+
+	const messageCount = 8
+	errs := make(chan error, messageCount)
+	var wg sync.WaitGroup
+	for i := range messageCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- handler.OnMessageCreate(ctx, &discordgo.Message{
+				ID:        string(rune('a' + i)),
+				GuildID:   "g1",
+				ChannelID: "missing",
+				Content:   "must not be written",
+				Timestamp: time.Now().UTC(),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.ErrorContains(t, err, "fetch channel missing: unavailable")
+	}
+
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Zero(t, status.ChannelCount)
+	require.Zero(t, status.MessageCount)
+	client.mu.Lock()
+	channelCalls := client.channelCalls["missing"]
+	client.mu.Unlock()
+	require.Equal(t, messageCount, channelCalls)
+
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, report.Failures)
 }
 
 func TestHelpers(t *testing.T) {
@@ -628,7 +1145,17 @@ func TestRunTail(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	handled := make(chan struct{}, 1)
-	client := &fakeClient{tailHandled: handled}
+	client := &fakeClient{
+		tailHandled: handled,
+		channelsByID: map[string]*discordgo.Channel{
+			"c1": {
+				ID:      "c1",
+				GuildID: "g1",
+				Name:    "general",
+				Type:    discordgo.ChannelTypeGuildText,
+			},
+		},
+	}
 	svc := New(client, s, nil)
 	go func() {
 		select {
@@ -1436,6 +1963,12 @@ func TestTailHandlersResolveOnlySuccessfulEventIdentity(t *testing.T) {
 		))
 	}
 	handler := &tailHandler{store: s}
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:      "c1",
+		GuildID: "g1",
+		Name:    "general",
+		Type:    discordgo.ChannelTypeGuildText,
+	}))
 	message := &discordgo.Message{
 		ID:        "10",
 		GuildID:   "g1",
@@ -1472,6 +2005,12 @@ func TestTailHandlerReturnedErrorIsRecordedOnlyByOuterOwner(t *testing.T) {
 	require.NoError(t, err)
 
 	handler := &tailHandler{store: s}
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID:      "c1",
+		GuildID: "g1",
+		Name:    "general",
+		Type:    discordgo.ChannelTypeGuildText,
+	}))
 	message := &discordgo.Message{
 		ID:        "m1",
 		GuildID:   "g1",
