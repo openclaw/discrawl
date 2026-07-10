@@ -180,6 +180,11 @@ func TestTailHandlerReconcilesUnknownMessageUpdateAsDelete(t *testing.T) {
 		tailMessageFailureIdentity("g1", "c1", "123", "update"),
 		errors.New("prior update failure"),
 	))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("", "c1", "123", "update"),
+		errors.New("prior guildless update failure"),
+	))
 
 	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
 		ID:        "123",
@@ -202,6 +207,156 @@ func TestTailHandlerReconcilesUnknownMessageUpdateAsDelete(t *testing.T) {
 	lastEvent, err := s.GetSyncState(ctx, "tail:last_event")
 	require.NoError(t, err)
 	require.Equal(t, "123", lastEvent)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+}
+
+func TestTailHandlerDoesNotDeleteExcludedMessageOnGuildlessUnknownUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	channel := &discordgo.Channel{
+		ID:      "feed",
+		GuildID: "g1",
+		Name:    "github",
+		Type:    discordgo.ChannelTypeGuildText,
+	}
+	message := &discordgo.Message{
+		ID:        "125",
+		GuildID:   "g1",
+		ChannelID: "feed",
+		Content:   "preserved feed message",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "bot", Bot: true},
+	}
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{"feed": channel},
+		messages:     map[string][]*discordgo.Message{"feed": {message}},
+		messageByIDErrs: map[string]error{
+			"feed/125": errors.New(`HTTP 404 Not Found, {"message": "Unknown Message", "code": 10008}`),
+		},
+	}
+	initialHandler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, initialHandler.OnChannelUpsert(ctx, channel))
+	require.NoError(t, initialHandler.OnMessageCreate(ctx, message))
+
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		exclusions:             newChannelExclusions([]string{"feed"}, nil),
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, handler.seedChannelExclusions(ctx))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("", "feed", "125", "update"),
+		errors.New("prior guildless update failure"),
+	))
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        "125",
+		ChannelID: "feed",
+	}))
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select coalesce(deleted_at, '') from messages where id = '125'`,
+	).Scan(&deletedAt))
+	require.Empty(t, deletedAt)
+	var deleteEvents int
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select count(*) from message_events where message_id = '125' and event_type = 'delete'`,
+	).Scan(&deleteEvents))
+	require.Zero(t, deleteEvents)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+}
+
+func TestTailHandlerDoesNotDeleteOutOfScopeMessageOnGuildlessUnknownUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	channel := &discordgo.Channel{
+		ID:      "other-channel",
+		GuildID: "other-guild",
+		Name:    "general",
+		Type:    discordgo.ChannelTypeGuildText,
+	}
+	message := &discordgo.Message{
+		ID:        "126",
+		GuildID:   "other-guild",
+		ChannelID: "other-channel",
+		Content:   "preserved outside scope",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	client := &fakeClient{
+		channelsByID: map[string]*discordgo.Channel{"other-channel": channel},
+		messages:     map[string][]*discordgo.Message{"other-channel": {message}},
+		messageByIDErrs: map[string]error{
+			"other-channel/126": errors.New(`HTTP 404 Not Found, {"message": "Unknown Message", "code": 10008}`),
+		},
+	}
+	initialHandler := &tailHandler{
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, initialHandler.OnChannelUpsert(ctx, channel))
+	require.NoError(t, initialHandler.OnMessageCreate(ctx, message))
+
+	handler := &tailHandler{
+		guilds:                 makeGuildSet([]string{"g1"}),
+		store:                  s,
+		client:                 client,
+		channels:               map[string]tailChannel{},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, handler.seedChannelExclusions(ctx))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("", "other-channel", "126", "update"),
+		errors.New("prior guildless update failure"),
+	))
+
+	require.NoError(t, handler.OnMessageUpdate(ctx, &discordgo.Message{
+		ID:        "126",
+		ChannelID: "other-channel",
+	}))
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select coalesce(deleted_at, '') from messages where id = '126'`,
+	).Scan(&deletedAt))
+	require.Empty(t, deletedAt)
+	var deleteEvents int
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select count(*) from message_events where message_id = '126' and event_type = 'delete'`,
+	).Scan(&deleteEvents))
+	require.Zero(t, deleteEvents)
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now().UTC())
 	require.NoError(t, err)
 	require.Zero(t, report.UnresolvedCount)
