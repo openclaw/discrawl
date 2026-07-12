@@ -1,0 +1,17 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Allow exact non-secret autoreview scanner fixtures"
+condition = "AND"
+regexTarget = "line"
+paths = [
+    '''^\.agents/skills/autoreview/tests/test_autoreview_hardening\.py$''',
+]
+regexes = [
+    '''^\s*hex_credential = "0123456789abcdef" \+ "0123456789abcdef01234567"$''',
+    '''^\s*uuid_credential = "550e8400-e29b-41d4-a716-" \+ "446655440000"$''',
+]
