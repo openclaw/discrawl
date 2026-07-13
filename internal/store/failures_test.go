@@ -167,6 +167,56 @@ func TestFailureLedgerFiltersLimitsAndBulkResolution(t *testing.T) {
 	require.NoError(t, s.ResolveMessageFailures(ctx, FailureRef{Operation: "sync", Source: "discord"}, nil))
 }
 
+func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	refs := []FailureRef{
+		{Operation: "tail_message", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m1"},
+		{Operation: "tail_message", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m2"},
+		{Operation: "tail_message", Source: "discord", GuildID: "g2", ChannelID: "c2", MessageID: "m3"},
+		{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m4"},
+	}
+	for i, ref := range refs {
+		require.NoError(t, s.RecordFailure(ctx, ref, fmt.Errorf("failure %d", i)))
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when 'm1' then '2026-07-13 00:00:03.000000000'
+			when 'm2' then '2026-07-13 00:00:01.000000000'
+			when 'm3' then '2026-07-13 00:00:02.000000000'
+			else last_seen_at
+		end
+	`)
+	require.NoError(t, err)
+
+	candidates, err := s.ListFailureReplayCandidates(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+	}, 2)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(t, []string{"m2", "m3"}, []string{candidates[0].MessageID, candidates[1].MessageID})
+
+	candidates, err = s.ListFailureReplayCandidates(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+	}, 10)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(t, []string{"m2", "m1"}, []string{candidates[0].MessageID, candidates[1].MessageID})
+
+	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message"}, 1)
+	require.Error(t, err)
+	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message", Source: "discord"}, maxFailureLimit+1)
+	require.ErrorContains(t, err, "at most")
+}
+
 func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -515,6 +515,9 @@ func (s *Syncer) persistMessagePage(ctx context.Context, messages []*discordgo.M
 	if err := s.store.UpsertMessages(ctx, mutations); err != nil {
 		return "", err
 	}
+	if err := s.resolveTailMessageFailuresForMessages(ctx, messages, fallbackGuildID); err != nil {
+		return "", err
+	}
 	return newest, nil
 }
 

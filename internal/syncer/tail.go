@@ -52,6 +52,9 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			if _, err := s.Sync(ctx, SyncOptions{GuildIDs: guildIDs, Full: false, RepairReason: "tail_repair"}); err != nil {
 				s.logger.Warn("repair sync failed", "err", err)
 			}
+			if _, err := s.replayTailMessageFailures(ctx, guildIDs, tailMessageReplayLimit); err != nil {
+				s.logger.Warn("tail message replay failed", "err", err)
+			}
 		}
 	}
 }

@@ -283,6 +283,69 @@ func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, gener
 	return report, nil
 }
 
+// ListFailureReplayCandidates returns unresolved failures in least-recently-attempted order.
+func (s *Store) ListFailureReplayCandidates(ctx context.Context, ref FailureRef, limit int) ([]Failure, error) {
+	ref = normalizeFailureRef(ref)
+	if ref.Operation == "" || ref.Source == "" {
+		return nil, errors.New("failure operation and source are required")
+	}
+	if limit <= 0 {
+		limit = defaultFailureLimit
+	}
+	if limit > maxFailureLimit {
+		return nil, fmt.Errorf("failure replay limit must be at most %d", maxFailureLimit)
+	}
+	clauses := []string{"resolved_at is null", "operation = ?", "source = ?"}
+	args := []any{ref.Operation, ref.Source}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"guild_id", ref.GuildID},
+		{"channel_id", ref.ChannelID},
+		{"message_id", ref.MessageID},
+		{"related_kind", ref.RelatedKind},
+		{"related_id", ref.RelatedID},
+	} {
+		if field.value != "" {
+			clauses = append(clauses, field.name+" = ?")
+			args = append(args, field.value)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		select failure_id, operation, source, guild_id, channel_id, message_id,
+		       related_kind, related_id, error_class, error_message,
+		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
+		from failure_ledger
+		where `+strings.Join(clauses, " and ")+`
+		order by last_seen_at asc, failure_id asc
+		limit ?`, append(args, limit)...)
+	if err != nil {
+		return nil, fmt.Errorf("list failure replay candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	failures := []Failure{}
+	for rows.Next() {
+		var row Failure
+		var firstSeen, lastSeen, resolved string
+		if err := rows.Scan(
+			&row.FailureID, &row.Operation, &row.Source, &row.GuildID, &row.ChannelID, &row.MessageID,
+			&row.RelatedKind, &row.RelatedID, &row.ErrorClass, &row.ErrorMessage,
+			&firstSeen, &lastSeen, &row.RetryCount, &resolved,
+		); err != nil {
+			return nil, fmt.Errorf("scan failure replay candidate: %w", err)
+		}
+		row.FirstSeenAt = parseTime(firstSeen)
+		row.LastSeenAt = parseTime(lastSeen)
+		row.ResolvedAt = parseTime(resolved)
+		failures = append(failures, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list failure replay candidates: %w", err)
+	}
+	return failures, nil
+}
+
 func (s *Store) pruneResolvedFailures(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-resolvedFailureMaxAge).Format(timeLayout)
 	if _, err := s.db.ExecContext(ctx, `delete from failure_ledger where resolved_at is not null and resolved_at < ?`, cutoff); err != nil {
