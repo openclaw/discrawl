@@ -554,7 +554,7 @@ func TestTailEscalatesAfterConsecutiveHandlerFailures(t *testing.T) {
 	}
 	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
-		for sequence := 0; sequence < defaultTailHandlerFailureLimit; sequence++ {
+		for sequence := range defaultTailHandlerFailureLimit {
 			messageID := fmt.Sprintf("failed-%d", sequence+1)
 			if err := conn.WriteJSON(messageCreateEvent(sequence+2, messageID, now)); err != nil {
 				t.Errorf("write failed event: %v", err)
