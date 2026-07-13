@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
+	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -204,6 +208,359 @@ func TestRunTailTaskRecoversPanics(t *testing.T) {
 	require.ErrorContains(t, err, "tail handler panic: again")
 }
 
+func TestRunTailTaskTreatsPostDeadlineNilAsFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 5 * time.Second
+
+		client := &Client{tailHandlerTimeout: timeout}
+		startedAt := time.Now()
+		err := client.runTailTask(context.Background(), func(ctx context.Context) error {
+			<-ctx.Done()
+			return nil
+		})
+		require.Equal(t, timeout, time.Since(startedAt))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		var deadlineErr *tailHandlerDeadlineError
+		require.ErrorAs(t, err, &deadlineErr)
+		require.True(t, deadlineErr.returnedNil)
+		require.False(t, deadlineErr.detached)
+		require.True(t, deadlineErr.requiresSynchronousRecord())
+	})
+}
+
+func TestRunTailTaskPreservesCooperativePostDeadlineError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 5 * time.Second
+
+		wantErr := errors.New("handler failed after deadline")
+		client := &Client{tailHandlerTimeout: timeout}
+		startedAt := time.Now()
+		err := client.runTailTask(context.Background(), func(ctx context.Context) error {
+			<-ctx.Done()
+			return wantErr
+		})
+		require.Equal(t, timeout, time.Since(startedAt))
+		require.ErrorIs(t, err, wantErr)
+		var deadlineErr *tailHandlerDeadlineError
+		require.ErrorAs(t, err, &deadlineErr)
+		require.Same(t, wantErr, deadlineErr.cause)
+		require.False(t, deadlineErr.returnedNil)
+		require.False(t, deadlineErr.detached)
+		require.False(t, deadlineErr.requiresSynchronousRecord())
+	})
+}
+
+func TestAwaitTailTaskDeadlineHonorsBufferedPreDeadlineCompletion(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Now().Add(-time.Millisecond)
+	result := make(chan tailTaskResult, 1)
+	wantErr := errors.New("completed before deadline")
+	result <- tailTaskResult{
+		err:         wantErr,
+		completedAt: deadline.Add(-time.Millisecond),
+	}
+	client := &Client{tailHandlerTimeout: 10 * time.Millisecond}
+	err := client.awaitTailTaskDeadline(
+		result,
+		deadline,
+		deadline.Add(tailHandlerCancelGrace),
+	)
+	require.Same(t, wantErr, err)
+	var deadlineErr *tailHandlerDeadlineError
+	require.NotErrorAs(t, err, &deadlineErr)
+}
+
+func TestAwaitTailTaskDeadlineTreatsEqualAndLaterCompletionAsTimeout(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{name: "equal", offset: 0},
+		{name: "later", offset: time.Nanosecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deadline := time.Now().Add(-time.Second)
+			result := make(chan tailTaskResult, 1)
+			wantErr := errors.New("completed at or after deadline")
+			result <- tailTaskResult{
+				err:         wantErr,
+				completedAt: deadline.Add(tc.offset),
+			}
+			client := &Client{tailHandlerTimeout: 10 * time.Millisecond}
+			err := client.awaitTailTaskDeadline(
+				result,
+				deadline,
+				deadline.Add(tailHandlerCancelGrace),
+			)
+			require.ErrorIs(t, err, wantErr)
+			var deadlineErr *tailHandlerDeadlineError
+			require.ErrorAs(t, err, &deadlineErr)
+			require.Same(t, wantErr, deadlineErr.cause)
+			require.False(t, deadlineErr.returnedNil)
+			require.False(t, deadlineErr.detached)
+		})
+	}
+}
+
+func TestAwaitTailTaskDeadlineFinalDrainUsesReadyResult(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Now().Add(-tailHandlerCancelGrace)
+	graceDeadline := deadline.Add(tailHandlerCancelGrace)
+	for _, tc := range []struct {
+		name         string
+		completedAt  time.Time
+		wantDetached bool
+	}{
+		{
+			name:        "at local deadline",
+			completedAt: deadline,
+		},
+		{
+			name:        "just before grace deadline",
+			completedAt: graceDeadline.Add(-time.Nanosecond),
+		},
+		{
+			name:         "at grace deadline",
+			completedAt:  graceDeadline,
+			wantDetached: true,
+		},
+		{
+			name:         "after grace deadline",
+			completedAt:  graceDeadline.Add(time.Nanosecond),
+			wantDetached: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := make(chan tailTaskResult, 1)
+			wantErr := errors.New("completed with grace timer")
+			result <- tailTaskResult{
+				err:         wantErr,
+				completedAt: tc.completedAt,
+			}
+			err := finalTailTaskDeadlineResult(
+				10*time.Millisecond,
+				result,
+				deadline,
+				graceDeadline,
+			)
+			var deadlineErr *tailHandlerDeadlineError
+			require.ErrorAs(t, err, &deadlineErr)
+			require.Equal(t, tc.wantDetached, deadlineErr.detached)
+			if tc.wantDetached {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.NotErrorIs(t, err, wantErr)
+				require.True(t, deadlineErr.requiresSynchronousRecord())
+				return
+			}
+			require.ErrorIs(t, err, wantErr)
+			require.Same(t, wantErr, deadlineErr.cause)
+			require.False(t, deadlineErr.requiresSynchronousRecord())
+		})
+	}
+}
+
+func TestAwaitTailTaskDeadlineFinalDrainAfterTimerExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deadline := time.Now()
+		graceDeadline := deadline.Add(tailHandlerCancelGrace)
+		result := make(chan tailTaskResult, 1)
+		wantErr := errors.New("completed before grace timer")
+		hookCalls := 0
+		client := &Client{
+			tailHandlerTimeout: 5 * time.Second,
+			tailGraceTimerHook: func() {
+				hookCalls++
+				result <- tailTaskResult{
+					err:         wantErr,
+					completedAt: graceDeadline.Add(-time.Nanosecond),
+				}
+			},
+		}
+
+		err := client.awaitTailTaskDeadline(result, deadline, graceDeadline)
+		require.Equal(t, tailHandlerCancelGrace, time.Since(deadline))
+		require.Equal(t, 1, hookCalls)
+		require.ErrorIs(t, err, wantErr)
+		var deadlineErr *tailHandlerDeadlineError
+		require.ErrorAs(t, err, &deadlineErr)
+		require.Same(t, wantErr, deadlineErr.cause)
+		require.False(t, deadlineErr.detached)
+		require.False(t, deadlineErr.requiresSynchronousRecord())
+	})
+}
+
+func TestRunTailTaskReturnsEarlierParentDeadlinePromptly(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			parentTimeout = 5 * time.Second
+			localTimeout  = 30 * time.Second
+		)
+
+		parent, cancel := context.WithTimeout(context.Background(), parentTimeout)
+		defer cancel()
+		client := &Client{tailHandlerTimeout: localTimeout}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		releaseHandler := sync.OnceFunc(func() { close(release) })
+		defer releaseHandler()
+		done := make(chan error, 1)
+		startedAt := time.Now()
+		go func() {
+			done <- client.runTailTask(parent, func(context.Context) error {
+				close(started)
+				<-release
+				close(finished)
+				return nil
+			})
+		}()
+		<-started
+
+		err := <-done
+		require.Equal(t, parentTimeout, time.Since(startedAt))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		var deadlineErr *tailHandlerDeadlineError
+		require.NotErrorAs(t, err, &deadlineErr)
+
+		releaseHandler()
+		<-finished
+	})
+}
+
+func TestRunTailTaskPreservesParentCancellationBeforeDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			cancelAfter  = 5 * time.Second
+			localTimeout = 30 * time.Second
+		)
+
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		client := &Client{tailHandlerTimeout: localTimeout}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		releaseHandler := sync.OnceFunc(func() { close(release) })
+		defer releaseHandler()
+		done := make(chan error, 1)
+		startedAt := time.Now()
+		go func() {
+			done <- client.runTailTask(parent, func(context.Context) error {
+				close(started)
+				<-release
+				close(finished)
+				return nil
+			})
+		}()
+		<-started
+		go func() {
+			time.Sleep(cancelAfter)
+			cancel()
+		}()
+
+		err := <-done
+		require.Equal(t, cancelAfter, time.Since(startedAt))
+		require.ErrorIs(t, err, context.Canceled)
+		var deadlineErr *tailHandlerDeadlineError
+		require.NotErrorAs(t, err, &deadlineErr)
+
+		releaseHandler()
+		<-finished
+	})
+}
+
+func TestRunTailTaskPreservesLocalDeadlineAtParentCancellationBoundary(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 5 * time.Second
+
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		client := &Client{tailHandlerTimeout: timeout}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		releaseHandler := sync.OnceFunc(func() { close(release) })
+		defer releaseHandler()
+		done := make(chan error, 1)
+		startedAt := time.Now()
+		go func() {
+			done <- client.runTailTask(parent, func(context.Context) error {
+				close(started)
+				<-release
+				close(finished)
+				return nil
+			})
+		}()
+		<-started
+		go func() {
+			time.Sleep(timeout)
+			cancel()
+		}()
+
+		err := <-done
+		require.Equal(t, timeout+tailHandlerCancelGrace, time.Since(startedAt))
+		require.ErrorIs(t, parent.Err(), context.Canceled)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		var deadlineErr *tailHandlerDeadlineError
+		require.ErrorAs(t, err, &deadlineErr)
+		require.True(t, deadlineErr.detached)
+		require.True(t, deadlineErr.requiresSynchronousRecord())
+
+		releaseHandler()
+		<-finished
+	})
+}
+
+func TestRunTailTaskPreservesDeadlineWhenParentCancelsDuringGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 5 * time.Second
+
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		client := &Client{tailHandlerTimeout: timeout}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		releaseHandler := sync.OnceFunc(func() { close(release) })
+		defer releaseHandler()
+		done := make(chan error, 1)
+		startedAt := time.Now()
+		go func() {
+			done <- client.runTailTask(parent, func(context.Context) error {
+				close(started)
+				<-release
+				close(finished)
+				return nil
+			})
+		}()
+		<-started
+		time.Sleep(timeout)
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("runTailTask returned before the fixed grace deadline: %v", err)
+		default:
+		}
+
+		err := <-done
+		require.Equal(t, timeout+tailHandlerCancelGrace, time.Since(startedAt))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		var deadlineErr *tailHandlerDeadlineError
+		require.ErrorAs(t, err, &deadlineErr)
+		require.True(t, deadlineErr.detached)
+		require.True(t, deadlineErr.requiresSynchronousRecord())
+
+		releaseHandler()
+		<-finished
+	})
+}
+
 func TestTailTaskMetadataIsNilSafe(t *testing.T) {
 	t.Parallel()
 
@@ -262,17 +619,41 @@ func TestTailTaskMetadataIsNilSafe(t *testing.T) {
 	).userID)
 }
 
-func TestTailFailureReportingSuppressesShutdownCancellation(t *testing.T) {
+func TestTailFailureReportingUsesSafeMetadata(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	handler := &failureContinuationHandler{
 		failureReported: make(chan struct{}),
 		failures:        make(chan TailFailure, 1),
 	}
-	reportTailFailure(ctx, handler, tailTask{eventType: "MESSAGE_CREATE"}, context.Canceled)
-	require.Empty(t, handler.failures)
+	reportTailFailure(handler, newTailFailure(tailTask{
+		eventType: "MESSAGE_CREATE",
+		guildID:   "g1",
+		channelID: "c1",
+		messageID: "m1",
+		userID:    "u1",
+	}, context.Canceled))
+	require.Equal(t, TailFailure{
+		EventType: "MESSAGE_CREATE",
+		Kind:      "returned_error",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+		UserID:    "u1",
+	}, <-handler.failures)
+}
+
+func TestTailFailureRecorderRequirements(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, recordTailFailure(nil, TailFailure{}))
+	require.ErrorContains(t, recordTailFailure(nil, TailFailure{MessageID: "m1"}), "recorder unavailable")
+	reportTailFailure(nil, TailFailure{})
+
+	wantErr := errors.New("ledger unavailable")
+	recorder := &tailFailureRecorderStub{err: wantErr}
+	require.ErrorIs(t, recordTailFailure(recorder, TailFailure{MessageID: "m1"}), wantErr)
+	require.Equal(t, TailFailure{MessageID: "m1"}, recorder.failure)
 }
 
 func TestRequestContextHonorsExistingDeadlineAndDisabledTimeout(t *testing.T) {
@@ -300,18 +681,20 @@ func TestTailQueueAndWorkerSizing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	workCh := make(chan tailTask)
-	errCh := make(chan error, 1)
+	fatal := newTailFatalState()
 	task := tailTask{run: func(context.Context) error { return nil }}
-	client.enqueueTailTask(ctx, workCh, errCh, task)
-	require.Empty(t, errCh)
+	client.enqueueTailTask(ctx, workCh, fatal, task)
+	require.NoError(t, fatal.err())
 
 	ctx = context.Background()
 	fullWorkCh := make(chan tailTask)
-	client.enqueueTailTask(ctx, fullWorkCh, errCh, task)
-	require.ErrorContains(t, <-errCh, "tail worker queue full")
-	errCh <- errors.New("existing")
-	client.enqueueTailTask(ctx, fullWorkCh, errCh, task)
-	require.ErrorContains(t, <-errCh, "existing")
+	fatal = newTailFatalState()
+	client.enqueueTailTask(ctx, fullWorkCh, fatal, task)
+	require.ErrorContains(t, fatal.err(), "tail worker queue full")
+	fatal.signal(errors.New("existing"))
+	client.enqueueTailTask(ctx, fullWorkCh, fatal, task)
+	require.ErrorContains(t, fatal.err(), "existing")
+	require.ErrorContains(t, fatal.err(), "tail worker queue full")
 
 	prev := runtime.GOMAXPROCS(2)
 	defer runtime.GOMAXPROCS(prev)
@@ -449,6 +832,87 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Zero(t, discordSessionHandlerCount(client.session))
 }
 
+func TestTailReportsScopedChannelAndMemberUpdateFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	handler := &updateFailureHandler{
+		failures: make(chan TailFailure, 2),
+		reported: make(chan struct{}, 2),
+	}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "CHANNEL_UPDATE",
+			"s":  2,
+			"d": map[string]any{
+				"id":       "c1",
+				"guild_id": "g1",
+				"name":     "renamed-channel",
+				"type":     0,
+			},
+		}); err != nil {
+			t.Errorf("write channel update: %v", err)
+			return
+		}
+		select {
+		case <-handler.reported:
+		case <-ctx.Done():
+			t.Error("channel update failure was not reported")
+			return
+		}
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "GUILD_MEMBER_UPDATE",
+			"s":  3,
+			"d": map[string]any{
+				"guild_id": "g1",
+				"nick":     "renamed-member",
+				"roles":    []string{"r1"},
+				"user":     map[string]any{"id": "u1", "username": "test-user"},
+			},
+		}); err != nil {
+			t.Errorf("write member update: %v", err)
+			return
+		}
+		select {
+		case <-handler.reported:
+			cancel()
+		case <-ctx.Done():
+			t.Error("member update failure was not reported")
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = 2
+
+	require.NoError(t, client.Tail(ctx, handler))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.EqualValues(t, 1, handler.channelCalls.Load())
+	require.EqualValues(t, 1, handler.memberCalls.Load())
+	require.Equal(t, TailFailure{
+		EventType: "CHANNEL_UPDATE",
+		Kind:      "returned_error",
+		GuildID:   "g1",
+		ChannelID: "c1",
+	}, <-handler.failures)
+	require.Equal(t, TailFailure{
+		EventType: "GUILD_MEMBER_UPDATE",
+		Kind:      "returned_error",
+		GuildID:   "g1",
+		UserID:    "u1",
+	}, <-handler.failures)
+}
+
 func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -547,48 +1011,92 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 }
 
 func TestTailEscalatesAfterConsecutiveHandlerFailures(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	handler := &persistentFailureHandler{
-		failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
+	tests := []struct {
+		name     string
+		fail     func(context.Context) error
+		wantKind string
+	}{
+		{
+			name: "returned error",
+			fail: func(context.Context) error {
+				return errors.New("persistent handler failure")
+			},
+			wantKind: "returned_error",
+		},
+		{
+			name: "panic",
+			fail: func(context.Context) error {
+				panic("persistent handler panic")
+			},
+			wantKind: "panic",
+		},
+		{
+			name: "deadline error",
+			fail: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			wantKind: "timeout",
+		},
+		{
+			name: "post-deadline nil",
+			fail: func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+			wantKind: "timeout",
+		},
 	}
-	server := newTailTestGateway(t, func(conn *websocket.Conn) {
-		now := time.Now().UTC().Format(time.RFC3339)
-		for sequence := range defaultTailHandlerFailureLimit {
-			messageID := fmt.Sprintf("failed-%d", sequence+1)
-			if err := conn.WriteJSON(messageCreateEvent(sequence+2, messageID, now)); err != nil {
-				t.Errorf("write failed event: %v", err)
-				return
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			handler := &persistentFailureHandler{
+				fail:     tt.fail,
+				failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
 			}
-			select {
-			case <-handler.failures:
-			case <-ctx.Done():
-				t.Error("tail failure was not reported")
-				return
-			}
-		}
-	})
-	defer server.Close()
+			server := newTailTestGateway(t, func(conn *websocket.Conn) {
+				now := time.Now().UTC().Format(time.RFC3339)
+				for sequence := range defaultTailHandlerFailureLimit {
+					messageID := fmt.Sprintf("failed-%d", sequence+1)
+					if err := conn.WriteJSON(messageCreateEvent(sequence+2, messageID, now)); err != nil {
+						t.Errorf("write failed event: %v", err)
+						return
+					}
+					select {
+					case failure := <-handler.failures:
+						require.Equal(t, tt.wantKind, failure.Kind)
+					case <-ctx.Done():
+						t.Error("tail failure was not reported")
+						return
+					}
+				}
+			})
+			defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
+			restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+			defer restore()
 
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
-	client.tailWorkerCount = 1
-	client.tailQueueSize = defaultTailHandlerFailureLimit
+			client, err := New("token")
+			require.NoError(t, err)
+			defer func() { _ = client.Close() }()
+			client.session.ShouldReconnectOnError = false
+			client.tailWorkerCount = 1
+			client.tailQueueSize = defaultTailHandlerFailureLimit
+			client.tailHandlerTimeout = 25 * time.Millisecond
 
-	err = client.Tail(ctx, handler)
-	require.ErrorContains(
-		t,
-		err,
-		"tail handler circuit breaker opened after 3 consecutive failures",
-	)
-	require.NoError(t, ctx.Err())
-	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+			err = client.Tail(ctx, handler)
+			require.ErrorContains(
+				t,
+				err,
+				"tail handler circuit breaker opened after 3 consecutive failures",
+			)
+			require.NoError(t, ctx.Err())
+			require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+		})
+	}
 }
 
 func TestTailMessageFailureCircuitIgnoresMemberSuccesses(t *testing.T) {
@@ -645,28 +1153,62 @@ func TestTailMessageFailureCircuitIgnoresMemberSuccesses(t *testing.T) {
 	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
 }
 
-func TestTailCircuitBreakerReturnsWhenHandlerIgnoresCancellation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func TestTailTimeoutStopsOrderedWorkAndReturnsAfterDurableReport(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+	tailCtx, cancelTail := context.WithCancel(testCtx)
+	defer cancelTail()
+	st, err := store.Open(testCtx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
 
 	handler := &nonCooperativeFailureHandler{
-		failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
-		release:  make(chan struct{}),
+		failures:         make(chan TailFailure, 1),
+		recorded:         make(chan TailFailure, 1),
+		failureReported:  make(chan struct{}),
+		recordingStarted: make(chan struct{}),
+		allowRecord:      make(chan struct{}),
+		started:          make(chan string, 1),
+		release:          make(chan struct{}),
+		finished:         make(chan string, 1),
+		record: func(failure TailFailure) error {
+			return st.RecordFailure(context.Background(), store.FailureRef{
+				Operation: "tail_message",
+				Source:    "discord",
+				GuildID:   failure.GuildID,
+				ChannelID: failure.ChannelID,
+				MessageID: failure.MessageID,
+			}, context.DeadlineExceeded)
+		},
 	}
-	defer close(handler.release)
+	defer func() {
+		close(handler.release)
+		select {
+		case <-handler.finished:
+		case <-testCtx.Done():
+			t.Error("detached handler did not finish after release")
+		}
+	}()
 	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
-		for sequence := range defaultTailHandlerFailureLimit {
-			if err := conn.WriteJSON(messageCreateEvent(sequence+2, fmt.Sprintf("blocked-%d", sequence+1), now)); err != nil {
-				t.Errorf("write blocked event: %v", err)
-				return
-			}
-			select {
-			case <-handler.failures:
-			case <-ctx.Done():
-				t.Error("non-cooperative handler failure was not reported")
-				return
-			}
+		if err := conn.WriteJSON(messageCreateEvent(2, "blocked-1", now)); err != nil {
+			t.Errorf("write blocked event: %v", err)
+			return
+		}
+		select {
+		case <-handler.started:
+		case <-testCtx.Done():
+			t.Error("non-cooperative handler did not start")
+			return
+		}
+		if err := conn.WriteJSON(messageCreateEvent(3, "must-not-run", now)); err != nil {
+			t.Errorf("write later event: %v", err)
+			return
+		}
+		select {
+		case <-handler.failureReported:
+		case <-testCtx.Done():
+			t.Error("non-cooperative handler failure was not reported")
 		}
 	})
 	defer server.Close()
@@ -683,11 +1225,175 @@ func TestTailCircuitBreakerReturnsWhenHandlerIgnoresCancellation(t *testing.T) {
 	client.tailHandlerTimeout = 25 * time.Millisecond
 
 	started := time.Now()
-	err = client.Tail(ctx, handler)
-	require.ErrorContains(t, err, "tail handler circuit breaker opened after 3 consecutive failures")
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Tail(tailCtx, handler)
+	}()
+	select {
+	case <-handler.recordingStarted:
+	case <-testCtx.Done():
+		t.Fatal("timed-out failure recording did not start")
+	}
+	cancelTail()
+	select {
+	case err = <-done:
+		t.Fatalf("Tail returned before the timed-out failure was durably recorded: %v", err)
+	default:
+	}
+	close(handler.allowRecord)
+	select {
+	case err = <-done:
+	case <-testCtx.Done():
+		t.Fatal("Tail did not return after timed-out failure recording completed")
+	}
+	require.ErrorContains(t, err, "tail ordered handler timed out for MESSAGE_CREATE")
 	require.Less(t, time.Since(started), 3*time.Second)
-	require.NoError(t, ctx.Err())
-	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+	require.ErrorIs(t, tailCtx.Err(), context.Canceled)
+	require.EqualValues(t, 1, handler.calls.Load())
+	require.Equal(t, TailFailure{
+		EventType: "MESSAGE_CREATE",
+		Kind:      "timeout",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "blocked-1",
+		UserID:    "u1",
+	}, <-handler.recorded)
+	require.Equal(t, TailFailure{
+		EventType: "MESSAGE_CREATE",
+		Kind:      "timeout",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "blocked-1",
+		UserID:    "u1",
+	}, <-handler.failures)
+	report, err := st.ListFailures(context.Background(), store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "g1", report.Failures[0].GuildID)
+	require.Equal(t, "c1", report.Failures[0].ChannelID)
+	require.Equal(t, "blocked-1", report.Failures[0].MessageID)
+}
+
+func TestTailTimeoutSurfacesFailureRecorderError(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+
+	allowRecord := make(chan struct{})
+	close(allowRecord)
+	handler := &nonCooperativeFailureHandler{
+		failures:         make(chan TailFailure, 1),
+		recorded:         make(chan TailFailure, 1),
+		failureReported:  make(chan struct{}),
+		recordingStarted: make(chan struct{}),
+		allowRecord:      allowRecord,
+		started:          make(chan string, 1),
+		release:          make(chan struct{}),
+		finished:         make(chan string, 1),
+		recordErr:        errors.New("ledger unavailable"),
+	}
+	defer func() {
+		close(handler.release)
+		select {
+		case <-handler.finished:
+		case <-testCtx.Done():
+			t.Error("detached handler did not finish after release")
+		}
+	}()
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if err := conn.WriteJSON(messageCreateEvent(2, "blocked-1", now)); err != nil {
+			t.Errorf("write blocked event: %v", err)
+			return
+		}
+		select {
+		case <-handler.failureReported:
+		case <-testCtx.Done():
+			t.Error("non-cooperative handler failure was not reported")
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = 1
+	client.tailHandlerTimeout = 25 * time.Millisecond
+
+	err = client.Tail(testCtx, handler)
+	require.ErrorContains(t, err, "tail ordered handler timed out for MESSAGE_CREATE")
+	require.ErrorContains(t, err, "persist timed-out tail failure: ledger unavailable")
+	require.EqualValues(t, 1, handler.calls.Load())
+}
+
+func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+
+	handler := &postDeadlineNilRecordingHandler{
+		recordingStarted: make(chan struct{}),
+		allowRecord:      make(chan struct{}),
+		recordErr:        errors.New("ledger unavailable"),
+	}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if err := conn.WriteJSON(messageCreateEvent(2, "post-deadline", now)); err != nil {
+			t.Errorf("write post-deadline event: %v", err)
+			return
+		}
+		select {
+		case <-handler.recordingStarted:
+		case <-testCtx.Done():
+			t.Error("post-deadline failure recording did not start")
+			return
+		}
+		for sequence := 3; sequence < 13; sequence++ {
+			if err := conn.WriteJSON(messageCreateEvent(sequence, fmt.Sprintf("queue-overflow-%d", sequence), now)); err != nil {
+				t.Errorf("write queue-overflow event: %v", err)
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = 0
+	client.tailHandlerTimeout = 25 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Tail(testCtx, handler)
+	}()
+	select {
+	case <-handler.recordingStarted:
+	case <-testCtx.Done():
+		t.Fatal("post-deadline failure recording did not start")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Tail returned before failure persistence completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(handler.allowRecord)
+	select {
+	case err = <-done:
+	case <-testCtx.Done():
+		t.Fatal("Tail did not return after failure persistence completed")
+	}
+	require.ErrorContains(t, err, "tail worker queue full")
+	require.ErrorContains(t, err, "persist timed-out tail failure: ledger unavailable")
+	require.EqualValues(t, 1, handler.calls.Load())
 }
 
 func TestTailFailureCircuitResetsAfterSuccess(t *testing.T) {
@@ -794,6 +1500,149 @@ func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 				MessageID: "m1",
 				UserID:    "u-refetched",
 			}, <-handler.failures)
+		})
+	}
+}
+
+func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		full map[string]any
+	}{
+		{
+			name: "message id",
+			full: map[string]any{
+				"id":         "other-message",
+				"guild_id":   "g1",
+				"channel_id": "c1",
+			},
+		},
+		{
+			name: "channel id",
+			full: map[string]any{
+				"id":         "m1",
+				"guild_id":   "g1",
+				"channel_id": "other-channel",
+			},
+		},
+		{
+			name: "guild id",
+			full: map[string]any{
+				"id":         "m1",
+				"guild_id":   "other-guild",
+				"channel_id": "c1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			handler := &messageUpdateFailureHandler{
+				fail: func(context.Context) error {
+					return nil
+				},
+				cancel:          cancel,
+				failureReported: make(chan struct{}),
+				failures:        make(chan TailFailure, 1),
+				updates:         make(chan *discordgo.Message, 1),
+			}
+			now := time.Now().UTC().Format(time.RFC3339)
+			full := maps.Clone(tt.full)
+			full["content"] = "full message"
+			full["timestamp"] = now
+			full["author"] = map[string]any{"id": "u-refetched", "username": "test-user"}
+			server := newTailTestGatewayWithRoutes(
+				t,
+				func(mux *http.ServeMux) {
+					mux.HandleFunc("/api/v10/channels/c1/messages/m1", writeJSON(full))
+				},
+				func(conn *websocket.Conn) {
+					event := messageUpdateEvent(2, "m1", now)
+					event["d"].(map[string]any)["guild_id"] = "g1"
+					if err := conn.WriteJSON(event); err != nil {
+						t.Errorf("write update event: %v", err)
+						return
+					}
+					select {
+					case <-handler.failureReported:
+					case <-ctx.Done():
+						t.Error("tail failure was not reported")
+					}
+				},
+			)
+			defer server.Close()
+
+			restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+			defer restore()
+
+			client, err := New("token")
+			require.NoError(t, err)
+			defer func() { _ = client.Close() }()
+			client.session.ShouldReconnectOnError = false
+			client.tailWorkerCount = 1
+			client.tailQueueSize = 1
+
+			require.NoError(t, client.Tail(ctx, handler))
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			update := <-handler.updates
+			require.Equal(t, "m1", update.ID)
+			require.Equal(t, "g1", update.GuildID)
+			require.Equal(t, "c1", update.ChannelID)
+			require.Equal(t, TailFailure{
+				EventType: "MESSAGE_UPDATE",
+				Kind:      "returned_error",
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "m1",
+			}, <-handler.failures)
+		})
+	}
+}
+
+func TestValidateRefetchedMessageIdentity(t *testing.T) {
+	t.Parallel()
+
+	partial := &discordgo.Message{ID: "m1", GuildID: "g1", ChannelID: "c1"}
+	tests := []struct {
+		name    string
+		full    *discordgo.Message
+		wantErr string
+	}{
+		{
+			name:    "message id",
+			full:    &discordgo.Message{ID: "other", GuildID: "g1", ChannelID: "c1"},
+			wantErr: "different message id",
+		},
+		{
+			name:    "channel id",
+			full:    &discordgo.Message{ID: "m1", GuildID: "g1", ChannelID: "other"},
+			wantErr: "different channel id",
+		},
+		{
+			name:    "guild id",
+			full:    &discordgo.Message{ID: "m1", GuildID: "other", ChannelID: "c1"},
+			wantErr: "different guild id",
+		},
+		{
+			name: "matching",
+			full: &discordgo.Message{ID: "m1", GuildID: "g1", ChannelID: "c1"},
+		},
+		{
+			name: "missing optional guild",
+			full: &discordgo.Message{ID: "m1", ChannelID: "c1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRefetchedMessageIdentity(partial, tt.full)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
@@ -1124,6 +1973,29 @@ func (r *recordingHandler) OnMemberDelete(context.Context, string, string) error
 	return nil
 }
 
+type updateFailureHandler struct {
+	recordingHandler
+	failures     chan TailFailure
+	reported     chan struct{}
+	channelCalls atomic.Int32
+	memberCalls  atomic.Int32
+}
+
+func (h *updateFailureHandler) OnTailFailure(failure TailFailure) {
+	h.failures <- failure
+	h.reported <- struct{}{}
+}
+
+func (h *updateFailureHandler) OnChannelUpsert(context.Context, *discordgo.Channel) error {
+	h.channelCalls.Add(1)
+	return errors.New("channel update failed")
+}
+
+func (h *updateFailureHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
+	h.memberCalls.Add(1)
+	return errors.New("member update failed")
+}
+
 type failureContinuationHandler struct {
 	fail            func(context.Context) error
 	cancel          context.CancelFunc
@@ -1179,6 +2051,7 @@ func (h *failureContinuationHandler) OnMemberDelete(context.Context, string, str
 
 type persistentFailureHandler struct {
 	recordingHandler
+	fail     func(context.Context) error
 	failures chan TailFailure
 	calls    atomic.Int32
 }
@@ -1187,9 +2060,39 @@ func (h *persistentFailureHandler) OnTailFailure(failure TailFailure) {
 	h.failures <- failure
 }
 
-func (h *persistentFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+func (h *persistentFailureHandler) RecordTailFailure(TailFailure) error {
+	return nil
+}
+
+func (h *persistentFailureHandler) OnMessageCreate(ctx context.Context, _ *discordgo.Message) error {
 	h.calls.Add(1)
+	if h.fail != nil {
+		return h.fail(ctx)
+	}
 	return errors.New("persistent handler failure")
+}
+
+type postDeadlineNilRecordingHandler struct {
+	recordingHandler
+	recordingStarted chan struct{}
+	allowRecord      chan struct{}
+	recordErr        error
+	recordOnce       sync.Once
+	calls            atomic.Int32
+}
+
+func (h *postDeadlineNilRecordingHandler) OnMessageCreate(ctx context.Context, _ *discordgo.Message) error {
+	h.calls.Add(1)
+	<-ctx.Done()
+	return nil
+}
+
+func (h *postDeadlineNilRecordingHandler) RecordTailFailure(TailFailure) error {
+	h.recordOnce.Do(func() {
+		close(h.recordingStarted)
+	})
+	<-h.allowRecord
+	return h.recordErr
 }
 
 type mixedFailureHandler struct {
@@ -1215,19 +2118,63 @@ func (h *mixedFailureHandler) OnMemberUpsert(context.Context, string, *discordgo
 
 type nonCooperativeFailureHandler struct {
 	recordingHandler
-	failures chan TailFailure
-	release  chan struct{}
-	calls    atomic.Int32
+	failures         chan TailFailure
+	recorded         chan TailFailure
+	failureReported  chan struct{}
+	recordingStarted chan struct{}
+	allowRecord      chan struct{}
+	started          chan string
+	release          chan struct{}
+	finished         chan string
+	calls            atomic.Int32
+	failureOnce      sync.Once
+	recordOnce       sync.Once
+	recordErr        error
+	record           func(TailFailure) error
 }
 
 func (h *nonCooperativeFailureHandler) OnTailFailure(failure TailFailure) {
 	h.failures <- failure
+	h.failureOnce.Do(func() {
+		close(h.failureReported)
+	})
 }
 
-func (h *nonCooperativeFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+func (h *nonCooperativeFailureHandler) RecordTailFailure(failure TailFailure) error {
+	h.recorded <- failure
+	h.recordOnce.Do(func() {
+		close(h.recordingStarted)
+	})
+	<-h.allowRecord
+	if h.record != nil {
+		return h.record(failure)
+	}
+	return h.recordErr
+}
+
+func (h *nonCooperativeFailureHandler) OnMessageCreate(_ context.Context, msg *discordgo.Message) error {
 	h.calls.Add(1)
+	if msg != nil {
+		select {
+		case h.started <- msg.ID:
+		default:
+		}
+	}
 	<-h.release
+	if msg != nil {
+		h.finished <- msg.ID
+	}
 	return errors.New("blocked handler released")
+}
+
+type tailFailureRecorderStub struct {
+	failure TailFailure
+	err     error
+}
+
+func (s *tailFailureRecorderStub) RecordTailFailure(failure TailFailure) error {
+	s.failure = failure
+	return s.err
 }
 
 type readyFailureHandler struct {

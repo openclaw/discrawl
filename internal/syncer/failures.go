@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	discordclient "github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -55,6 +57,34 @@ func withFailureRecordError(failure, recordErr error) error {
 		return failure
 	}
 	return fmt.Errorf("%w (record failure ledger: %w)", failure, recordErr)
+}
+
+func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error {
+	if failure.Kind != "timeout" {
+		return nil
+	}
+	if failure.MessageID == "" {
+		if strings.HasPrefix(failure.EventType, "MESSAGE_") {
+			return errors.New("record timed-out message failure: missing message id")
+		}
+		return nil
+	}
+	if t == nil || t.store == nil {
+		return errors.New("record timed-out message failure: missing store")
+	}
+
+	ledgerCtx, cancel := failureLedgerContext(context.Background())
+	defer cancel()
+	if err := t.store.RecordFailureWithMessageScope(ledgerCtx, store.FailureRef{
+		Operation: tailMessageFailureOperation,
+		Source:    "discord",
+		GuildID:   failure.GuildID,
+		ChannelID: failure.ChannelID,
+		MessageID: failure.MessageID,
+	}, context.DeadlineExceeded); err != nil {
+		return fmt.Errorf("record timed-out message failure: %w", err)
+	}
+	return nil
 }
 
 func (t *tailHandler) recordMessageFailure(ctx context.Context, guildID, channelID, messageID string, failure error) error {

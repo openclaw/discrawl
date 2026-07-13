@@ -63,6 +63,68 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	require.True(t, report.Failures[0].ResolvedAt.IsZero())
 }
 
+func TestRecordFailureWithMessageScope(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		CreatedAt:         "2026-07-13T00:00:00Z",
+		Content:           "message",
+		NormalizedContent: "message",
+		RawJSON:           `{}`,
+	}))
+
+	failure := context.DeadlineExceeded
+	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		MessageID: "m1",
+	}, failure))
+	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "g1", report.Failures[0].GuildID)
+	require.Equal(t, "c1", report.Failures[0].ChannelID)
+	require.Equal(t, "m1", report.Failures[0].MessageID)
+
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "wrong-guild",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, failure), "guild mismatch")
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "wrong-channel",
+		MessageID: "m1",
+	}, failure), "channel mismatch")
+
+	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g2",
+		ChannelID: "c2",
+		MessageID: "new-message",
+	}, failure))
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		MessageID: "missing-scope",
+	}, failure), "identity is incomplete")
+
+	report, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 2)
+}
+
 func TestAttachmentWriteErrorIncludesSafeRowContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

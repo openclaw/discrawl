@@ -38,6 +38,10 @@ type tailFailureHandler interface {
 	OnTailFailure(TailFailure)
 }
 
+type tailFailureRecorder interface {
+	RecordTailFailure(TailFailure) error
+}
+
 type tailTask struct {
 	eventType       string
 	failureClass    tailFailureClass
@@ -70,11 +74,49 @@ type tailHandlerPanicError struct {
 	value any
 }
 
+type tailHandlerDeadlineError struct {
+	timeout     time.Duration
+	cause       error
+	detached    bool
+	returnedNil bool
+}
+
 func (e *tailHandlerPanicError) Error() string {
 	return fmt.Sprintf("tail handler panic: %v", e.value)
 }
 
-const defaultTailHandlerFailureLimit = 3
+func (e *tailHandlerDeadlineError) Error() string {
+	switch {
+	case e.detached:
+		return fmt.Sprintf("tail handler timed out after %s", e.timeout)
+	case e.returnedNil:
+		return fmt.Sprintf("tail handler returned nil after deadline %s", e.timeout)
+	default:
+		return fmt.Sprintf("tail handler returned after deadline %s: %v", e.timeout, e.cause)
+	}
+}
+
+func (e *tailHandlerDeadlineError) Unwrap() error {
+	if e.cause != nil {
+		return e.cause
+	}
+	return context.DeadlineExceeded
+}
+
+func (e *tailHandlerDeadlineError) requiresSynchronousRecord() bool {
+	return e.detached || e.returnedNil
+}
+
+var ErrFatalTail = errors.New("fatal tail failure")
+
+func IsFatalTailError(err error) bool {
+	return errors.Is(err, ErrFatalTail)
+}
+
+const (
+	defaultTailHandlerFailureLimit = 3
+	tailHandlerCancelGrace         = 100 * time.Millisecond
+)
 
 type tailFailureCircuit struct {
 	mu          sync.Mutex
@@ -83,12 +125,26 @@ type tailFailureCircuit struct {
 	opened      bool
 }
 
+type tailFatalState struct {
+	mu    sync.Mutex
+	ready chan struct{}
+	errs  []error
+	seen  map[string]struct{}
+	once  sync.Once
+}
+
+type tailTaskResult struct {
+	err         error
+	completedAt time.Time
+}
+
 type Client struct {
 	session            *discordgo.Session
 	requestTimeout     time.Duration
 	tailWorkerCount    int
 	tailQueueSize      int
 	tailHandlerTimeout time.Duration
+	tailGraceTimerHook func()
 }
 
 func New(token string) (*Client, error) {
@@ -100,6 +156,7 @@ func New(token string) (*Client, error) {
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsMessageContent |
 		discordgo.IntentsGuildMembers
+	session.SyncEvents = true
 	return &Client{
 		session:            session,
 		requestTimeout:     45 * time.Second,
@@ -246,41 +303,71 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	}
 	tailCtx, cancel := context.WithCancel(ctx)
 
-	fatalCh := make(chan error, 1)
+	fatal := newTailFatalState()
 	workCh := make(chan tailTask, c.tailQueueSize)
+	orderedWorkCh := make(chan tailTask, c.tailQueueSize)
 	failureHandler, _ := handler.(tailFailureHandler)
+	failureRecorder, _ := handler.(tailFailureRecorder)
 	failureCircuits := map[tailFailureClass]*tailFailureCircuit{
 		tailFailureClassOrdered: {limit: defaultTailHandlerFailureLimit},
 		tailFailureClassMember:  {limit: defaultTailHandlerFailureLimit},
 	}
 	var wg sync.WaitGroup
-	for range c.tailWorkerCount {
+	startWorker := func(queue <-chan tailTask) {
 		wg.Go(func() {
 			for {
 				select {
 				case <-tailCtx.Done():
 					return
-				case task := <-workCh:
+				case task := <-queue:
 					if task.run == nil {
 						continue
 					}
 					if err := c.runTailTask(tailCtx, task.run); err != nil {
-						if tailCtx.Err() != nil {
+						var deadlineErr *tailHandlerDeadlineError
+						hasDeadlineErr := errors.As(err, &deadlineErr)
+						if tailCtx.Err() != nil && !hasDeadlineErr {
 							return
 						}
-						reportTailFailure(tailCtx, failureHandler, task, err)
+						failure := newTailFailure(task, err)
+						if deadlineErr != nil && deadlineErr.detached {
+							cancel()
+						}
+						var recordErr error
+						if deadlineErr != nil && deadlineErr.requiresSynchronousRecord() {
+							recordErr = recordTailFailure(failureRecorder, failure)
+						}
+						reportTailFailure(failureHandler, failure)
+						if deadlineErr != nil && (deadlineErr.detached || recordErr != nil) {
+							cancel()
+							fatalErr := fmt.Errorf(
+								"tail %s handler timed out for %s: %w",
+								task.failureClass,
+								task.eventType,
+								err,
+							)
+							if recordErr != nil {
+								fatalErr = errors.Join(
+									fatalErr,
+									fmt.Errorf("persist timed-out tail failure: %w", recordErr),
+								)
+							}
+							fatal.signal(fatalErr)
+							return
+						}
 						failureCircuit := failureCircuits[task.failureClass]
 						if failureCircuit == nil {
 							failureCircuit = failureCircuits[tailFailureClassOrdered]
 						}
 						if failureCircuit.recordFailure() {
-							signalTailFatal(
-								fatalCh,
+							fatal.signal(
 								fmt.Errorf(
 									"tail handler circuit breaker opened after %d consecutive failures",
 									defaultTailHandlerFailureLimit,
 								),
 							)
+							cancel()
+							return
 						}
 						continue
 					}
@@ -293,6 +380,10 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			}
 		})
 	}
+	for range c.tailWorkerCount {
+		startWorker(workCh)
+	}
+	startWorker(orderedWorkCh)
 
 	var removers []func()
 	addHandler := func(eventHandler any) {
@@ -303,7 +394,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		if evt != nil {
 			msg = evt.Message
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMessageTailTask(
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newMessageTailTask(
 			"MESSAGE_CREATE",
 			func(taskCtx context.Context) error {
 				return handler.OnMessageCreate(taskCtx, msg)
@@ -327,19 +418,26 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		metadata := task.failureMetadata
 		task.run = func(taskCtx context.Context) error {
 			taskCtx = withTailFailureMetadata(taskCtx, metadata)
+			var refetchErr error
 			if msg != nil && msg.Content == "" {
 				full, err := session.ChannelMessage(msg.ChannelID, msg.ID, discordgo.WithContext(taskCtx))
-				if err == nil {
+				if err == nil && full != nil {
+					if err := validateRefetchedMessageIdentity(msg, full); err != nil {
+						refetchErr = err
+					} else {
+						msg = full
+						EnrichTailFailureMetadata(taskCtx, full)
+					}
+				} else if err == nil {
 					msg = full
-					EnrichTailFailureMetadata(taskCtx, full)
 				}
 			}
 			if msg == nil {
-				return nil
+				return refetchErr
 			}
-			return handler.OnMessageUpdate(taskCtx, msg)
+			return errors.Join(refetchErr, handler.OnMessageUpdate(taskCtx, msg))
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, task)
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageDelete) {
 		var msg, before *discordgo.Message
@@ -347,7 +445,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			msg = evt.Message
 			before = evt.BeforeDelete
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMessageTailTask(
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newMessageTailTask(
 			"MESSAGE_DELETE",
 			func(taskCtx context.Context) error {
 				return handler.OnMessageDelete(taskCtx, evt)
@@ -361,7 +459,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		if evt != nil {
 			channel = evt.Channel
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newChannelTailTask(
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
 			"CHANNEL_CREATE",
 			func(taskCtx context.Context) error {
 				return handler.OnChannelUpsert(taskCtx, channel)
@@ -375,7 +473,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			channel = evt.Channel
 			before = evt.BeforeUpdate
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newChannelTailTask(
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
 			"CHANNEL_UPDATE",
 			func(taskCtx context.Context) error {
 				return handler.OnChannelUpsert(taskCtx, channel)
@@ -389,7 +487,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		if evt != nil {
 			member = evt.Member
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+		c.enqueueTailTask(tailCtx, workCh, fatal, newMemberTailTask(
 			"GUILD_MEMBER_ADD",
 			func(taskCtx context.Context) error {
 				if member == nil {
@@ -415,7 +513,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 				}
 			}
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+		c.enqueueTailTask(tailCtx, workCh, fatal, newMemberTailTask(
 			"GUILD_MEMBER_UPDATE",
 			func(taskCtx context.Context) error {
 				if member == nil {
@@ -435,7 +533,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		if member == nil || member.User == nil {
 			return
 		}
-		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+		c.enqueueTailTask(tailCtx, workCh, fatal, newMemberTailTask(
 			"GUILD_MEMBER_REMOVE",
 			func(taskCtx context.Context) error {
 				return handler.OnMemberDelete(taskCtx, member.GuildID, member.User.ID)
@@ -465,23 +563,23 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	}
 	select {
 	case <-ctx.Done():
+		cancel()
+		wg.Wait()
+		if err := fatal.err(); err != nil {
+			return err
+		}
 		return nil
-	case err := <-fatalCh:
-		return err
-	}
-}
-
-func signalTailFatal(fatalCh chan<- error, err error) {
-	select {
-	case fatalCh <- err:
-	default:
+	case <-fatal.ready:
+		cancel()
+		wg.Wait()
+		return fatal.err()
 	}
 }
 
 func (c *Client) enqueueTailTask(
 	ctx context.Context,
 	workCh chan<- tailTask,
-	fatalCh chan<- error,
+	fatal *tailFatalState,
 	task tailTask,
 ) {
 	select {
@@ -489,28 +587,247 @@ func (c *Client) enqueueTailTask(
 		return
 	case workCh <- task:
 	default:
-		signalTailFatal(fatalCh, errors.New("tail worker queue full"))
+		fatal.signal(errors.New("tail worker queue full"))
 	}
 }
 
-func (c *Client) runTailTask(ctx context.Context, task func(context.Context) error) (err error) {
-	var taskCtx context.Context
-	var cancel context.CancelFunc
-	if c.tailHandlerTimeout > 0 {
-		taskCtx, cancel = context.WithTimeout(ctx, c.tailHandlerTimeout)
-	} else {
-		taskCtx, cancel = context.WithCancel(ctx)
+func newTailFatalState() *tailFatalState {
+	return &tailFatalState{
+		ready: make(chan struct{}),
+		seen:  map[string]struct{}{},
 	}
+}
+
+func (s *tailFatalState) signal(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	if !IsFatalTailError(err) {
+		err = fmt.Errorf("%w: %w", ErrFatalTail, err)
+	}
+	key := err.Error()
+	s.mu.Lock()
+	if _, ok := s.seen[key]; ok {
+		s.mu.Unlock()
+		return
+	}
+	s.seen[key] = struct{}{}
+	s.errs = append(s.errs, err)
+	s.mu.Unlock()
+	s.once.Do(func() {
+		close(s.ready)
+	})
+}
+
+func (s *tailFatalState) err() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return errors.Join(s.errs...)
+}
+
+func (c *Client) runTailTask(ctx context.Context, task func(context.Context) error) (err error) {
+	if c.tailHandlerTimeout <= 0 {
+		taskCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		result := make(chan tailTaskResult, 1)
+		go func() {
+			result <- tailTaskResult{
+				err:         runTailTaskSafely(taskCtx, task),
+				completedAt: time.Now(),
+			}
+		}()
+		select {
+		case result := <-result:
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return result.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	deadline := time.Now().Add(c.tailHandlerTimeout)
+	graceDeadline := deadline.Add(tailHandlerCancelGrace)
+	parentDeadline, hasParentDeadline := ctx.Deadline()
+	parentDeadlineBeforeLocal := hasParentDeadline && parentDeadline.Before(deadline)
+	taskCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	result := make(chan error, 1)
+	result := make(chan tailTaskResult, 1)
 	go func() {
-		result <- runTailTaskSafely(taskCtx, task)
+		result <- tailTaskResult{
+			err:         runTailTaskSafely(taskCtx, task),
+			completedAt: time.Now(),
+		}
 	}()
 	select {
-	case err := <-result:
-		return err
+	case result := <-result:
+		if parentErr := tailTaskParentError(
+			ctx,
+			parentDeadlineBeforeLocal,
+			deadline,
+		); parentErr != nil {
+			return parentErr
+		}
+		return classifyTailTaskResult(
+			c.tailHandlerTimeout,
+			result,
+			deadline,
+			graceDeadline,
+		)
 	case <-taskCtx.Done():
-		return taskCtx.Err()
+		if parentErr := tailTaskParentError(
+			ctx,
+			parentDeadlineBeforeLocal,
+			deadline,
+		); parentErr != nil {
+			return parentErr
+		}
+		return c.awaitTailTaskDeadline(result, deadline, graceDeadline)
+	}
+}
+
+func tailTaskParentError(
+	ctx context.Context,
+	parentDeadlineBeforeLocal bool,
+	localDeadline time.Time,
+) error {
+	parentErr := ctx.Err()
+	if parentErr == nil {
+		return nil
+	}
+	if parentDeadlineBeforeLocal || time.Now().Before(localDeadline) {
+		return parentErr
+	}
+	return nil
+}
+
+func (c *Client) awaitTailTaskDeadline(
+	result <-chan tailTaskResult,
+	deadline time.Time,
+	graceDeadline time.Time,
+) error {
+	select {
+	case result := <-result:
+		return classifyTailTaskResult(
+			c.tailHandlerTimeout,
+			result,
+			deadline,
+			graceDeadline,
+		)
+	default:
+	}
+	graceRemaining := time.Until(graceDeadline)
+	if graceRemaining <= 0 {
+		return finalTailTaskDeadlineResult(
+			c.tailHandlerTimeout,
+			result,
+			deadline,
+			graceDeadline,
+		)
+	}
+	timer := time.NewTimer(graceRemaining)
+	defer timer.Stop()
+	select {
+	case result := <-result:
+		return classifyTailTaskResult(
+			c.tailHandlerTimeout,
+			result,
+			deadline,
+			graceDeadline,
+		)
+	case <-timer.C:
+		if c.tailGraceTimerHook != nil {
+			c.tailGraceTimerHook()
+		}
+		return finalTailTaskDeadlineResult(
+			c.tailHandlerTimeout,
+			result,
+			deadline,
+			graceDeadline,
+		)
+	}
+}
+
+func classifyTailTaskResult(
+	timeout time.Duration,
+	result tailTaskResult,
+	deadline time.Time,
+	graceDeadline time.Time,
+) error {
+	switch {
+	case result.completedAt.Before(deadline):
+		return result.err
+	case result.completedAt.Before(graceDeadline):
+		return tailTaskDeadlineResult(timeout, result.err)
+	default:
+		return tailTaskDetachedDeadlineError(timeout)
+	}
+}
+
+func finalTailTaskDeadlineResult(
+	timeout time.Duration,
+	result <-chan tailTaskResult,
+	deadline time.Time,
+	graceDeadline time.Time,
+) error {
+	select {
+	case result := <-result:
+		return classifyTailTaskResult(timeout, result, deadline, graceDeadline)
+	default:
+		return tailTaskDetachedDeadlineError(timeout)
+	}
+}
+
+func tailTaskDetachedDeadlineError(timeout time.Duration) error {
+	return &tailHandlerDeadlineError{
+		timeout:  timeout,
+		cause:    context.DeadlineExceeded,
+		detached: true,
+	}
+}
+
+func tailTaskDeadlineResult(timeout time.Duration, err error) error {
+	if err == nil {
+		return &tailHandlerDeadlineError{
+			timeout:     timeout,
+			cause:       context.DeadlineExceeded,
+			returnedNil: true,
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		err = context.DeadlineExceeded
+	}
+	return &tailHandlerDeadlineError{timeout: timeout, cause: err}
+}
+
+func validateRefetchedMessageIdentity(partial, full *discordgo.Message) error {
+	switch {
+	case partial == nil || full == nil:
+		return nil
+	case full.ID != "" && partial.ID != "" && full.ID != partial.ID:
+		return fmt.Errorf(
+			"refetched message update returned different message id: event=%s fetched=%s",
+			partial.ID,
+			full.ID,
+		)
+	case full.ChannelID != "" && partial.ChannelID != "" && full.ChannelID != partial.ChannelID:
+		return fmt.Errorf(
+			"refetched message update returned different channel id: event=%s fetched=%s",
+			partial.ChannelID,
+			full.ChannelID,
+		)
+	case full.GuildID != "" && partial.GuildID != "" && full.GuildID != partial.GuildID:
+		return fmt.Errorf(
+			"refetched message update returned different guild id: event=%s fetched=%s",
+			partial.GuildID,
+			full.GuildID,
+		)
+	default:
+		return nil
 	}
 }
 
@@ -545,22 +862,36 @@ func (c *tailFailureCircuit) recordSuccess() {
 	}
 }
 
-func reportTailFailure(ctx context.Context, handler tailFailureHandler, task tailTask, err error) {
-	if handler == nil || ctx.Err() != nil {
+func recordTailFailure(handler tailFailureRecorder, failure TailFailure) error {
+	if handler == nil {
+		if failure.MessageID != "" {
+			return errors.New("tail failure recorder unavailable")
+		}
+		return nil
+	}
+	return handler.RecordTailFailure(failure)
+}
+
+func reportTailFailure(handler tailFailureHandler, failure TailFailure) {
+	if handler == nil {
 		return
 	}
+	handler.OnTailFailure(failure)
+}
+
+func newTailFailure(task tailTask, err error) TailFailure {
 	guildID, channelID, messageID, userID := task.guildID, task.channelID, task.messageID, task.userID
 	if task.failureMetadata != nil {
 		guildID, channelID, messageID, userID = task.failureMetadata.snapshot()
 	}
-	handler.OnTailFailure(TailFailure{
+	return TailFailure{
 		EventType: task.eventType,
 		Kind:      tailFailureKind(err),
 		GuildID:   guildID,
 		ChannelID: channelID,
 		MessageID: messageID,
 		UserID:    userID,
-	})
+	}
 }
 
 func tailFailureKind(err error) string {

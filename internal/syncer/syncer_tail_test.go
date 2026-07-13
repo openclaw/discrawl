@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -197,6 +198,45 @@ func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	require.Len(t, mentions, 1)
 	require.Equal(t, "u2", mentions[0].TargetID)
 	require.Equal(t, "Shadow", mentions[0].TargetName)
+}
+
+func TestMessageUpdateSnapshotRejectsConflictingRefetchIdentity(t *testing.T) {
+	t.Parallel()
+
+	partial := &discordgo.Message{
+		ID:        "m1",
+		GuildID:   "g1",
+		ChannelID: "c1",
+	}
+	tests := []struct {
+		name    string
+		full    *discordgo.Message
+		wantErr string
+	}{
+		{
+			name:    "message id",
+			full:    &discordgo.Message{ID: "other", GuildID: "g1", ChannelID: "c1"},
+			wantErr: "different message id",
+		},
+		{
+			name:    "channel id",
+			full:    &discordgo.Message{ID: "m1", GuildID: "g1", ChannelID: "other"},
+			wantErr: "different channel id",
+		},
+		{
+			name:    "guild id",
+			full:    &discordgo.Message{ID: "m1", GuildID: "other", ChannelID: "c1"},
+			wantErr: "different guild id",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &tailHandler{client: &tailSnapshotClient{message: tt.full}}
+			snapshot, err := handler.messageUpdateSnapshot(context.Background(), partial)
+			require.Nil(t, snapshot)
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }
 
 func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T) {
@@ -465,7 +505,19 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	require.Zero(t, exactMessageCalls)
 	report, err := s.ListFailures(context.Background(), store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
-	require.Equal(t, 1, report.UnresolvedCount)
+	require.GreaterOrEqual(t, report.UnresolvedCount, 1)
+	foundTailFailure := false
+	for _, failure := range report.Failures {
+		if failure.Operation == tailMessageFailureOperation &&
+			failure.Source == "discord" &&
+			failure.GuildID == "g1" &&
+			failure.ChannelID == "c1" &&
+			failure.MessageID == "5" {
+			foundTailFailure = true
+			break
+		}
+	}
+	require.True(t, foundTailFailure)
 }
 
 func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *testing.T) {
@@ -796,6 +848,41 @@ func TestRunTailWithRepairLoopJoinsTailOnCancellation(t *testing.T) {
 	}
 }
 
+func TestRunTailPreservesFatalHandlerErrorDuringRequestedShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	tailErr := fmt.Errorf("%w: detached ordered handler timeout", discordclient.ErrFatalTail)
+	client := &joiningTailClient{
+		started:  make(chan struct{}),
+		finished: make(chan struct{}),
+		closed:   make(chan struct{}),
+		tailErr:  tailErr,
+	}
+	svc := New(client, s, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.RunTail(ctx, nil, time.Hour)
+	}()
+
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("tail did not start")
+	}
+	cancel()
+	require.ErrorIs(t, <-done, discordclient.ErrFatalTail)
+	select {
+	case <-client.finished:
+	default:
+		t.Fatal("RunTail returned before the fatal tail result")
+	}
+}
+
 func TestTailReadyCallback(t *testing.T) {
 	t.Parallel()
 
@@ -844,13 +931,14 @@ type joiningTailClient struct {
 	started  chan struct{}
 	finished chan struct{}
 	closed   chan struct{}
+	tailErr  error
 }
 
 func (c *joiningTailClient) Tail(ctx context.Context, _ discordclient.EventHandler) error {
 	close(c.started)
 	<-ctx.Done()
 	close(c.finished)
-	return nil
+	return c.tailErr
 }
 
 func (c *joiningTailClient) Close() error {
