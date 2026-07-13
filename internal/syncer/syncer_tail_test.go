@@ -2,12 +2,20 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
 	discordclient "github.com/openclaw/discrawl/internal/discord"
@@ -189,6 +197,108 @@ func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	require.Len(t, mentions, 1)
 	require.Equal(t, "u2", mentions[0].TargetID)
 	require.Equal(t, "Shadow", mentions[0].TargetName)
+}
+
+func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantKind string
+	}{
+		{name: "returned error", wantKind: "returned_error"},
+		{name: "panic", wantKind: "panic"},
+		{name: "cooperative timeout", wantKind: "timeout"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var tailStore *store.Store
+			var onFetch func(context.Context)
+			switch tt.wantKind {
+			case "returned_error":
+				var err error
+				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+				require.NoError(t, err)
+				require.NoError(t, tailStore.Close())
+			case "panic":
+			case "timeout":
+				var err error
+				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = tailStore.Close() })
+				tailStore.DB().SetMaxOpenConns(1)
+				heldConn, err := tailStore.DB().Conn(ctx)
+				require.NoError(t, err)
+				var releaseOnce sync.Once
+				release := func() {
+					releaseOnce.Do(func() { _ = heldConn.Close() })
+				}
+				t.Cleanup(release)
+				onFetch = func(taskCtx context.Context) {
+					go func() {
+						<-taskCtx.Done()
+						time.Sleep(10 * time.Millisecond)
+						release()
+					}()
+				}
+			default:
+				t.Fatalf("unsupported failure kind %q", tt.wantKind)
+			}
+
+			full := &discordgo.Message{
+				ID:        "m1",
+				GuildID:   "g-refetched",
+				ChannelID: "c1",
+				Content:   "full message",
+				Timestamp: time.Now().UTC(),
+				Author:    &discordgo.User{ID: "u-refetched", Username: "test-user"},
+			}
+			snapshotClient := &tailSnapshotClient{
+				message: full,
+				onFetch: onFetch,
+			}
+			clientRefetches := &atomic.Int32{}
+			server := newSyncerTailMessageUpdateGateway(t, full, clientRefetches)
+			defer server.Close()
+			restore := patchSyncerTailDiscordEndpoints(server.URL + "/api/v10/")
+			defer restore()
+
+			eventClient, err := discordclient.New("token")
+			require.NoError(t, err)
+			defer func() { _ = eventClient.Close() }()
+			setDiscordTailHandlerTimeout(t, eventClient, 25*time.Millisecond)
+
+			handler := &capturingTailHandler{
+				tailHandler: &tailHandler{
+					store:                 tailStore,
+					client:                snapshotClient,
+					attachmentTextEnabled: false,
+				},
+				cancel:   cancel,
+				failures: make(chan discordclient.TailFailure, 1),
+			}
+			require.NoError(t, eventClient.Tail(ctx, handler))
+
+			var failure discordclient.TailFailure
+			select {
+			case failure = <-handler.failures:
+			default:
+				t.Fatalf("tail failure was not reported before Tail returned: %v", ctx.Err())
+			}
+			require.Equal(t, discordclient.TailFailure{
+				EventType: "MESSAGE_UPDATE",
+				Kind:      tt.wantKind,
+				GuildID:   "g-refetched",
+				ChannelID: "c1",
+				MessageID: "m1",
+				UserID:    "u-refetched",
+			}, failure)
+			require.EqualValues(t, 1, snapshotClient.calls.Load())
+			require.Zero(t, clientRefetches.Load())
+		})
+	}
 }
 
 func TestHelpers(t *testing.T) {
@@ -399,6 +509,32 @@ func TestTailReadyCallback(t *testing.T) {
 	require.NoError(t, handler.OnTailReady(context.Background()))
 }
 
+func TestRunTailLogsSafeEventFailureMetadata(t *testing.T) {
+	out := &lockedBuffer{}
+	client := &reportingTailClient{
+		failure: discordclient.TailFailure{
+			EventType: "MESSAGE_CREATE",
+			Kind:      "returned_error",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "m1",
+			UserID:    "u1",
+		},
+	}
+	svc := New(client, nil, newTestLogger(out))
+
+	require.NoError(t, svc.RunTail(context.Background(), nil, 0))
+	logged := out.String()
+	require.Contains(t, logged, `level=WARN msg="tail event handler failed"`)
+	require.Contains(t, logged, "event_type=MESSAGE_CREATE")
+	require.Contains(t, logged, "failure_kind=returned_error")
+	require.Contains(t, logged, "guild_id=g1")
+	require.Contains(t, logged, "channel_id=c1")
+	require.Contains(t, logged, "message_id=m1")
+	require.Contains(t, logged, "user_id=u1")
+	require.NotContains(t, logged, "err=")
+}
+
 type joiningTailClient struct {
 	fakeClient
 	started  chan struct{}
@@ -416,4 +552,161 @@ func (c *joiningTailClient) Tail(ctx context.Context, _ discordclient.EventHandl
 func (c *joiningTailClient) Close() error {
 	close(c.closed)
 	return nil
+}
+
+type reportingTailClient struct {
+	fakeClient
+	failure discordclient.TailFailure
+}
+
+func (c *reportingTailClient) Tail(_ context.Context, handler discordclient.EventHandler) error {
+	reporter, ok := handler.(interface {
+		OnTailFailure(discordclient.TailFailure)
+	})
+	if !ok {
+		return errors.New("tail handler does not report failures")
+	}
+	reporter.OnTailFailure(c.failure)
+	return nil
+}
+
+type tailSnapshotClient struct {
+	fakeClient
+	message *discordgo.Message
+	onFetch func(context.Context)
+	calls   atomic.Int32
+}
+
+func (c *tailSnapshotClient) ChannelMessage(ctx context.Context, _, _ string) (*discordgo.Message, error) {
+	c.calls.Add(1)
+	if c.onFetch != nil {
+		c.onFetch(ctx)
+	}
+	return c.message, nil
+}
+
+type capturingTailHandler struct {
+	*tailHandler
+	cancel   context.CancelFunc
+	failures chan discordclient.TailFailure
+}
+
+func (h *capturingTailHandler) OnTailFailure(failure discordclient.TailFailure) {
+	select {
+	case h.failures <- failure:
+		h.cancel()
+	default:
+	}
+}
+
+func newSyncerTailMessageUpdateGateway(
+	t *testing.T,
+	full *discordgo.Message,
+	clientRefetches *atomic.Int32,
+) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/channels/c1/messages/m1", func(w http.ResponseWriter, _ *http.Request) {
+		clientRefetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(full)
+	})
+	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": "ws://" + r.Host + "/gateway"})
+	})
+
+	upgrader := websocket.Upgrader{}
+	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 10,
+			"d":  map[string]any{"heartbeat_interval": 1000},
+		}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "READY",
+			"s":  1,
+			"d": map[string]any{
+				"session_id": "session",
+				"user":       map[string]any{"id": "bot", "username": "bot"},
+			},
+		}); err != nil {
+			t.Errorf("write ready: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "MESSAGE_UPDATE",
+			"s":  2,
+			"d": map[string]any{
+				"id":         "m1",
+				"channel_id": "c1",
+				"content":    "edited partial",
+			},
+		}); err != nil {
+			t.Errorf("write update: %v", err)
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}
+	mux.HandleFunc("/gateway", gatewayHandler)
+	mux.HandleFunc("/gateway/", gatewayHandler)
+	return httptest.NewServer(mux)
+}
+
+func patchSyncerTailDiscordEndpoints(apiBase string) func() {
+	oldDiscord := discordgo.EndpointDiscord
+	oldAPI := discordgo.EndpointAPI
+	oldChannels := discordgo.EndpointChannels
+	oldGateway := discordgo.EndpointGateway
+	oldChannelMessages := discordgo.EndpointChannelMessages
+	oldChannelMessage := discordgo.EndpointChannelMessage
+
+	discordgo.EndpointDiscord = apiBase[:len(apiBase)-len("api/v10/")]
+	discordgo.EndpointAPI = apiBase
+	discordgo.EndpointChannels = apiBase + "channels/"
+	discordgo.EndpointGateway = apiBase + "gateway"
+	discordgo.EndpointChannelMessages = func(channelID string) string {
+		return discordgo.EndpointChannels + channelID + "/messages"
+	}
+	discordgo.EndpointChannelMessage = func(channelID, messageID string) string {
+		return discordgo.EndpointChannelMessages(channelID) + "/" + messageID
+	}
+
+	return func() {
+		discordgo.EndpointDiscord = oldDiscord
+		discordgo.EndpointAPI = oldAPI
+		discordgo.EndpointChannels = oldChannels
+		discordgo.EndpointGateway = oldGateway
+		discordgo.EndpointChannelMessages = oldChannelMessages
+		discordgo.EndpointChannelMessage = oldChannelMessage
+	}
+}
+
+func setDiscordTailHandlerTimeout(t *testing.T, client *discordclient.Client, timeout time.Duration) {
+	t.Helper()
+
+	field := reflect.ValueOf(client).Elem().FieldByName("tailHandlerTimeout")
+	require.True(t, field.IsValid() && field.CanAddr())
+	// Keep the production client API unchanged while making the cooperative timeout test fast.
+	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().SetInt(int64(timeout))
 }

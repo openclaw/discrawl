@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,6 +203,76 @@ func TestRunTailTaskRecoversPanics(t *testing.T) {
 	require.ErrorContains(t, err, "tail handler panic: again")
 }
 
+func TestTailTaskMetadataIsNilSafe(t *testing.T) {
+	t.Parallel()
+
+	task := newMessageTailTask(
+		"MESSAGE_UPDATE",
+		nil,
+		nil,
+		&discordgo.Message{
+			ID:        "m1",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Author:    &discordgo.User{ID: "u1"},
+		},
+	)
+	require.Equal(t, tailTask{
+		eventType: "MESSAGE_UPDATE",
+		guildID:   "g1",
+		channelID: "c1",
+		messageID: "m1",
+		userID:    "u1",
+	}, task)
+
+	metadata := newTailFailureMetadata(tailTask{
+		channelID: "c1",
+		messageID: "m1",
+	})
+	metadataCtx := withTailFailureMetadata(context.Background(), metadata)
+	EnrichTailFailureMetadata(metadataCtx, &discordgo.Message{
+		ID:        "m1",
+		GuildID:   "g-refetched",
+		ChannelID: "c1",
+		Author:    &discordgo.User{ID: "u-refetched"},
+	})
+	guildID, channelID, messageID, userID := metadata.snapshot()
+	require.Equal(t, "g-refetched", guildID)
+	require.Equal(t, "c1", channelID)
+	require.Equal(t, "m1", messageID)
+	require.Equal(t, "u-refetched", userID)
+	emptyCtx := context.Background()
+	EnrichTailFailureMetadata(emptyCtx, &discordgo.Message{GuildID: "ignored"})
+	EnrichTailFailureMetadata(emptyCtx, nil)
+	require.Equal(t, emptyCtx, withTailFailureMetadata(emptyCtx, nil))
+
+	require.Equal(t, "c2", newChannelTailTask(
+		"CHANNEL_UPDATE",
+		nil,
+		nil,
+		&discordgo.Channel{ID: "c2"},
+	).channelID)
+	require.Equal(t, "u2", newMemberTailTask(
+		"GUILD_MEMBER_UPDATE",
+		nil,
+		nil,
+		&discordgo.Member{User: &discordgo.User{ID: "u2"}},
+	).userID)
+}
+
+func TestTailFailureReportingSuppressesShutdownCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	handler := &failureContinuationHandler{
+		failureReported: make(chan struct{}),
+		failures:        make(chan TailFailure, 1),
+	}
+	reportTailFailure(ctx, handler, tailTask{eventType: "MESSAGE_CREATE"}, context.Canceled)
+	require.Empty(t, handler.failures)
+}
+
 func TestRequestContextHonorsExistingDeadlineAndDisabledTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -226,17 +297,18 @@ func TestTailQueueAndWorkerSizing(t *testing.T) {
 	client := &Client{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	workCh := make(chan func(context.Context) error)
+	workCh := make(chan tailTask)
 	errCh := make(chan error, 1)
-	client.enqueueTailTask(ctx, workCh, errCh, func(context.Context) error { return nil })
+	task := tailTask{run: func(context.Context) error { return nil }}
+	client.enqueueTailTask(ctx, workCh, errCh, task)
 	require.Empty(t, errCh)
 
 	ctx = context.Background()
-	fullWorkCh := make(chan func(context.Context) error)
-	client.enqueueTailTask(ctx, fullWorkCh, errCh, func(context.Context) error { return nil })
+	fullWorkCh := make(chan tailTask)
+	client.enqueueTailTask(ctx, fullWorkCh, errCh, task)
 	require.ErrorContains(t, <-errCh, "tail worker queue full")
 	errCh <- errors.New("existing")
-	client.enqueueTailTask(ctx, fullWorkCh, errCh, func(context.Context) error { return nil })
+	client.enqueueTailTask(ctx, fullWorkCh, errCh, task)
 	require.ErrorContains(t, <-errCh, "existing")
 
 	prev := runtime.GOMAXPROCS(2)
@@ -375,6 +447,223 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Zero(t, discordSessionHandlerCount(client.session))
 }
 
+func TestTailContinuesAfterHandlerFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		fail     func(context.Context) error
+		wantKind string
+	}{
+		{
+			name: "returned error",
+			fail: func(context.Context) error {
+				return errors.New("sensitive returned error")
+			},
+			wantKind: "returned_error",
+		},
+		{
+			name: "panic",
+			fail: func(context.Context) error {
+				panic("sensitive panic value")
+			},
+			wantKind: "panic",
+		},
+		{
+			name: "timeout",
+			fail: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			wantKind: "timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			handler := &failureContinuationHandler{
+				fail:            tt.fail,
+				cancel:          cancel,
+				failureReported: make(chan struct{}),
+				failures:        make(chan TailFailure, 1),
+				laterHandled:    make(chan struct{}),
+			}
+			server := newTailTestGateway(t, func(conn *websocket.Conn) {
+				now := time.Now().UTC().Format(time.RFC3339)
+				if err := conn.WriteJSON(messageCreateEvent(2, "failed", now)); err != nil {
+					t.Errorf("write failed event: %v", err)
+					return
+				}
+				select {
+				case <-handler.failureReported:
+				case <-ctx.Done():
+					t.Error("tail failure was not reported")
+					return
+				}
+				if err := conn.WriteJSON(messageCreateEvent(3, "later", now)); err != nil {
+					t.Errorf("write later event: %v", err)
+					return
+				}
+				select {
+				case <-handler.laterHandled:
+				case <-ctx.Done():
+					t.Error("later tail event was not handled")
+				}
+			})
+			defer server.Close()
+
+			restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+			defer restore()
+
+			client, err := New("token")
+			require.NoError(t, err)
+			defer func() { _ = client.Close() }()
+			client.session.ShouldReconnectOnError = false
+			client.tailWorkerCount = 1
+			client.tailQueueSize = 1
+			client.tailHandlerTimeout = 25 * time.Millisecond
+
+			require.NoError(t, client.Tail(ctx, handler))
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			failure := <-handler.failures
+			require.Equal(t, TailFailure{
+				EventType: "MESSAGE_CREATE",
+				Kind:      tt.wantKind,
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "failed",
+				UserID:    "u1",
+			}, failure)
+			select {
+			case <-handler.laterHandled:
+			default:
+				t.Fatal("Tail returned before the later event was handled")
+			}
+		})
+	}
+}
+
+func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		fail     func(context.Context) error
+		wantKind string
+	}{
+		{
+			name: "returned error",
+			fail: func(context.Context) error {
+				return errors.New("sensitive returned error")
+			},
+			wantKind: "returned_error",
+		},
+		{
+			name: "panic",
+			fail: func(context.Context) error {
+				panic("sensitive panic value")
+			},
+			wantKind: "panic",
+		},
+		{
+			name: "timeout",
+			fail: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			wantKind: "timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			handler := &messageUpdateFailureHandler{
+				fail:            tt.fail,
+				cancel:          cancel,
+				failureReported: make(chan struct{}),
+				failures:        make(chan TailFailure, 1),
+				updates:         make(chan *discordgo.Message, 1),
+			}
+			now := time.Now().UTC().Format(time.RFC3339)
+			server := newTailTestGatewayWithRoutes(
+				t,
+				func(mux *http.ServeMux) {
+					mux.HandleFunc("/api/v10/channels/c1/messages/m1", writeJSON(map[string]any{
+						"id":         "m1",
+						"guild_id":   "g-refetched",
+						"channel_id": "c1",
+						"content":    "full message",
+						"timestamp":  now,
+						"author":     map[string]any{"id": "u-refetched", "username": "test-user"},
+					}))
+				},
+				func(conn *websocket.Conn) {
+					if err := conn.WriteJSON(messageUpdateEvent(2, "m1", now)); err != nil {
+						t.Errorf("write update event: %v", err)
+						return
+					}
+					select {
+					case <-handler.failureReported:
+					case <-ctx.Done():
+						t.Error("tail failure was not reported")
+					}
+				},
+			)
+			defer server.Close()
+
+			restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+			defer restore()
+
+			client, err := New("token")
+			require.NoError(t, err)
+			defer func() { _ = client.Close() }()
+			client.session.ShouldReconnectOnError = false
+			client.tailWorkerCount = 1
+			client.tailQueueSize = 1
+			client.tailHandlerTimeout = 25 * time.Millisecond
+
+			require.NoError(t, client.Tail(ctx, handler))
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			update := <-handler.updates
+			require.Equal(t, "g-refetched", update.GuildID)
+			require.Equal(t, "u-refetched", update.Author.ID)
+			require.Equal(t, TailFailure{
+				EventType: "MESSAGE_UPDATE",
+				Kind:      tt.wantKind,
+				GuildID:   "g-refetched",
+				ChannelID: "c1",
+				MessageID: "m1",
+				UserID:    "u-refetched",
+			}, <-handler.failures)
+		})
+	}
+}
+
+func TestTailReadyHandlerFailureRemainsTerminal(t *testing.T) {
+	gatewayDone := make(chan struct{})
+	server := newTailTestGateway(t, func(*websocket.Conn) {
+		<-gatewayDone
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+
+	readyErr := errors.New("ready failed")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = client.Tail(ctx, &readyFailureHandler{err: readyErr})
+	close(gatewayDone)
+	require.ErrorIs(t, err, readyErr)
+}
+
 func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
 	mux := http.NewServeMux()
 	upgrader := websocket.Upgrader{}
@@ -456,6 +745,94 @@ func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
 
 	err = client.Tail(context.Background(), &slowHandler{sleep: 200 * time.Millisecond})
 	require.ErrorContains(t, err, "tail worker queue full")
+}
+
+func newTailTestGateway(t *testing.T, afterReady func(*websocket.Conn)) *httptest.Server {
+	return newTailTestGatewayWithRoutes(t, nil, afterReady)
+}
+
+func newTailTestGatewayWithRoutes(
+	t *testing.T,
+	addRoutes func(*http.ServeMux),
+	afterReady func(*websocket.Conn),
+) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	if addRoutes != nil {
+		addRoutes(mux)
+	}
+	upgrader := websocket.Upgrader{}
+	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": "ws://" + r.Host + "/gateway"})
+	})
+	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 10,
+			"d":  map[string]any{"heartbeat_interval": 1000},
+		}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "READY",
+			"s":  1,
+			"d": map[string]any{
+				"session_id": "session",
+				"user":       map[string]any{"id": "bot", "username": "bot"},
+			},
+		}); err != nil {
+			t.Errorf("write ready: %v", err)
+			return
+		}
+		afterReady(conn)
+	}
+	mux.HandleFunc("/gateway", gatewayHandler)
+	mux.HandleFunc("/gateway/", gatewayHandler)
+	return httptest.NewServer(mux)
+}
+
+func messageCreateEvent(sequence int, messageID, timestamp string) map[string]any {
+	return map[string]any{
+		"op": 0,
+		"t":  "MESSAGE_CREATE",
+		"s":  sequence,
+		"d": map[string]any{
+			"id":         messageID,
+			"guild_id":   "g1",
+			"channel_id": "c1",
+			"content":    "safe test content",
+			"timestamp":  timestamp,
+			"author":     map[string]any{"id": "u1", "username": "test-user"},
+		},
+	}
+}
+
+func messageUpdateEvent(sequence int, messageID, timestamp string) map[string]any {
+	return map[string]any{
+		"op": 0,
+		"t":  "MESSAGE_UPDATE",
+		"s":  sequence,
+		"d": map[string]any{
+			"id":         messageID,
+			"channel_id": "c1",
+			"content":    "",
+			"timestamp":  timestamp,
+		},
+	}
 }
 
 func writeJSON(v any) http.HandlerFunc {
@@ -575,6 +952,91 @@ func (r *recordingHandler) OnMemberUpsert(context.Context, string, *discordgo.Me
 func (r *recordingHandler) OnMemberDelete(context.Context, string, string) error {
 	r.memberDeletes++
 	return nil
+}
+
+type failureContinuationHandler struct {
+	fail            func(context.Context) error
+	cancel          context.CancelFunc
+	failureReported chan struct{}
+	failures        chan TailFailure
+	laterHandled    chan struct{}
+	failureOnce     sync.Once
+	laterOnce       sync.Once
+}
+
+func (h *failureContinuationHandler) OnTailFailure(failure TailFailure) {
+	h.failureOnce.Do(func() {
+		h.failures <- failure
+		close(h.failureReported)
+	})
+}
+
+func (h *failureContinuationHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
+	if msg == nil {
+		return nil
+	}
+	switch msg.ID {
+	case "failed":
+		return h.fail(ctx)
+	case "later":
+		h.laterOnce.Do(func() {
+			close(h.laterHandled)
+			h.cancel()
+		})
+	}
+	return nil
+}
+
+func (h *failureContinuationHandler) OnMessageUpdate(context.Context, *discordgo.Message) error {
+	return nil
+}
+
+func (h *failureContinuationHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
+	return nil
+}
+
+func (h *failureContinuationHandler) OnChannelUpsert(context.Context, *discordgo.Channel) error {
+	return nil
+}
+
+func (h *failureContinuationHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
+	return nil
+}
+
+func (h *failureContinuationHandler) OnMemberDelete(context.Context, string, string) error {
+	return nil
+}
+
+type readyFailureHandler struct {
+	recordingHandler
+	err error
+}
+
+func (h *readyFailureHandler) OnTailReady(context.Context) error {
+	return h.err
+}
+
+type messageUpdateFailureHandler struct {
+	recordingHandler
+	fail            func(context.Context) error
+	cancel          context.CancelFunc
+	failureReported chan struct{}
+	failures        chan TailFailure
+	updates         chan *discordgo.Message
+	failureOnce     sync.Once
+}
+
+func (h *messageUpdateFailureHandler) OnTailFailure(failure TailFailure) {
+	h.failureOnce.Do(func() {
+		h.failures <- failure
+		close(h.failureReported)
+		h.cancel()
+	})
+}
+
+func (h *messageUpdateFailureHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
+	h.updates <- msg
+	return h.fail(ctx)
 }
 
 type slowHandler struct {

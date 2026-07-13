@@ -3,10 +3,12 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	discordclient "github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -17,6 +19,7 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		client:                s.client,
 		attachmentTextEnabled: s.attachmentTextEnabled,
 		onReady:               s.tailReady,
+		logger:                s.logger,
 	}
 	if repairEvery <= 0 {
 		return s.client.Tail(ctx, handler)
@@ -59,6 +62,7 @@ type tailHandler struct {
 	client                Client
 	attachmentTextEnabled bool
 	onReady               func(context.Context) error
+	logger                *slog.Logger
 }
 
 func (t *tailHandler) OnTailReady(ctx context.Context) error {
@@ -66,6 +70,29 @@ func (t *tailHandler) OnTailReady(ctx context.Context) error {
 		return nil
 	}
 	return t.onReady(ctx)
+}
+
+func (t *tailHandler) OnTailFailure(failure discordclient.TailFailure) {
+	if t == nil || t.logger == nil {
+		return
+	}
+	attrs := []any{
+		"event_type", failure.EventType,
+		"failure_kind", failure.Kind,
+	}
+	if failure.GuildID != "" {
+		attrs = append(attrs, "guild_id", failure.GuildID)
+	}
+	if failure.ChannelID != "" {
+		attrs = append(attrs, "channel_id", failure.ChannelID)
+	}
+	if failure.MessageID != "" {
+		attrs = append(attrs, "message_id", failure.MessageID)
+	}
+	if failure.UserID != "" {
+		attrs = append(attrs, "user_id", failure.UserID)
+	}
+	t.logger.Warn("tail event handler failed", attrs...)
 }
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
@@ -144,6 +171,7 @@ func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.
 		if full.ChannelID == "" {
 			full.ChannelID = msg.ChannelID
 		}
+		discordclient.EnrichTailFailureMetadata(ctx, full)
 		return full, nil
 	}
 	if isPartialMessageUpdate(msg) {

@@ -25,6 +25,47 @@ type TailReadyHandler interface {
 	OnTailReady(context.Context) error
 }
 
+type TailFailure struct {
+	EventType string
+	Kind      string
+	GuildID   string
+	ChannelID string
+	MessageID string
+	UserID    string
+}
+
+type tailFailureHandler interface {
+	OnTailFailure(TailFailure)
+}
+
+type tailTask struct {
+	eventType       string
+	guildID         string
+	channelID       string
+	messageID       string
+	userID          string
+	failureMetadata *tailFailureMetadata
+	run             func(context.Context) error
+}
+
+type tailFailureMetadata struct {
+	mu        sync.RWMutex
+	guildID   string
+	channelID string
+	messageID string
+	userID    string
+}
+
+type tailFailureMetadataContextKey struct{}
+
+type tailHandlerPanicError struct {
+	value any
+}
+
+func (e *tailHandlerPanicError) Error() string {
+	return fmt.Sprintf("tail handler panic: %v", e.value)
+}
+
 type Client struct {
 	session            *discordgo.Session
 	requestTimeout     time.Duration
@@ -188,8 +229,9 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	}
 	tailCtx, cancel := context.WithCancel(ctx)
 
-	errCh := make(chan error, 1)
-	workCh := make(chan func(context.Context) error, c.tailQueueSize)
+	fatalCh := make(chan error, 1)
+	workCh := make(chan tailTask, c.tailQueueSize)
+	failureHandler, _ := handler.(tailFailureHandler)
 	var wg sync.WaitGroup
 	for range c.tailWorkerCount {
 		wg.Go(func() {
@@ -198,14 +240,11 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 				case <-tailCtx.Done():
 					return
 				case task := <-workCh:
-					if task == nil {
+					if task.run == nil {
 						continue
 					}
-					if err := c.runTailTask(tailCtx, task); err != nil {
-						select {
-						case errCh <- err:
-						default:
-						}
+					if err := c.runTailTask(tailCtx, task.run); err != nil {
+						reportTailFailure(tailCtx, failureHandler, task, err)
 					}
 				}
 			}
@@ -217,65 +256,149 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		removers = append(removers, c.session.AddHandler(eventHandler))
 	}
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageCreate) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnMessageCreate(taskCtx, evt.Message)
-		})
+		var msg *discordgo.Message
+		if evt != nil {
+			msg = evt.Message
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMessageTailTask(
+			"MESSAGE_CREATE",
+			func(taskCtx context.Context) error {
+				return handler.OnMessageCreate(taskCtx, msg)
+			},
+			msg,
+		))
 	})
 	addHandler(func(session *discordgo.Session, evt *discordgo.MessageUpdate) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			msg := evt.Message
+		var msg, before *discordgo.Message
+		if evt != nil {
+			msg = evt.Message
+			before = evt.BeforeUpdate
+		}
+		task := newMessageTailTask(
+			"MESSAGE_UPDATE",
+			nil,
+			msg,
+			before,
+		)
+		task.failureMetadata = newTailFailureMetadata(task)
+		metadata := task.failureMetadata
+		task.run = func(taskCtx context.Context) error {
+			taskCtx = withTailFailureMetadata(taskCtx, metadata)
 			if msg != nil && msg.Content == "" {
-				full, err := session.ChannelMessage(evt.ChannelID, evt.ID, discordgo.WithContext(taskCtx))
+				full, err := session.ChannelMessage(msg.ChannelID, msg.ID, discordgo.WithContext(taskCtx))
 				if err == nil {
 					msg = full
+					EnrichTailFailureMetadata(taskCtx, full)
 				}
 			}
 			if msg == nil {
 				return nil
 			}
 			return handler.OnMessageUpdate(taskCtx, msg)
-		})
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, task)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageDelete) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnMessageDelete(taskCtx, evt)
-		})
+		var msg, before *discordgo.Message
+		if evt != nil {
+			msg = evt.Message
+			before = evt.BeforeDelete
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMessageTailTask(
+			"MESSAGE_DELETE",
+			func(taskCtx context.Context) error {
+				return handler.OnMessageDelete(taskCtx, evt)
+			},
+			msg,
+			before,
+		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelCreate) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnChannelUpsert(taskCtx, evt.Channel)
-		})
+		var channel *discordgo.Channel
+		if evt != nil {
+			channel = evt.Channel
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newChannelTailTask(
+			"CHANNEL_CREATE",
+			func(taskCtx context.Context) error {
+				return handler.OnChannelUpsert(taskCtx, channel)
+			},
+			channel,
+		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelUpdate) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnChannelUpsert(taskCtx, evt.Channel)
-		})
+		var channel, before *discordgo.Channel
+		if evt != nil {
+			channel = evt.Channel
+			before = evt.BeforeUpdate
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newChannelTailTask(
+			"CHANNEL_UPDATE",
+			func(taskCtx context.Context) error {
+				return handler.OnChannelUpsert(taskCtx, channel)
+			},
+			channel,
+			before,
+		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildMemberAdd) {
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnMemberUpsert(taskCtx, evt.GuildID, evt.Member)
-		})
+		var member *discordgo.Member
+		if evt != nil {
+			member = evt.Member
+		}
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+			"GUILD_MEMBER_ADD",
+			func(taskCtx context.Context) error {
+				if member == nil {
+					return handler.OnMemberUpsert(taskCtx, "", nil)
+				}
+				return handler.OnMemberUpsert(taskCtx, member.GuildID, member)
+			},
+			member,
+		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildMemberUpdate) {
-		member := &discordgo.Member{
-			GuildID:  evt.GuildID,
-			Nick:     evt.Nick,
-			Avatar:   evt.Avatar,
-			Roles:    evt.Roles,
-			JoinedAt: evt.JoinedAt,
-			User:     evt.User,
+		var member, before *discordgo.Member
+		if evt != nil {
+			before = evt.BeforeUpdate
+			if evt.Member != nil {
+				member = &discordgo.Member{
+					GuildID:  evt.GuildID,
+					Nick:     evt.Nick,
+					Avatar:   evt.Avatar,
+					Roles:    evt.Roles,
+					JoinedAt: evt.JoinedAt,
+					User:     evt.User,
+				}
+			}
 		}
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnMemberUpsert(taskCtx, evt.GuildID, member)
-		})
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+			"GUILD_MEMBER_UPDATE",
+			func(taskCtx context.Context) error {
+				if member == nil {
+					return handler.OnMemberUpsert(taskCtx, "", nil)
+				}
+				return handler.OnMemberUpsert(taskCtx, member.GuildID, member)
+			},
+			member,
+			before,
+		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildMemberRemove) {
-		if evt.User == nil {
+		var member *discordgo.Member
+		if evt != nil {
+			member = evt.Member
+		}
+		if member == nil || member.User == nil {
 			return
 		}
-		c.enqueueTailTask(tailCtx, workCh, errCh, func(taskCtx context.Context) error {
-			return handler.OnMemberDelete(taskCtx, evt.GuildID, evt.User.ID)
-		})
+		c.enqueueTailTask(tailCtx, workCh, fatalCh, newMemberTailTask(
+			"GUILD_MEMBER_REMOVE",
+			func(taskCtx context.Context) error {
+				return handler.OnMemberDelete(taskCtx, member.GuildID, member.User.ID)
+			},
+			member,
+		))
 	})
 	opened := false
 	defer func() {
@@ -300,16 +423,16 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	select {
 	case <-ctx.Done():
 		return nil
-	case err := <-errCh:
+	case err := <-fatalCh:
 		return err
 	}
 }
 
 func (c *Client) enqueueTailTask(
 	ctx context.Context,
-	workCh chan<- func(context.Context) error,
-	errCh chan<- error,
-	task func(context.Context) error,
+	workCh chan<- tailTask,
+	fatalCh chan<- error,
+	task tailTask,
 ) {
 	select {
 	case <-ctx.Done():
@@ -317,31 +440,162 @@ func (c *Client) enqueueTailTask(
 	case workCh <- task:
 	default:
 		select {
-		case errCh <- errors.New("tail worker queue full"):
+		case fatalCh <- errors.New("tail worker queue full"):
 		default:
 		}
 	}
 }
 
 func (c *Client) runTailTask(ctx context.Context, task func(context.Context) error) (err error) {
+	var taskCtx context.Context
+	var cancel context.CancelFunc
 	if c.tailHandlerTimeout > 0 {
-		taskCtx, cancel := context.WithTimeout(ctx, c.tailHandlerTimeout)
-		defer cancel()
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err = fmt.Errorf("tail handler panic: %v", recovered)
-			}
-		}()
-		return task(taskCtx)
+		taskCtx, cancel = context.WithTimeout(ctx, c.tailHandlerTimeout)
+	} else {
+		taskCtx, cancel = context.WithCancel(ctx)
 	}
-	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("tail handler panic: %v", recovered)
+			err = &tailHandlerPanicError{value: recovered}
 		}
 	}()
 	return task(taskCtx)
+}
+
+func reportTailFailure(ctx context.Context, handler tailFailureHandler, task tailTask, err error) {
+	if handler == nil || ctx.Err() != nil {
+		return
+	}
+	guildID, channelID, messageID, userID := task.guildID, task.channelID, task.messageID, task.userID
+	if task.failureMetadata != nil {
+		guildID, channelID, messageID, userID = task.failureMetadata.snapshot()
+	}
+	handler.OnTailFailure(TailFailure{
+		EventType: task.eventType,
+		Kind:      tailFailureKind(err),
+		GuildID:   guildID,
+		ChannelID: channelID,
+		MessageID: messageID,
+		UserID:    userID,
+	})
+}
+
+func tailFailureKind(err error) string {
+	var panicErr *tailHandlerPanicError
+	switch {
+	case errors.As(err, &panicErr):
+		return "panic"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "returned_error"
+	}
+}
+
+func newMessageTailTask(
+	eventType string,
+	run func(context.Context) error,
+	messages ...*discordgo.Message,
+) tailTask {
+	task := tailTask{eventType: eventType, run: run}
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		setTailTaskID(&task.guildID, msg.GuildID)
+		setTailTaskID(&task.channelID, msg.ChannelID)
+		setTailTaskID(&task.messageID, msg.ID)
+		if msg.Author != nil {
+			setTailTaskID(&task.userID, msg.Author.ID)
+		}
+	}
+	return task
+}
+
+func newChannelTailTask(
+	eventType string,
+	run func(context.Context) error,
+	channels ...*discordgo.Channel,
+) tailTask {
+	task := tailTask{eventType: eventType, run: run}
+	for _, channel := range channels {
+		if channel == nil {
+			continue
+		}
+		setTailTaskID(&task.guildID, channel.GuildID)
+		setTailTaskID(&task.channelID, channel.ID)
+	}
+	return task
+}
+
+func newMemberTailTask(
+	eventType string,
+	run func(context.Context) error,
+	members ...*discordgo.Member,
+) tailTask {
+	task := tailTask{eventType: eventType, run: run}
+	for _, member := range members {
+		if member == nil {
+			continue
+		}
+		setTailTaskID(&task.guildID, member.GuildID)
+		if member.User != nil {
+			setTailTaskID(&task.userID, member.User.ID)
+		}
+	}
+	return task
+}
+
+func setTailTaskID(dst *string, value string) {
+	if *dst == "" && value != "" {
+		*dst = value
+	}
+}
+
+func newTailFailureMetadata(task tailTask) *tailFailureMetadata {
+	return &tailFailureMetadata{
+		guildID:   task.guildID,
+		channelID: task.channelID,
+		messageID: task.messageID,
+		userID:    task.userID,
+	}
+}
+
+func withTailFailureMetadata(ctx context.Context, metadata *tailFailureMetadata) context.Context {
+	if ctx == nil || metadata == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, tailFailureMetadataContextKey{}, metadata)
+}
+
+// EnrichTailFailureMetadata adds message identifiers to the current tail event's failure report.
+func EnrichTailFailureMetadata(ctx context.Context, msg *discordgo.Message) {
+	if ctx == nil || msg == nil {
+		return
+	}
+	metadata, _ := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
+	metadata.addMessage(msg)
+}
+
+func (m *tailFailureMetadata) addMessage(msg *discordgo.Message) {
+	if m == nil || msg == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	setTailTaskID(&m.guildID, msg.GuildID)
+	setTailTaskID(&m.channelID, msg.ChannelID)
+	setTailTaskID(&m.messageID, msg.ID)
+	if msg.Author != nil {
+		setTailTaskID(&m.userID, msg.Author.ID)
+	}
+}
+
+func (m *tailFailureMetadata) snapshot() (string, string, string, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.guildID, m.channelID, m.messageID, m.userID
 }
 
 func defaultTailWorkerCount() int {
