@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -326,7 +327,10 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 					if err := c.runTailTask(tailCtx, task.run); err != nil {
 						var deadlineErr *tailHandlerDeadlineError
 						hasDeadlineErr := errors.As(err, &deadlineErr)
-						if tailCtx.Err() != nil && !hasDeadlineErr {
+						var panicErr *tailHandlerPanicError
+						hasPanicErr := errors.As(err, &panicErr)
+						hasMessagePanicErr := hasPanicErr && strings.HasPrefix(task.eventType, "MESSAGE_")
+						if tailCtx.Err() != nil && !hasDeadlineErr && !hasMessagePanicErr {
 							return
 						}
 						failure := newTailFailure(task, err)
@@ -334,8 +338,18 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 							cancel()
 						}
 						var recordErr error
-						if deadlineErr != nil && deadlineErr.requiresSynchronousRecord() {
+						switch {
+						case hasMessagePanicErr && failureRecorder == nil:
+							recordErr = errors.New("tail failure recorder unavailable")
+						case hasMessagePanicErr:
 							recordErr = recordTailFailure(failureRecorder, failure)
+						case deadlineErr != nil && deadlineErr.requiresSynchronousRecord():
+							recordErr = recordTailFailure(failureRecorder, failure)
+						}
+						if hasMessagePanicErr && recordErr != nil {
+							cancel()
+							fatal.signal(errors.New("persist tail handler panic failure"))
+							return
 						}
 						reportTailFailure(failureHandler, failure)
 						if deadlineErr != nil && (deadlineErr.detached || recordErr != nil) {
@@ -642,11 +656,11 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 		select {
 		case result := <-result:
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
+				return tailTaskResultAfterParentCancellation(ctxErr, result)
 			}
 			return result.err
 		case <-ctx.Done():
-			return ctx.Err()
+			return awaitTailTaskParentCancellation(ctx.Err(), result)
 		}
 	}
 
@@ -670,7 +684,7 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 			parentDeadlineBeforeLocal,
 			deadline,
 		); parentErr != nil {
-			return parentErr
+			return tailTaskResultAfterParentCancellation(parentErr, result)
 		}
 		return classifyTailTaskResult(
 			c.tailHandlerTimeout,
@@ -684,9 +698,33 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 			parentDeadlineBeforeLocal,
 			deadline,
 		); parentErr != nil {
-			return parentErr
+			return awaitTailTaskParentCancellation(parentErr, result)
 		}
 		return c.awaitTailTaskDeadline(result, deadline, graceDeadline)
+	}
+}
+
+func tailTaskResultAfterParentCancellation(parentErr error, result tailTaskResult) error {
+	var panicErr *tailHandlerPanicError
+	if errors.As(result.err, &panicErr) {
+		return result.err
+	}
+	return parentErr
+}
+
+func awaitTailTaskParentCancellation(parentErr error, result <-chan tailTaskResult) error {
+	select {
+	case result := <-result:
+		return tailTaskResultAfterParentCancellation(parentErr, result)
+	default:
+	}
+	timer := time.NewTimer(tailHandlerCancelGrace)
+	defer timer.Stop()
+	select {
+	case result := <-result:
+		return tailTaskResultAfterParentCancellation(parentErr, result)
+	case <-timer.C:
+		return parentErr
 	}
 }
 

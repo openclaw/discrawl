@@ -16,6 +16,8 @@ const syncMessagesFailureOperation = "sync_messages"
 
 const tailMessageFailureOperation = "tail_message"
 
+var errTailMessageHandlerPanic = errors.New("tail message handler panicked")
+
 func (s *Syncer) recordChannelFailure(ctx context.Context, guildID, channelID string, failure error) error {
 	if s == nil || s.store == nil || failure == nil {
 		return nil
@@ -60,17 +62,26 @@ func withFailureRecordError(failure, recordErr error) error {
 }
 
 func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error {
-	if failure.Kind != "timeout" {
+	if !strings.HasPrefix(failure.EventType, "MESSAGE_") {
+		return nil
+	}
+	var durableFailure error
+	var failureLabel string
+	switch failure.Kind {
+	case "timeout":
+		durableFailure = context.DeadlineExceeded
+		failureLabel = "timed-out"
+	case "panic":
+		durableFailure = errTailMessageHandlerPanic
+		failureLabel = "panicked"
+	default:
 		return nil
 	}
 	if failure.MessageID == "" {
-		if strings.HasPrefix(failure.EventType, "MESSAGE_") {
-			return errors.New("record timed-out message failure: missing message id")
-		}
-		return nil
+		return fmt.Errorf("record %s message failure: missing message id", failureLabel)
 	}
 	if t == nil || t.store == nil {
-		return errors.New("record timed-out message failure: missing store")
+		return fmt.Errorf("record %s message failure: missing store", failureLabel)
 	}
 
 	ledgerCtx, cancel := failureLedgerContext(context.Background())
@@ -81,8 +92,8 @@ func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error
 		GuildID:   failure.GuildID,
 		ChannelID: failure.ChannelID,
 		MessageID: failure.MessageID,
-	}, context.DeadlineExceeded); err != nil {
-		return fmt.Errorf("record timed-out message failure: %w", err)
+	}, durableFailure); err != nil {
+		return fmt.Errorf("record %s message failure: %w", failureLabel, err)
 	}
 	return nil
 }

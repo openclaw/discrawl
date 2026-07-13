@@ -263,6 +263,10 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 				require.NoError(t, err)
 				require.NoError(t, tailStore.Close())
 			case "panic":
+				var err error
+				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = tailStore.Close() })
 			case "timeout":
 				var err error
 				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
@@ -316,8 +320,9 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 					client:                snapshotClient,
 					attachmentTextEnabled: false,
 				},
-				cancel:   cancel,
-				failures: make(chan discordclient.TailFailure, 1),
+				cancel:        cancel,
+				failures:      make(chan discordclient.TailFailure, 1),
+				panicOnUpdate: tt.wantKind == "panic",
 			}
 			require.NoError(t, eventClient.Tail(ctx, handler))
 
@@ -518,6 +523,142 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 		}
 	}
 	require.True(t, foundTailFailure)
+}
+
+func TestPanickedGatewayMessageReplaysExactlyWithoutTailSideEffects(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+	tailCtx, cancelTail := context.WithCancel(testCtx)
+	defer cancelTail()
+
+	s, err := store.Open(testCtx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.AdvanceChannelLatestMessageID(tailCtx, "c1", "100"))
+	require.NoError(t, s.SetSyncState(tailCtx, "tail:last_event", "999"))
+
+	const sensitivePanicText = "sensitive gateway panic token=do-not-store"
+	exactFetches := &atomic.Int32{}
+	exactMessage := &discordgo.Message{
+		ID:        "50",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "recovered below cursor",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	server := newSyncerTailMessagePanicGateway(t, exactMessage, exactFetches)
+	defer server.Close()
+	restore := patchSyncerTailDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	eventClient, err := discordclient.New("token")
+	require.NoError(t, err)
+	defer func() { _ = eventClient.Close() }()
+	eventClientFailure := make(chan discordclient.TailFailure, 1)
+	handler := &panicReplayTailHandler{
+		tailHandler: &tailHandler{
+			store:                 s,
+			attachmentTextEnabled: false,
+		},
+		panicValue: sensitivePanicText,
+		cancel:     cancelTail,
+		failures:   eventClientFailure,
+		started:    make(chan struct{}),
+	}
+
+	tailDone := make(chan error, 1)
+	go func() {
+		tailDone <- eventClient.Tail(tailCtx, handler)
+	}()
+	select {
+	case <-handler.started:
+	case <-testCtx.Done():
+		t.Fatal("gateway panic handler did not start")
+	}
+	cancelTail()
+	select {
+	case err = <-tailDone:
+	case <-testCtx.Done():
+		t.Fatal("Tail did not return after gateway handler panic")
+	}
+	require.NoError(t, err)
+	require.ErrorIs(t, tailCtx.Err(), context.Canceled)
+	require.Equal(t, discordclient.TailFailure{
+		EventType: "MESSAGE_CREATE",
+		Kind:      "panic",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "50",
+		UserID:    "u1",
+	}, <-eventClientFailure)
+
+	replayCtx := context.Background()
+	report, err := s.ListFailures(replayCtx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	failure := report.Failures[0]
+	require.Equal(t, tailMessageFailureOperation, failure.Operation)
+	require.Equal(t, "discord", failure.Source)
+	require.Equal(t, "g1", failure.GuildID)
+	require.Equal(t, "c1", failure.ChannelID)
+	require.Equal(t, "50", failure.MessageID)
+	require.Equal(t, "errors.errorString", failure.ErrorClass)
+	require.Equal(t, errTailMessageHandlerPanic.Error(), failure.ErrorMessage)
+	require.NotContains(t, failure.ErrorClass, sensitivePanicText)
+	require.NotContains(t, failure.ErrorMessage, sensitivePanicText)
+
+	messages, err := s.ListMessages(replayCtx, store.MessageListOptions{
+		GuildIDs:     []string{"g1"},
+		IncludeEmpty: true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, messages)
+	cursor, err := s.GetSyncState(replayCtx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "100", cursor)
+	lastEvent, err := s.GetSyncState(replayCtx, "tail:last_event")
+	require.NoError(t, err)
+	require.Equal(t, "999", lastEvent)
+	var eventCount int
+	require.NoError(t, s.DB().QueryRowContext(replayCtx, `select count(*) from message_events`).Scan(&eventCount))
+	require.Zero(t, eventCount)
+	require.Zero(t, exactFetches.Load())
+
+	svc := New(eventClient, s, nil)
+	stats, err := svc.replayTailMessageFailures(replayCtx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+
+	messages, err = s.ListMessages(replayCtx, store.MessageListOptions{
+		GuildIDs:     []string{"g1"},
+		IncludeEmpty: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "50", messages[0].MessageID)
+	require.Equal(t, "recovered below cursor", messages[0].Content)
+	cursor, err = s.GetSyncState(replayCtx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "100", cursor)
+	lastEvent, err = s.GetSyncState(replayCtx, "tail:last_event")
+	require.NoError(t, err)
+	require.Equal(t, "999", lastEvent)
+	require.NoError(t, s.DB().QueryRowContext(replayCtx, `select count(*) from message_events`).Scan(&eventCount))
+	require.Zero(t, eventCount)
+
+	report, err = s.ListFailures(replayCtx, store.FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.False(t, report.Failures[0].ResolvedAt.IsZero())
+	require.Equal(t, errTailMessageHandlerPanic.Error(), report.Failures[0].ErrorMessage)
+
+	stats, err = svc.replayTailMessageFailures(replayCtx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Zero(t, stats.Candidates)
+	require.EqualValues(t, 1, exactFetches.Load())
 }
 
 func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *testing.T) {
@@ -999,8 +1140,9 @@ func (c *tailSnapshotClient) ChannelMessage(ctx context.Context, _, _ string) (*
 
 type capturingTailHandler struct {
 	*tailHandler
-	cancel   context.CancelFunc
-	failures chan discordclient.TailFailure
+	cancel        context.CancelFunc
+	failures      chan discordclient.TailFailure
+	panicOnUpdate bool
 }
 
 func (h *capturingTailHandler) OnTailFailure(failure discordclient.TailFailure) {
@@ -1009,6 +1151,39 @@ func (h *capturingTailHandler) OnTailFailure(failure discordclient.TailFailure) 
 		h.cancel()
 	default:
 	}
+}
+
+func (h *capturingTailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
+	if !h.panicOnUpdate {
+		return h.tailHandler.OnMessageUpdate(ctx, msg)
+	}
+	snapshot, err := h.messageUpdateSnapshot(ctx, msg)
+	if err != nil || snapshot == nil {
+		return err
+	}
+	panic("sensitive syncer message update panic")
+}
+
+type panicReplayTailHandler struct {
+	*tailHandler
+	panicValue any
+	cancel     context.CancelFunc
+	failures   chan discordclient.TailFailure
+	started    chan struct{}
+	startOnce  sync.Once
+}
+
+func (h *panicReplayTailHandler) OnMessageCreate(ctx context.Context, _ *discordgo.Message) error {
+	h.startOnce.Do(func() {
+		close(h.started)
+	})
+	<-ctx.Done()
+	panic(h.panicValue)
+}
+
+func (h *panicReplayTailHandler) OnTailFailure(failure discordclient.TailFailure) {
+	h.failures <- failure
+	h.cancel()
 }
 
 func newSyncerTailMessageUpdateGateway(
@@ -1072,6 +1247,83 @@ func newSyncerTailMessageUpdateGateway(
 			},
 		}); err != nil {
 			t.Errorf("write update: %v", err)
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}
+	mux.HandleFunc("/gateway", gatewayHandler)
+	mux.HandleFunc("/gateway/", gatewayHandler)
+	return httptest.NewServer(mux)
+}
+
+func newSyncerTailMessagePanicGateway(
+	t *testing.T,
+	exactMessage *discordgo.Message,
+	exactFetches *atomic.Int32,
+) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/channels/c1/messages/50", func(w http.ResponseWriter, _ *http.Request) {
+		exactFetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(exactMessage)
+	})
+	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": "ws://" + r.Host + "/gateway"})
+	})
+
+	upgrader := websocket.Upgrader{}
+	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 10,
+			"d":  map[string]any{"heartbeat_interval": 1000},
+		}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "READY",
+			"s":  1,
+			"d": map[string]any{
+				"session_id": "session",
+				"user":       map[string]any{"id": "bot", "username": "bot"},
+			},
+		}); err != nil {
+			t.Errorf("write ready: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "MESSAGE_CREATE",
+			"s":  2,
+			"d": map[string]any{
+				"id":         "50",
+				"guild_id":   "g1",
+				"channel_id": "c1",
+				"content":    "gateway message",
+				"timestamp":  time.Now().UTC().Format(time.RFC3339),
+				"author":     map[string]any{"id": "u1", "username": "user"},
+			},
+		}); err != nil {
+			t.Errorf("write message create: %v", err)
 			return
 		}
 		for {
