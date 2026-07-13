@@ -401,6 +401,16 @@ func printHuman(w io.Writer, value any) error {
 	case syncer.SyncStats:
 		_, err := fmt.Fprintf(w, "guilds=%d channels=%d threads=%d members=%d messages=%d\n", v.Guilds, v.Channels, v.Threads, v.Members, v.Messages)
 		return err
+	case syncer.TailMessageReplayStats:
+		_, err := fmt.Fprintf(
+			w,
+			"candidates=%d\nrecovered=%d\ndeferred=%d\npolicy_deferred=%d\n",
+			v.Candidates,
+			v.Recovered,
+			v.Deferred,
+			v.PolicyDeferred,
+		)
+		return err
 	case discorddesktop.Stats:
 		_, err := fmt.Fprintf(w, "path=%s\nvisited=%d\nfiles=%d\nskipped=%d\nunchanged=%d\nfast_skipped=%d\nobjects=%d\nguilds=%d\nchannels=%d\nmessages=%d\ndm_messages=%d\ndm_channels=%d\nguild_messages=%d\nskipped_messages=%d\nskipped_channels=%d\ncheckpoints=%d\nfull_cache=%t\ndry_run=%t\n",
 			v.Path, v.FilesVisited, v.FilesScanned, v.FilesSkipped, v.FilesUnchanged, v.CacheFilesFastSkipped, v.JSONObjects, v.Guilds, v.Channels, v.Messages, v.DMMessages, v.DMChannels, v.GuildMessages, v.SkippedMessages, v.SkippedChannels, v.Checkpoints, v.FullCache, v.DryRun)

@@ -441,6 +441,13 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "repair", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 		},
 	}
+	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
+		Operation: tailMessageFailureOperation,
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "5",
+	}, context.DeadlineExceeded))
 	svc := New(client, s, nil)
 	go func() {
 		time.Sleep(40 * time.Millisecond)
@@ -452,6 +459,13 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	status, err := s.Status(context.Background(), "db", "")
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, status.MessageCount, 1)
+	client.mu.Lock()
+	exactMessageCalls := client.exactMessageCalls
+	client.mu.Unlock()
+	require.Zero(t, exactMessageCalls)
+	report, err := s.ListFailures(context.Background(), store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
 }
 
 func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *testing.T) {
@@ -519,6 +533,17 @@ func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *t
 	require.Equal(t, []string{"c1/50"}, client.calls)
 }
 
+func TestReplayTailMessageFailuresEnforcesBoundedLimit(t *testing.T) {
+	t.Parallel()
+
+	svc := New(&exactReplayClient{}, nil, nil)
+	for _, limit := range []int{-1, 0, TailMessageReplayLimit + 1} {
+		stats, err := svc.ReplayTailMessageFailures(context.Background(), nil, limit)
+		require.ErrorContains(t, err, "tail message replay limit must be between 1 and 25")
+		require.Zero(t, stats.Candidates)
+	}
+}
+
 func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -576,7 +601,7 @@ func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *t
 	require.Equal(t, 1, report.Failures[0].RetryCount)
 }
 
-func TestReplayTailMessageFailuresResolvesOutOfScopeGuildWithoutFetching(t *testing.T) {
+func TestReplayTailMessageFailuresLeavesOutOfScopeGuildVisibleWithoutFetching(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -594,12 +619,12 @@ func TestReplayTailMessageFailuresResolvesOutOfScopeGuildWithoutFetching(t *test
 	client := &exactReplayClient{}
 	stats, err := New(client, s, nil).replayTailMessageFailures(ctx, []string{"g1"}, 10)
 	require.NoError(t, err)
-	require.Equal(t, tailMessageReplayStats{Candidates: 1, PolicyResolved: 1}, stats)
+	require.Zero(t, stats.Candidates)
 	require.Empty(t, client.calls)
 
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
-	require.Zero(t, report.UnresolvedCount)
+	require.Equal(t, 1, report.UnresolvedCount)
 }
 
 func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) {
@@ -660,6 +685,42 @@ func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) 
 			require.Zero(t, messageCount)
 		})
 	}
+}
+
+func TestReplayTailMessageFailuresDoesNotRewriteLedgerOnParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	ref := store.FailureRef{
+		Operation: tailMessageFailureOperation,
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "70",
+	}
+	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("original tail failure")))
+
+	client := &exactReplayClient{
+		errors: map[string]error{"c1/70": context.Canceled},
+		onFetch: func(context.Context) {
+			cancel()
+		},
+	}
+	stats, err := New(client, s, nil).ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, stats.Candidates)
+	require.Zero(t, stats.Deferred)
+
+	report, err := s.ListFailures(context.Background(), store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "original tail failure", report.Failures[0].ErrorMessage)
+	require.Zero(t, report.Failures[0].RetryCount)
 }
 
 func TestPersistMessagePageResolvesMatchingTailFailure(t *testing.T) {
@@ -802,11 +863,15 @@ type exactReplayClient struct {
 	messages map[string]*discordgo.Message
 	errors   map[string]error
 	calls    []string
+	onFetch  func(context.Context)
 }
 
-func (c *exactReplayClient) ChannelMessage(_ context.Context, channelID, messageID string) (*discordgo.Message, error) {
+func (c *exactReplayClient) ChannelMessage(ctx context.Context, channelID, messageID string) (*discordgo.Message, error) {
 	key := channelID + "/" + messageID
 	c.calls = append(c.calls, key)
+	if c.onFetch != nil {
+		c.onFetch(ctx)
+	}
 	if err := c.errors[key]; err != nil {
 		return nil, err
 	}

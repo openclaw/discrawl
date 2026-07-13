@@ -284,7 +284,12 @@ func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, gener
 }
 
 // ListFailureReplayCandidates returns unresolved failures in least-recently-attempted order.
-func (s *Store) ListFailureReplayCandidates(ctx context.Context, ref FailureRef, limit int) ([]Failure, error) {
+func (s *Store) ListFailureReplayCandidates(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	limit int,
+) ([]Failure, error) {
 	ref = normalizeFailureRef(ref)
 	if ref.Operation == "" || ref.Source == "" {
 		return nil, errors.New("failure operation and source are required")
@@ -297,6 +302,12 @@ func (s *Store) ListFailureReplayCandidates(ctx context.Context, ref FailureRef,
 	}
 	clauses := []string{"resolved_at is null", "operation = ?", "source = ?"}
 	args := []any{ref.Operation, ref.Source}
+	if len(guildIDs) > 0 {
+		clauses = append(clauses, "guild_id in ("+placeholders(len(guildIDs))+")")
+		for _, guildID := range guildIDs {
+			args = append(args, guildID)
+		}
+	}
 	for _, field := range []struct {
 		name  string
 		value string

@@ -40,6 +40,7 @@ type tailFailureHandler interface {
 
 type tailTask struct {
 	eventType       string
+	failureClass    tailFailureClass
 	guildID         string
 	channelID       string
 	messageID       string
@@ -47,6 +48,13 @@ type tailTask struct {
 	failureMetadata *tailFailureMetadata
 	run             func(context.Context) error
 }
+
+type tailFailureClass string
+
+const (
+	tailFailureClassOrdered tailFailureClass = "ordered"
+	tailFailureClassMember  tailFailureClass = "member"
+)
 
 type tailFailureMetadata struct {
 	mu        sync.RWMutex
@@ -241,7 +249,10 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	fatalCh := make(chan error, 1)
 	workCh := make(chan tailTask, c.tailQueueSize)
 	failureHandler, _ := handler.(tailFailureHandler)
-	failureCircuit := &tailFailureCircuit{limit: defaultTailHandlerFailureLimit}
+	failureCircuits := map[tailFailureClass]*tailFailureCircuit{
+		tailFailureClassOrdered: {limit: defaultTailHandlerFailureLimit},
+		tailFailureClassMember:  {limit: defaultTailHandlerFailureLimit},
+	}
 	var wg sync.WaitGroup
 	for range c.tailWorkerCount {
 		wg.Go(func() {
@@ -258,6 +269,10 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 							return
 						}
 						reportTailFailure(tailCtx, failureHandler, task, err)
+						failureCircuit := failureCircuits[task.failureClass]
+						if failureCircuit == nil {
+							failureCircuit = failureCircuits[tailFailureClassOrdered]
+						}
 						if failureCircuit.recordFailure() {
 							signalTailFatal(
 								fatalCh,
@@ -268,6 +283,10 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 							)
 						}
 						continue
+					}
+					failureCircuit := failureCircuits[task.failureClass]
+					if failureCircuit == nil {
+						failureCircuit = failureCircuits[tailFailureClassOrdered]
 					}
 					failureCircuit.recordSuccess()
 				}
@@ -483,12 +502,25 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 		taskCtx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- runTailTaskSafely(taskCtx, task)
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-taskCtx.Done():
+		return taskCtx.Err()
+	}
+}
+
+func runTailTaskSafely(ctx context.Context, task func(context.Context) error) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = &tailHandlerPanicError{value: recovered}
 		}
 	}()
-	return task(taskCtx)
+	return task(ctx)
 }
 
 func (c *tailFailureCircuit) recordFailure() bool {
@@ -548,7 +580,11 @@ func newMessageTailTask(
 	run func(context.Context) error,
 	messages ...*discordgo.Message,
 ) tailTask {
-	task := tailTask{eventType: eventType, run: run}
+	task := tailTask{
+		eventType:    eventType,
+		failureClass: tailFailureClassOrdered,
+		run:          run,
+	}
 	for _, msg := range messages {
 		if msg == nil {
 			continue
@@ -568,7 +604,11 @@ func newChannelTailTask(
 	run func(context.Context) error,
 	channels ...*discordgo.Channel,
 ) tailTask {
-	task := tailTask{eventType: eventType, run: run}
+	task := tailTask{
+		eventType:    eventType,
+		failureClass: tailFailureClassOrdered,
+		run:          run,
+	}
 	for _, channel := range channels {
 		if channel == nil {
 			continue
@@ -584,7 +624,11 @@ func newMemberTailTask(
 	run func(context.Context) error,
 	members ...*discordgo.Member,
 ) tailTask {
-	task := tailTask{eventType: eventType, run: run}
+	task := tailTask{
+		eventType:    eventType,
+		failureClass: tailFailureClassMember,
+		run:          run,
+	}
 	for _, member := range members {
 		if member == nil {
 			continue

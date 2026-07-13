@@ -10,15 +10,27 @@ import (
 )
 
 const (
-	tailMessageReplayLimit   = 25
+	TailMessageReplayLimit   = 25
 	tailMessageReplayTimeout = 30 * time.Second
 )
 
-type tailMessageReplayStats struct {
-	Candidates     int
-	Recovered      int
-	Deferred       int
-	PolicyResolved int
+type TailMessageReplayStats struct {
+	Candidates     int `json:"candidates"`
+	Recovered      int `json:"recovered"`
+	Deferred       int `json:"deferred"`
+	PolicyDeferred int `json:"policy_deferred"`
+}
+
+type tailMessageReplayStats = TailMessageReplayStats
+
+func (s *Syncer) ReplayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (TailMessageReplayStats, error) {
+	if limit <= 0 || limit > TailMessageReplayLimit {
+		return TailMessageReplayStats{}, fmt.Errorf(
+			"tail message replay limit must be between 1 and %d",
+			TailMessageReplayLimit,
+		)
+	}
+	return s.replayTailMessageFailures(ctx, guildIDs, limit)
 }
 
 func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (tailMessageReplayStats, error) {
@@ -29,12 +41,11 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 	candidates, err := s.store.ListFailureReplayCandidates(ctx, store.FailureRef{
 		Operation: tailMessageFailureOperation,
 		Source:    "discord",
-	}, limit)
+	}, guildIDs, limit)
 	if err != nil {
 		return stats, err
 	}
 	stats.Candidates = len(candidates)
-	allowedGuilds := makeGuildSet(guildIDs)
 	for _, failure := range candidates {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -47,19 +58,12 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			stats.Deferred++
 			continue
 		}
-		if len(allowedGuilds) > 0 {
-			if _, ok := allowedGuilds[failure.GuildID]; !ok {
-				if err := s.resolveTailMessageReplay(ctx, ref); err != nil {
-					return stats, err
-				}
-				stats.PolicyResolved++
-				continue
-			}
-		}
-
 		fetchCtx, cancel := context.WithTimeout(ctx, tailMessageReplayTimeout)
 		message, fetchErr := s.client.ChannelMessage(fetchCtx, failure.ChannelID, failure.MessageID)
 		cancel()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return stats, ctxErr
+		}
 		if fetchErr != nil {
 			if err := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("fetch exact tail message: %w", fetchErr)); err != nil {
 				return stats, err
@@ -79,6 +83,9 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 		}
 		mutation, err := buildMessageMutation(ctx, message, "", failure.GuildID, false, s.attachmentTextEnabled)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return stats, ctxErr
+			}
 			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("build exact tail message mutation: %w", err)); recordErr != nil {
 				return stats, recordErr
 			}
@@ -86,6 +93,9 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			continue
 		}
 		if err := s.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return stats, ctxErr
+			}
 			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("upsert exact tail message: %w", err)); recordErr != nil {
 				return stats, recordErr
 			}
@@ -93,24 +103,30 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			continue
 		}
 		if err := s.store.AdvanceChannelLatestMessageID(ctx, failure.ChannelID, failure.MessageID); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return stats, ctxErr
+			}
 			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("advance exact tail message cursor: %w", err)); recordErr != nil {
 				return stats, recordErr
 			}
 			stats.Deferred++
 			continue
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return stats, ctxErr
+		}
 		if err := s.resolveTailMessageReplay(ctx, ref); err != nil {
 			return stats, err
 		}
 		stats.Recovered++
 	}
-	if stats.Candidates > 0 {
+	if stats.Candidates > 0 && s.logger != nil {
 		s.logger.Info(
 			"tail message replay completed",
 			"candidates", stats.Candidates,
 			"recovered", stats.Recovered,
 			"deferred", stats.Deferred,
-			"policy_resolved", stats.PolicyResolved,
+			"policy_deferred", stats.PolicyDeferred,
 		)
 	}
 	return stats, nil

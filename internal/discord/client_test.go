@@ -219,11 +219,12 @@ func TestTailTaskMetadataIsNilSafe(t *testing.T) {
 		},
 	)
 	require.Equal(t, tailTask{
-		eventType: "MESSAGE_UPDATE",
-		guildID:   "g1",
-		channelID: "c1",
-		messageID: "m1",
-		userID:    "u1",
+		eventType:    "MESSAGE_UPDATE",
+		failureClass: tailFailureClassOrdered,
+		guildID:      "g1",
+		channelID:    "c1",
+		messageID:    "m1",
+		userID:       "u1",
 	}, task)
 
 	metadata := newTailFailureMetadata(tailTask{
@@ -590,6 +591,105 @@ func TestTailEscalatesAfterConsecutiveHandlerFailures(t *testing.T) {
 	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
 }
 
+func TestTailMessageFailureCircuitIgnoresMemberSuccesses(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	handler := &mixedFailureHandler{
+		failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
+		members:  make(chan struct{}, defaultTailHandlerFailureLimit-1),
+	}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		for sequence := range defaultTailHandlerFailureLimit {
+			if err := conn.WriteJSON(messageCreateEvent(sequence*2+2, fmt.Sprintf("failed-%d", sequence+1), now)); err != nil {
+				t.Errorf("write failed event: %v", err)
+				return
+			}
+			select {
+			case <-handler.failures:
+			case <-ctx.Done():
+				t.Error("message failure was not reported")
+				return
+			}
+			if sequence == defaultTailHandlerFailureLimit-1 {
+				continue
+			}
+			if err := conn.WriteJSON(memberAddEvent(sequence*2 + 3)); err != nil {
+				t.Errorf("write member event: %v", err)
+				return
+			}
+			select {
+			case <-handler.members:
+			case <-ctx.Done():
+				t.Error("member success was not observed")
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = defaultTailHandlerFailureLimit
+
+	err = client.Tail(ctx, handler)
+	require.ErrorContains(t, err, "tail handler circuit breaker opened after 3 consecutive failures")
+	require.NoError(t, ctx.Err())
+	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+}
+
+func TestTailCircuitBreakerReturnsWhenHandlerIgnoresCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	handler := &nonCooperativeFailureHandler{
+		failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
+		release:  make(chan struct{}),
+	}
+	defer close(handler.release)
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		for sequence := range defaultTailHandlerFailureLimit {
+			if err := conn.WriteJSON(messageCreateEvent(sequence+2, fmt.Sprintf("blocked-%d", sequence+1), now)); err != nil {
+				t.Errorf("write blocked event: %v", err)
+				return
+			}
+			select {
+			case <-handler.failures:
+			case <-ctx.Done():
+				t.Error("non-cooperative handler failure was not reported")
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = defaultTailHandlerFailureLimit
+	client.tailHandlerTimeout = 25 * time.Millisecond
+
+	started := time.Now()
+	err = client.Tail(ctx, handler)
+	require.ErrorContains(t, err, "tail handler circuit breaker opened after 3 consecutive failures")
+	require.Less(t, time.Since(started), 3*time.Second)
+	require.NoError(t, ctx.Err())
+	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+}
+
 func TestTailFailureCircuitResetsAfterSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -878,6 +978,19 @@ func messageCreateEvent(sequence int, messageID, timestamp string) map[string]an
 	}
 }
 
+func memberAddEvent(sequence int) map[string]any {
+	return map[string]any{
+		"op": 0,
+		"t":  "GUILD_MEMBER_ADD",
+		"s":  sequence,
+		"d": map[string]any{
+			"guild_id": "g1",
+			"user":     map[string]any{"id": fmt.Sprintf("member-%d", sequence), "username": "test-member"},
+			"roles":    []string{},
+		},
+	}
+}
+
 func messageUpdateEvent(sequence int, messageID, timestamp string) map[string]any {
 	return map[string]any{
 		"op": 0,
@@ -1077,6 +1190,44 @@ func (h *persistentFailureHandler) OnTailFailure(failure TailFailure) {
 func (h *persistentFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
 	h.calls.Add(1)
 	return errors.New("persistent handler failure")
+}
+
+type mixedFailureHandler struct {
+	recordingHandler
+	failures chan TailFailure
+	members  chan struct{}
+	calls    atomic.Int32
+}
+
+func (h *mixedFailureHandler) OnTailFailure(failure TailFailure) {
+	h.failures <- failure
+}
+
+func (h *mixedFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+	h.calls.Add(1)
+	return errors.New("persistent message failure")
+}
+
+func (h *mixedFailureHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
+	h.members <- struct{}{}
+	return nil
+}
+
+type nonCooperativeFailureHandler struct {
+	recordingHandler
+	failures chan TailFailure
+	release  chan struct{}
+	calls    atomic.Int32
+}
+
+func (h *nonCooperativeFailureHandler) OnTailFailure(failure TailFailure) {
+	h.failures <- failure
+}
+
+func (h *nonCooperativeFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+	h.calls.Add(1)
+	<-h.release
+	return errors.New("blocked handler released")
 }
 
 type readyFailureHandler struct {

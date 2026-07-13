@@ -188,7 +188,7 @@ func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T
 		set last_seen_at = case message_id
 			when 'm1' then '2026-07-13 00:00:03.000000000'
 			when 'm2' then '2026-07-13 00:00:01.000000000'
-			when 'm3' then '2026-07-13 00:00:02.000000000'
+			when 'm3' then '2026-07-13 00:00:00.000000000'
 			else last_seen_at
 		end
 	`)
@@ -197,23 +197,27 @@ func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T
 	candidates, err := s.ListFailureReplayCandidates(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
-	}, 2)
+	}, nil, 2)
 	require.NoError(t, err)
 	require.Len(t, candidates, 2)
-	require.Equal(t, []string{"m2", "m3"}, []string{candidates[0].MessageID, candidates[1].MessageID})
+	require.Equal(t, []string{"m3", "m2"}, []string{candidates[0].MessageID, candidates[1].MessageID})
 
 	candidates, err = s.ListFailureReplayCandidates(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
-		GuildID:   "g1",
-	}, 10)
+	}, []string{"g1"}, 1)
 	require.NoError(t, err)
-	require.Len(t, candidates, 2)
-	require.Equal(t, []string{"m2", "m1"}, []string{candidates[0].MessageID, candidates[1].MessageID})
+	require.Len(t, candidates, 1)
+	require.Equal(t, "m2", candidates[0].MessageID)
 
-	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message"}, 1)
+	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message"}, nil, 1)
 	require.Error(t, err)
-	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message", Source: "discord"}, maxFailureLimit+1)
+	_, err = s.ListFailureReplayCandidates(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		nil,
+		maxFailureLimit+1,
+	)
 	require.ErrorContains(t, err, "at most")
 }
 
