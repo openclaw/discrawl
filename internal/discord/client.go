@@ -66,6 +66,15 @@ func (e *tailHandlerPanicError) Error() string {
 	return fmt.Sprintf("tail handler panic: %v", e.value)
 }
 
+const defaultTailHandlerFailureLimit = 3
+
+type tailFailureCircuit struct {
+	mu          sync.Mutex
+	limit       int
+	consecutive int
+	opened      bool
+}
+
 type Client struct {
 	session            *discordgo.Session
 	requestTimeout     time.Duration
@@ -232,6 +241,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	fatalCh := make(chan error, 1)
 	workCh := make(chan tailTask, c.tailQueueSize)
 	failureHandler, _ := handler.(tailFailureHandler)
+	failureCircuit := &tailFailureCircuit{limit: defaultTailHandlerFailureLimit}
 	var wg sync.WaitGroup
 	for range c.tailWorkerCount {
 		wg.Go(func() {
@@ -244,8 +254,22 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 						continue
 					}
 					if err := c.runTailTask(tailCtx, task.run); err != nil {
+						if tailCtx.Err() != nil {
+							return
+						}
 						reportTailFailure(tailCtx, failureHandler, task, err)
+						if failureCircuit.recordFailure() {
+							signalTailFatal(
+								fatalCh,
+								fmt.Errorf(
+									"tail handler circuit breaker opened after %d consecutive failures",
+									defaultTailHandlerFailureLimit,
+								),
+							)
+						}
+						continue
 					}
+					failureCircuit.recordSuccess()
 				}
 			}
 		})
@@ -428,6 +452,13 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	}
 }
 
+func signalTailFatal(fatalCh chan<- error, err error) {
+	select {
+	case fatalCh <- err:
+	default:
+	}
+}
+
 func (c *Client) enqueueTailTask(
 	ctx context.Context,
 	workCh chan<- tailTask,
@@ -439,10 +470,7 @@ func (c *Client) enqueueTailTask(
 		return
 	case workCh <- task:
 	default:
-		select {
-		case fatalCh <- errors.New("tail worker queue full"):
-		default:
-		}
+		signalTailFatal(fatalCh, errors.New("tail worker queue full"))
 	}
 }
 
@@ -461,6 +489,28 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 		}
 	}()
 	return task(taskCtx)
+}
+
+func (c *tailFailureCircuit) recordFailure() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.opened || c.limit <= 0 {
+		return false
+	}
+	c.consecutive++
+	if c.consecutive < c.limit {
+		return false
+	}
+	c.opened = true
+	return true
+}
+
+func (c *tailFailureCircuit) recordSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.opened {
+		c.consecutive = 0
+	}
 }
 
 func reportTailFailure(ctx context.Context, handler tailFailureHandler, task tailTask, err error) {

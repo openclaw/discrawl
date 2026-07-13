@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -544,6 +545,62 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 	}
 }
 
+func TestTailEscalatesAfterConsecutiveHandlerFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	handler := &persistentFailureHandler{
+		failures: make(chan TailFailure, defaultTailHandlerFailureLimit),
+	}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		for sequence := 0; sequence < defaultTailHandlerFailureLimit; sequence++ {
+			messageID := fmt.Sprintf("failed-%d", sequence+1)
+			if err := conn.WriteJSON(messageCreateEvent(sequence+2, messageID, now)); err != nil {
+				t.Errorf("write failed event: %v", err)
+				return
+			}
+			select {
+			case <-handler.failures:
+			case <-ctx.Done():
+				t.Error("tail failure was not reported")
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.tailWorkerCount = 1
+	client.tailQueueSize = defaultTailHandlerFailureLimit
+
+	err = client.Tail(ctx, handler)
+	require.ErrorContains(
+		t,
+		err,
+		"tail handler circuit breaker opened after 3 consecutive failures",
+	)
+	require.NoError(t, ctx.Err())
+	require.EqualValues(t, defaultTailHandlerFailureLimit, handler.calls.Load())
+}
+
+func TestTailFailureCircuitResetsAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	circuit := &tailFailureCircuit{limit: 2}
+	require.False(t, circuit.recordFailure())
+	circuit.recordSuccess()
+	require.False(t, circuit.recordFailure())
+	require.True(t, circuit.recordFailure())
+	require.False(t, circuit.recordFailure())
+}
+
 func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1005,6 +1062,21 @@ func (h *failureContinuationHandler) OnMemberUpsert(context.Context, string, *di
 
 func (h *failureContinuationHandler) OnMemberDelete(context.Context, string, string) error {
 	return nil
+}
+
+type persistentFailureHandler struct {
+	recordingHandler
+	failures chan TailFailure
+	calls    atomic.Int32
+}
+
+func (h *persistentFailureHandler) OnTailFailure(failure TailFailure) {
+	h.failures <- failure
+}
+
+func (h *persistentFailureHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+	h.calls.Add(1)
+	return errors.New("persistent handler failure")
 }
 
 type readyFailureHandler struct {
