@@ -437,6 +437,47 @@ func (s *Store) ListFailureReplayCandidates(
 	guildIDs []string,
 	limit int,
 ) ([]Failure, error) {
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, nil, limit)
+}
+
+// ListFailureReplayCandidatesMatchingRelatedIDs returns unresolved failures
+// whose related ID matches one of the allowed values.
+func (s *Store) ListFailureReplayCandidatesMatchingRelatedIDs(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	relatedIDs []string,
+	limit int,
+) ([]Failure, error) {
+	if strings.TrimSpace(ref.RelatedID) != "" {
+		return nil, errors.New("failure related ID and related ID list cannot both be set")
+	}
+	normalizedIDs := make([]string, 0, len(relatedIDs))
+	seen := make(map[string]struct{}, len(relatedIDs))
+	for _, relatedID := range relatedIDs {
+		relatedID = strings.TrimSpace(relatedID)
+		if relatedID == "" {
+			continue
+		}
+		if _, ok := seen[relatedID]; ok {
+			continue
+		}
+		seen[relatedID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, relatedID)
+	}
+	if len(normalizedIDs) == 0 {
+		return nil, errors.New("at least one failure related ID is required")
+	}
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, normalizedIDs, limit)
+}
+
+func (s *Store) listFailureReplayCandidates(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	relatedIDs []string,
+	limit int,
+) ([]Failure, error) {
 	ref = normalizeFailureRef(ref)
 	if ref.Operation == "" || ref.Source == "" {
 		return nil, errors.New("failure operation and source are required")
@@ -468,6 +509,12 @@ func (s *Store) ListFailureReplayCandidates(
 		if field.value != "" {
 			clauses = append(clauses, field.name+" = ?")
 			args = append(args, field.value)
+		}
+	}
+	if len(relatedIDs) > 0 {
+		clauses = append(clauses, "related_id in ("+placeholders(len(relatedIDs))+")")
+		for _, relatedID := range relatedIDs {
+			args = append(args, relatedID)
 		}
 	}
 	rows, err := s.db.QueryContext(ctx, `

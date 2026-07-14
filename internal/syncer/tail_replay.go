@@ -53,10 +53,17 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
 		return stats, err
 	}
-	candidates, err := s.store.ListFailureReplayCandidates(ctx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-	}, guildIDs, limit)
+	candidates, err := s.store.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		store.FailureRef{
+			Operation:   tailMessageFailureOperation,
+			Source:      "discord",
+			RelatedKind: tailMessageFailureRelatedKind,
+		},
+		guildIDs,
+		[]string{"create", "update", "delete"},
+		limit,
+	)
 	if err != nil {
 		return stats, err
 	}

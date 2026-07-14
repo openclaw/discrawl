@@ -389,6 +389,113 @@ func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T
 	require.ErrorContains(t, err, "at most")
 }
 
+func TestFailureReplayCandidatesCanMatchRelatedIDs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, ref := range []FailureRef{
+		{
+			Operation: "tail_message",
+			Source:    "discord",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "legacy",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "invalid",
+			RelatedKind: "message_event",
+			RelatedID:   "unknown",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "event-aware-create",
+			RelatedKind: "message_event",
+			RelatedID:   "create",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "event-aware-delete",
+			RelatedKind: "message_event",
+			RelatedID:   "delete",
+		},
+	} {
+		require.NoError(t, s.RecordFailure(ctx, ref, errors.New(ref.MessageID)))
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when 'legacy' then '2026-07-13 00:00:01.000000000'
+			when 'invalid' then '2026-07-13 00:00:02.000000000'
+			when 'event-aware-create' then '2026-07-13 00:00:03.000000000'
+			else '2026-07-13 00:00:04.000000000'
+		end
+	`)
+	require.NoError(t, err)
+
+	candidates, err := s.ListFailureReplayCandidates(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		[]string{"g1"},
+		1,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	require.Equal(t, "legacy", candidates[0].MessageID)
+
+	candidates, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{
+			Operation:   "tail_message",
+			Source:      "discord",
+			RelatedKind: "message_event",
+		},
+		[]string{"g1"},
+		[]string{"create", "delete", "create", ""},
+		10,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(
+		t,
+		[]string{"event-aware-create", "event-aware-delete"},
+		[]string{candidates[0].MessageID, candidates[1].MessageID},
+	)
+
+	_, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		nil,
+		nil,
+		1,
+	)
+	require.ErrorContains(t, err, "at least one")
+	_, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{
+			Operation: "tail_message",
+			Source:    "discord",
+			RelatedID: "create",
+		},
+		nil,
+		[]string{"delete"},
+		1,
+	)
+	require.ErrorContains(t, err, "cannot both")
+}
+
 func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -1234,7 +1234,7 @@ func TestReplayTailMessageDeleteDoesNotFetchOrCreateTailSideEffects(t *testing.T
 	requireTailFailureEventKinds(t, s, nil)
 }
 
-func TestReplayTailMessageFailuresPolicyDefersLegacyIdentities(t *testing.T) {
+func TestReplayTailMessageFailuresLeavesUnsupportedIdentitiesUntouched(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1267,7 +1267,7 @@ func TestReplayTailMessageFailuresPolicyDefersLegacyIdentities(t *testing.T) {
 	for range 2 {
 		stats, err := svc.ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
 		require.NoError(t, err)
-		require.Equal(t, tailMessageReplayStats{Candidates: 2, PolicyDeferred: 2}, stats)
+		require.Equal(t, tailMessageReplayStats{}, stats)
 	}
 	require.Empty(t, client.calls)
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
@@ -1275,8 +1275,92 @@ func TestReplayTailMessageFailuresPolicyDefersLegacyIdentities(t *testing.T) {
 	require.Equal(t, 2, report.UnresolvedCount)
 	require.Len(t, report.Failures, 2)
 	for _, failure := range report.Failures {
-		require.Equal(t, errTailMessageReplayPolicyDeferred.Error(), failure.ErrorMessage)
-		require.Equal(t, 2, failure.RetryCount)
+		require.Equal(t, context.DeadlineExceeded.Error(), failure.ErrorMessage)
+		require.Zero(t, failure.RetryCount)
+	}
+}
+
+func TestReplayTailMessageFailuresSelectsOnlyValidEventAwareIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	legacy := store.FailureRef{
+		Operation: tailMessageFailureOperation,
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "legacy",
+	}
+	invalid := store.FailureRef{
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     "g1",
+		ChannelID:   "c1",
+		MessageID:   "invalid",
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "unknown",
+	}
+	eventAware := tailMessageFailureIdentity("g1", "c1", "50", "create")
+	require.NoError(t, s.RecordFailure(ctx, legacy, errors.New("legacy failure")))
+	require.NoError(t, s.RecordFailure(ctx, invalid, errors.New("invalid failure")))
+	require.NoError(t, s.RecordFailure(ctx, eventAware, errTailMessageHandlerTimeout))
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when 'legacy' then '2026-07-13 00:00:01.000000000'
+			when 'invalid' then '2026-07-13 00:00:02.000000000'
+			else '2026-07-13 00:00:03.000000000'
+		end
+	`)
+	require.NoError(t, err)
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/50": {
+			ID:        "50",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "recovered",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	stats, err := New(client, s, nil).
+		ReplayTailMessageFailures(ctx, []string{"g1"}, 1)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+	require.Equal(t, []string{"c1/50"}, client.calls)
+
+	stats, err = New(client, s, nil).
+		ReplayTailMessageFailures(ctx, []string{"g1"}, TailMessageReplayLimit)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{}, stats)
+
+	report, err := s.ListFailures(
+		ctx,
+		store.FailureListOptions{IncludeResolved: true},
+		time.Now(),
+	)
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 3)
+	for _, failure := range report.Failures {
+		switch failure.MessageID {
+		case "legacy":
+			require.True(t, failure.ResolvedAt.IsZero())
+			require.Zero(t, failure.RetryCount)
+			require.Equal(t, "legacy failure", failure.ErrorMessage)
+		case "invalid":
+			require.True(t, failure.ResolvedAt.IsZero())
+			require.Zero(t, failure.RetryCount)
+			require.Equal(t, "invalid failure", failure.ErrorMessage)
+		case "50":
+			require.False(t, failure.ResolvedAt.IsZero())
+		default:
+			t.Fatalf("unexpected failure: %+v", failure)
+		}
 	}
 }
 
