@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -42,6 +43,9 @@ type Syncer struct {
 	messageSyncLogEvery   time.Duration
 	messageSyncWaitEvery  time.Duration
 	tailReady             func(context.Context) error
+	tailRepair            func(context.Context, SyncOptions) (SyncStats, error)
+	tailRepairJoinTimeout time.Duration
+	tailRepairMu          sync.Mutex
 }
 
 type SyncOptions struct {

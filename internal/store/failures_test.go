@@ -125,6 +125,112 @@ func TestRecordFailureWithMessageScope(t *testing.T) {
 	require.Len(t, report.Failures, 2)
 }
 
+func TestRecordFailureWithMessageScopeTimedDiagnostics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	deadline := time.Now().Add(time.Minute)
+	timedCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	diagnostics, err := s.RecordFailureWithMessageScopeTimed(timedCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, context.DeadlineExceeded)
+	require.NoError(t, err)
+	require.Equal(t, deadline, diagnostics.ContextDeadline)
+	require.GreaterOrEqual(t, diagnostics.PoolWait, time.Duration(0))
+	require.Greater(t, diagnostics.DBElapsed, time.Duration(0))
+	require.Zero(t, diagnostics.SQLiteCode)
+	require.Zero(t, diagnostics.SQLiteCategory)
+
+	conn, err := s.DB().Conn(ctx)
+	require.NoError(t, err)
+	waitCtx, waitCancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer waitCancel()
+	waitDeadline, ok := waitCtx.Deadline()
+	require.True(t, ok)
+	diagnostics, err = s.RecordFailureWithMessageScopeTimed(waitCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m2",
+	}, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, waitDeadline, diagnostics.ContextDeadline)
+	require.GreaterOrEqual(t, diagnostics.PoolWait, 20*time.Millisecond)
+	require.Zero(t, diagnostics.DBElapsed)
+	require.Zero(t, diagnostics.SQLiteCode)
+	require.NoError(t, conn.Close())
+}
+
+func TestRecordFailureWithMessageScopeTimedReportsExternalSQLiteBusy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	_, err = s.DB().ExecContext(ctx, `pragma busy_timeout = 25`)
+	require.NoError(t, err)
+
+	lockerDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	defer func() { _ = lockerDB.Close() }()
+	lockerDB.SetMaxOpenConns(1)
+	locker, err := lockerDB.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _ = locker.Close() }()
+	_, err = locker.ExecContext(ctx, `begin immediate`)
+	require.NoError(t, err)
+	defer func() { _, _ = locker.ExecContext(context.Background(), `rollback`) }()
+
+	timedCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	deadline, ok := timedCtx.Deadline()
+	require.True(t, ok)
+	diagnostics, err := s.RecordFailureWithMessageScopeTimed(timedCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, context.DeadlineExceeded)
+	require.Error(t, err)
+	require.Equal(t, deadline, diagnostics.ContextDeadline)
+	require.Greater(t, diagnostics.DBElapsed, time.Duration(0))
+	require.Equal(t, 5, diagnostics.SQLiteCode)
+	require.Equal(t, 5, diagnostics.SQLiteCategory)
+}
+
+func TestSQLiteFailureCodesUseNumericCategory(t *testing.T) {
+	t.Parallel()
+	code, category := sqliteFailureCodes(&codedFailureError{code: 6 | 2<<8})
+	require.Equal(t, 518, code)
+	require.Equal(t, 6, category)
+	code, category = sqliteFailureCodes(errors.New("plain"))
+	require.Zero(t, code)
+	require.Zero(t, category)
+}
+
+type codedFailureError struct {
+	code int
+}
+
+func (e *codedFailureError) Error() string {
+	return "coded failure"
+}
+
+func (e *codedFailureError) Code() int {
+	return e.code
+}
+
 func TestAttachmentWriteErrorIncludesSafeRowContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -14,6 +14,18 @@ const (
 	tailMessageReplayTimeout = 30 * time.Second
 )
 
+var (
+	errTailMessageReplayPolicyDeferred  = errors.New("tail message replay policy deferred")
+	errTailMessageReplayIncomplete      = errors.New("tail message replay identity is incomplete")
+	errTailMessageReplayClientMissing   = errors.New("tail message replay client is unavailable")
+	errTailMessageReplayFetch           = errors.New("tail message replay exact fetch failed")
+	errTailMessageReplayIdentity        = errors.New("tail message replay identity validation failed")
+	errTailMessageReplayMutation        = errors.New("tail message replay mutation build failed")
+	errTailMessageReplayUpsert          = errors.New("tail message replay canonical upsert failed")
+	errTailMessageReplayCursor          = errors.New("tail message replay cursor advance failed")
+	errTailMessageReplayDeleteCanonical = errors.New("tail message replay canonical delete failed")
+)
+
 type TailMessageReplayStats struct {
 	Candidates     int `json:"candidates"`
 	Recovered      int `json:"recovered"`
@@ -35,8 +47,11 @@ func (s *Syncer) ReplayTailMessageFailures(ctx context.Context, guildIDs []strin
 
 func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (tailMessageReplayStats, error) {
 	stats := tailMessageReplayStats{}
-	if s == nil || s.store == nil || s.client == nil {
+	if s == nil || s.store == nil {
 		return stats, nil
+	}
+	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
+		return stats, err
 	}
 	candidates, err := s.store.ListFailureReplayCandidates(ctx, store.FailureRef{
 		Operation: tailMessageFailureOperation,
@@ -51,8 +66,41 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			return stats, err
 		}
 		ref := tailMessageFailureRef(failure)
+		eventKind, eventAware := tailMessageReplayEventKind(failure)
+		if !eventAware {
+			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayPolicyDeferred); err != nil {
+				return stats, err
+			}
+			stats.PolicyDeferred++
+			continue
+		}
 		if failure.GuildID == "" || failure.ChannelID == "" || failure.MessageID == "" {
-			if err := s.recordTailMessageReplayFailure(ctx, ref, errors.New("tail message replay identity is incomplete")); err != nil {
+			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayIncomplete); err != nil {
+				return stats, err
+			}
+			stats.Deferred++
+			continue
+		}
+		if eventKind == "delete" {
+			if err := s.replayTailMessageDelete(ctx, ref); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return stats, ctxErr
+				}
+				if recordErr := s.recordTailMessageReplayFailure(
+					ctx,
+					ref,
+					errTailMessageReplayDeleteCanonical,
+				); recordErr != nil {
+					return stats, recordErr
+				}
+				stats.Deferred++
+				continue
+			}
+			stats.Recovered++
+			continue
+		}
+		if s.client == nil {
+			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayClientMissing); err != nil {
 				return stats, err
 			}
 			stats.Deferred++
@@ -65,14 +113,14 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			return stats, ctxErr
 		}
 		if fetchErr != nil {
-			if err := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("fetch exact tail message: %w", fetchErr)); err != nil {
+			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayFetch); err != nil {
 				return stats, err
 			}
 			stats.Deferred++
 			continue
 		}
 		if err := validateTailMessageReplay(failure, message); err != nil {
-			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, err); recordErr != nil {
+			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayIdentity); recordErr != nil {
 				return stats, recordErr
 			}
 			stats.Deferred++
@@ -86,7 +134,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
 			}
-			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("build exact tail message mutation: %w", err)); recordErr != nil {
+			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayMutation); recordErr != nil {
 				return stats, recordErr
 			}
 			stats.Deferred++
@@ -96,7 +144,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
 			}
-			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("upsert exact tail message: %w", err)); recordErr != nil {
+			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayUpsert); recordErr != nil {
 				return stats, recordErr
 			}
 			stats.Deferred++
@@ -106,7 +154,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
 			}
-			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, fmt.Errorf("advance exact tail message cursor: %w", err)); recordErr != nil {
+			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayCursor); recordErr != nil {
 				return stats, recordErr
 			}
 			stats.Deferred++
@@ -130,6 +178,25 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 		)
 	}
 	return stats, nil
+}
+
+func tailMessageReplayEventKind(failure store.Failure) (string, bool) {
+	if failure.RelatedKind != tailMessageFailureRelatedKind {
+		return "", false
+	}
+	return normalizeTailMessageEventKind(failure.RelatedID)
+}
+
+func (s *Syncer) replayTailMessageDelete(ctx context.Context, ref store.FailureRef) error {
+	if err := s.store.MarkMessageDeletedWithoutEvent(
+		ctx,
+		ref.GuildID,
+		ref.ChannelID,
+		ref.MessageID,
+	); err != nil {
+		return err
+	}
+	return s.resolveTailMessageReplay(ctx, ref)
 }
 
 func (s *Syncer) recordTailMessageReplayFailure(ctx context.Context, ref store.FailureRef, failure error) error {

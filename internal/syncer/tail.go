@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,9 @@ import (
 )
 
 func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery time.Duration) error {
+	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
+		return err
+	}
 	handler := &tailHandler{
 		guilds:                makeGuildSet(guildIDs),
 		store:                 s.store,
@@ -32,31 +36,157 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			_ = closeable.Close()
 		}
 	}
-	defer closeOnce.Do(closeClient)
-	errCh := make(chan error, 2)
+	tailDone := make(chan error, 1)
 	go func() {
-		errCh <- s.client.Tail(tailCtx, handler)
+		tailDone <- s.client.Tail(tailCtx, handler)
 	}()
 	ticker := time.NewTicker(repairEvery)
 	defer ticker.Stop()
+	var activeRepair *tailRepairRun
+	var repairDone <-chan tailRepairResult
 	for {
 		select {
 		case <-ctx.Done():
 			cancelTail()
+			repairErr := s.joinTailRepair(activeRepair, "parent_shutdown")
 			closeOnce.Do(closeClient)
-			tailErr := <-errCh
+			tailErr := <-tailDone
 			if discordclient.IsFatalTailError(tailErr) {
+				if repairErr != nil {
+					return errors.Join(tailErr, repairErr)
+				}
 				return tailErr
 			}
+			if repairErr != nil {
+				return repairErr
+			}
 			return nil
-		case err := <-errCh:
+		case err := <-tailDone:
+			cancelTail()
+			repairErr := s.joinTailRepair(activeRepair, "tail_return")
+			closeOnce.Do(closeClient)
+			if repairErr != nil {
+				return errors.Join(err, repairErr)
+			}
 			return err
+		case result := <-repairDone:
+			s.logTailRepairResult(result)
+			activeRepair = nil
+			repairDone = nil
 		case <-ticker.C:
-			if _, err := s.Sync(ctx, SyncOptions{GuildIDs: guildIDs, Full: false, RepairReason: "tail_repair"}); err != nil {
-				s.logger.Warn("repair sync failed", "err", err)
+			if activeRepair != nil {
+				continue
+			}
+			activeRepair = s.startTailRepair(ctx, guildIDs)
+			if activeRepair != nil {
+				repairDone = activeRepair.done
 			}
 		}
 	}
+}
+
+const defaultTailRepairJoinTimeout = 5 * time.Second
+
+type tailRepairResult struct {
+	err     error
+	elapsed time.Duration
+}
+
+type tailRepairRun struct {
+	cancel context.CancelFunc
+	done   <-chan tailRepairResult
+}
+
+func (s *Syncer) importTailMessageFailureFallbacks(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	imported, err := s.store.ImportTailMessageFailureFallbacks(ctx)
+	if err != nil {
+		return fmt.Errorf("import tail message failure fallbacks: %w", err)
+	}
+	if imported > 0 && s.logger != nil {
+		s.logger.Info("tail message failure fallbacks imported", "count", imported)
+	}
+	return nil
+}
+
+func (s *Syncer) startTailRepair(ctx context.Context, guildIDs []string) *tailRepairRun {
+	if s == nil || !s.tailRepairMu.TryLock() {
+		if s != nil && s.logger != nil {
+			s.logger.Warn("tail repair start skipped", "reason", "repair_already_running")
+		}
+		return nil
+	}
+	repairCtx, cancel := context.WithCancel(ctx)
+	done := make(chan tailRepairResult, 1)
+	startedAt := time.Now()
+	go func() {
+		defer s.tailRepairMu.Unlock()
+		_, err := s.runTailRepair(repairCtx, SyncOptions{
+			GuildIDs:     guildIDs,
+			Full:         false,
+			RepairReason: "tail_repair",
+		})
+		done <- tailRepairResult{err: err, elapsed: time.Since(startedAt)}
+	}()
+	return &tailRepairRun{cancel: cancel, done: done}
+}
+
+func (s *Syncer) runTailRepair(ctx context.Context, opts SyncOptions) (SyncStats, error) {
+	if s.tailRepair != nil {
+		return s.tailRepair(ctx, opts)
+	}
+	return s.Sync(ctx, opts)
+}
+
+func (s *Syncer) joinTailRepair(repair *tailRepairRun, reason string) error {
+	if repair == nil {
+		return nil
+	}
+	startedAt := time.Now()
+	repair.cancel()
+	timeout := s.tailRepairJoinTimeout
+	if timeout <= 0 {
+		timeout = defaultTailRepairJoinTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	outcome := "timed_out"
+	var result tailRepairResult
+	select {
+	case result = <-repair.done:
+		outcome = "joined"
+	case <-timer.C:
+	}
+	if s.logger != nil {
+		s.logger.Info(
+			"tail repair join completed",
+			"reason", reason,
+			"outcome", outcome,
+			"join_elapsed", time.Since(startedAt),
+		)
+	}
+	if outcome == "joined" {
+		s.logTailRepairResult(result)
+		return nil
+	}
+	return fmt.Errorf("%w: scheduled tail repair join timed out", discordclient.ErrFatalTail)
+}
+
+func (s *Syncer) logTailRepairResult(result tailRepairResult) {
+	if result.err == nil || errors.Is(result.err, context.Canceled) || s == nil || s.logger == nil {
+		return
+	}
+	failureKind := "returned_error"
+	if errors.Is(result.err, context.DeadlineExceeded) {
+		failureKind = "timeout"
+	}
+	s.logger.Warn(
+		"tail repair failed",
+		"failure_kind", failureKind,
+		"elapsed", result.elapsed,
+	)
 }
 
 type tailHandler struct {
@@ -64,6 +194,7 @@ type tailHandler struct {
 	store                 *store.Store
 	client                Client
 	attachmentTextEnabled bool
+	failureLedgerTimeout  time.Duration
 	onReady               func(context.Context) error
 	logger                *slog.Logger
 }
@@ -99,58 +230,68 @@ func (t *tailHandler) OnTailFailure(failure discordclient.TailFailure) {
 }
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
 	if !t.allowGuild(msg.GuildID) {
 		return nil
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
 	mutation, err := buildMessageMutation(ctx, msg, "", "", false, t.attachmentTextEnabled)
 	if err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalWrite)
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageEventAppend)
 	if err := t.store.AppendMessageEvent(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create", msg); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCursorAdvance)
 	if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
-	return t.resolveMessageFailures(ctx, msg.GuildID, msg.ChannelID, msg.ID)
+	return t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create")
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
 	if msg == nil {
 		return nil
 	}
 	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
 		return nil
 	}
-	guildID, channelID, messageID := msg.GuildID, msg.ChannelID, msg.ID
 	var err error
 	msg, err = t.messageUpdateSnapshot(ctx, msg)
 	if err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, guildID, channelID, messageID, err))
+		return err
 	}
 	if msg == nil || !t.allowGuild(msg.GuildID) {
 		return nil
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
 	mutation, err := buildMessageMutation(ctx, msg, "", "", false, t.attachmentTextEnabled)
 	if err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalWrite)
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageEventAppend)
 	if err := t.store.AppendMessageEvent(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update", msg); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
-		return withFailureRecordError(err, t.recordMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, err))
+		return err
 	}
-	return t.resolveMessageFailures(ctx, msg.GuildID, msg.ChannelID, msg.ID)
+	return t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update")
 }
 
 func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.Message) (*discordgo.Message, error) {
@@ -160,6 +301,7 @@ func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.
 		}
 		return msg, nil
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageUpdateRefetch)
 	full, err := t.client.ChannelMessage(ctx, msg.ChannelID, msg.ID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch message update %s/%s: %w", msg.ChannelID, msg.ID, err)
@@ -218,13 +360,19 @@ func isPartialMessageUpdate(msg *discordgo.Message) bool {
 }
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
 	if !t.allowGuild(evt.GuildID) {
 		return nil
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalDelete)
 	if err := t.store.MarkMessageDeleted(ctx, evt.GuildID, evt.ChannelID, evt.ID, evt); err != nil {
 		return err
 	}
-	return t.store.SetSyncState(ctx, "tail:last_event", evt.ID)
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
+	if err := t.store.SetSyncState(ctx, "tail:last_event", evt.ID); err != nil {
+		return err
+	}
+	return t.resolveMessageFailure(ctx, evt.GuildID, evt.ChannelID, evt.ID, "delete")
 }
 
 func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Channel) error {

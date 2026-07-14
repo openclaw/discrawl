@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -14,9 +15,17 @@ import (
 
 const syncMessagesFailureOperation = "sync_messages"
 
-const tailMessageFailureOperation = "tail_message"
+const (
+	tailMessageFailureOperation     = "tail_message"
+	tailMessageFailureRelatedKind   = "message_event"
+	tailMessageFailureLedgerTimeout = 250 * time.Millisecond
+)
 
-var errTailMessageHandlerPanic = errors.New("tail message handler panicked")
+var (
+	errTailMessageHandlerReturned = errors.New("tail message handler returned an error")
+	errTailMessageHandlerPanic    = errors.New("tail message handler panicked")
+	errTailMessageHandlerTimeout  = errors.New("tail message handler timed out")
+)
 
 func (s *Syncer) recordChannelFailure(ctx context.Context, guildID, channelID string, failure error) error {
 	if s == nil || s.store == nil || failure == nil {
@@ -62,70 +71,225 @@ func withFailureRecordError(failure, recordErr error) error {
 }
 
 func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error {
-	if !strings.HasPrefix(failure.EventType, "MESSAGE_") {
+	eventKind, messageEvent := normalizeTailMessageEventKind(failure.EventType)
+	if !messageEvent {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(failure.EventType)), "MESSAGE_") {
+			return errors.New("record tail message failure: unsupported event type")
+		}
 		return nil
 	}
-	var durableFailure error
-	var failureLabel string
-	switch failure.Kind {
-	case "timeout":
-		durableFailure = context.DeadlineExceeded
-		failureLabel = "timed-out"
-	case "panic":
-		durableFailure = errTailMessageHandlerPanic
-		failureLabel = "panicked"
-	default:
-		return nil
+	failureKind, durableFailure, ok := tailMessageFailureSentinel(failure.Kind)
+	if !ok {
+		return errors.New("record tail message failure: unsupported failure kind")
 	}
 	if failure.MessageID == "" {
-		return fmt.Errorf("record %s message failure: missing message id", failureLabel)
+		return errors.New("record tail message failure: missing message id")
 	}
 	if t == nil || t.store == nil {
-		return fmt.Errorf("record %s message failure: missing store", failureLabel)
+		return errors.New("record tail message failure: missing store")
 	}
 
-	ledgerCtx, cancel := failureLedgerContext(context.Background())
-	defer cancel()
-	if err := t.store.RecordFailureWithMessageScope(ledgerCtx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   failure.GuildID,
-		ChannelID: failure.ChannelID,
-		MessageID: failure.MessageID,
-	}, durableFailure); err != nil {
-		return fmt.Errorf("record %s message failure: %w", failureLabel, err)
+	ref := store.FailureRef{
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     failure.GuildID,
+		ChannelID:   failure.ChannelID,
+		MessageID:   failure.MessageID,
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   eventKind,
 	}
-	return nil
+	fallback := store.TailMessageFailureFallback{
+		EventKind:   eventKind,
+		FailureKind: failureKind,
+		GuildID:     failure.GuildID,
+		ChannelID:   failure.ChannelID,
+		MessageID:   failure.MessageID,
+	}
+
+	var (
+		diagnostics     store.FailurePersistenceDiagnostics
+		ledgerElapsed   time.Duration
+		fallbackElapsed time.Duration
+		ledgerAttempted bool
+		ledgerPersisted bool
+		fallbackTried   bool
+		fallbackSaved   bool
+	)
+	if !failure.ForceFallback {
+		ledgerAttempted = true
+		ledgerStartedAt := time.Now()
+		ledgerCtx, cancel := context.WithTimeout(context.Background(), t.tailFailureLedgerTimeout())
+		var ledgerErr error
+		diagnostics, ledgerErr = t.store.RecordFailureWithMessageScopeTimed(ledgerCtx, ref, durableFailure)
+		cancel()
+		ledgerElapsed = time.Since(ledgerStartedAt)
+		ledgerPersisted = ledgerErr == nil
+	}
+	if failure.ForceFallback || !ledgerPersisted {
+		fallbackTried = true
+		fallbackStartedAt := time.Now()
+		fallbackErr := t.store.PersistTailMessageFailureFallback(fallback)
+		fallbackElapsed = time.Since(fallbackStartedAt)
+		fallbackSaved = fallbackErr == nil
+	}
+	t.logTailFailureDurability(
+		failure,
+		eventKind,
+		failureKind,
+		diagnostics,
+		ledgerElapsed,
+		fallbackElapsed,
+		ledgerAttempted,
+		ledgerPersisted,
+		fallbackTried,
+		fallbackSaved,
+	)
+	if ledgerPersisted || fallbackSaved {
+		return nil
+	}
+	return errors.New("record tail message failure: no durable path succeeded")
 }
 
-func (t *tailHandler) recordMessageFailure(ctx context.Context, guildID, channelID, messageID string, failure error) error {
-	if t == nil || t.store == nil || failure == nil {
+func (t *tailHandler) tailFailureLedgerTimeout() time.Duration {
+	if t != nil && t.failureLedgerTimeout > 0 {
+		return t.failureLedgerTimeout
+	}
+	return tailMessageFailureLedgerTimeout
+}
+
+func (t *tailHandler) logTailFailureDurability(
+	failure discordclient.TailFailure,
+	eventKind string,
+	failureKind string,
+	diagnostics store.FailurePersistenceDiagnostics,
+	ledgerElapsed time.Duration,
+	fallbackElapsed time.Duration,
+	ledgerAttempted bool,
+	ledgerPersisted bool,
+	fallbackAttempted bool,
+	fallbackPersisted bool,
+) {
+	if t == nil || t.logger == nil {
+		return
+	}
+	durablePath := "none"
+	switch {
+	case ledgerPersisted:
+		durablePath = "ledger"
+	case fallbackPersisted:
+		durablePath = "fallback"
+	}
+	t.logger.LogAttrs(
+		context.Background(),
+		slog.LevelWarn,
+		"tail message failure durability",
+		slog.String("event_type", eventKind),
+		slog.String("failure_kind", failureKind),
+		slog.String("guild_id", failure.GuildID),
+		slog.String("channel_id", failure.ChannelID),
+		slog.String("message_id", failure.MessageID),
+		slog.String("handler_stage", safeTailFailureStage(failure.HandlerStage)),
+		slog.Duration("handler_stage_elapsed", failure.HandlerStageElapsed),
+		slog.Duration("handler_elapsed", failure.HandlerElapsed),
+		slog.String("join_outcome", safeTailFailureJoinOutcome(failure.JoinOutcome)),
+		slog.Duration("join_elapsed", failure.JoinElapsed),
+		slog.Bool("forced_fallback", failure.ForceFallback),
+		slog.Bool("ledger_attempted", ledgerAttempted),
+		slog.Bool("ledger_persisted", ledgerPersisted),
+		slog.Duration("sql_pool_wait", diagnostics.PoolWait),
+		slog.Duration("db_elapsed", diagnostics.DBElapsed),
+		slog.Duration("ledger_elapsed", ledgerElapsed),
+		slog.Time("ledger_deadline", diagnostics.ContextDeadline),
+		slog.Int("sqlite_code", diagnostics.SQLiteCode),
+		slog.Int("sqlite_category", diagnostics.SQLiteCategory),
+		slog.Bool("fallback_attempted", fallbackAttempted),
+		slog.Bool("fallback_persisted", fallbackPersisted),
+		slog.Duration("fallback_elapsed", fallbackElapsed),
+		slog.String("durable_path", durablePath),
+	)
+}
+
+func safeTailFailureStage(stage discordclient.TailFailureStage) string {
+	switch stage {
+	case discordclient.TailFailureStageHandler,
+		discordclient.TailFailureStageMessageUpdateRefetch,
+		discordclient.TailFailureStageMessageBuild,
+		discordclient.TailFailureStageCanonicalWrite,
+		discordclient.TailFailureStageEventAppend,
+		discordclient.TailFailureStageStateUpdate,
+		discordclient.TailFailureStageCursorAdvance,
+		discordclient.TailFailureStageCanonicalDelete,
+		discordclient.TailFailureStageFailureResolution:
+		return string(stage)
+	default:
+		return string(discordclient.TailFailureStageUnknown)
+	}
+}
+
+func safeTailFailureJoinOutcome(outcome discordclient.TailFailureJoinOutcome) string {
+	switch outcome {
+	case discordclient.TailFailureJoinNotRequired,
+		discordclient.TailFailureJoinJoined,
+		discordclient.TailFailureJoinTimedOut:
+		return string(outcome)
+	default:
+		return string(discordclient.TailFailureJoinNotRequired)
+	}
+}
+
+func normalizeTailMessageEventKind(eventType string) (string, bool) {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	eventType = strings.TrimPrefix(eventType, "message_")
+	switch eventType {
+	case "create", "update", "delete":
+		return eventType, true
+	default:
+		return "", false
+	}
+}
+
+func tailMessageFailureSentinel(kind string) (string, error, bool) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	kind = strings.ReplaceAll(kind, "-", "_")
+	switch kind {
+	case "returned_error":
+		return kind, errTailMessageHandlerReturned, true
+	case "panic":
+		return kind, errTailMessageHandlerPanic, true
+	case "timeout":
+		return kind, errTailMessageHandlerTimeout, true
+	default:
+		return "", nil, false
+	}
+}
+
+func tailMessageFailureIdentity(guildID, channelID, messageID, eventKind string) store.FailureRef {
+	return store.FailureRef{
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     guildID,
+		ChannelID:   channelID,
+		MessageID:   messageID,
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   eventKind,
+	}
+}
+
+func (t *tailHandler) resolveMessageFailure(ctx context.Context, guildID, channelID, messageID, eventKind string) error {
+	if t == nil || t.store == nil {
 		return nil
+	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageFailureResolution)
+	eventKind, ok := normalizeTailMessageEventKind(eventKind)
+	if !ok {
+		return errors.New("resolve tail message failure: unsupported event type")
 	}
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
-	return t.store.RecordFailure(ledgerCtx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   guildID,
-		ChannelID: channelID,
-		MessageID: messageID,
-	}, failure)
-}
-
-func (t *tailHandler) resolveMessageFailures(ctx context.Context, guildID, channelID, messageID string) error {
-	if t == nil || t.store == nil {
-		return nil
-	}
-	ledgerCtx, cancel := failureLedgerContext(ctx)
-	defer cancel()
-	return t.store.ResolveFailures(ledgerCtx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   guildID,
-		ChannelID: channelID,
-		MessageID: messageID,
-	})
+	return t.store.ResolveFailureIdentity(
+		ledgerCtx,
+		tailMessageFailureIdentity(guildID, channelID, messageID, eventKind),
+	)
 }
 
 func (s *Syncer) resolveTailMessageFailuresForMessages(ctx context.Context, messages []*discordgo.Message, fallbackGuildID string) error {
@@ -156,13 +320,17 @@ func (s *Syncer) resolveTailMessageFailuresForMessages(ctx context.Context, mess
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
 	for key, ids := range messageIDs {
-		if err := s.store.ResolveMessageFailures(ledgerCtx, store.FailureRef{
-			Operation: tailMessageFailureOperation,
-			Source:    "discord",
-			GuildID:   key.guildID,
-			ChannelID: key.channelID,
-		}, ids); err != nil {
-			return err
+		for _, eventKind := range []string{"create", "update"} {
+			if err := s.store.ResolveMessageFailures(ledgerCtx, store.FailureRef{
+				Operation:   tailMessageFailureOperation,
+				Source:      "discord",
+				GuildID:     key.guildID,
+				ChannelID:   key.channelID,
+				RelatedKind: tailMessageFailureRelatedKind,
+				RelatedID:   eventKind,
+			}, ids); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

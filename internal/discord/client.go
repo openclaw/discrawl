@@ -26,13 +26,42 @@ type TailReadyHandler interface {
 	OnTailReady(context.Context) error
 }
 
+type TailFailureStage string
+
+const (
+	TailFailureStageUnknown              TailFailureStage = "unknown"
+	TailFailureStageHandler              TailFailureStage = "handler"
+	TailFailureStageMessageUpdateRefetch TailFailureStage = "message_update_refetch"
+	TailFailureStageMessageBuild         TailFailureStage = "message_build"
+	TailFailureStageCanonicalWrite       TailFailureStage = "canonical_write"
+	TailFailureStageEventAppend          TailFailureStage = "event_append"
+	TailFailureStageStateUpdate          TailFailureStage = "state_update"
+	TailFailureStageCursorAdvance        TailFailureStage = "cursor_advance"
+	TailFailureStageCanonicalDelete      TailFailureStage = "canonical_delete"
+	TailFailureStageFailureResolution    TailFailureStage = "failure_resolution"
+)
+
+type TailFailureJoinOutcome string
+
+const (
+	TailFailureJoinNotRequired TailFailureJoinOutcome = "not_required"
+	TailFailureJoinJoined      TailFailureJoinOutcome = "joined"
+	TailFailureJoinTimedOut    TailFailureJoinOutcome = "timed_out"
+)
+
 type TailFailure struct {
-	EventType string
-	Kind      string
-	GuildID   string
-	ChannelID string
-	MessageID string
-	UserID    string
+	EventType           string
+	Kind                string
+	GuildID             string
+	ChannelID           string
+	MessageID           string
+	UserID              string
+	HandlerStage        TailFailureStage
+	HandlerStageElapsed time.Duration
+	HandlerElapsed      time.Duration
+	JoinElapsed         time.Duration
+	JoinOutcome         TailFailureJoinOutcome
+	ForceFallback       bool
 }
 
 type tailFailureHandler interface {
@@ -62,18 +91,20 @@ const (
 )
 
 type tailFailureMetadata struct {
-	mu        sync.RWMutex
-	guildID   string
-	channelID string
-	messageID string
-	userID    string
+	mu              sync.RWMutex
+	guildID         string
+	channelID       string
+	messageID       string
+	userID          string
+	handlerStage    TailFailureStage
+	stageStartedAt  time.Time
+	stageObservedAt time.Time
+	stageFrozen     bool
 }
 
 type tailFailureMetadataContextKey struct{}
 
-type tailHandlerPanicError struct {
-	value any
-}
+type tailHandlerPanicError struct{}
 
 type tailHandlerDeadlineError struct {
 	timeout     time.Duration
@@ -82,8 +113,16 @@ type tailHandlerDeadlineError struct {
 	returnedNil bool
 }
 
+type tailHandlerJoinError struct {
+	cause error
+}
+
+type GatewayOpenError struct {
+	cause error
+}
+
 func (e *tailHandlerPanicError) Error() string {
-	return fmt.Sprintf("tail handler panic: %v", e.value)
+	return "tail handler panic"
 }
 
 func (e *tailHandlerDeadlineError) Error() string {
@@ -104,14 +143,37 @@ func (e *tailHandlerDeadlineError) Unwrap() error {
 	return context.DeadlineExceeded
 }
 
-func (e *tailHandlerDeadlineError) requiresSynchronousRecord() bool {
-	return e.detached || e.returnedNil
+func (e *tailHandlerJoinError) Error() string {
+	return "tail handler did not stop after cancellation"
+}
+
+func (e *tailHandlerJoinError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *GatewayOpenError) Error() string {
+	return "open discord gateway"
+}
+
+func (e *GatewayOpenError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 var ErrFatalTail = errors.New("fatal tail failure")
 
 func IsFatalTailError(err error) bool {
 	return errors.Is(err, ErrFatalTail)
+}
+
+func IsGatewayOpenError(err error) bool {
+	var gatewayErr *GatewayOpenError
+	return errors.As(err, &gatewayErr)
 }
 
 const (
@@ -139,13 +201,25 @@ type tailTaskResult struct {
 	completedAt time.Time
 }
 
+type tailTaskExecution struct {
+	err                error
+	observedAt         time.Time
+	handlerElapsed     time.Duration
+	joinElapsed        time.Duration
+	joinOutcome        TailFailureJoinOutcome
+	forceFallback      bool
+	parentCancellation bool
+	handlerReturnedErr bool
+}
+
 type Client struct {
-	session            *discordgo.Session
-	requestTimeout     time.Duration
-	tailWorkerCount    int
-	tailQueueSize      int
-	tailHandlerTimeout time.Duration
-	tailGraceTimerHook func()
+	session              *discordgo.Session
+	requestTimeout       time.Duration
+	tailWorkerCount      int
+	tailQueueSize        int
+	tailHandlerTimeout   time.Duration
+	tailGraceTimerHook   func()
+	tailTaskDequeuedHook func(context.Context)
 }
 
 func New(token string) (*Client, error) {
@@ -158,6 +232,9 @@ func New(token string) (*Client, error) {
 		discordgo.IntentsMessageContent |
 		discordgo.IntentsGuildMembers
 	session.SyncEvents = true
+	// discordgo logs gateway URLs and raw transport errors; callers receive
+	// sanitized typed errors from this client instead.
+	session.LogLevel = -1
 	return &Client{
 		session:            session,
 		requestTimeout:     45 * time.Second,
@@ -317,56 +394,71 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	startWorker := func(queue <-chan tailTask) {
 		wg.Go(func() {
 			for {
+				if tailCtx.Err() != nil {
+					return
+				}
 				select {
 				case <-tailCtx.Done():
 					return
 				case task := <-queue:
+					if c.tailTaskDequeuedHook != nil {
+						c.tailTaskDequeuedHook(tailCtx)
+					}
+					if tailCtx.Err() != nil {
+						return
+					}
 					if task.run == nil {
 						continue
 					}
-					if err := c.runTailTask(tailCtx, task.run); err != nil {
+					if task.failureMetadata == nil {
+						task.failureMetadata = newTailFailureMetadata(task)
+					}
+					execution := c.runTailTaskExecution(tailCtx, task.failureMetadata, task.run)
+					if err := execution.err; err != nil {
 						var deadlineErr *tailHandlerDeadlineError
 						hasDeadlineErr := errors.As(err, &deadlineErr)
 						var panicErr *tailHandlerPanicError
 						hasPanicErr := errors.As(err, &panicErr)
-						hasMessagePanicErr := hasPanicErr && strings.HasPrefix(task.eventType, "MESSAGE_")
-						if tailCtx.Err() != nil && !hasDeadlineErr && !hasMessagePanicErr {
+						messageScoped := strings.HasPrefix(task.eventType, "MESSAGE_")
+						parentJoinTimedOut := execution.parentCancellation && execution.forceFallback
+						parentMessageFailure := execution.parentCancellation &&
+							execution.handlerReturnedErr &&
+							messageScoped
+						if tailCtx.Err() != nil &&
+							!hasDeadlineErr &&
+							!hasPanicErr &&
+							!parentJoinTimedOut &&
+							!parentMessageFailure {
 							return
 						}
-						failure := newTailFailure(task, err)
+
+						failure := newTailFailureFromExecution(task, execution)
 						if deadlineErr != nil && deadlineErr.detached {
 							cancel()
 						}
-						var recordErr error
-						switch {
-						case hasMessagePanicErr && failureRecorder == nil:
-							recordErr = errors.New("tail failure recorder unavailable")
-						case hasMessagePanicErr:
-							recordErr = recordTailFailure(failureRecorder, failure)
-						case deadlineErr != nil && deadlineErr.requiresSynchronousRecord():
-							recordErr = recordTailFailure(failureRecorder, failure)
-						}
-						if hasMessagePanicErr && recordErr != nil {
+						if parentJoinTimedOut {
 							cancel()
-							fatal.signal(errors.New("persist tail handler panic failure"))
-							return
+						}
+						if messageScoped {
+							if recordTailFailure(failureRecorder, failure) != nil {
+								cancel()
+								fatal.signal(errors.New("persist tail message failure"))
+								return
+							}
 						}
 						reportTailFailure(failureHandler, failure)
-						if deadlineErr != nil && (deadlineErr.detached || recordErr != nil) {
+						if parentJoinTimedOut {
+							fatal.signal(errors.New("tail handler did not stop after cancellation"))
+							return
+						}
+						if deadlineErr != nil && deadlineErr.detached {
 							cancel()
-							fatalErr := fmt.Errorf(
+							fatal.signal(fmt.Errorf(
 								"tail %s handler timed out for %s: %w",
 								task.failureClass,
 								task.eventType,
 								err,
-							)
-							if recordErr != nil {
-								fatalErr = errors.Join(
-									fatalErr,
-									fmt.Errorf("persist timed-out tail failure: %w", recordErr),
-								)
-							}
-							fatal.signal(fatalErr)
+							))
 							return
 						}
 						failureCircuit := failureCircuits[task.failureClass]
@@ -428,28 +520,36 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			msg,
 			before,
 		)
-		task.failureMetadata = newTailFailureMetadata(task)
-		metadata := task.failureMetadata
 		task.run = func(taskCtx context.Context) error {
-			taskCtx = withTailFailureMetadata(taskCtx, metadata)
 			var refetchErr error
 			if msg != nil && msg.Content == "" {
+				UpdateTailFailureStage(taskCtx, TailFailureStageMessageUpdateRefetch)
 				full, err := session.ChannelMessage(msg.ChannelID, msg.ID, discordgo.WithContext(taskCtx))
-				if err == nil && full != nil {
+				switch {
+				case err != nil:
+					refetchErr = fmt.Errorf("refetch message update: %w", err)
+				case full != nil:
 					if err := validateRefetchedMessageIdentity(msg, full); err != nil {
 						refetchErr = err
 					} else {
 						msg = full
 						EnrichTailFailureMetadata(taskCtx, full)
 					}
-				} else if err == nil {
+				default:
 					msg = full
 				}
 			}
 			if msg == nil {
 				return refetchErr
 			}
-			return errors.Join(refetchErr, handler.OnMessageUpdate(taskCtx, msg))
+			// A failed refetch does not suppress the partial update, but it remains
+			// an event failure even when the handler accepts that recovery input.
+			UpdateTailFailureStage(taskCtx, TailFailureStageHandler)
+			handlerErr := handler.OnMessageUpdate(taskCtx, msg)
+			if refetchErr != nil {
+				UpdateTailFailureStage(taskCtx, TailFailureStageMessageUpdateRefetch)
+			}
+			return errors.Join(refetchErr, handlerErr)
 		}
 		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
@@ -556,18 +656,22 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		))
 	})
 	opened := false
-	defer func() {
-		cancel()
-		for _, remove := range slices.Backward(removers) {
-			remove()
-		}
-		if opened {
-			_ = c.session.Close()
-		}
-		wg.Wait()
-	}()
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			cancel()
+			for _, remove := range slices.Backward(removers) {
+				remove()
+			}
+			wg.Wait()
+			if opened {
+				_ = c.session.Close()
+			}
+		})
+	}
+	defer cleanup()
 	if err := c.session.Open(); err != nil {
-		return err
+		return &GatewayOpenError{cause: err}
 	}
 	opened = true
 	if ready, ok := handler.(TailReadyHandler); ok {
@@ -577,17 +681,13 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	}
 	select {
 	case <-ctx.Done():
-		cancel()
-		wg.Wait()
-		if err := fatal.err(); err != nil {
-			return err
-		}
-		return nil
 	case <-fatal.ready:
-		cancel()
-		wg.Wait()
-		return fatal.err()
 	}
+	cleanup()
+	if err := fatal.err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) enqueueTailTask(
@@ -643,33 +743,32 @@ func (s *tailFatalState) err() error {
 }
 
 func (c *Client) runTailTask(ctx context.Context, task func(context.Context) error) (err error) {
-	if c.tailHandlerTimeout <= 0 {
-		taskCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		result := make(chan tailTaskResult, 1)
-		go func() {
-			result <- tailTaskResult{
-				err:         runTailTaskSafely(taskCtx, task),
-				completedAt: time.Now(),
-			}
-		}()
-		select {
-		case result := <-result:
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return tailTaskResultAfterParentCancellation(ctxErr, result)
-			}
-			return result.err
-		case <-ctx.Done():
-			return awaitTailTaskParentCancellation(ctx.Err(), result)
-		}
-	}
+	return c.runTailTaskExecution(ctx, nil, task).err
+}
 
-	deadline := time.Now().Add(c.tailHandlerTimeout)
-	graceDeadline := deadline.Add(tailHandlerCancelGrace)
-	parentDeadline, hasParentDeadline := ctx.Deadline()
-	parentDeadlineBeforeLocal := hasParentDeadline && parentDeadline.Before(deadline)
-	taskCtx, cancel := context.WithDeadline(ctx, deadline)
+func (c *Client) runTailTaskExecution(
+	ctx context.Context,
+	metadata *tailFailureMetadata,
+	task func(context.Context) error,
+) tailTaskExecution {
+	startedAt := time.Now()
+	if metadata == nil {
+		metadata = &tailFailureMetadata{}
+	}
+	metadata.setStageAt(TailFailureStageHandler, startedAt)
+
+	var (
+		taskCtx context.Context
+		cancel  context.CancelFunc
+	)
+	if c.tailHandlerTimeout > 0 {
+		taskCtx, cancel = context.WithDeadline(ctx, startedAt.Add(c.tailHandlerTimeout))
+	} else {
+		taskCtx, cancel = context.WithCancel(ctx)
+	}
+	taskCtx = withTailFailureMetadata(taskCtx, metadata)
 	defer cancel()
+
 	result := make(chan tailTaskResult, 1)
 	go func() {
 		result <- tailTaskResult{
@@ -677,6 +776,28 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 			completedAt: time.Now(),
 		}
 	}()
+
+	if c.tailHandlerTimeout <= 0 {
+		select {
+		case result := <-result:
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				canceledAt := time.Now()
+				metadata.freezeStageAt(canceledAt)
+				return tailTaskExecutionAfterParentCancellation(ctxErr, result, startedAt, canceledAt)
+			}
+			metadata.freezeStageAt(result.completedAt)
+			return completedTailTaskExecution(result, startedAt)
+		case <-ctx.Done():
+			canceledAt := time.Now()
+			metadata.freezeStageAt(canceledAt)
+			return awaitTailTaskParentCancellationExecution(ctx.Err(), result, startedAt, canceledAt)
+		}
+	}
+
+	deadline := startedAt.Add(c.tailHandlerTimeout)
+	graceDeadline := deadline.Add(tailHandlerCancelGrace)
+	parentDeadline, hasParentDeadline := ctx.Deadline()
+	parentDeadlineBeforeLocal := hasParentDeadline && parentDeadline.Before(deadline)
 	select {
 	case result := <-result:
 		if parentErr := tailTaskParentError(
@@ -684,11 +805,19 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 			parentDeadlineBeforeLocal,
 			deadline,
 		); parentErr != nil {
-			return tailTaskResultAfterParentCancellation(parentErr, result)
+			canceledAt := time.Now()
+			metadata.freezeStageAt(canceledAt)
+			return tailTaskExecutionAfterParentCancellation(parentErr, result, startedAt, canceledAt)
 		}
-		return classifyTailTaskResult(
+		if result.completedAt.Before(deadline) {
+			metadata.freezeStageAt(result.completedAt)
+		} else {
+			metadata.freezeStageAt(deadline)
+		}
+		return classifyTailTaskExecution(
 			c.tailHandlerTimeout,
 			result,
+			startedAt,
 			deadline,
 			graceDeadline,
 		)
@@ -698,33 +827,81 @@ func (c *Client) runTailTask(ctx context.Context, task func(context.Context) err
 			parentDeadlineBeforeLocal,
 			deadline,
 		); parentErr != nil {
-			return awaitTailTaskParentCancellation(parentErr, result)
+			canceledAt := time.Now()
+			metadata.freezeStageAt(canceledAt)
+			return awaitTailTaskParentCancellationExecution(parentErr, result, startedAt, canceledAt)
 		}
-		return c.awaitTailTaskDeadline(result, deadline, graceDeadline)
+		metadata.freezeStageAt(deadline)
+		return c.awaitTailTaskDeadlineExecution(result, startedAt, deadline, graceDeadline)
 	}
 }
 
 func tailTaskResultAfterParentCancellation(parentErr error, result tailTaskResult) error {
-	var panicErr *tailHandlerPanicError
-	if errors.As(result.err, &panicErr) {
-		return result.err
+	return tailTaskExecutionAfterParentCancellation(
+		parentErr,
+		result,
+		time.Time{},
+		time.Now(),
+	).err
+}
+
+func tailTaskExecutionAfterParentCancellation(
+	parentErr error,
+	result tailTaskResult,
+	startedAt time.Time,
+	canceledAt time.Time,
+) tailTaskExecution {
+	execution := tailTaskExecution{
+		err:                parentErr,
+		observedAt:         canceledAt,
+		handlerElapsed:     elapsedBetween(startedAt, result.completedAt),
+		joinElapsed:        boundedJoinElapsed(canceledAt, result.completedAt),
+		joinOutcome:        TailFailureJoinJoined,
+		parentCancellation: true,
+		handlerReturnedErr: result.err != nil,
 	}
-	return parentErr
+	if result.err != nil {
+		execution.err = result.err
+		execution.observedAt = result.completedAt
+	}
+	return execution
 }
 
 func awaitTailTaskParentCancellation(parentErr error, result <-chan tailTaskResult) error {
+	return awaitTailTaskParentCancellationExecution(
+		parentErr,
+		result,
+		time.Now(),
+		time.Now(),
+	).err
+}
+
+func awaitTailTaskParentCancellationExecution(
+	parentErr error,
+	result <-chan tailTaskResult,
+	startedAt time.Time,
+	canceledAt time.Time,
+) tailTaskExecution {
 	select {
 	case result := <-result:
-		return tailTaskResultAfterParentCancellation(parentErr, result)
+		return tailTaskExecutionAfterParentCancellation(parentErr, result, startedAt, canceledAt)
 	default:
 	}
 	timer := time.NewTimer(tailHandlerCancelGrace)
 	defer timer.Stop()
 	select {
 	case result := <-result:
-		return tailTaskResultAfterParentCancellation(parentErr, result)
+		return tailTaskExecutionAfterParentCancellation(parentErr, result, startedAt, canceledAt)
 	case <-timer.C:
-		return parentErr
+		return tailTaskExecution{
+			err:                &tailHandlerJoinError{cause: parentErr},
+			observedAt:         canceledAt,
+			handlerElapsed:     elapsedBetween(startedAt, time.Now()),
+			joinElapsed:        tailHandlerCancelGrace,
+			joinOutcome:        TailFailureJoinTimedOut,
+			forceFallback:      true,
+			parentCancellation: true,
+		}
 	}
 }
 
@@ -748,11 +925,26 @@ func (c *Client) awaitTailTaskDeadline(
 	deadline time.Time,
 	graceDeadline time.Time,
 ) error {
+	return c.awaitTailTaskDeadlineExecution(
+		result,
+		time.Time{},
+		deadline,
+		graceDeadline,
+	).err
+}
+
+func (c *Client) awaitTailTaskDeadlineExecution(
+	result <-chan tailTaskResult,
+	startedAt time.Time,
+	deadline time.Time,
+	graceDeadline time.Time,
+) tailTaskExecution {
 	select {
 	case result := <-result:
-		return classifyTailTaskResult(
+		return classifyTailTaskExecution(
 			c.tailHandlerTimeout,
 			result,
+			startedAt,
 			deadline,
 			graceDeadline,
 		)
@@ -760,9 +952,10 @@ func (c *Client) awaitTailTaskDeadline(
 	}
 	graceRemaining := time.Until(graceDeadline)
 	if graceRemaining <= 0 {
-		return finalTailTaskDeadlineResult(
+		return finalTailTaskDeadlineExecution(
 			c.tailHandlerTimeout,
 			result,
+			startedAt,
 			deadline,
 			graceDeadline,
 		)
@@ -771,9 +964,10 @@ func (c *Client) awaitTailTaskDeadline(
 	defer timer.Stop()
 	select {
 	case result := <-result:
-		return classifyTailTaskResult(
+		return classifyTailTaskExecution(
 			c.tailHandlerTimeout,
 			result,
+			startedAt,
 			deadline,
 			graceDeadline,
 		)
@@ -781,9 +975,10 @@ func (c *Client) awaitTailTaskDeadline(
 		if c.tailGraceTimerHook != nil {
 			c.tailGraceTimerHook()
 		}
-		return finalTailTaskDeadlineResult(
+		return finalTailTaskDeadlineExecution(
 			c.tailHandlerTimeout,
 			result,
+			startedAt,
 			deadline,
 			graceDeadline,
 		)
@@ -796,13 +991,41 @@ func classifyTailTaskResult(
 	deadline time.Time,
 	graceDeadline time.Time,
 ) error {
+	return classifyTailTaskExecution(
+		timeout,
+		result,
+		time.Time{},
+		deadline,
+		graceDeadline,
+	).err
+}
+
+func classifyTailTaskExecution(
+	timeout time.Duration,
+	result tailTaskResult,
+	startedAt time.Time,
+	deadline time.Time,
+	graceDeadline time.Time,
+) tailTaskExecution {
 	switch {
 	case result.completedAt.Before(deadline):
-		return result.err
+		return completedTailTaskExecution(result, startedAt)
 	case result.completedAt.Before(graceDeadline):
-		return tailTaskDeadlineResult(timeout, result.err)
+		return tailTaskExecution{
+			err:            tailTaskDeadlineResult(timeout, result.err),
+			observedAt:     deadline,
+			handlerElapsed: elapsedBetween(startedAt, result.completedAt),
+			joinElapsed:    boundedJoinElapsed(deadline, result.completedAt),
+			joinOutcome:    TailFailureJoinJoined,
+		}
 	default:
-		return tailTaskDetachedDeadlineError(timeout)
+		return tailTaskExecution{
+			err:            tailTaskDetachedDeadlineError(timeout),
+			observedAt:     deadline,
+			handlerElapsed: elapsedBetween(startedAt, graceDeadline),
+			joinElapsed:    tailHandlerCancelGrace,
+			joinOutcome:    TailFailureJoinJoined,
+		}
 	}
 }
 
@@ -812,12 +1035,60 @@ func finalTailTaskDeadlineResult(
 	deadline time.Time,
 	graceDeadline time.Time,
 ) error {
+	return finalTailTaskDeadlineExecution(
+		timeout,
+		result,
+		time.Time{},
+		deadline,
+		graceDeadline,
+	).err
+}
+
+func finalTailTaskDeadlineExecution(
+	timeout time.Duration,
+	result <-chan tailTaskResult,
+	startedAt time.Time,
+	deadline time.Time,
+	graceDeadline time.Time,
+) tailTaskExecution {
 	select {
 	case result := <-result:
-		return classifyTailTaskResult(timeout, result, deadline, graceDeadline)
+		return classifyTailTaskExecution(timeout, result, startedAt, deadline, graceDeadline)
 	default:
-		return tailTaskDetachedDeadlineError(timeout)
+		return tailTaskExecution{
+			err:            tailTaskDetachedDeadlineError(timeout),
+			observedAt:     deadline,
+			handlerElapsed: elapsedBetween(startedAt, graceDeadline),
+			joinElapsed:    tailHandlerCancelGrace,
+			joinOutcome:    TailFailureJoinTimedOut,
+			forceFallback:  true,
+		}
 	}
+}
+
+func completedTailTaskExecution(result tailTaskResult, startedAt time.Time) tailTaskExecution {
+	return tailTaskExecution{
+		err:                result.err,
+		observedAt:         result.completedAt,
+		handlerElapsed:     elapsedBetween(startedAt, result.completedAt),
+		joinOutcome:        TailFailureJoinNotRequired,
+		handlerReturnedErr: result.err != nil,
+	}
+}
+
+func elapsedBetween(startedAt, endedAt time.Time) time.Duration {
+	if startedAt.IsZero() || endedAt.IsZero() || endedAt.Before(startedAt) {
+		return 0
+	}
+	return endedAt.Sub(startedAt)
+}
+
+func boundedJoinElapsed(startedAt, endedAt time.Time) time.Duration {
+	elapsed := elapsedBetween(startedAt, endedAt)
+	if elapsed > tailHandlerCancelGrace {
+		return tailHandlerCancelGrace
+	}
+	return elapsed
 }
 
 func tailTaskDetachedDeadlineError(timeout time.Duration) error {
@@ -871,8 +1142,8 @@ func validateRefetchedMessageIdentity(partial, full *discordgo.Message) error {
 
 func runTailTaskSafely(ctx context.Context, task func(context.Context) error) (err error) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = &tailHandlerPanicError{value: recovered}
+		if recover() != nil {
+			err = &tailHandlerPanicError{}
 		}
 	}()
 	return task(ctx)
@@ -900,13 +1171,15 @@ func (c *tailFailureCircuit) recordSuccess() {
 	}
 }
 
-func recordTailFailure(handler tailFailureRecorder, failure TailFailure) error {
+func recordTailFailure(handler tailFailureRecorder, failure TailFailure) (err error) {
 	if handler == nil {
-		if failure.MessageID != "" {
-			return errors.New("tail failure recorder unavailable")
-		}
-		return nil
+		return errors.New("tail failure recorder unavailable")
 	}
+	defer func() {
+		if recover() != nil {
+			err = errors.New("tail failure recorder panicked")
+		}
+	}()
 	return handler.RecordTailFailure(failure)
 }
 
@@ -918,25 +1191,53 @@ func reportTailFailure(handler tailFailureHandler, failure TailFailure) {
 }
 
 func newTailFailure(task tailTask, err error) TailFailure {
+	return newTailFailureFromExecution(task, tailTaskExecution{
+		err:         err,
+		observedAt:  time.Now(),
+		joinOutcome: TailFailureJoinNotRequired,
+	})
+}
+
+func newTailFailureFromExecution(task tailTask, execution tailTaskExecution) TailFailure {
 	guildID, channelID, messageID, userID := task.guildID, task.channelID, task.messageID, task.userID
+	handlerStage := TailFailureStageUnknown
+	var handlerStageElapsed time.Duration
 	if task.failureMetadata != nil {
-		guildID, channelID, messageID, userID = task.failureMetadata.snapshot()
+		snapshot := task.failureMetadata.snapshot(execution.observedAt)
+		guildID = snapshot.guildID
+		channelID = snapshot.channelID
+		messageID = snapshot.messageID
+		userID = snapshot.userID
+		handlerStage = snapshot.handlerStage
+		handlerStageElapsed = snapshot.handlerStageElapsed
+	}
+	if handlerStageElapsed > execution.handlerElapsed {
+		handlerStageElapsed = execution.handlerElapsed
 	}
 	return TailFailure{
-		EventType: task.eventType,
-		Kind:      tailFailureKind(err),
-		GuildID:   guildID,
-		ChannelID: channelID,
-		MessageID: messageID,
-		UserID:    userID,
+		EventType:           task.eventType,
+		Kind:                tailFailureKind(execution.err),
+		GuildID:             guildID,
+		ChannelID:           channelID,
+		MessageID:           messageID,
+		UserID:              userID,
+		HandlerStage:        handlerStage,
+		HandlerStageElapsed: handlerStageElapsed,
+		HandlerElapsed:      execution.handlerElapsed,
+		JoinElapsed:         execution.joinElapsed,
+		JoinOutcome:         execution.joinOutcome,
+		ForceFallback:       execution.forceFallback,
 	}
 }
 
 func tailFailureKind(err error) string {
 	var panicErr *tailHandlerPanicError
+	var joinErr *tailHandlerJoinError
 	switch {
 	case errors.As(err, &panicErr):
 		return "panic"
+	case errors.As(err, &joinErr):
+		return "timeout"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	default:
@@ -965,6 +1266,7 @@ func newMessageTailTask(
 			setTailTaskID(&task.userID, msg.Author.ID)
 		}
 	}
+	task.failureMetadata = newTailFailureMetadata(task)
 	return task
 }
 
@@ -1032,13 +1334,50 @@ func withTailFailureMetadata(ctx context.Context, metadata *tailFailureMetadata)
 	return context.WithValue(ctx, tailFailureMetadataContextKey{}, metadata)
 }
 
+// SetTailFailureStage installs or updates the current tail handler stage.
+func SetTailFailureStage(ctx context.Context, stage TailFailureStage) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	metadata, _ := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
+	if metadata == nil {
+		metadata = &tailFailureMetadata{}
+		ctx = withTailFailureMetadata(ctx, metadata)
+	}
+	if ctx.Err() == nil {
+		metadata.setStageAt(stage, time.Now())
+	}
+	return ctx
+}
+
+// UpdateTailFailureStage updates a stage installed by Tail or SetTailFailureStage.
+func UpdateTailFailureStage(ctx context.Context, stage TailFailureStage) {
+	if ctx == nil || ctx.Err() != nil {
+		return
+	}
+	metadata, _ := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
+	if metadata == nil {
+		return
+	}
+	metadata.setStageAt(stage, time.Now())
+}
+
 // EnrichTailFailureMetadata adds message identifiers to the current tail event's failure report.
 func EnrichTailFailureMetadata(ctx context.Context, msg *discordgo.Message) {
-	if ctx == nil || msg == nil {
+	if ctx == nil || ctx.Err() != nil || msg == nil {
 		return
 	}
 	metadata, _ := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
 	metadata.addMessage(msg)
+}
+
+type tailFailureMetadataSnapshot struct {
+	guildID             string
+	channelID           string
+	messageID           string
+	userID              string
+	handlerStage        TailFailureStage
+	handlerStageElapsed time.Duration
 }
 
 func (m *tailFailureMetadata) addMessage(msg *discordgo.Message) {
@@ -1055,10 +1394,66 @@ func (m *tailFailureMetadata) addMessage(msg *discordgo.Message) {
 	}
 }
 
-func (m *tailFailureMetadata) snapshot() (string, string, string, string) {
+func (m *tailFailureMetadata) setStageAt(stage TailFailureStage, startedAt time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stageFrozen {
+		return
+	}
+	m.handlerStage = normalizeTailFailureStage(stage)
+	m.stageStartedAt = startedAt
+}
+
+func (m *tailFailureMetadata) freezeStageAt(observedAt time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stageFrozen {
+		return
+	}
+	m.stageObservedAt = observedAt
+	m.stageFrozen = true
+}
+
+func (m *tailFailureMetadata) snapshot(observedAt time.Time) tailFailureMetadataSnapshot {
+	if m == nil {
+		return tailFailureMetadataSnapshot{handlerStage: TailFailureStageUnknown}
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.guildID, m.channelID, m.messageID, m.userID
+	if m.stageFrozen {
+		observedAt = m.stageObservedAt
+	}
+	return tailFailureMetadataSnapshot{
+		guildID:             m.guildID,
+		channelID:           m.channelID,
+		messageID:           m.messageID,
+		userID:              m.userID,
+		handlerStage:        normalizeTailFailureStage(m.handlerStage),
+		handlerStageElapsed: elapsedBetween(m.stageStartedAt, observedAt),
+	}
+}
+
+func normalizeTailFailureStage(stage TailFailureStage) TailFailureStage {
+	switch stage {
+	case TailFailureStageHandler,
+		TailFailureStageMessageUpdateRefetch,
+		TailFailureStageMessageBuild,
+		TailFailureStageCanonicalWrite,
+		TailFailureStageEventAppend,
+		TailFailureStageStateUpdate,
+		TailFailureStageCursorAdvance,
+		TailFailureStageCanonicalDelete,
+		TailFailureStageFailureResolution:
+		return stage
+	default:
+		return TailFailureStageUnknown
+	}
 }
 
 func defaultTailWorkerCount() int {

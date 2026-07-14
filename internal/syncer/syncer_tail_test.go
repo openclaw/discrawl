@@ -241,12 +241,25 @@ func TestMessageUpdateSnapshotRejectsConflictingRefetchIdentity(t *testing.T) {
 
 func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T) {
 	tests := []struct {
-		name     string
-		wantKind string
+		name      string
+		wantKind  string
+		wantStage discordclient.TailFailureStage
 	}{
-		{name: "returned error", wantKind: "returned_error"},
-		{name: "panic", wantKind: "panic"},
-		{name: "cooperative timeout", wantKind: "timeout"},
+		{
+			name:      "returned error",
+			wantKind:  "returned_error",
+			wantStage: discordclient.TailFailureStageCanonicalWrite,
+		},
+		{
+			name:      "panic",
+			wantKind:  "panic",
+			wantStage: discordclient.TailFailureStageMessageBuild,
+		},
+		{
+			name:      "cooperative timeout",
+			wantKind:  "timeout",
+			wantStage: discordclient.TailFailureStageCanonicalWrite,
+		},
 	}
 
 	for _, tt := range tests {
@@ -332,14 +345,23 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 			default:
 				t.Fatalf("tail failure was not reported before Tail returned: %v", ctx.Err())
 			}
-			require.Equal(t, discordclient.TailFailure{
-				EventType: "MESSAGE_UPDATE",
-				Kind:      tt.wantKind,
-				GuildID:   "g-refetched",
-				ChannelID: "c1",
-				MessageID: "m1",
-				UserID:    "u-refetched",
-			}, failure)
+			require.Equal(t, "MESSAGE_UPDATE", failure.EventType)
+			require.Equal(t, tt.wantKind, failure.Kind)
+			require.Equal(t, "g-refetched", failure.GuildID)
+			require.Equal(t, "c1", failure.ChannelID)
+			require.Equal(t, "m1", failure.MessageID)
+			require.Equal(t, "u-refetched", failure.UserID)
+			require.Equal(t, tt.wantStage, failure.HandlerStage)
+			require.Positive(t, failure.HandlerStageElapsed)
+			require.Positive(t, failure.HandlerElapsed)
+			if tt.wantKind == "timeout" {
+				require.Equal(t, discordclient.TailFailureJoinJoined, failure.JoinOutcome)
+				require.Positive(t, failure.JoinElapsed)
+			} else {
+				require.Equal(t, discordclient.TailFailureJoinNotRequired, failure.JoinOutcome)
+				require.Zero(t, failure.JoinElapsed)
+			}
+			require.False(t, failure.ForceFallback)
 			require.EqualValues(t, 1, snapshotClient.calls.Load())
 			require.Zero(t, clientRefetches.Load())
 		})
@@ -585,14 +607,20 @@ func TestPanickedGatewayMessageReplaysExactlyWithoutTailSideEffects(t *testing.T
 	}
 	require.NoError(t, err)
 	require.ErrorIs(t, tailCtx.Err(), context.Canceled)
-	require.Equal(t, discordclient.TailFailure{
-		EventType: "MESSAGE_CREATE",
-		Kind:      "panic",
-		GuildID:   "g1",
-		ChannelID: "c1",
-		MessageID: "50",
-		UserID:    "u1",
-	}, <-eventClientFailure)
+	failureReport := <-eventClientFailure
+	require.Equal(t, "MESSAGE_CREATE", failureReport.EventType)
+	require.Equal(t, "panic", failureReport.Kind)
+	require.Equal(t, "g1", failureReport.GuildID)
+	require.Equal(t, "c1", failureReport.ChannelID)
+	require.Equal(t, "50", failureReport.MessageID)
+	require.Equal(t, "u1", failureReport.UserID)
+	require.Equal(t, discordclient.TailFailureStageHandler, failureReport.HandlerStage)
+	require.Positive(t, failureReport.HandlerStageElapsed)
+	require.Positive(t, failureReport.HandlerElapsed)
+	require.Equal(t, discordclient.TailFailureJoinJoined, failureReport.JoinOutcome)
+	require.GreaterOrEqual(t, failureReport.JoinElapsed, time.Duration(0))
+	require.LessOrEqual(t, failureReport.JoinElapsed, 100*time.Millisecond)
+	require.False(t, failureReport.ForceFallback)
 
 	replayCtx := context.Background()
 	report, err := s.ListFailures(replayCtx, store.FailureListOptions{}, time.Now())
@@ -604,6 +632,8 @@ func TestPanickedGatewayMessageReplaysExactlyWithoutTailSideEffects(t *testing.T
 	require.Equal(t, "g1", failure.GuildID)
 	require.Equal(t, "c1", failure.ChannelID)
 	require.Equal(t, "50", failure.MessageID)
+	require.Equal(t, tailMessageFailureRelatedKind, failure.RelatedKind)
+	require.Equal(t, "create", failure.RelatedID)
 	require.Equal(t, "errors.errorString", failure.ErrorClass)
 	require.Equal(t, errTailMessageHandlerPanic.Error(), failure.ErrorMessage)
 	require.NotContains(t, failure.ErrorClass, sensitivePanicText)
@@ -672,11 +702,13 @@ func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *t
 	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "100"))
 	require.NoError(t, s.SetSyncState(ctx, "tail:last_event", "999"))
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   "g1",
-		ChannelID: "c1",
-		MessageID: "50",
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     "g1",
+		ChannelID:   "c1",
+		MessageID:   "50",
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "create",
 	}, context.DeadlineExceeded))
 
 	client := &exactReplayClient{
@@ -747,11 +779,13 @@ func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *t
 
 	for _, messageID := range []string{"10", "20"} {
 		require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
-			Operation: tailMessageFailureOperation,
-			Source:    "discord",
-			GuildID:   "g1",
-			ChannelID: "c1",
-			MessageID: messageID,
+			Operation:   tailMessageFailureOperation,
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   messageID,
+			RelatedKind: tailMessageFailureRelatedKind,
+			RelatedID:   "create",
 		}, context.DeadlineExceeded))
 	}
 	_, err = s.DB().ExecContext(ctx, `
@@ -802,11 +836,13 @@ func TestReplayTailMessageFailuresLeavesOutOfScopeGuildVisibleWithoutFetching(t 
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   "g2",
-		ChannelID: "c2",
-		MessageID: "30",
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     "g2",
+		ChannelID:   "c2",
+		MessageID:   "30",
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "create",
 	}, context.DeadlineExceeded))
 
 	client := &exactReplayClient{}
@@ -852,11 +888,13 @@ func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) 
 			require.NoError(t, err)
 			defer func() { _ = s.Close() }()
 			require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
-				Operation: tailMessageFailureOperation,
-				Source:    "discord",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				MessageID: "60",
+				Operation:   tailMessageFailureOperation,
+				Source:      "discord",
+				GuildID:     "g1",
+				ChannelID:   "c1",
+				MessageID:   "60",
+				RelatedKind: tailMessageFailureRelatedKind,
+				RelatedID:   "update",
 			}, context.DeadlineExceeded))
 
 			client := &exactReplayClient{
@@ -889,11 +927,13 @@ func TestReplayTailMessageFailuresDoesNotRewriteLedgerOnParentCancellation(t *te
 	defer func() { _ = s.Close() }()
 
 	ref := store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   "g1",
-		ChannelID: "c1",
-		MessageID: "70",
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		GuildID:     "g1",
+		ChannelID:   "c1",
+		MessageID:   "70",
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "create",
 	}
 	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("original tail failure")))
 
@@ -916,20 +956,27 @@ func TestReplayTailMessageFailuresDoesNotRewriteLedgerOnParentCancellation(t *te
 	require.Zero(t, report.Failures[0].RetryCount)
 }
 
-func TestPersistMessagePageResolvesMatchingTailFailure(t *testing.T) {
+func TestPersistMessagePageResolvesOnlyCreateAndUpdateTailFailures(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
-	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
-		Operation: tailMessageFailureOperation,
-		Source:    "discord",
-		GuildID:   "g1",
-		ChannelID: "c1",
-		MessageID: "40",
-	}, context.DeadlineExceeded))
+	for _, ref := range []store.FailureRef{
+		tailMessageFailureIdentity("g1", "c1", "40", "create"),
+		tailMessageFailureIdentity("g1", "c1", "40", "update"),
+		tailMessageFailureIdentity("g1", "c1", "40", "delete"),
+		{
+			Operation: tailMessageFailureOperation,
+			Source:    "discord",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "40",
+		},
+	} {
+		require.NoError(t, s.RecordFailure(ctx, ref, context.DeadlineExceeded))
+	}
 
 	svc := New(&fakeClient{}, s, nil)
 	newest, err := svc.persistMessagePage(ctx, []*discordgo.Message{{
@@ -945,10 +992,321 @@ func TestPersistMessagePageResolvesMatchingTailFailure(t *testing.T) {
 
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
-	require.Zero(t, report.UnresolvedCount)
+	require.Equal(t, 2, report.UnresolvedCount)
+	require.Len(t, report.Failures, 2)
+	require.ElementsMatch(t, []string{"", "delete"}, []string{
+		report.Failures[0].RelatedID,
+		report.Failures[1].RelatedID,
+	})
 	var eventCount int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events`).Scan(&eventCount))
 	require.Zero(t, eventCount)
+}
+
+func TestTailHandlersResolveOnlySuccessfulEventIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, eventKind := range []string{"create", "update", "delete"} {
+		require.NoError(t, s.RecordFailure(
+			ctx,
+			tailMessageFailureIdentity("g1", "c1", "10", eventKind),
+			context.DeadlineExceeded,
+		))
+	}
+	handler := &tailHandler{store: s}
+	message := &discordgo.Message{
+		ID:        "10",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "tail event",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+
+	require.NoError(t, handler.OnMessageCreate(ctx, message))
+	requireTailFailureEventKinds(t, s, []string{"update", "delete"})
+	require.NoError(t, handler.OnMessageUpdate(ctx, message))
+	requireTailFailureEventKinds(t, s, []string{"delete"})
+	require.NoError(t, handler.OnMessageDelete(ctx, &discordgo.MessageDelete{
+		Message: &discordgo.Message{ID: "10", GuildID: "g1", ChannelID: "c1"},
+	}))
+	requireTailFailureEventKinds(t, s, nil)
+}
+
+func TestTailHandlerReturnedErrorIsRecordedOnlyByOuterOwner(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	_, err = s.DB().ExecContext(ctx, `
+		create trigger fail_tail_message_event
+		before insert on message_events
+		begin
+			select raise(abort, 'sensitive raw handler failure token=do-not-store');
+		end
+	`)
+	require.NoError(t, err)
+
+	handler := &tailHandler{store: s}
+	message := &discordgo.Message{
+		ID:        "m1",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "tail event",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	require.Error(t, handler.OnMessageCreate(ctx, message))
+	require.NoError(t, handler.RecordTailFailure(discordclient.TailFailure{
+		EventType: "MESSAGE_CREATE",
+		Kind:      "returned_error",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}))
+
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, tailMessageFailureRelatedKind, report.Failures[0].RelatedKind)
+	require.Equal(t, "create", report.Failures[0].RelatedID)
+	require.Equal(t, errTailMessageHandlerReturned.Error(), report.Failures[0].ErrorMessage)
+	require.NotContains(t, report.Failures[0].ErrorMessage, "do-not-store")
+}
+
+func TestRunTailImportsFallbackBeforeOpeningGatewayExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.PersistTailMessageFailureFallback(store.TailMessageFailureFallback{
+		EventKind:   "update",
+		FailureKind: "timeout",
+		GuildID:     "g1",
+		ChannelID:   "c1",
+		MessageID:   "m1",
+	}))
+
+	client := &importObservingTailClient{store: s}
+	svc := New(client, s, nil)
+	require.NoError(t, svc.RunTail(ctx, nil, 0))
+	require.NoError(t, svc.RunTail(ctx, nil, 0))
+	require.Equal(t, []int{1, 1}, client.observedFailureCounts)
+
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "update", report.Failures[0].RelatedID)
+	require.Zero(t, report.Failures[0].RetryCount)
+}
+
+func TestReplayTailMessageFailuresImportsFallbackBeforeCandidateSelection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.PersistTailMessageFailureFallback(store.TailMessageFailureFallback{
+		EventKind:   "create",
+		FailureKind: "panic",
+		GuildID:     "g1",
+		ChannelID:   "c1",
+		MessageID:   "10",
+	}))
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "recovered",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	stats, err := New(client, s, nil).ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+	require.Equal(t, []string{"c1/10"}, client.calls)
+}
+
+func TestReplayTailMessageUpdateIsEventAware(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("g1", "c1", "10", "update"),
+		errTailMessageHandlerReturned,
+	))
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "updated canonical message",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	stats, err := New(client, s, nil).ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+
+	messages, err := s.ListMessages(ctx, store.MessageListOptions{
+		GuildIDs:     []string{"g1"},
+		IncludeEmpty: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "updated canonical message", messages[0].Content)
+}
+
+func TestReplayTailMessageDeleteDoesNotFetchOrCreateTailSideEffects(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
+		Record: store.MessageRecord{
+			ID:                "m1",
+			GuildID:           "g1",
+			ChannelID:         "c1",
+			AuthorID:          "u1",
+			AuthorName:        "user",
+			CreatedAt:         now,
+			Content:           "delete me",
+			NormalizedContent: "delete me",
+			RawJSON:           `{}`,
+		},
+		Options: store.WriteOptions{EnqueueEmbedding: true},
+	}}))
+	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "100"))
+	require.NoError(t, s.SetSyncState(ctx, "tail:last_event", "999"))
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("g1", "c1", "m1", "delete"),
+		errTailMessageHandlerTimeout,
+	))
+
+	client := &exactReplayClient{}
+	stats, err := New(client, s, nil).ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+	require.Empty(t, client.calls)
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		`select coalesce(deleted_at, '') from messages where id = 'm1'`,
+	).Scan(&deletedAt))
+	require.NotEmpty(t, deletedAt)
+	var eventCount, jobCount, searchCount int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events`).Scan(&eventCount))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from embedding_jobs where message_id = 'm1'`).Scan(&jobCount))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_fts where message_id = 'm1'`).Scan(&searchCount))
+	require.Zero(t, eventCount)
+	require.Zero(t, jobCount)
+	require.Zero(t, searchCount)
+	cursor, err := s.GetSyncState(ctx, "channel:c1:latest_message_id")
+	require.NoError(t, err)
+	require.Equal(t, "100", cursor)
+	lastEvent, err := s.GetSyncState(ctx, "tail:last_event")
+	require.NoError(t, err)
+	require.Equal(t, "999", lastEvent)
+	requireTailFailureEventKinds(t, s, nil)
+}
+
+func TestReplayTailMessageFailuresPolicyDefersLegacyIdentities(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	for _, ref := range []store.FailureRef{
+		{
+			Operation: tailMessageFailureOperation,
+			Source:    "discord",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "legacy",
+		},
+		{
+			Operation:   tailMessageFailureOperation,
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "invalid",
+			RelatedKind: tailMessageFailureRelatedKind,
+			RelatedID:   "unknown",
+		},
+	} {
+		require.NoError(t, s.RecordFailure(ctx, ref, context.DeadlineExceeded))
+	}
+
+	client := &exactReplayClient{}
+	svc := New(client, s, nil)
+	for range 2 {
+		stats, err := svc.ReplayTailMessageFailures(ctx, []string{"g1"}, 10)
+		require.NoError(t, err)
+		require.Equal(t, tailMessageReplayStats{Candidates: 2, PolicyDeferred: 2}, stats)
+	}
+	require.Empty(t, client.calls)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 2, report.UnresolvedCount)
+	require.Len(t, report.Failures, 2)
+	for _, failure := range report.Failures {
+		require.Equal(t, errTailMessageReplayPolicyDeferred.Error(), failure.ErrorMessage)
+		require.Equal(t, 2, failure.RetryCount)
+	}
+}
+
+func TestReplayTailMessageFailuresKeepsIncompleteIdentityVisible(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
+		Operation:   tailMessageFailureOperation,
+		Source:      "discord",
+		ChannelID:   "c1",
+		MessageID:   "80",
+		RelatedKind: tailMessageFailureRelatedKind,
+		RelatedID:   "create",
+	}, context.DeadlineExceeded))
+
+	client := &exactReplayClient{}
+	stats, err := New(client, s, nil).ReplayTailMessageFailures(ctx, nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, tailMessageReplayStats{Candidates: 1, Deferred: 1}, stats)
+	require.Empty(t, client.calls)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, errTailMessageReplayIncomplete.Error(), report.Failures[0].ErrorMessage)
+	require.Equal(t, 1, report.Failures[0].RetryCount)
 }
 
 func TestRunTailWithRepairLoopJoinsTailOnCancellation(t *testing.T) {
@@ -1024,6 +1382,223 @@ func TestRunTailPreservesFatalHandlerErrorDuringRequestedShutdown(t *testing.T) 
 	}
 }
 
+func TestRunTailCancelsAndJoinsSerializedRepairBeforeClientClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	repairStarted := make(chan struct{})
+	repairStopped := make(chan struct{})
+	var startOnce sync.Once
+	var stopOnce sync.Once
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	svc := New(nil, s, nil)
+	svc.tailRepairJoinTimeout = time.Second
+	svc.tailRepair = func(repairCtx context.Context, _ SyncOptions) (SyncStats, error) {
+		active := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			previous := maxInFlight.Load()
+			if active <= previous || maxInFlight.CompareAndSwap(previous, active) {
+				break
+			}
+		}
+		startOnce.Do(func() { close(repairStarted) })
+		<-repairCtx.Done()
+		stopOnce.Do(func() { close(repairStopped) })
+		return SyncStats{}, repairCtx.Err()
+	}
+	client := &repairAwareTailClient{
+		repairStopped: repairStopped,
+		started:       make(chan struct{}),
+		finished:      make(chan struct{}),
+		closed:        make(chan struct{}),
+	}
+	svc.client = client
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.RunTail(ctx, nil, 5*time.Millisecond)
+	}()
+	select {
+	case <-repairStarted:
+	case <-time.After(time.Second):
+		t.Fatal("repair did not start")
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+	require.EqualValues(t, 1, maxInFlight.Load())
+	require.Zero(t, inFlight.Load())
+	require.False(t, client.closedBeforeRepair.Load())
+	select {
+	case <-client.closed:
+	default:
+		t.Fatal("client was not closed")
+	}
+}
+
+func TestRunTailRepairJoinIsBoundedAndLogsSafeDiagnostics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	out := &lockedBuffer{}
+	releaseRepair := make(chan struct{})
+	repairStarted := make(chan struct{})
+	repairFinished := make(chan struct{})
+	svc := New(nil, s, newTestLogger(out))
+	svc.tailRepairJoinTimeout = 20 * time.Millisecond
+	svc.tailRepair = func(context.Context, SyncOptions) (SyncStats, error) {
+		close(repairStarted)
+		<-releaseRepair
+		close(repairFinished)
+		return SyncStats{}, errors.New("sensitive repair token=do-not-log")
+	}
+	client := &joiningTailClient{
+		started:  make(chan struct{}),
+		finished: make(chan struct{}),
+		closed:   make(chan struct{}),
+	}
+	svc.client = client
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.RunTail(ctx, nil, 5*time.Millisecond)
+	}()
+	select {
+	case <-repairStarted:
+	case <-time.After(time.Second):
+		t.Fatal("repair did not start")
+	}
+	cancel()
+	startedAt := time.Now()
+	require.ErrorIs(t, <-done, discordclient.ErrFatalTail)
+	require.Less(t, time.Since(startedAt), 500*time.Millisecond)
+	logged := out.String()
+	require.Contains(t, logged, `msg="tail repair join completed"`)
+	require.Contains(t, logged, "outcome=timed_out")
+	require.Contains(t, logged, "reason=")
+	require.NotContains(t, logged, "do-not-log")
+	close(releaseRepair)
+	select {
+	case <-repairFinished:
+	case <-time.After(time.Second):
+		t.Fatal("repair did not finish after release")
+	}
+}
+
+func TestRunTailRepairJoinTimeoutIsFatalWhenTailReturns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	out := &lockedBuffer{}
+	releaseRepair := make(chan struct{})
+	repairStarted := make(chan struct{})
+	repairFinished := make(chan struct{})
+	svc := New(nil, s, newTestLogger(out))
+	svc.tailRepairJoinTimeout = 20 * time.Millisecond
+	svc.tailRepair = func(context.Context, SyncOptions) (SyncStats, error) {
+		close(repairStarted)
+		<-releaseRepair
+		close(repairFinished)
+		return SyncStats{}, errors.New("sensitive repair token=do-not-log")
+	}
+	client := &returningTailClient{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+	svc.client = client
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.RunTail(ctx, nil, 5*time.Millisecond)
+	}()
+	select {
+	case <-client.started:
+	case <-ctx.Done():
+		t.Fatal("tail did not start")
+	}
+	select {
+	case <-repairStarted:
+	case <-ctx.Done():
+		t.Fatal("repair did not start")
+	}
+	close(client.release)
+	require.ErrorIs(t, <-done, discordclient.ErrFatalTail)
+	select {
+	case <-client.closed:
+	default:
+		t.Fatal("client was not closed after tail return")
+	}
+	logged := out.String()
+	require.Contains(t, logged, `msg="tail repair join completed"`)
+	require.Contains(t, logged, "outcome=timed_out")
+	require.Contains(t, logged, "reason=tail_return")
+	require.NotContains(t, logged, "do-not-log")
+
+	close(releaseRepair)
+	select {
+	case <-repairFinished:
+	case <-ctx.Done():
+		t.Fatal("repair did not finish after release")
+	}
+}
+
+func TestLogTailRepairResultUsesSafeFailureKinds(t *testing.T) {
+	t.Parallel()
+
+	out := &lockedBuffer{}
+	svc := &Syncer{logger: newTestLogger(out)}
+	svc.logTailRepairResult(tailRepairResult{})
+	svc.logTailRepairResult(tailRepairResult{err: context.Canceled})
+	require.Empty(t, out.String())
+
+	svc.logTailRepairResult(tailRepairResult{
+		err:     context.DeadlineExceeded,
+		elapsed: 2 * time.Second,
+	})
+	svc.logTailRepairResult(tailRepairResult{
+		err:     errors.New("sensitive repair token=do-not-log"),
+		elapsed: 3 * time.Second,
+	})
+	logged := out.String()
+	require.Contains(t, logged, "failure_kind=timeout")
+	require.Contains(t, logged, "failure_kind=returned_error")
+	require.Contains(t, logged, "elapsed=2s")
+	require.Contains(t, logged, "elapsed=3s")
+	require.NotContains(t, logged, "do-not-log")
+}
+
+func TestRunTailPreservesGatewayOpenErrorWithoutMessageFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	client := &gatewayOpenTailClient{}
+	err = New(client, s, nil).RunTail(ctx, nil, 0)
+	require.Error(t, err)
+	require.True(t, discordclient.IsGatewayOpenError(err))
+	report, reportErr := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, reportErr)
+	require.Empty(t, report.Failures)
+}
+
 func TestTailReadyCallback(t *testing.T) {
 	t.Parallel()
 
@@ -1067,6 +1642,68 @@ func TestRunTailLogsSafeEventFailureMetadata(t *testing.T) {
 	require.NotContains(t, logged, "err=")
 }
 
+func requireTailFailureEventKinds(t *testing.T, s *store.Store, want []string) {
+	t.Helper()
+	report, err := s.ListFailures(context.Background(), store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	got := make([]string, 0, len(report.Failures))
+	for _, failure := range report.Failures {
+		if failure.Operation == tailMessageFailureOperation && failure.Source == "discord" {
+			got = append(got, failure.RelatedID)
+		}
+	}
+	require.ElementsMatch(t, want, got)
+}
+
+type importObservingTailClient struct {
+	fakeClient
+	store                 *store.Store
+	observedFailureCounts []int
+}
+
+func (c *importObservingTailClient) Tail(ctx context.Context, _ discordclient.EventHandler) error {
+	report, err := c.store.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	if err != nil {
+		return err
+	}
+	c.observedFailureCounts = append(c.observedFailureCounts, report.UnresolvedCount)
+	return nil
+}
+
+type gatewayOpenTailClient struct {
+	fakeClient
+}
+
+func (c *gatewayOpenTailClient) Tail(context.Context, discordclient.EventHandler) error {
+	return &discordclient.GatewayOpenError{}
+}
+
+type repairAwareTailClient struct {
+	fakeClient
+	repairStopped      <-chan struct{}
+	started            chan struct{}
+	finished           chan struct{}
+	closed             chan struct{}
+	closedBeforeRepair atomic.Bool
+}
+
+func (c *repairAwareTailClient) Tail(ctx context.Context, _ discordclient.EventHandler) error {
+	close(c.started)
+	<-ctx.Done()
+	close(c.finished)
+	return nil
+}
+
+func (c *repairAwareTailClient) Close() error {
+	select {
+	case <-c.repairStopped:
+	default:
+		c.closedBeforeRepair.Store(true)
+	}
+	close(c.closed)
+	return nil
+}
+
 type joiningTailClient struct {
 	fakeClient
 	started  chan struct{}
@@ -1083,6 +1720,24 @@ func (c *joiningTailClient) Tail(ctx context.Context, _ discordclient.EventHandl
 }
 
 func (c *joiningTailClient) Close() error {
+	close(c.closed)
+	return nil
+}
+
+type returningTailClient struct {
+	fakeClient
+	started chan struct{}
+	release chan struct{}
+	closed  chan struct{}
+}
+
+func (c *returningTailClient) Tail(context.Context, discordclient.EventHandler) error {
+	close(c.started)
+	<-c.release
+	return nil
+}
+
+func (c *returningTailClient) Close() error {
 	close(c.closed)
 	return nil
 }
@@ -1161,6 +1816,7 @@ func (h *capturingTailHandler) OnMessageUpdate(ctx context.Context, msg *discord
 	if err != nil || snapshot == nil {
 		return err
 	}
+	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
 	panic("sensitive syncer message update panic")
 }
 

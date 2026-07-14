@@ -67,6 +67,16 @@ type FailureReport struct {
 	Failures        []Failure `json:"failures"`
 }
 
+// FailurePersistenceDiagnostics contains timing and SQLite result codes without
+// retaining the database error text.
+type FailurePersistenceDiagnostics struct {
+	PoolWait        time.Duration
+	DBElapsed       time.Duration
+	ContextDeadline time.Time
+	SQLiteCode      int
+	SQLiteCategory  int
+}
+
 // RowWriteError carries identifiers without retaining message content, URLs, or raw payloads.
 type RowWriteError struct {
 	Ref         FailureRef
@@ -121,19 +131,49 @@ func (s *Store) RecordFailureWithMessageScope(
 	ref FailureRef,
 	failure error,
 ) error {
+	_, err := s.RecordFailureWithMessageScopeTimed(ctx, ref, failure)
+	return err
+}
+
+// RecordFailureWithMessageScopeTimed is RecordFailureWithMessageScope with
+// pool, transaction, deadline, and numeric SQLite diagnostics for safe logging.
+func (s *Store) RecordFailureWithMessageScopeTimed(
+	ctx context.Context,
+	ref FailureRef,
+	failure error,
+) (diagnostics FailurePersistenceDiagnostics, returnErr error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		diagnostics.ContextDeadline = deadline
+	}
+	defer func() {
+		diagnostics.SQLiteCode, diagnostics.SQLiteCategory = sqliteFailureCodes(returnErr)
+	}()
 	if failure == nil {
-		return errors.New("message-scoped failure is required")
+		return diagnostics, errors.New("message-scoped failure is required")
 	}
 	ref = normalizeFailureRef(mergeFailureRef(ref, FailureRefFromError(failure)))
 	if ref.Operation == "" || ref.Source == "" {
-		return errors.New("failure operation and source are required")
+		return diagnostics, errors.New("failure operation and source are required")
 	}
 	if ref.MessageID == "" {
-		return errors.New("message id is required")
+		return diagnostics, errors.New("message id is required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+
+	poolStartedAt := time.Now()
+	conn, err := s.db.Conn(ctx)
+	diagnostics.PoolWait = time.Since(poolStartedAt)
 	if err != nil {
-		return fmt.Errorf("begin message-scoped failure transaction: %w", err)
+		return diagnostics, fmt.Errorf("acquire message-scoped failure connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	dbStartedAt := time.Now()
+	defer func() {
+		diagnostics.DBElapsed = time.Since(dbStartedAt)
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return diagnostics, fmt.Errorf("begin message-scoped failure transaction: %w", err)
 	}
 	defer rollback(tx)
 
@@ -147,12 +187,12 @@ func (s *Store) RecordFailureWithMessageScope(
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
-		return fmt.Errorf("look up message failure scope: %w", err)
+		return diagnostics, fmt.Errorf("look up message failure scope: %w", err)
 	default:
 		if ref.ChannelID == "" {
 			ref.ChannelID = storedChannelID
 		} else if storedChannelID != "" && ref.ChannelID != storedChannelID {
-			return fmt.Errorf(
+			return diagnostics, fmt.Errorf(
 				"message channel mismatch: event=%s stored=%s",
 				ref.ChannelID,
 				storedChannelID,
@@ -161,7 +201,7 @@ func (s *Store) RecordFailureWithMessageScope(
 		if ref.GuildID == "" {
 			ref.GuildID = storedGuildID
 		} else if storedGuildID != "" && ref.GuildID != storedGuildID {
-			return fmt.Errorf(
+			return diagnostics, fmt.Errorf(
 				"message guild mismatch: event=%s stored=%s",
 				ref.GuildID,
 				storedGuildID,
@@ -169,7 +209,7 @@ func (s *Store) RecordFailureWithMessageScope(
 		}
 	}
 	if ref.GuildID == "" || ref.ChannelID == "" {
-		return fmt.Errorf(
+		return diagnostics, fmt.Errorf(
 			"message identity is incomplete: guild_id=%q channel_id=%q message_id=%q",
 			ref.GuildID,
 			ref.ChannelID,
@@ -179,19 +219,32 @@ func (s *Store) RecordFailureWithMessageScope(
 
 	now := time.Now().UTC()
 	if err := recordFailure(ctx, tx, ref, failure, now); err != nil {
-		return err
+		return diagnostics, err
 	}
 	if err := pruneResolvedFailures(ctx, tx, now); err != nil {
-		return err
+		return diagnostics, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit message-scoped failure transaction: %w", err)
+		return diagnostics, fmt.Errorf("commit message-scoped failure transaction: %w", err)
 	}
-	return nil
+	return diagnostics, nil
 }
 
 type failureExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type sqliteErrorCoder interface {
+	Code() int
+}
+
+func sqliteFailureCodes(err error) (code, category int) {
+	var coder sqliteErrorCoder
+	if err == nil || !errors.As(err, &coder) {
+		return 0, 0
+	}
+	code = coder.Code()
+	return code, code & 0xff
 }
 
 func recordFailure(
