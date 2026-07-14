@@ -1091,7 +1091,9 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			testCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			tailCtx, cancel := context.WithCancel(testCtx)
 			defer cancel()
 
 			handler := &failureContinuationHandler{
@@ -1109,7 +1111,7 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 				}
 				select {
 				case <-handler.failureReported:
-				case <-ctx.Done():
+				case <-testCtx.Done():
 					t.Error("tail failure was not reported")
 					return
 				}
@@ -1119,7 +1121,7 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 				}
 				select {
 				case <-handler.laterHandled:
-				case <-ctx.Done():
+				case <-testCtx.Done():
 					t.Error("later tail event was not handled")
 				}
 			})
@@ -1136,8 +1138,8 @@ func TestTailContinuesAfterHandlerFailure(t *testing.T) {
 			client.tailQueueSize = 1
 			client.tailHandlerTimeout = 25 * time.Millisecond
 
-			require.NoError(t, client.Tail(ctx, handler))
-			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.NoError(t, client.Tail(tailCtx, handler))
+			require.ErrorIs(t, tailCtx.Err(), context.Canceled)
 			failure := <-handler.failures
 			require.Equal(t, TailFailure{
 				EventType: "MESSAGE_CREATE",
