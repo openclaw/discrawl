@@ -61,6 +61,20 @@ func TestHelpAndVersion(t *testing.T) {
 	require.Equal(t, 7, ExitCode(&cliError{code: 7, err: errors.New("custom")}))
 }
 
+func TestTopLevelHelpIncludesDescriptions(t *testing.T) {
+	t.Parallel()
+
+	for _, helpFlag := range []string{"-h", "--help"} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(context.Background(), []string{helpFlag}, &stdout, &stderr))
+		require.Contains(t, stdout.String(), "wiretap")
+		require.Contains(t, stdout.String(), "Import Discord Desktop cache data.")
+		require.Contains(t, stdout.String(), "search")
+		require.Contains(t, stdout.String(), "Search archived messages.")
+		require.Empty(t, stderr.String())
+	}
+}
+
 func TestCommandValidationEdges(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -4051,20 +4065,59 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "help", "search"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "help", "wiretap"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "search", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "messages", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "sql", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "coverage", "--help"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "wiretap", "-h"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "wiretap", "--help"},
 	} {
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
-		require.Contains(t, stdout.String(), "Usage:", "args=%v", args)
+		require.Contains(t, stdout.String(), "Usage", "args=%v", args)
+		require.Empty(t, stderr.String(), "args=%v", args)
+	}
+
+	for _, spec := range discrawlCommandSpecs {
+		args := []string{"--config", filepath.Join(t.TempDir(), "missing.toml"), spec.name, "--help"}
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
+		require.Contains(t, stdout.String(), "Usage", "args=%v", args)
 		require.Empty(t, stderr.String(), "args=%v", args)
 	}
 
 	err := Run(context.Background(), []string{"help", "wat"}, &bytes.Buffer{}, &bytes.Buffer{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `unknown help topic "wat"`)
+}
+
+func TestNestedCommandHelp(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"analytics", "-h"},
+		{"analytics", "--help"},
+		{"help", "analytics"},
+	} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
+		require.Contains(t, stdout.String(), "Usage: discrawl analytics <command> [flags]", "args=%v", args)
+		require.Contains(t, stdout.String(), "quiet", "args=%v", args)
+		require.Contains(t, stdout.String(), "trends", "args=%v", args)
+		require.Empty(t, stderr.String(), "args=%v", args)
+	}
+
+	for _, args := range [][]string{
+		{"analytics", "quiet", "--help"},
+		{"help", "analytics", "quiet"},
+	} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
+		require.Contains(t, stdout.String(), "Usage: discrawl analytics quiet", "args=%v", args)
+		require.Contains(t, stdout.String(), "no activity in the lookback window", "args=%v", args)
+		require.Empty(t, stderr.String(), "args=%v", args)
+	}
 }
 
 func TestHelpers(t *testing.T) {

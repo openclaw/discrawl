@@ -95,57 +95,24 @@ func printPlain(w io.Writer, value any) error {
 	}
 }
 
-func printUsage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `discrawl archives Discord guild data into local SQLite.
-
-Usage:
-  discrawl [global flags] <command> [args]
-
-Commands:
-  metadata
-  check-update
-  version
-  init
-  sync
-  tail
-  tap
-  cache-import
-  wiretap
-  search
-  tui
-  messages
-  digest
-  analytics
-  dms
-  mentions
-  attachments
-  embed
-  sql
-  members
-  channels
-  status
-  diagnostics
-  coverage
-  failures
-  remote
-  whoami
-  report
-  doctor
-  cloud
-  subscribe-cloud
-`)
+func printUsage(w io.Writer) error {
+	return printKongUsage(w, "")
 }
 
 func printCommandUsage(w io.Writer, args []string) error {
-	if len(args) != 1 {
-		return usageErr(errors.New("usage: discrawl help <command>"))
+	if len(args) == 0 || len(args) > 2 {
+		return usageErr(errors.New("usage: discrawl help <command> [subcommand]"))
 	}
-	text, ok := commandUsage[args[0]]
-	if !ok {
-		return usageErr(fmt.Errorf("unknown help topic %q", args[0]))
+	topic := strings.Join(args, " ")
+	text, ok := commandUsage[topic]
+	if ok {
+		_, _ = fmt.Fprint(w, text)
+		return nil
 	}
-	_, _ = fmt.Fprint(w, text)
-	return nil
+	if !hasHelpTopic(args) {
+		return usageErr(fmt.Errorf("unknown help topic %q", topic))
+	}
+	return printKongUsage(w, topic)
 }
 
 var commandUsage = map[string]string{
