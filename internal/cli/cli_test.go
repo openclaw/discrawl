@@ -2842,6 +2842,22 @@ func TestTailFailureReplayUsesExclusiveWriterLockWithoutStartingGateway(t *testi
 	require.Equal(t, 7, fakeSync.lastReplayLimit)
 	require.Zero(t, fakeSync.tailCalls)
 	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+
+	require.NoError(t, rt.dispatch([]string{
+		"tail",
+		"--guild", "123456789012345678",
+		"--replay-failures-only",
+		"--replay-identity", "123456789012345678/234567890123456789/345678901234567890/delete",
+	}))
+	require.Equal(t, 1, fakeSync.exactReplayCalls)
+	require.Equal(t, []syncer.TailMessageReplayIdentity{{
+		GuildID:   "123456789012345678",
+		ChannelID: "234567890123456789",
+		MessageID: "345678901234567890",
+		EventKind: "delete",
+	}}, fakeSync.lastExactIdentities)
+	require.Zero(t, fakeSync.tailCalls)
+	require.Empty(t, syncLockOwnerFiles(t, lockPath))
 }
 
 func TestTailReadyPromotesOnceAndCleansUpOnCancellation(t *testing.T) {
@@ -3658,6 +3674,8 @@ type fakeSyncService struct {
 	lastReplayGuilds      []string
 	lastReplayLimit       int
 	replayCalls           int
+	lastExactIdentities   []syncer.TailMessageReplayIdentity
+	exactReplayCalls      int
 	replayHook            func()
 	replayStats           syncer.TailMessageReplayStats
 	replayErr             error
@@ -3698,6 +3716,23 @@ func (f *fakeSyncService) ReplayTailMessageFailures(_ context.Context, guildIDs 
 	f.replayCalls++
 	f.lastReplayGuilds = append([]string(nil), guildIDs...)
 	f.lastReplayLimit = limit
+	if f.replayHook != nil {
+		f.replayHook()
+	}
+	return f.replayStats, f.replayErr
+}
+
+func (f *fakeSyncService) ReplayTailMessageFailuresExact(
+	_ context.Context,
+	guildIDs []string,
+	identities []syncer.TailMessageReplayIdentity,
+) (syncer.TailMessageReplayStats, error) {
+	f.exactReplayCalls++
+	f.lastReplayGuilds = append([]string(nil), guildIDs...)
+	f.lastExactIdentities = append(
+		[]syncer.TailMessageReplayIdentity(nil),
+		identities...,
+	)
 	if f.replayHook != nil {
 		f.replayHook()
 	}
@@ -3849,10 +3884,50 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.Contains(t, out.String(), "recovered=2")
 	require.Contains(t, out.String(), "deferred=1")
 	require.Contains(t, out.String(), "policy_deferred=1")
+
+	const replayGuild = "123456789012345678"
+	exactIdentities := []syncer.TailMessageReplayIdentity{
+		{
+			GuildID:   replayGuild,
+			ChannelID: "234567890123456789",
+			MessageID: "345678901234567890",
+			EventKind: "delete",
+		},
+		{
+			GuildID:   replayGuild,
+			ChannelID: "456789012345678901",
+			MessageID: "567890123456789012",
+			EventKind: "update",
+		},
+	}
+	require.NoError(t, rt.withServices(true, func() error {
+		return rt.runTail([]string{
+			"--guild", replayGuild,
+			"--replay-failures-only",
+			"--replay-identity", "123456789012345678/234567890123456789/345678901234567890/delete",
+			"--replay-identity", "123456789012345678/456789012345678901/567890123456789012/update",
+		})
+	}))
+	require.Equal(t, []string{replayGuild}, fakeSync.lastReplayGuilds)
+	require.Equal(t, exactIdentities, fakeSync.lastExactIdentities)
+	require.Equal(t, 1, fakeSync.exactReplayCalls)
+
 	require.Equal(t, 2, ExitCode(rt.runTail([]string{"extra"})))
 	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "0"})))
 	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "26"})))
 	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "7"})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{
+		"--replay-identity", "123456789012345678/234567890123456789/345678901234567890/delete",
+	})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{
+		"--replay-failures-only",
+		"--replay-limit", "1",
+		"--replay-identity", "123456789012345678/234567890123456789/345678901234567890/delete",
+	})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{
+		"--replay-failures-only",
+		"--replay-identity", "invalid",
+	})))
 
 	rt = newRuntime()
 	out.Reset()

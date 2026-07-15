@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/openclaw/discrawl/internal/store"
@@ -33,6 +34,14 @@ type TailMessageReplayStats struct {
 	PolicyDeferred int `json:"policy_deferred"`
 }
 
+// TailMessageReplayIdentity identifies one exact event-aware failure to replay.
+type TailMessageReplayIdentity struct {
+	GuildID   string
+	ChannelID string
+	MessageID string
+	EventKind string
+}
+
 type tailMessageReplayStats = TailMessageReplayStats
 
 func (s *Syncer) ReplayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (TailMessageReplayStats, error) {
@@ -42,10 +51,75 @@ func (s *Syncer) ReplayTailMessageFailures(ctx context.Context, guildIDs []strin
 			TailMessageReplayLimit,
 		)
 	}
-	return s.replayTailMessageFailures(ctx, guildIDs, limit)
+	return s.replayTailMessageFailuresSelected(ctx, guildIDs, limit, nil)
+}
+
+// ReplayTailMessageFailuresExact replays only the supplied identities, in order.
+func (s *Syncer) ReplayTailMessageFailuresExact(
+	ctx context.Context,
+	guildIDs []string,
+	identities []TailMessageReplayIdentity,
+) (TailMessageReplayStats, error) {
+	if len(identities) == 0 || len(identities) > TailMessageReplayLimit {
+		return TailMessageReplayStats{}, fmt.Errorf(
+			"exact tail message replay identity count must be between 1 and %d",
+			TailMessageReplayLimit,
+		)
+	}
+	allowedGuilds := make(map[string]struct{}, len(guildIDs))
+	for _, guildID := range guildIDs {
+		guildID = strings.TrimSpace(guildID)
+		if guildID != "" {
+			allowedGuilds[guildID] = struct{}{}
+		}
+	}
+	refs := make([]store.FailureRef, 0, len(identities))
+	seen := make(map[TailMessageReplayIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		identity.GuildID = strings.TrimSpace(identity.GuildID)
+		identity.ChannelID = strings.TrimSpace(identity.ChannelID)
+		identity.MessageID = strings.TrimSpace(identity.MessageID)
+		identity.EventKind = strings.ToLower(strings.TrimSpace(identity.EventKind))
+		if identity.GuildID == "" || identity.ChannelID == "" || identity.MessageID == "" {
+			return TailMessageReplayStats{}, errors.New("exact tail message replay identity is incomplete")
+		}
+		if len(allowedGuilds) > 0 {
+			if _, ok := allowedGuilds[identity.GuildID]; !ok {
+				return TailMessageReplayStats{}, errors.New("exact tail message replay identity is outside the guild scope")
+			}
+		}
+		switch identity.EventKind {
+		case "create", "update", "delete":
+		default:
+			return TailMessageReplayStats{}, errors.New("exact tail message replay event kind is invalid")
+		}
+		if _, ok := seen[identity]; ok {
+			return TailMessageReplayStats{}, errors.New("exact tail message replay identities contain a duplicate")
+		}
+		seen[identity] = struct{}{}
+		refs = append(refs, store.FailureRef{
+			Operation:   tailMessageFailureOperation,
+			Source:      "discord",
+			GuildID:     identity.GuildID,
+			ChannelID:   identity.ChannelID,
+			MessageID:   identity.MessageID,
+			RelatedKind: tailMessageFailureRelatedKind,
+			RelatedID:   identity.EventKind,
+		})
+	}
+	return s.replayTailMessageFailuresSelected(ctx, guildIDs, len(refs), refs)
 }
 
 func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (tailMessageReplayStats, error) {
+	return s.replayTailMessageFailuresSelected(ctx, guildIDs, limit, nil)
+}
+
+func (s *Syncer) replayTailMessageFailuresSelected(
+	ctx context.Context,
+	guildIDs []string,
+	limit int,
+	exactIdentities []store.FailureRef,
+) (tailMessageReplayStats, error) {
 	stats := tailMessageReplayStats{}
 	if s == nil || s.store == nil {
 		return stats, nil
@@ -53,17 +127,27 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
 		return stats, err
 	}
-	candidates, err := s.store.ListFailureReplayCandidatesMatchingRelatedIDs(
-		ctx,
-		store.FailureRef{
-			Operation:   tailMessageFailureOperation,
-			Source:      "discord",
-			RelatedKind: tailMessageFailureRelatedKind,
-		},
-		guildIDs,
-		[]string{"create", "update", "delete"},
-		limit,
-	)
+	var candidates []store.Failure
+	var err error
+	if exactIdentities != nil {
+		candidates, err = s.store.ListFailureReplayCandidatesByExactIdentities(
+			ctx,
+			exactIdentities,
+			guildIDs,
+		)
+	} else {
+		candidates, err = s.store.ListFailureReplayCandidatesMatchingRelatedIDs(
+			ctx,
+			store.FailureRef{
+				Operation:   tailMessageFailureOperation,
+				Source:      "discord",
+				RelatedKind: tailMessageFailureRelatedKind,
+			},
+			guildIDs,
+			[]string{"create", "update", "delete"},
+			limit,
+		)
+	}
 	if err != nil {
 		return stats, err
 	}

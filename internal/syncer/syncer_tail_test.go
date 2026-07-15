@@ -767,6 +767,122 @@ func TestReplayTailMessageFailuresEnforcesBoundedLimit(t *testing.T) {
 		require.ErrorContains(t, err, "tail message replay limit must be between 1 and 25")
 		require.Zero(t, stats.Candidates)
 	}
+	_, err := svc.ReplayTailMessageFailuresExact(context.Background(), nil, nil)
+	require.ErrorContains(t, err, "identity count must be between 1 and 25")
+	_, err = svc.ReplayTailMessageFailuresExact(
+		context.Background(),
+		nil,
+		make([]TailMessageReplayIdentity, TailMessageReplayLimit+1),
+	)
+	require.ErrorContains(t, err, "identity count must be between 1 and 25")
+	identity := TailMessageReplayIdentity{
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+		EventKind: "create",
+	}
+	_, err = svc.ReplayTailMessageFailuresExact(
+		context.Background(),
+		nil,
+		[]TailMessageReplayIdentity{identity, identity},
+	)
+	require.ErrorContains(t, err, "duplicate")
+	_, err = svc.ReplayTailMessageFailuresExact(
+		context.Background(),
+		[]string{"g2"},
+		[]TailMessageReplayIdentity{identity},
+	)
+	require.ErrorContains(t, err, "outside the guild scope")
+}
+
+func TestReplayTailMessageFailuresExactSelectsOnlyAllowlistedIdentities(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, messageID := range []string{"10", "20"} {
+		require.NoError(t, s.RecordFailure(
+			ctx,
+			tailMessageFailureIdentity("g1", "c1", messageID, "create"),
+			errTailMessageHandlerTimeout,
+		))
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when '10' then '2026-07-13 00:00:01.000000000'
+			else '2026-07-13 00:00:02.000000000'
+		end
+		where operation = 'tail_message'
+	`)
+	require.NoError(t, err)
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "older unreviewed candidate",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+		"c1/20": {
+			ID:        "20",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "reviewed candidate",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	svc := New(client, s, nil)
+	stats, err := svc.ReplayTailMessageFailuresExact(
+		ctx,
+		[]string{"g1"},
+		[]TailMessageReplayIdentity{{
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "20",
+			EventKind: "create",
+		}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, TailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+	require.Equal(t, []string{"c1/20"}, client.calls)
+
+	report, err := s.ListFailures(
+		ctx,
+		store.FailureListOptions{IncludeResolved: true},
+		time.Now(),
+	)
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 2)
+	for _, failure := range report.Failures {
+		switch failure.MessageID {
+		case "10":
+			require.True(t, failure.ResolvedAt.IsZero())
+		case "20":
+			require.False(t, failure.ResolvedAt.IsZero())
+		default:
+			t.Fatalf("unexpected failure: %+v", failure)
+		}
+	}
+
+	_, err = svc.ReplayTailMessageFailuresExact(
+		ctx,
+		[]string{"g1"},
+		[]TailMessageReplayIdentity{{
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "30",
+			EventKind: "create",
+		}},
+	)
+	require.ErrorContains(t, err, "identity 1 is unavailable")
+	require.Equal(t, []string{"c1/20"}, client.calls)
 }
 
 func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *testing.T) {

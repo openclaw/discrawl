@@ -304,6 +304,8 @@ discrawl tail
 discrawl tail --guild 123456789012345678
 discrawl tail --repair-every 30m
 discrawl tail --replay-failures-only
+discrawl tail --replay-failures-only \
+  --replay-identity 123456789012345678/234567890123456789/345678901234567890/delete
 ```
 
 ### `wiretap`
