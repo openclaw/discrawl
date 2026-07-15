@@ -526,7 +526,8 @@ func (s *Store) ListFailureReplayCandidatesByExactIdentities(
 
 		var failure Failure
 		var firstSeen, lastSeen, resolved string
-		err := s.db.QueryRowContext(ctx, `
+		err := s.db.QueryRowContext(
+			ctx, `
 			select failure_id, operation, source, guild_id, channel_id, message_id,
 			       related_kind, related_id, error_class, error_message,
 			       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
