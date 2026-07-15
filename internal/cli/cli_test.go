@@ -3928,6 +3928,23 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 		"--replay-failures-only",
 		"--replay-identity", "invalid",
 	})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{
+		"--replay-failures-only",
+		"--replay-identity", "123/234567890123456789/345678901234567890/delete",
+	})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{
+		"--replay-failures-only",
+		"--replay-identity", "123456789012345678/234567890123456789/345678901234567890/unknown",
+	})))
+	tooManyIdentities := []string{"--replay-failures-only"}
+	for range syncer.TailMessageReplayLimit + 1 {
+		tooManyIdentities = append(
+			tooManyIdentities,
+			"--replay-identity",
+			"123456789012345678/234567890123456789/345678901234567890/delete",
+		)
+	}
+	require.Equal(t, 2, ExitCode(rt.runTail(tooManyIdentities)))
 
 	rt = newRuntime()
 	out.Reset()

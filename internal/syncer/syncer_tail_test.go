@@ -793,6 +793,12 @@ func TestReplayTailMessageFailuresEnforcesBoundedLimit(t *testing.T) {
 		[]TailMessageReplayIdentity{identity},
 	)
 	require.ErrorContains(t, err, "outside the guild scope")
+	_, err = svc.ReplayTailMessageFailuresExact(
+		context.Background(),
+		nil,
+		[]TailMessageReplayIdentity{identity},
+	)
+	require.ErrorContains(t, err, "store is unavailable")
 }
 
 func TestReplayTailMessageFailuresExactSelectsOnlyAllowlistedIdentities(t *testing.T) {
@@ -883,6 +889,57 @@ func TestReplayTailMessageFailuresExactSelectsOnlyAllowlistedIdentities(t *testi
 	)
 	require.ErrorContains(t, err, "identity 1 is unavailable")
 	require.Equal(t, []string{"c1/20"}, client.calls)
+}
+
+func TestReplayTailMessageFailuresExactMixedUnavailableBatchDoesNotReplay(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.RecordFailure(
+		ctx,
+		tailMessageFailureIdentity("g1", "c1", "10", "create"),
+		errTailMessageHandlerTimeout,
+	))
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "must remain unresolved",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	_, err = New(client, s, nil).ReplayTailMessageFailuresExact(
+		ctx,
+		[]string{"g1"},
+		[]TailMessageReplayIdentity{
+			{
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "10",
+				EventKind: "create",
+			},
+			{
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "20",
+				EventKind: "create",
+			},
+		},
+	)
+	require.ErrorContains(t, err, "identity 2 is unavailable")
+	require.Empty(t, client.calls)
+	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "10", report.Failures[0].MessageID)
+	require.Zero(t, report.Failures[0].RetryCount)
 }
 
 func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *testing.T) {

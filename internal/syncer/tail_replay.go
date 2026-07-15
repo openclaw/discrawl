@@ -107,6 +107,9 @@ func (s *Syncer) ReplayTailMessageFailuresExact(
 			RelatedID:   identity.EventKind,
 		})
 	}
+	if s == nil || s.store == nil {
+		return TailMessageReplayStats{}, errors.New("tail message replay store is unavailable")
+	}
 	return s.replayTailMessageFailuresSelected(ctx, guildIDs, len(refs), refs)
 }
 
