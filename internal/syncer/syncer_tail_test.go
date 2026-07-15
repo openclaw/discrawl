@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -891,6 +892,76 @@ func TestReplayTailMessageFailuresExactSelectsOnlyAllowlistedIdentities(t *testi
 	require.Equal(t, []string{"c1/20"}, client.calls)
 }
 
+func TestReplayTailMessageFailuresExactImportsOnlyAllowlistedFallbacks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := store.Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	for _, fallback := range []store.TailMessageFailureFallback{
+		{
+			EventKind: "create", FailureKind: "timeout",
+			GuildID: "g1", ChannelID: "c1", MessageID: "10",
+		},
+		{
+			EventKind: "update", FailureKind: "panic",
+			GuildID: "g1", ChannelID: "c2", MessageID: "20",
+		},
+	} {
+		require.NoError(t, s.PersistTailMessageFailureFallback(fallback))
+	}
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "selected fallback",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	stats, err := New(client, s, nil).ReplayTailMessageFailuresExact(
+		ctx,
+		[]string{"g1"},
+		[]TailMessageReplayIdentity{{
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "10",
+			EventKind: "create",
+		}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, TailMessageReplayStats{Candidates: 1, Recovered: 1}, stats)
+	require.Equal(t, []string{"c1/10"}, client.calls)
+
+	entries, err := os.ReadDir(dbPath + ".tail-message-failures")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	body, err := os.ReadFile(filepath.Join(
+		dbPath+".tail-message-failures",
+		entries[0].Name(),
+	))
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"message_id":"20"`)
+
+	report, err := s.ListFailures(
+		ctx,
+		store.FailureListOptions{IncludeResolved: true},
+		time.Now(),
+	)
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "10", report.Failures[0].MessageID)
+	require.False(t, report.Failures[0].ResolvedAt.IsZero())
+
+	imported, err := s.ImportTailMessageFailureFallbacks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, imported)
+}
+
 func TestReplayTailMessageFailuresExactMixedUnavailableBatchDoesNotReplay(t *testing.T) {
 	t.Parallel()
 
@@ -940,6 +1011,68 @@ func TestReplayTailMessageFailuresExactMixedUnavailableBatchDoesNotReplay(t *tes
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, "10", report.Failures[0].MessageID)
 	require.Zero(t, report.Failures[0].RetryCount)
+}
+
+func TestReplayTailMessageFailuresExactMixedFallbackBatchDoesNotImport(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := store.Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.PersistTailMessageFailureFallback(
+		store.TailMessageFailureFallback{
+			EventKind: "create", FailureKind: "timeout",
+			GuildID: "g1", ChannelID: "c1", MessageID: "10",
+		},
+	))
+
+	client := &exactReplayClient{messages: map[string]*discordgo.Message{
+		"c1/10": {
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "must remain staged",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		},
+	}}
+	_, err = New(client, s, nil).ReplayTailMessageFailuresExact(
+		ctx,
+		[]string{"g1"},
+		[]TailMessageReplayIdentity{
+			{
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "10",
+				EventKind: "create",
+			},
+			{
+				GuildID:   "g1",
+				ChannelID: "c1",
+				MessageID: "20",
+				EventKind: "create",
+			},
+		},
+	)
+	require.ErrorContains(t, err, "identity 2 is unavailable")
+	require.Empty(t, client.calls)
+
+	var ledgerCount int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select count(*) from failure_ledger
+	`).Scan(&ledgerCount))
+	require.Zero(t, ledgerCount)
+	var receiptCount int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select count(*) from sync_state
+		where scope like 'tail-message-failure-fallback:%'
+	`).Scan(&receiptCount))
+	require.Zero(t, receiptCount)
+	entries, err := os.ReadDir(dbPath + ".tail-message-failures")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
 }
 
 func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *testing.T) {

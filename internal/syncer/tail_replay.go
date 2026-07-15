@@ -127,8 +127,25 @@ func (s *Syncer) replayTailMessageFailuresSelected(
 	if s == nil || s.store == nil {
 		return stats, nil
 	}
-	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
-		return stats, err
+	if exactIdentities != nil {
+		imported, err := s.store.ImportTailMessageFailureFallbacksExact(
+			ctx,
+			exactIdentities,
+		)
+		if err != nil {
+			return stats, fmt.Errorf("import exact tail message failure fallbacks: %w", err)
+		}
+		if imported > 0 && s.logger != nil {
+			s.logger.Info(
+				"exact tail message failure fallbacks imported",
+				"count",
+				imported,
+			)
+		}
+	} else {
+		if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
+			return stats, err
+		}
 	}
 	var candidates []store.Failure
 	var err error

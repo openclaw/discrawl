@@ -72,6 +72,13 @@ type committedTailMessageFailure struct {
 	record tailMessageFailureFallbackRecord
 }
 
+type tailMessageFailureFallbackIdentity struct {
+	guildID   string
+	channelID string
+	messageID string
+	eventKind string
+}
+
 type tailMessageFailureFallbackDir struct {
 	root *os.Root
 	file *os.File
@@ -176,8 +183,35 @@ func (s *Store) ImportTailMessageFailureFallbacks(ctx context.Context) (int, err
 	return s.importTailMessageFailureFallbacks(ctx, tailMessageFailureFallbackHooks{})
 }
 
+// ImportTailMessageFailureFallbacksExact validates every committed fallback,
+// but imports and removes only fallbacks matching the supplied identities.
+func (s *Store) ImportTailMessageFailureFallbacksExact(
+	ctx context.Context,
+	identities []FailureRef,
+) (int, error) {
+	allowed, required, err := exactTailMessageFailureFallbackIdentities(identities)
+	if err != nil {
+		return 0, err
+	}
+	return s.importTailMessageFailureFallbacksSelected(
+		ctx,
+		allowed,
+		required,
+		tailMessageFailureFallbackHooks{},
+	)
+}
+
 func (s *Store) importTailMessageFailureFallbacks(
 	ctx context.Context,
+	hooks tailMessageFailureFallbackHooks,
+) (int, error) {
+	return s.importTailMessageFailureFallbacksSelected(ctx, nil, nil, hooks)
+}
+
+func (s *Store) importTailMessageFailureFallbacksSelected(
+	ctx context.Context,
+	allowed map[tailMessageFailureFallbackIdentity]struct{},
+	required []FailureRef,
 	hooks tailMessageFailureFallbackHooks,
 ) (int, error) {
 	dirPath, err := s.tailMessageFailureFallbackDir()
@@ -221,18 +255,32 @@ func (s *Store) importTailMessageFailureFallbacks(
 	if err := cleanupTailMessageFailureTemps(dir, tempNames, hooks); err != nil {
 		return 0, err
 	}
-	if len(committed) == 0 {
+	selected := committed
+	if allowed != nil {
+		selected = make([]committedTailMessageFailure, 0, len(committed))
+		for _, item := range committed {
+			if _, ok := allowed[tailMessageFailureFallbackRecordIdentity(item.record)]; ok {
+				selected = append(selected, item)
+			}
+		}
+	}
+	if len(selected) == 0 && len(required) == 0 {
 		return 0, nil
 	}
 
-	imported, err := s.importTailMessageFailureFallbackRecords(ctx, committed, time.Now().UTC())
+	imported, err := s.importTailMessageFailureFallbackRecordsRequired(
+		ctx,
+		selected,
+		required,
+		time.Now().UTC(),
+	)
 	if err != nil {
 		return 0, err
 	}
 
 	var removeErr error
 	removed := false
-	for _, item := range committed {
+	for _, item := range selected {
 		err := hooks.removeFile(dir.root, item.name)
 		switch {
 		case err == nil:
@@ -253,12 +301,76 @@ func (s *Store) importTailMessageFailureFallbacks(
 	return imported, nil
 }
 
+func exactTailMessageFailureFallbackIdentities(
+	identities []FailureRef,
+) (
+	map[tailMessageFailureFallbackIdentity]struct{},
+	[]FailureRef,
+	error,
+) {
+	if len(identities) == 0 {
+		return nil, nil, errors.New("at least one exact tail message failure fallback identity is required")
+	}
+	allowed := make(map[tailMessageFailureFallbackIdentity]struct{}, len(identities))
+	required := make([]FailureRef, 0, len(identities))
+	for _, ref := range identities {
+		ref = normalizeFailureRef(ref)
+		if ref.Operation != tailMessageFailureOperation ||
+			ref.Source != tailMessageFailureSource ||
+			ref.RelatedKind != tailMessageFailureRelated {
+			return nil, nil, errors.New("exact tail message failure fallback identity has invalid scope")
+		}
+		eventKind, ok := normalizeTailMessageEventKind(ref.RelatedID)
+		if !ok || ref.GuildID == "" || ref.ChannelID == "" || ref.MessageID == "" {
+			return nil, nil, errors.New("exact tail message failure fallback identity is incomplete")
+		}
+		ref.RelatedID = eventKind
+		identity := tailMessageFailureFallbackIdentity{
+			guildID:   ref.GuildID,
+			channelID: ref.ChannelID,
+			messageID: ref.MessageID,
+			eventKind: eventKind,
+		}
+		if _, ok := allowed[identity]; ok {
+			return nil, nil, errors.New("exact tail message failure fallback identities contain a duplicate")
+		}
+		allowed[identity] = struct{}{}
+		required = append(required, ref)
+	}
+	return allowed, required, nil
+}
+
+func tailMessageFailureFallbackRecordIdentity(
+	record tailMessageFailureFallbackRecord,
+) tailMessageFailureFallbackIdentity {
+	return tailMessageFailureFallbackIdentity{
+		guildID:   record.GuildID,
+		channelID: record.ChannelID,
+		messageID: record.MessageID,
+		eventKind: record.EventKind,
+	}
+}
+
 func (s *Store) importTailMessageFailureFallbackRecords(
 	ctx context.Context,
 	committed []committedTailMessageFailure,
 	now time.Time,
 ) (int, error) {
-	if len(committed) == 0 {
+	return s.importTailMessageFailureFallbackRecordsRequired(
+		ctx,
+		committed,
+		nil,
+		now,
+	)
+}
+
+func (s *Store) importTailMessageFailureFallbackRecordsRequired(
+	ctx context.Context,
+	committed []committedTailMessageFailure,
+	required []FailureRef,
+	now time.Time,
+) (int, error) {
+	if len(committed) == 0 && len(required) == 0 {
 		return 0, nil
 	}
 	for _, item := range committed {
@@ -299,6 +411,38 @@ func (s *Store) importTailMessageFailureFallbackRecords(
 			return 0, err
 		}
 		imported++
+	}
+	for index, identity := range required {
+		var available int
+		err := tx.QueryRowContext(
+			ctx, `
+			select 1
+			from failure_ledger
+			where resolved_at is null
+			  and operation = ? and source = ?
+			  and guild_id = ? and channel_id = ? and message_id = ?
+			  and related_kind = ? and related_id = ?
+		`,
+			identity.Operation,
+			identity.Source,
+			identity.GuildID,
+			identity.ChannelID,
+			identity.MessageID,
+			identity.RelatedKind,
+			identity.RelatedID,
+		).Scan(&available)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf(
+				"exact tail message failure fallback identity %d is unavailable",
+				index+1,
+			)
+		}
+		if err != nil {
+			return 0, fmt.Errorf(
+				"verify exact tail message failure fallback identity: %w",
+				err,
+			)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit tail message failure fallback import: %w", err)
