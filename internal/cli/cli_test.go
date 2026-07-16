@@ -4120,6 +4120,17 @@ func TestNestedCommandHelp(t *testing.T) {
 	}
 }
 
+func TestHelpFlagAfterDelimiterReachesCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, helpFlag := range []string{"-h", "--help"} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(context.Background(), []string{"version", "--", helpFlag}, &stdout, &stderr))
+		require.Equal(t, version+"\n", stdout.String())
+		require.Empty(t, stderr.String())
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	t.Parallel()
 

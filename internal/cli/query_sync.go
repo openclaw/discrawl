@@ -107,6 +107,9 @@ func hasHelpArg(args []string) bool {
 
 func hasHelpFlag(args []string) bool {
 	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
 		if arg == "--help" || arg == "-h" {
 			return true
 		}

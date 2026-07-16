@@ -2,6 +2,10 @@
 
 ## 0.11.6 - Unreleased
 
+### Changes
+
+- Improve root, command, and nested command help with descriptions and side-effect-free `-h` handling. Thanks @0xdevalias.
+
 ### Fixes
 
 - Show setup guidance instead of a raw missing-file error when configuration-dependent commands cannot find `config.toml`. Thanks @0xdevalias.
