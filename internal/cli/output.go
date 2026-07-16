@@ -96,26 +96,121 @@ func printPlain(w io.Writer, value any) error {
 }
 
 func printUsage(w io.Writer) error {
-	return printKongUsage(w, "")
+	return printKongUsage(w)
 }
 
 func printCommandUsage(w io.Writer, args []string) error {
 	if len(args) == 0 || len(args) > 2 {
 		return usageErr(errors.New("usage: discrawl help <command> [subcommand]"))
 	}
-	topic := strings.Join(args, " ")
+	topic := canonicalHelpTopic(strings.Join(args, " "))
 	text, ok := commandUsage[topic]
 	if ok {
 		_, _ = fmt.Fprint(w, text)
 		return nil
 	}
-	if !hasHelpTopic(args) {
-		return usageErr(fmt.Errorf("unknown help topic %q", topic))
-	}
-	return printKongUsage(w, topic)
+	return usageErr(fmt.Errorf("unknown help topic %q", topic))
 }
 
 var commandUsage = map[string]string{
+	"metadata": `Usage: discrawl metadata [--json]
+
+Print the archive control manifest.
+`,
+	"version": "Usage: discrawl version\n\nPrint the Discrawl version.\n",
+	"init": `Usage: discrawl init [--guild ID] [--db PATH] [--with-embeddings]
+
+Discover accessible guilds and initialize configuration.
+`,
+	"sync": `Usage: discrawl sync [--full] [--all] [--all-channels] [--since RFC3339] [--channels IDS] [--concurrency N] [--source SOURCE] [--with-embeddings] [--with-media] [--skip-members|--with-members] [--latest-only] [--guild ID|--guilds IDS] [--update MODE|--no-update]
+
+Sync Discord or desktop-cache data into the local archive.
+`,
+	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS]
+
+Continuously archive new Discord messages.
+`,
+	"wiretap": `Usage:
+  discrawl wiretap [flags]
+
+Flags:
+  --path PATH                  Discord Desktop cache path.
+  --max-file-bytes N           Maximum cache file size to inspect.
+  --full-cache                 Scan the full cache instead of recent files only.
+  --dry-run                    Inspect cache data without writing archive rows.
+  --watch-every DURATION       Repeat imports at this interval (minimum 1s).
+  --stats                      Include archive coverage and watch deltas.
+  --json                       Write JSON output.
+`,
+	"tui": `Usage: discrawl tui [--channel ID] [--author ID] [--limit N] [--include-empty] [--dm] [--guild ID|--guilds IDS] [--json]
+
+Explore the archive in an interactive terminal UI.
+`,
+	"digest": `Usage: discrawl digest [--since DURATION] [--guild ID] [--channel ID_OR_NAME] [--top-n N]
+
+Summarize recent archive activity.
+`,
+	"analytics": `Usage: discrawl analytics <quiet|trends> [flags]
+
+Analyze inactive channels or week-over-week message trends.
+`,
+	"analytics quiet": `Usage: discrawl analytics quiet [--since DURATION] [--guild ID]
+
+List channels with no activity in the lookback window.
+`,
+	"analytics trends": `Usage: discrawl analytics trends [--weeks N] [--guild ID] [--channel ID_OR_NAME]
+
+Report week-over-week message counts per channel.
+`,
+	"dms": `Usage: discrawl dms [--with ID_OR_NAME] [--search TEXT] [--hours N|--days N|--since RFC3339] [--before RFC3339] [--limit N|--last N|--all] [--list] [--include-empty]
+
+List local Discord Desktop conversations or messages.
+`,
+	"mentions": `Usage: discrawl mentions [--channel ID_OR_NAME] [--author ID_OR_NAME] [--target ID_OR_NAME] [--type user|role] [--days N|--since RFC3339] [--before RFC3339] [--limit N] [--guild ID|--guilds IDS]
+
+List archived mentions matching at least one filter.
+`,
+	"embed": `Usage: discrawl embed [--limit N] [--batch-size N] [--rebuild]
+
+Generate embeddings for queued archive messages.
+`,
+	"members": `Usage: discrawl members <list|show|search> [args]
+
+List, inspect, or search archived Discord members.
+`,
+	"members list": `Usage: discrawl members list
+
+List archived Discord members.
+`,
+	"members show": `Usage: discrawl members show [--messages N] ID_OR_QUERY
+
+Show one member profile and recent messages.
+`,
+	"members search": `Usage: discrawl members search QUERY
+
+Search archived Discord members.
+`,
+	"status": `Usage: discrawl status [--json]
+
+Show archive status and freshness.
+`,
+	"report": `Usage: discrawl report [--readme PATH]
+
+Generate the archive activity report.
+`,
+	"doctor": `Usage: discrawl doctor [--json]
+
+Check configuration, storage, credentials, and optional services.
+`,
+	"subscribe": `Usage: discrawl subscribe [--repo PATH] [--branch NAME] [--stale-after DURATION] [--no-auto-update] [--no-import] [--force] [--with-embeddings] [--no-media] REMOTE
+
+Configure and optionally import a read-only snapshot subscription.
+`,
+	"update": `Usage: discrawl update [--repo PATH] [--remote URL] [--branch NAME] [--force] [--ref REF] [--with-embeddings] [--no-media]
+
+Update the configured snapshot subscription. Historical --ref imports require --force.
+`,
+	"whoami": "Usage: discrawl whoami\n\nShow the configured remote identity.\n",
 	"failures": `Usage:
   discrawl failures [--all] [--source SOURCE] [--guild ID] [--channel ID] [--limit N] [--json]
 
@@ -200,6 +295,18 @@ Flags:
 
 Resolution prefers an exact channel id, then an exact name, then a unique partial name. Ambiguous names fail with candidate guild/channel ids.
 `,
+	"channels resolve": `Usage: discrawl channels resolve [--guild ID|--guilds IDS] [--json] ID_OR_NAME
+
+Resolve a channel id or name with actionable ambiguity candidates.
+`,
+	"channels list": `Usage: discrawl channels list
+
+List archived Discord channels.
+`,
+	"channels show": `Usage: discrawl channels show CHANNEL_ID
+
+Show one archived Discord channel.
+`,
 	"sql": `Usage:
   discrawl sql [--unsafe --confirm] <query>
   discrawl sql [--unsafe --confirm] -
@@ -219,10 +326,30 @@ Read-only SQL is allowed by default. Use "-" or no query to read SQL from stdin.
 
 Reads the configured Cloudflare-backed remote archive without opening the local SQLite database.
 `,
-	"cloud": `Usage:
-  discrawl cloud publish --remote URL --archive ARCHIVE [--token-env ENV]
+	"remote status": `Usage: discrawl remote status
 
-Publishes the local non-DM SQLite archive into a Cloudflare-backed remote archive.
+Show the configured remote archive status.
+`,
+	"remote archives": `Usage: discrawl remote archives
+
+List archives visible to the configured remote identity.
+`,
+	"remote login": `Usage: discrawl remote login [--endpoint URL] [--github-token-env ENV] [--no-browser] [--timeout DURATION] [--poll-interval DURATION] [--json]
+
+Authenticate to a remote archive with GitHub device flow or an explicit token environment variable.
+`,
+	"remote whoami": `Usage: discrawl remote whoami
+
+Show the configured remote identity.
+`,
+	"cloud": `Usage:
+  discrawl cloud publish [--remote URL] [--archive ARCHIVE] [--token-env ENV]
+
+Publishes the local non-DM SQLite archive into a Cloudflare-backed remote archive, using configured remote targets when flags are omitted.
+`,
+	"cloud publish": `Usage: discrawl cloud publish [--remote URL] [--archive ID] [--token-env ENV] [--sqlite-only] [--json]
+
+Publish the local non-DM archive to a Cloudflare-backed remote, using configured targets when flags are omitted.
 `,
 	"publish": `Usage:
   discrawl publish [flags]

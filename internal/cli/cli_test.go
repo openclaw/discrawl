@@ -4072,6 +4072,9 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "coverage", "--help"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "wiretap", "-h"},
 		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "wiretap", "--help"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "sync", "--full", "--help"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "search", "term", "--help"},
+		{"--config", filepath.Join(t.TempDir(), "missing.toml"), "remote", "login", "--endpoint", "https://example.invalid", "--help"},
 	} {
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
@@ -4086,6 +4089,13 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 		require.Contains(t, stdout.String(), "Usage", "args=%v", args)
 		require.Empty(t, stderr.String(), "args=%v", args)
 	}
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(context.Background(), []string{"wiretap", "--help"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "--path PATH")
+	require.Contains(t, stdout.String(), "--watch-every DURATION")
+	require.Contains(t, stdout.String(), "--stats")
+	require.Empty(t, stderr.String())
 
 	err := Run(context.Background(), []string{"help", "wat"}, &bytes.Buffer{}, &bytes.Buffer{})
 	require.Error(t, err)
@@ -4102,7 +4112,7 @@ func TestNestedCommandHelp(t *testing.T) {
 	} {
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(context.Background(), args, &stdout, &stderr), "args=%v", args)
-		require.Contains(t, stdout.String(), "Usage: discrawl analytics <command> [flags]", "args=%v", args)
+		require.Contains(t, stdout.String(), "Usage: discrawl analytics <quiet|trends> [flags]", "args=%v", args)
 		require.Contains(t, stdout.String(), "quiet", "args=%v", args)
 		require.Contains(t, stdout.String(), "trends", "args=%v", args)
 		require.Empty(t, stderr.String(), "args=%v", args)
@@ -4155,6 +4165,18 @@ func TestHelpers(t *testing.T) {
 	require.True(t, hybridSemanticUnavailable(store.ErrNoCompatibleEmbeddings))
 	require.True(t, hybridSemanticUnavailable(assertErr("semantic query embedding missing")))
 	require.False(t, hybridSemanticUnavailable(assertErr("other")))
+	topic, ok := earlyCommandHelpTopic([]string{"wiretap", "--help"})
+	require.True(t, ok)
+	require.Equal(t, []string{"wiretap"}, topic)
+	topic, ok = earlyCommandHelpTopic([]string{"sync", "--help"})
+	require.True(t, ok)
+	require.Equal(t, []string{"sync"}, topic)
+	topic, ok = earlyCommandHelpTopic([]string{"remote", "login", "--help"})
+	require.True(t, ok)
+	require.Equal(t, []string{"remote", "login"}, topic)
+	topic, ok = earlyCommandHelpTopic([]string{"remote", "login", "--endpoint", "https://example.invalid", "--help"})
+	require.True(t, ok)
+	require.Equal(t, []string{"remote", "login"}, topic)
 	opts, err := shareOptionsFromFlags("~/share", "git@example.com:org/archive.git", "")
 	require.NoError(t, err)
 	require.Equal(t, "git@example.com:org/archive.git", opts.Remote)

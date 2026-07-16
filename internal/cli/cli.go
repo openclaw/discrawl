@@ -66,8 +66,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if rest[0] == "help" {
 		return printCommandUsage(stdout, rest[1:])
 	}
-	if rest[0] != "tui" && hasHelpFlag(rest[1:]) {
-		return printCommandUsage(stdout, commandHelpTopic(rest))
+	if topic, ok := earlyCommandHelpTopic(rest); ok {
+		return printCommandUsage(stdout, topic)
 	}
 	if rest[0] == "version" {
 		_, _ = io.WriteString(stdout, version+"\n")
@@ -110,11 +110,6 @@ type discrawlRootArgs struct {
 
 type discrawlHelpArgs struct {
 	discrawlGlobalArgs
-}
-
-type discrawlAnalyticsHelpArgs struct {
-	Quiet  struct{} `cmd:"" help:"List channels with no activity in the lookback window."`
-	Trends struct{} `cmd:"" help:"Report week-over-week message counts per channel."`
 }
 
 type discrawlCommandSpec struct {
@@ -162,7 +157,6 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 func newDiscrawlHelpParser(stdout io.Writer) (*kong.Kong, error) {
 	var root discrawlHelpArgs
 	var command struct{}
-	var analytics discrawlAnalyticsHelpArgs
 	options := []kong.Option{
 		kong.Name("discrawl"),
 		kong.Description("discrawl archives Discord guild data into local SQLite."),
@@ -171,45 +165,45 @@ func newDiscrawlHelpParser(stdout io.Writer) (*kong.Kong, error) {
 		kong.ConfigureHelp(kong.HelpOptions{Compact: true, NoExpandSubcommands: true}),
 	}
 	for _, spec := range discrawlCommandSpecs {
-		target := any(&command)
-		if spec.name == "analytics" {
-			target = &analytics
-		}
-		options = append(options, kong.DynamicCommand(spec.name, spec.description, "", target))
+		options = append(options, kong.DynamicCommand(spec.name, spec.description, "", &command))
 	}
 	return kong.New(&root, options...)
 }
 
-func printKongUsage(stdout io.Writer, command string) error {
+func printKongUsage(stdout io.Writer) error {
 	parser, err := newDiscrawlHelpParser(stdout)
 	if err != nil {
 		return err
 	}
-	args := []string{"--help"}
-	if command != "" {
-		args = append(strings.Fields(command), "--help")
-	}
-	_, _ = parser.Parse(args)
+	_, _ = parser.Parse([]string{"--help"})
 	return nil
 }
 
-func hasHelpTopic(args []string) bool {
-	if len(args) == 1 {
-		for _, spec := range discrawlCommandSpecs {
-			if spec.name == args[0] {
-				return true
-			}
-		}
-		return false
+func earlyCommandHelpTopic(rest []string) ([]string, bool) {
+	if len(rest) < 2 || rest[0] == "tui" || !hasHelpFlag(rest[1:]) {
+		return nil, false
 	}
-	return len(args) == 2 && args[0] == "analytics" && (args[1] == "quiet" || args[1] == "trends")
+	if len(rest) >= 3 {
+		topic := canonicalHelpTopic(strings.Join(rest[:2], " "))
+		if _, ok := commandUsage[topic]; ok {
+			return strings.Fields(topic), true
+		}
+	}
+	topic := canonicalHelpTopic(rest[0])
+	if _, ok := commandUsage[topic]; !ok {
+		return nil, false
+	}
+	return []string{topic}, true
 }
 
-func commandHelpTopic(rest []string) []string {
-	if len(rest) >= 2 && hasHelpTopic(rest[:2]) {
-		return rest[:2]
+func canonicalHelpTopic(topic string) string {
+	if topic == "tap" || topic == "cache-import" {
+		return "wiretap"
 	}
-	return rest[:1]
+	if topic == "attachments fetch" {
+		return "attachments"
+	}
+	return topic
 }
 
 func rootHelpRequested(args []string, valueFlags ...string) bool {
