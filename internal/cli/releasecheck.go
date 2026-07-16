@@ -27,7 +27,7 @@ func discrawlReleaseCheckOptions(force bool) releasecheck.Options {
 		AppName:        "discrawl",
 		Owner:          owner,
 		Repo:           repo,
-		CurrentVersion: version,
+		CurrentVersion: currentVersion(),
 		CacheDir:       cfg.CacheDir,
 		Force:          force,
 	}

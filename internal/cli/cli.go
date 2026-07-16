@@ -56,7 +56,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return usageErr(err)
 	}
 	if global.Version {
-		_, _ = io.WriteString(stdout, version+"\n")
+		_, _ = io.WriteString(stdout, currentVersion()+"\n")
 		return nil
 	}
 	rest := global.Args
@@ -70,7 +70,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return printCommandUsage(stdout, topic)
 	}
 	if rest[0] == "version" {
-		_, _ = io.WriteString(stdout, version+"\n")
+		_, _ = io.WriteString(stdout, currentVersion()+"\n")
 		return nil
 	}
 	level := slog.LevelInfo

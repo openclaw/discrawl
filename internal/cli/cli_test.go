@@ -51,9 +51,11 @@ func TestHelpAndVersion(t *testing.T) {
 	require.NoError(t, Run(context.Background(), []string{"help"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "discrawl")
 
-	out.Reset()
-	require.NoError(t, Run(context.Background(), []string{"--version"}, &out, &bytes.Buffer{}))
-	require.Contains(t, out.String(), "0.11.2")
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		out.Reset()
+		require.NoError(t, Run(context.Background(), args, &out, &bytes.Buffer{}))
+		require.Equal(t, currentVersion()+"\n", out.String())
+	}
 
 	err := Run(context.Background(), []string{"bogus"}, &out, &bytes.Buffer{})
 	require.Equal(t, 2, ExitCode(err))
@@ -4136,7 +4138,7 @@ func TestHelpFlagAfterDelimiterReachesCommand(t *testing.T) {
 	for _, helpFlag := range []string{"-h", "--help"} {
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(context.Background(), []string{"version", "--", helpFlag}, &stdout, &stderr))
-		require.Equal(t, version+"\n", stdout.String())
+		require.Equal(t, currentVersion()+"\n", stdout.String())
 		require.Empty(t, stderr.String())
 	}
 }

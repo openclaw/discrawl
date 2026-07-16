@@ -73,7 +73,7 @@ func (r *runtime) runCloudPublish(args []string) error {
 			TokenEnv: firstNonEmpty(*tokenEnv, r.cfg.Remote.TokenEnv, config.DefaultRemoteTokenEnv),
 		}
 		client, err := crawlremote.NewClientFromConfig(remoteCfg, crawlremote.Options{
-			UserAgent:  "discrawl/" + version,
+			UserAgent:  discrawlUserAgent(),
 			HTTPClient: &http.Client{Timeout: 10 * time.Minute},
 		})
 		if err != nil {

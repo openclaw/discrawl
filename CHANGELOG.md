@@ -9,6 +9,7 @@
 ### Fixes
 
 - Show setup guidance instead of a raw missing-file error when configuration-dependent commands cannot find `config.toml`. Thanks @0xdevalias.
+- Report module build metadata for source-installed binaries instead of a stale hard-coded release version.
 
 ## 0.11.5 - 2026-07-09
 

@@ -65,6 +65,9 @@ func TestDiscrawlReleaseCheckOptionsUsesModulePath(t *testing.T) {
 	if opts.AppName != "discrawl" || opts.CurrentVersion == "" || opts.CacheDir == "" {
 		t.Fatalf("incomplete options = %#v", opts)
 	}
+	if opts.CurrentVersion != currentVersion() {
+		t.Fatalf("CurrentVersion = %q, want %q", opts.CurrentVersion, currentVersion())
+	}
 }
 
 func TestRunCheckUpdateRejectsArgsBeforeNetwork(t *testing.T) {

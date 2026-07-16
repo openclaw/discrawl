@@ -149,7 +149,7 @@ func (r *runtime) runRemoteLogin(args []string) error {
 	if strings.TrimSpace(cfg.Remote.Endpoint) == "" {
 		return usageErr(errors.New("remote login requires --endpoint or remote.endpoint"))
 	}
-	client, err := crawlremote.NewClientFromConfig(cfg.Remote, crawlremote.Options{UserAgent: "discrawl/" + version})
+	client, err := crawlremote.NewClientFromConfig(cfg.Remote, crawlremote.Options{UserAgent: discrawlUserAgent()})
 	if err != nil {
 		return configErr(err)
 	}
@@ -325,7 +325,7 @@ func (r *runtime) remoteClient(requireArchive bool) (remoteArchiveClient, error)
 	}
 	client, err := crawlremote.NewClientFromConfig(r.cfg.Remote, crawlremote.Options{
 		TokenProvider: tokenProvider,
-		UserAgent:     "discrawl/" + version,
+		UserAgent:     discrawlUserAgent(),
 	})
 	if err != nil {
 		return nil, configErr(err)
