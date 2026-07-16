@@ -2,6 +2,10 @@
 
 ## 0.11.6 - Unreleased
 
+### Fixes
+
+- Show setup guidance instead of a raw missing-file error when configuration-dependent commands cannot find `config.toml`. Thanks @0xdevalias.
+
 ## 0.11.5 - 2026-07-09
 
 ### Maintenance
