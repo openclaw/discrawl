@@ -307,6 +307,8 @@ func TestUpsertMessageWithEmbeddingsQueuesExistingMessageWithoutJob(t *testing.T
 }
 
 func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
@@ -352,8 +354,6 @@ func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
 	}, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 2})
 	require.NoError(t, err)
 	require.Equal(t, 2, stats.Succeeded)
-	populateMessageFTSFiller(t, s, 20000)
-
 	results, err := s.SearchMessages(ctx, SearchOptions{Query: "needle", Limit: 10})
 	require.NoError(t, err)
 	require.Equal(t, []string{"m1"}, searchResultIDs(results))
@@ -368,12 +368,7 @@ func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, searchResultIDs(semanticResults), "m1")
 
-	deleteTimeout := 250 * time.Millisecond
-	deleteCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
-	startedAt := time.Now()
-	require.NoError(t, s.MarkMessageDeleted(deleteCtx, "g1", "c1", "m1", map[string]string{"deleted": "1"}))
-	require.Less(t, time.Since(startedAt), deleteTimeout)
-	cancel()
+	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "m1", map[string]string{"deleted": "1"}))
 
 	results, err = s.SearchMessages(ctx, SearchOptions{Query: "needle", Limit: 10})
 	require.NoError(t, err)

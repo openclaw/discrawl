@@ -304,10 +304,6 @@ type tailMessageFailureReplayer interface {
 	ReplayTailMessageFailures(context.Context, []string, int) (syncer.TailMessageReplayStats, error)
 }
 
-type exactTailMessageFailureReplayer interface {
-	ReplayTailMessageFailuresExact(context.Context, []string, []syncer.TailMessageReplayIdentity) (syncer.TailMessageReplayStats, error)
-}
-
 type attachmentTextConfigurer interface {
 	SetAttachmentTextEnabled(bool)
 }

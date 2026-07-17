@@ -332,15 +332,6 @@ func (r *runtime) runTail(args []string) error {
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
 	replayLimit := fs.Int("replay-limit", syncer.TailMessageReplayLimit, "")
-	replayIdentities := []syncer.TailMessageReplayIdentity{}
-	fs.Func("replay-identity", "", func(raw string) error {
-		identity, err := parseTailMessageReplayIdentity(raw)
-		if err != nil {
-			return err
-		}
-		replayIdentities = append(replayIdentities, identity)
-		return nil
-	})
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
 	if err := fs.Parse(args); err != nil {
@@ -356,50 +347,20 @@ func (r *runtime) runTail(args []string) error {
 	if replayLimitSet && !*replayFailuresOnly {
 		return usageErr(errors.New("--replay-limit requires --replay-failures-only"))
 	}
-	if len(replayIdentities) > 0 && !*replayFailuresOnly {
-		return usageErr(errors.New("--replay-identity requires --replay-failures-only"))
-	}
-	if len(replayIdentities) > 0 && replayLimitSet {
-		return usageErr(errors.New("--replay-limit cannot be combined with --replay-identity"))
-	}
 	if *replayLimit <= 0 || *replayLimit > syncer.TailMessageReplayLimit {
 		return usageErr(fmt.Errorf(
 			"--replay-limit must be between 1 and %d",
 			syncer.TailMessageReplayLimit,
 		))
 	}
-	if len(replayIdentities) > syncer.TailMessageReplayLimit {
-		return usageErr(fmt.Errorf(
-			"--replay-identity may be repeated at most %d times",
-			syncer.TailMessageReplayLimit,
-		))
-	}
 	guildIDs := r.resolveSyncGuilds(*guildFlag, *guildsFlag)
 	if *replayFailuresOnly {
-		r.setSyncLockPhase("tail failure replay")
-		var stats syncer.TailMessageReplayStats
-		var err error
-		if len(replayIdentities) > 0 {
-			replayer, ok := r.syncer.(exactTailMessageFailureReplayer)
-			if !ok {
-				return errors.New("exact tail failure replay is unavailable")
-			}
-			stats, err = replayer.ReplayTailMessageFailuresExact(
-				r.ctx,
-				guildIDs,
-				replayIdentities,
-			)
-		} else {
-			replayer, ok := r.syncer.(tailMessageFailureReplayer)
-			if !ok {
-				return errors.New("tail failure replay is unavailable")
-			}
-			stats, err = replayer.ReplayTailMessageFailures(
-				r.ctx,
-				guildIDs,
-				*replayLimit,
-			)
+		replayer, ok := r.syncer.(tailMessageFailureReplayer)
+		if !ok {
+			return errors.New("tail failure replay is unavailable")
 		}
+		r.setSyncLockPhase("tail failure replay")
+		stats, err := replayer.ReplayTailMessageFailures(r.ctx, guildIDs, *replayLimit)
 		if err != nil {
 			return err
 		}
@@ -414,36 +375,6 @@ func (r *runtime) runTail(args []string) error {
 		defer configurable.SetTailReadyCallback(nil)
 	}
 	return r.syncer.RunTail(ctx, guildIDs, *repairEvery)
-}
-
-func parseTailMessageReplayIdentity(raw string) (syncer.TailMessageReplayIdentity, error) {
-	parts := strings.Split(strings.TrimSpace(raw), "/")
-	if len(parts) != 4 {
-		return syncer.TailMessageReplayIdentity{}, errors.New(
-			"--replay-identity must be guild/channel/message/create|update|delete",
-		)
-	}
-	for _, value := range parts[:3] {
-		if !isDiscordID(value) {
-			return syncer.TailMessageReplayIdentity{}, errors.New(
-				"--replay-identity contains an invalid Discord ID",
-			)
-		}
-	}
-	eventKind := strings.ToLower(strings.TrimSpace(parts[3]))
-	switch eventKind {
-	case "create", "update", "delete":
-	default:
-		return syncer.TailMessageReplayIdentity{}, errors.New(
-			"--replay-identity event kind must be create, update, or delete",
-		)
-	}
-	return syncer.TailMessageReplayIdentity{
-		GuildID:   parts[0],
-		ChannelID: parts[1],
-		MessageID: parts[2],
-		EventKind: eventKind,
-	}, nil
 }
 
 func (r *runtime) runWiretap(args []string) error {

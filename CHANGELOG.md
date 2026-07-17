@@ -10,6 +10,7 @@
 
 - Show setup guidance instead of a raw missing-file error when configuration-dependent commands cannot find `config.toml`. Thanks @0xdevalias.
 - Report module build metadata for source-installed binaries instead of a stale hard-coded release version.
+- Keep Discord Gateway tails fail-closed while durably spooling and replaying timed-out message creates, updates, and deletes. Thanks @hannesrudolph.
 
 ## 0.11.5 - 2026-07-09
 

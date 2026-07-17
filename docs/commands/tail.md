@@ -25,9 +25,6 @@ discrawl tail --replay-failures-only
 - `--repair-every <duration>` - frequency of the repair sweep
 - `--replay-failures-only` - replay unresolved exact-message tail failures and exit
 - `--replay-limit <n>` - maximum failures to inspect in replay-only mode (default and maximum: `25`)
-- `--replay-identity <guild/channel/message/event>` - replay only this exact
-  `create`, `update`, or `delete` failure identity; repeat up to `25` times.
-  This cannot be combined with `--replay-limit`.
 
 ## Notes
 
