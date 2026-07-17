@@ -2429,6 +2429,8 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 		allowRecord:      make(chan struct{}),
 		recordErr:        errors.New("ledger unavailable"),
 	}
+	observerReady := make(chan struct{})
+	overflowObserved := make(chan struct{})
 	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		if err := conn.WriteJSON(messageCreateEvent(2, "post-deadline", now)); err != nil {
@@ -2439,6 +2441,12 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 		case <-handler.recordingStarted:
 		case <-testCtx.Done():
 			t.Error("post-deadline failure recording did not start")
+			return
+		}
+		select {
+		case <-observerReady:
+		case <-testCtx.Done():
+			t.Error("queue observer was not installed")
 			return
 		}
 		for sequence := 3; sequence < 13; sequence++ {
@@ -2460,11 +2468,6 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 0
 	client.tailHandlerTimeout = 25 * time.Millisecond
-	queueFull := make(chan struct{})
-	var queueFullOnce sync.Once
-	client.tailQueueFullHook = func() {
-		queueFullOnce.Do(func() { close(queueFull) })
-	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -2475,8 +2478,15 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 	case <-testCtx.Done():
 		t.Fatal("post-deadline failure recording did not start")
 	}
+	removeObserver := client.session.AddHandler(func(_ *discordgo.Session, event *discordgo.MessageCreate) {
+		if event.ID == "queue-overflow-3" {
+			close(overflowObserved)
+		}
+	})
+	defer removeObserver()
+	close(observerReady)
 	select {
-	case <-queueFull:
+	case <-overflowObserved:
 	case err := <-done:
 		t.Fatalf("Tail returned before failure persistence completed: %v", err)
 	case <-testCtx.Done():

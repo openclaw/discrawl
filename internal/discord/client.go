@@ -220,7 +220,6 @@ type Client struct {
 	tailHandlerTimeout   time.Duration
 	tailGraceTimerHook   func()
 	tailTaskDequeuedHook func(context.Context)
-	tailQueueFullHook    func()
 }
 
 func New(token string) (*Client, error) {
@@ -702,9 +701,6 @@ func (c *Client) enqueueTailTask(
 		return
 	case workCh <- task:
 	default:
-		if c.tailQueueFullHook != nil {
-			c.tailQueueFullHook()
-		}
 		fatal.signal(errors.New("tail worker queue full"))
 	}
 }
