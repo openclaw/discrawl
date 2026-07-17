@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -33,35 +34,26 @@ func TestTailFailureWindowsACLProtectsDirectoryAndFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, validateTailFailureFallbackFile(file, fileInfo))
 
+	insecurePath := filepath.Join(t.TempDir(), "insecure")
 	permissive, err := windows.SecurityDescriptorFromString("D:(A;;FA;;;WD)")
 	require.NoError(t, err)
-	dacl, _, err := permissive.DACL()
-	require.NoError(t, err)
-	extendedPath, err := tailFailureExtendedWindowsPath(path)
+	extendedPath, err := tailFailureExtendedWindowsPath(insecurePath)
 	require.NoError(t, err)
 	pathPtr, err := windows.UTF16PtrFromString(extendedPath)
 	require.NoError(t, err)
-	writeDACL, err := windows.CreateFile(
-		pathPtr,
-		windows.WRITE_DAC,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
-	)
+	require.NoError(t, windows.CreateDirectory(pathPtr, &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: permissive,
+	}))
+	insecureRoot, err := os.OpenRoot(insecurePath)
 	require.NoError(t, err)
-	defer func() { _ = windows.CloseHandle(writeDACL) }()
-	require.NoError(t, windows.SetSecurityInfo(
-		writeDACL,
-		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
-		nil,
-		nil,
-		dacl,
-		nil,
-	))
-	require.Error(t, validateTailFailureFallbackDir(dir, dirInfo))
+	defer func() { _ = insecureRoot.Close() }()
+	insecureDir, err := insecureRoot.Open(".")
+	require.NoError(t, err)
+	defer func() { _ = insecureDir.Close() }()
+	insecureInfo, err := insecureDir.Stat()
+	require.NoError(t, err)
+	require.Error(t, validateTailFailureFallbackDir(insecureDir, insecureInfo))
 }
 
 func TestRenameTailFailureWindowsIsNoReplace(t *testing.T) {

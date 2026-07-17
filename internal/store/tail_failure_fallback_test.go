@@ -72,7 +72,9 @@ func TestPersistTailMessageFailureFallbackIsCanonicalPrivateAndPoolIndependent(t
 	recordInfo, err := entries[0].Info()
 	require.NoError(t, err)
 	require.True(t, recordInfo.Mode().IsRegular())
-	require.Equal(t, os.FileMode(0o600), recordInfo.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), recordInfo.Mode().Perm())
+	}
 
 	other, err := Open(ctx, filepath.Join(dir, "other.db"))
 	require.NoError(t, err)
