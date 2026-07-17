@@ -956,7 +956,7 @@ func TestReplayTailMessageFailuresDoesNotRewriteLedgerOnParentCancellation(t *te
 	require.Zero(t, report.Failures[0].RetryCount)
 }
 
-func TestPersistMessagePageResolvesOnlyCreateAndUpdateTailFailures(t *testing.T) {
+func TestPersistMessagePageResolvesCreateButLeavesNewerUpdateFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -979,6 +979,7 @@ func TestPersistMessagePageResolvesOnlyCreateAndUpdateTailFailures(t *testing.T)
 	}
 
 	svc := New(&fakeClient{}, s, nil)
+	// This page represents data fetched before the update failure was recorded.
 	newest, err := svc.persistMessagePage(ctx, []*discordgo.Message{{
 		ID:        "40",
 		GuildID:   "g1",
@@ -992,11 +993,12 @@ func TestPersistMessagePageResolvesOnlyCreateAndUpdateTailFailures(t *testing.T)
 
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
-	require.Equal(t, 2, report.UnresolvedCount)
-	require.Len(t, report.Failures, 2)
-	require.ElementsMatch(t, []string{"", "delete"}, []string{
+	require.Equal(t, 3, report.UnresolvedCount)
+	require.Len(t, report.Failures, 3)
+	require.ElementsMatch(t, []string{"", "delete", "update"}, []string{
 		report.Failures[0].RelatedID,
 		report.Failures[1].RelatedID,
+		report.Failures[2].RelatedID,
 	})
 	var eventCount int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events`).Scan(&eventCount))

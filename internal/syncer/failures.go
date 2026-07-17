@@ -292,7 +292,7 @@ func (t *tailHandler) resolveMessageFailure(ctx context.Context, guildID, channe
 	)
 }
 
-func (s *Syncer) resolveTailMessageFailuresForMessages(ctx context.Context, messages []*discordgo.Message, fallbackGuildID string) error {
+func (s *Syncer) resolveTailMessageCreateFailuresForMessages(ctx context.Context, messages []*discordgo.Message, fallbackGuildID string) error {
 	if s == nil || s.store == nil || len(messages) == 0 {
 		return nil
 	}
@@ -320,17 +320,15 @@ func (s *Syncer) resolveTailMessageFailuresForMessages(ctx context.Context, mess
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
 	for key, ids := range messageIDs {
-		for _, eventKind := range []string{"create", "update"} {
-			if err := s.store.ResolveMessageFailures(ledgerCtx, store.FailureRef{
-				Operation:   tailMessageFailureOperation,
-				Source:      "discord",
-				GuildID:     key.guildID,
-				ChannelID:   key.channelID,
-				RelatedKind: tailMessageFailureRelatedKind,
-				RelatedID:   eventKind,
-			}, ids); err != nil {
-				return err
-			}
+		if err := s.store.ResolveMessageFailures(ledgerCtx, store.FailureRef{
+			Operation:   tailMessageFailureOperation,
+			Source:      "discord",
+			GuildID:     key.guildID,
+			ChannelID:   key.channelID,
+			RelatedKind: tailMessageFailureRelatedKind,
+			RelatedID:   "create",
+		}, ids); err != nil {
+			return err
 		}
 	}
 	return nil

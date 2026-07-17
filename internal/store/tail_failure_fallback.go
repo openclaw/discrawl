@@ -130,6 +130,19 @@ func (s *Store) persistTailMessageFailureFallback(
 		_ = temp.Close()
 		return fmt.Errorf("secure tail message failure fallback temp file: %w", err)
 	}
+	if err := secureTailFailureFallbackTempFile(dir.file, tempName); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	tempInfo, err := temp.Stat()
+	if err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("inspect tail message failure fallback temp file: %w", err)
+	}
+	if err := validateTailFailureFallbackFile(temp, tempInfo); err != nil {
+		_ = temp.Close()
+		return err
+	}
 	written, err := temp.Write(body)
 	if err != nil {
 		_ = temp.Close()
@@ -433,7 +446,7 @@ func openTailMessageFailureFallbackDir(path string, create bool) (*tailMessageFa
 	info, err := os.Lstat(path)
 	created := false
 	if errors.Is(err, os.ErrNotExist) && create {
-		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := createTailFailureFallbackDir(path); err != nil && !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("create tail message failure fallback directory: %w", err)
 		} else if err == nil {
 			created = true
@@ -448,9 +461,6 @@ func openTailMessageFailureFallbackDir(path string, create bool) (*tailMessageFa
 	}
 	if !info.IsDir() {
 		return nil, errors.New("tail message failure fallback path must be a directory")
-	}
-	if info.Mode().Perm() != 0o700 {
-		return nil, errors.New("tail message failure fallback directory permissions must be 0700")
 	}
 	root, err := os.OpenRoot(path)
 	if err != nil {
@@ -492,6 +502,11 @@ func openTailMessageFailureFallbackDir(path string, create bool) (*tailMessageFa
 		_ = root.Close()
 		return nil, errors.New("tail message failure fallback directory handle changed during verification")
 	}
+	if err := validateTailFailureFallbackDir(dirFile, dirInfo); err != nil {
+		_ = dirFile.Close()
+		_ = root.Close()
+		return nil, err
+	}
 	if created {
 		parent, err := os.Open(filepath.Dir(path))
 		if err != nil {
@@ -499,7 +514,7 @@ func openTailMessageFailureFallbackDir(path string, create bool) (*tailMessageFa
 			_ = root.Close()
 			return nil, fmt.Errorf("open tail message failure fallback parent directory: %w", err)
 		}
-		if err := parent.Sync(); err != nil {
+		if err := syncTailFailureDirectory(parent); err != nil {
 			_ = parent.Close()
 			_ = dirFile.Close()
 			_ = root.Close()
@@ -532,9 +547,6 @@ func readCommittedTailMessageFailure(
 	if !info.Mode().IsRegular() {
 		return tailMessageFailureFallbackRecord{}, nil, errors.New("committed tail message failure fallback must be a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0 {
-		return tailMessageFailureFallbackRecord{}, nil, errors.New("committed tail message failure fallback permissions are insecure")
-	}
 	if info.Size() <= 0 || info.Size() > tailMessageFailureFallbackMaxSize {
 		return tailMessageFailureFallbackRecord{}, nil, errors.New("committed tail message failure fallback size is invalid")
 	}
@@ -550,6 +562,9 @@ func readCommittedTailMessageFailure(
 	}
 	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
 		return tailMessageFailureFallbackRecord{}, nil, errors.New("committed tail message failure fallback changed during verification")
+	}
+	if err := validateTailFailureFallbackFile(file, openedInfo); err != nil {
+		return tailMessageFailureFallbackRecord{}, nil, err
 	}
 	body, err := io.ReadAll(io.LimitReader(file, tailMessageFailureFallbackMaxSize+1))
 	if err != nil {
@@ -741,5 +756,5 @@ func (h tailMessageFailureFallbackHooks) syncDirectory(dir *os.File) error {
 	if h.syncDir != nil {
 		return h.syncDir(dir)
 	}
-	return dir.Sync()
+	return syncTailFailureDirectory(dir)
 }
