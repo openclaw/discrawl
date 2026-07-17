@@ -16,37 +16,38 @@ import (
 )
 
 type fakeClient struct {
-	guilds           []*discordgo.UserGuild
-	guildByID        map[string]*discordgo.Guild
-	channels         map[string][]*discordgo.Channel
-	activeThreads    map[string][]*discordgo.Channel
-	guildThreads     map[string][]*discordgo.Channel
-	threadErrors     map[string]error
-	guildThreadErrs  map[string]error
-	publicArchived   map[string][]*discordgo.Channel
-	privateArchive   map[string][]*discordgo.Channel
-	archivedErrors   map[string]error
-	archivedCalls    map[string]int
-	members          map[string][]*discordgo.Member
-	messages         map[string][]*discordgo.Message
-	messageErrors    map[string]error
-	messageCalls     map[string]int
-	messageRequests  []messageRequest
-	messageBlocks    map[string]chan struct{}
-	messageStarted   chan string
-	beforeErrors     map[string]map[string]error
-	memberDelay      time.Duration
-	memberErr        error
-	tailCalls        int
-	tailHandled      chan struct{}
-	messageDelay     time.Duration
-	guildChanCalls   int
-	threadCalls      int
-	guildThreadCalls int
-	memberCalls      int
-	mu               sync.Mutex
-	inFlight         int
-	maxInFlight      int
+	guilds            []*discordgo.UserGuild
+	guildByID         map[string]*discordgo.Guild
+	channels          map[string][]*discordgo.Channel
+	activeThreads     map[string][]*discordgo.Channel
+	guildThreads      map[string][]*discordgo.Channel
+	threadErrors      map[string]error
+	guildThreadErrs   map[string]error
+	publicArchived    map[string][]*discordgo.Channel
+	privateArchive    map[string][]*discordgo.Channel
+	archivedErrors    map[string]error
+	archivedCalls     map[string]int
+	members           map[string][]*discordgo.Member
+	messages          map[string][]*discordgo.Message
+	messageErrors     map[string]error
+	messageCalls      map[string]int
+	exactMessageCalls int
+	messageRequests   []messageRequest
+	messageBlocks     map[string]chan struct{}
+	messageStarted    chan string
+	beforeErrors      map[string]map[string]error
+	memberDelay       time.Duration
+	memberErr         error
+	tailCalls         int
+	tailHandled       chan struct{}
+	messageDelay      time.Duration
+	guildChanCalls    int
+	threadCalls       int
+	guildThreadCalls  int
+	memberCalls       int
+	mu                sync.Mutex
+	inFlight          int
+	maxInFlight       int
 }
 
 type messageRequest struct {
@@ -208,6 +209,9 @@ func (f *fakeClient) ChannelMessages(ctx context.Context, channelID string, limi
 }
 
 func (f *fakeClient) ChannelMessage(_ context.Context, channelID, messageID string) (*discordgo.Message, error) {
+	f.mu.Lock()
+	f.exactMessageCalls++
+	f.mu.Unlock()
 	for _, msg := range f.messages[channelID] {
 		if msg.ID == messageID {
 			return msg, nil

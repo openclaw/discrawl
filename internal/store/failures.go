@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -66,6 +67,16 @@ type FailureReport struct {
 	Failures        []Failure `json:"failures"`
 }
 
+// FailurePersistenceDiagnostics contains timing and SQLite result codes without
+// retaining the database error text.
+type FailurePersistenceDiagnostics struct {
+	PoolWait        time.Duration
+	DBElapsed       time.Duration
+	ContextDeadline time.Time
+	SQLiteCode      int
+	SQLiteCategory  int
+}
+
 // RowWriteError carries identifiers without retaining message content, URLs, or raw payloads.
 type RowWriteError struct {
 	Ref         FailureRef
@@ -106,12 +117,148 @@ func (s *Store) RecordFailure(ctx context.Context, ref FailureRef, failure error
 	if failure == nil {
 		return s.ResolveFailures(ctx, ref)
 	}
+	now := time.Now().UTC()
+	if err := recordFailure(ctx, s.db, ref, failure, now); err != nil {
+		return err
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
+// RecordFailureWithMessageScope atomically validates an existing message's scope
+// and records the failure under either that scope or the complete supplied scope.
+func (s *Store) RecordFailureWithMessageScope(
+	ctx context.Context,
+	ref FailureRef,
+	failure error,
+) error {
+	_, err := s.RecordFailureWithMessageScopeTimed(ctx, ref, failure)
+	return err
+}
+
+// RecordFailureWithMessageScopeTimed is RecordFailureWithMessageScope with
+// pool, transaction, deadline, and numeric SQLite diagnostics for safe logging.
+func (s *Store) RecordFailureWithMessageScopeTimed(
+	ctx context.Context,
+	ref FailureRef,
+	failure error,
+) (diagnostics FailurePersistenceDiagnostics, returnErr error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		diagnostics.ContextDeadline = deadline
+	}
+	defer func() {
+		diagnostics.SQLiteCode, diagnostics.SQLiteCategory = sqliteFailureCodes(returnErr)
+	}()
+	if failure == nil {
+		return diagnostics, errors.New("message-scoped failure is required")
+	}
+	ref = normalizeFailureRef(mergeFailureRef(ref, FailureRefFromError(failure)))
+	if ref.Operation == "" || ref.Source == "" {
+		return diagnostics, errors.New("failure operation and source are required")
+	}
+	if ref.MessageID == "" {
+		return diagnostics, errors.New("message id is required")
+	}
+
+	poolStartedAt := time.Now()
+	conn, err := s.db.Conn(ctx)
+	diagnostics.PoolWait = time.Since(poolStartedAt)
+	if err != nil {
+		return diagnostics, fmt.Errorf("acquire message-scoped failure connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	dbStartedAt := time.Now()
+	defer func() {
+		diagnostics.DBElapsed = time.Since(dbStartedAt)
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return diagnostics, fmt.Errorf("begin message-scoped failure transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	var storedGuildID string
+	var storedChannelID string
+	err = tx.QueryRowContext(
+		ctx,
+		`select guild_id, channel_id from messages where id = ?`,
+		ref.MessageID,
+	).Scan(&storedGuildID, &storedChannelID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return diagnostics, fmt.Errorf("look up message failure scope: %w", err)
+	default:
+		if ref.ChannelID == "" {
+			ref.ChannelID = storedChannelID
+		} else if storedChannelID != "" && ref.ChannelID != storedChannelID {
+			return diagnostics, fmt.Errorf(
+				"message channel mismatch: event=%s stored=%s",
+				ref.ChannelID,
+				storedChannelID,
+			)
+		}
+		if ref.GuildID == "" {
+			ref.GuildID = storedGuildID
+		} else if storedGuildID != "" && ref.GuildID != storedGuildID {
+			return diagnostics, fmt.Errorf(
+				"message guild mismatch: event=%s stored=%s",
+				ref.GuildID,
+				storedGuildID,
+			)
+		}
+	}
+	if ref.GuildID == "" || ref.ChannelID == "" {
+		return diagnostics, fmt.Errorf(
+			"message identity is incomplete: guild_id=%q channel_id=%q message_id=%q",
+			ref.GuildID,
+			ref.ChannelID,
+			ref.MessageID,
+		)
+	}
+
+	now := time.Now().UTC()
+	if err := recordFailure(ctx, tx, ref, failure, now); err != nil {
+		return diagnostics, err
+	}
+	if err := pruneResolvedFailures(ctx, tx, now); err != nil {
+		return diagnostics, err
+	}
+	if err := tx.Commit(); err != nil {
+		return diagnostics, fmt.Errorf("commit message-scoped failure transaction: %w", err)
+	}
+	return diagnostics, nil
+}
+
+type failureExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type sqliteErrorCoder interface {
+	Code() int
+}
+
+func sqliteFailureCodes(err error) (code, category int) {
+	var coder sqliteErrorCoder
+	if err == nil || !errors.As(err, &coder) {
+		return 0, 0
+	}
+	code = coder.Code()
+	return code, code & 0xff
+}
+
+func recordFailure(
+	ctx context.Context,
+	execer failureExecer,
+	ref FailureRef,
+	failure error,
+	now time.Time,
+) error {
 	ref = normalizeFailureRef(mergeFailureRef(ref, FailureRefFromError(failure)))
 	if ref.Operation == "" || ref.Source == "" {
 		return errors.New("failure operation and source are required")
 	}
-	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := execer.ExecContext(ctx, `
 		insert into failure_ledger(
 			operation, source, guild_id, channel_id, message_id, related_kind, related_id,
 			error_class, error_message, first_seen_at, last_seen_at, retry_count, resolved_at
@@ -127,7 +274,7 @@ func (s *Store) RecordFailure(ctx context.Context, ref FailureRef, failure error
 		failureClass(failure), sanitizeFailureMessage(failure.Error()), now.Format(timeLayout), now.Format(timeLayout)); err != nil {
 		return fmt.Errorf("record %s/%s failure: %w", ref.Source, ref.Operation, err)
 	}
-	return s.pruneResolvedFailures(ctx, now)
+	return nil
 }
 
 // ResolveFailures resolves every unresolved row matching the non-empty identifiers in ref.
@@ -283,9 +430,134 @@ func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, gener
 	return report, nil
 }
 
+// ListFailureReplayCandidates returns unresolved failures in least-recently-attempted order.
+func (s *Store) ListFailureReplayCandidates(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	limit int,
+) ([]Failure, error) {
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, nil, limit)
+}
+
+// ListFailureReplayCandidatesMatchingRelatedIDs returns unresolved failures
+// whose related ID matches one of the allowed values.
+func (s *Store) ListFailureReplayCandidatesMatchingRelatedIDs(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	relatedIDs []string,
+	limit int,
+) ([]Failure, error) {
+	if strings.TrimSpace(ref.RelatedID) != "" {
+		return nil, errors.New("failure related ID and related ID list cannot both be set")
+	}
+	normalizedIDs := make([]string, 0, len(relatedIDs))
+	seen := make(map[string]struct{}, len(relatedIDs))
+	for _, relatedID := range relatedIDs {
+		relatedID = strings.TrimSpace(relatedID)
+		if relatedID == "" {
+			continue
+		}
+		if _, ok := seen[relatedID]; ok {
+			continue
+		}
+		seen[relatedID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, relatedID)
+	}
+	if len(normalizedIDs) == 0 {
+		return nil, errors.New("at least one failure related ID is required")
+	}
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, normalizedIDs, limit)
+}
+
+func (s *Store) listFailureReplayCandidates(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	relatedIDs []string,
+	limit int,
+) ([]Failure, error) {
+	ref = normalizeFailureRef(ref)
+	if ref.Operation == "" || ref.Source == "" {
+		return nil, errors.New("failure operation and source are required")
+	}
+	if limit <= 0 {
+		limit = defaultFailureLimit
+	}
+	if limit > maxFailureLimit {
+		return nil, fmt.Errorf("failure replay limit must be at most %d", maxFailureLimit)
+	}
+	clauses := []string{"resolved_at is null", "operation = ?", "source = ?"}
+	args := []any{ref.Operation, ref.Source}
+	if len(guildIDs) > 0 {
+		clauses = append(clauses, "guild_id in ("+placeholders(len(guildIDs))+")")
+		for _, guildID := range guildIDs {
+			args = append(args, guildID)
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"guild_id", ref.GuildID},
+		{"channel_id", ref.ChannelID},
+		{"message_id", ref.MessageID},
+		{"related_kind", ref.RelatedKind},
+		{"related_id", ref.RelatedID},
+	} {
+		if field.value != "" {
+			clauses = append(clauses, field.name+" = ?")
+			args = append(args, field.value)
+		}
+	}
+	if len(relatedIDs) > 0 {
+		clauses = append(clauses, "related_id in ("+placeholders(len(relatedIDs))+")")
+		for _, relatedID := range relatedIDs {
+			args = append(args, relatedID)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		select failure_id, operation, source, guild_id, channel_id, message_id,
+		       related_kind, related_id, error_class, error_message,
+		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
+		from failure_ledger
+		where `+strings.Join(clauses, " and ")+`
+		order by last_seen_at asc, failure_id asc
+		limit ?`, append(args, limit)...)
+	if err != nil {
+		return nil, fmt.Errorf("list failure replay candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	failures := []Failure{}
+	for rows.Next() {
+		var row Failure
+		var firstSeen, lastSeen, resolved string
+		if err := rows.Scan(
+			&row.FailureID, &row.Operation, &row.Source, &row.GuildID, &row.ChannelID, &row.MessageID,
+			&row.RelatedKind, &row.RelatedID, &row.ErrorClass, &row.ErrorMessage,
+			&firstSeen, &lastSeen, &row.RetryCount, &resolved,
+		); err != nil {
+			return nil, fmt.Errorf("scan failure replay candidate: %w", err)
+		}
+		row.FirstSeenAt = parseTime(firstSeen)
+		row.LastSeenAt = parseTime(lastSeen)
+		row.ResolvedAt = parseTime(resolved)
+		failures = append(failures, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list failure replay candidates: %w", err)
+	}
+	return failures, nil
+}
+
 func (s *Store) pruneResolvedFailures(ctx context.Context, now time.Time) error {
+	return pruneResolvedFailures(ctx, s.db, now)
+}
+
+func pruneResolvedFailures(ctx context.Context, execer failureExecer, now time.Time) error {
 	cutoff := now.Add(-resolvedFailureMaxAge).Format(timeLayout)
-	if _, err := s.db.ExecContext(ctx, `delete from failure_ledger where resolved_at is not null and resolved_at < ?`, cutoff); err != nil {
+	if _, err := execer.ExecContext(ctx, `delete from failure_ledger where resolved_at is not null and resolved_at < ?`, cutoff); err != nil {
 		return fmt.Errorf("prune resolved failures: %w", err)
 	}
 	return nil

@@ -330,10 +330,41 @@ func (r *runtime) runTail(args []string) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
+	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
+	replayLimit := fs.Int("replay-limit", syncer.TailMessageReplayLimit, "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
+	}
+	if fs.NArg() != 0 {
+		return usageErr(errors.New("tail takes flags only"))
+	}
+	replayLimitSet := false
+	fs.Visit(func(current *flag.Flag) {
+		replayLimitSet = replayLimitSet || current.Name == "replay-limit"
+	})
+	if replayLimitSet && !*replayFailuresOnly {
+		return usageErr(errors.New("--replay-limit requires --replay-failures-only"))
+	}
+	if *replayLimit <= 0 || *replayLimit > syncer.TailMessageReplayLimit {
+		return usageErr(fmt.Errorf(
+			"--replay-limit must be between 1 and %d",
+			syncer.TailMessageReplayLimit,
+		))
+	}
+	guildIDs := r.resolveSyncGuilds(*guildFlag, *guildsFlag)
+	if *replayFailuresOnly {
+		replayer, ok := r.syncer.(tailMessageFailureReplayer)
+		if !ok {
+			return errors.New("tail failure replay is unavailable")
+		}
+		r.setSyncLockPhase("tail failure replay")
+		stats, err := replayer.ReplayTailMessageFailures(r.ctx, guildIDs, *replayLimit)
+		if err != nil {
+			return err
+		}
+		return r.print(stats)
 	}
 	ctx, stop := signal.NotifyContext(r.ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -343,7 +374,7 @@ func (r *runtime) runTail(args []string) error {
 		})
 		defer configurable.SetTailReadyCallback(nil)
 	}
-	return r.syncer.RunTail(ctx, r.resolveSyncGuilds(*guildFlag, *guildsFlag), *repairEvery)
+	return r.syncer.RunTail(ctx, guildIDs, *repairEvery)
 }
 
 func (r *runtime) runWiretap(args []string) error {

@@ -63,6 +63,174 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	require.True(t, report.Failures[0].ResolvedAt.IsZero())
 }
 
+func TestRecordFailureWithMessageScope(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		CreatedAt:         "2026-07-13T00:00:00Z",
+		Content:           "message",
+		NormalizedContent: "message",
+		RawJSON:           `{}`,
+	}))
+
+	failure := context.DeadlineExceeded
+	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		MessageID: "m1",
+	}, failure))
+	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "g1", report.Failures[0].GuildID)
+	require.Equal(t, "c1", report.Failures[0].ChannelID)
+	require.Equal(t, "m1", report.Failures[0].MessageID)
+
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "wrong-guild",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, failure), "guild mismatch")
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "wrong-channel",
+		MessageID: "m1",
+	}, failure), "channel mismatch")
+
+	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g2",
+		ChannelID: "c2",
+		MessageID: "new-message",
+	}, failure))
+	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		MessageID: "missing-scope",
+	}, failure), "identity is incomplete")
+
+	report, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, report.Failures, 2)
+}
+
+func TestRecordFailureWithMessageScopeTimedDiagnostics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	deadline := time.Now().Add(time.Minute)
+	timedCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	diagnostics, err := s.RecordFailureWithMessageScopeTimed(timedCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, context.DeadlineExceeded)
+	require.NoError(t, err)
+	require.Equal(t, deadline, diagnostics.ContextDeadline)
+	require.GreaterOrEqual(t, diagnostics.PoolWait, time.Duration(0))
+	require.Greater(t, diagnostics.DBElapsed, time.Duration(0))
+	require.Zero(t, diagnostics.SQLiteCode)
+	require.Zero(t, diagnostics.SQLiteCategory)
+
+	conn, err := s.DB().Conn(ctx)
+	require.NoError(t, err)
+	waitCtx, waitCancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer waitCancel()
+	waitDeadline, ok := waitCtx.Deadline()
+	require.True(t, ok)
+	diagnostics, err = s.RecordFailureWithMessageScopeTimed(waitCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m2",
+	}, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, waitDeadline, diagnostics.ContextDeadline)
+	require.GreaterOrEqual(t, diagnostics.PoolWait, 20*time.Millisecond)
+	require.Zero(t, diagnostics.DBElapsed)
+	require.Zero(t, diagnostics.SQLiteCode)
+	require.NoError(t, conn.Close())
+}
+
+func TestRecordFailureWithMessageScopeTimedReportsExternalSQLiteBusy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	_, err = s.DB().ExecContext(ctx, `pragma busy_timeout = 25`)
+	require.NoError(t, err)
+
+	lockerDB, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	defer func() { _ = lockerDB.Close() }()
+	lockerDB.SetMaxOpenConns(1)
+	locker, err := lockerDB.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _ = locker.Close() }()
+	_, err = locker.ExecContext(ctx, `begin immediate`)
+	require.NoError(t, err)
+	defer func() { _, _ = locker.ExecContext(context.Background(), `rollback`) }()
+
+	timedCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	deadline, ok := timedCtx.Deadline()
+	require.True(t, ok)
+	diagnostics, err := s.RecordFailureWithMessageScopeTimed(timedCtx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, context.DeadlineExceeded)
+	require.Error(t, err)
+	require.Equal(t, deadline, diagnostics.ContextDeadline)
+	require.Greater(t, diagnostics.DBElapsed, time.Duration(0))
+	require.Equal(t, 5, diagnostics.SQLiteCode)
+	require.Equal(t, 5, diagnostics.SQLiteCategory)
+}
+
+func TestSQLiteFailureCodesUseNumericCategory(t *testing.T) {
+	t.Parallel()
+	code, category := sqliteFailureCodes(&codedFailureError{code: 6 | 2<<8})
+	require.Equal(t, 518, code)
+	require.Equal(t, 6, category)
+	code, category = sqliteFailureCodes(errors.New("plain"))
+	require.Zero(t, code)
+	require.Zero(t, category)
+}
+
+type codedFailureError struct {
+	code int
+}
+
+func (e *codedFailureError) Error() string {
+	return "coded failure"
+}
+
+func (e *codedFailureError) Code() int {
+	return e.code
+}
+
 func TestAttachmentWriteErrorIncludesSafeRowContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -165,6 +333,167 @@ func TestFailureLedgerFiltersLimitsAndBulkResolution(t *testing.T) {
 	require.Error(t, s.RecordFailure(ctx, FailureRef{Operation: "sync"}, errors.New("missing source")))
 	require.Error(t, s.ResolveFailures(ctx, FailureRef{Source: "discord"}))
 	require.NoError(t, s.ResolveMessageFailures(ctx, FailureRef{Operation: "sync", Source: "discord"}, nil))
+}
+
+func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	refs := []FailureRef{
+		{Operation: "tail_message", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m1"},
+		{Operation: "tail_message", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m2"},
+		{Operation: "tail_message", Source: "discord", GuildID: "g2", ChannelID: "c2", MessageID: "m3"},
+		{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1", MessageID: "m4"},
+	}
+	for i, ref := range refs {
+		require.NoError(t, s.RecordFailure(ctx, ref, fmt.Errorf("failure %d", i)))
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when 'm1' then '2026-07-13 00:00:03.000000000'
+			when 'm2' then '2026-07-13 00:00:01.000000000'
+			when 'm3' then '2026-07-13 00:00:00.000000000'
+			else last_seen_at
+		end
+	`)
+	require.NoError(t, err)
+
+	candidates, err := s.ListFailureReplayCandidates(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+	}, nil, 2)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(t, []string{"m3", "m2"}, []string{candidates[0].MessageID, candidates[1].MessageID})
+
+	candidates, err = s.ListFailureReplayCandidates(ctx, FailureRef{
+		Operation: "tail_message",
+		Source:    "discord",
+	}, []string{"g1"}, 1)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	require.Equal(t, "m2", candidates[0].MessageID)
+
+	_, err = s.ListFailureReplayCandidates(ctx, FailureRef{Operation: "tail_message"}, nil, 1)
+	require.Error(t, err)
+	_, err = s.ListFailureReplayCandidates(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		nil,
+		maxFailureLimit+1,
+	)
+	require.ErrorContains(t, err, "at most")
+}
+
+func TestFailureReplayCandidatesCanMatchRelatedIDs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, ref := range []FailureRef{
+		{
+			Operation: "tail_message",
+			Source:    "discord",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			MessageID: "legacy",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "invalid",
+			RelatedKind: "message_event",
+			RelatedID:   "unknown",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "event-aware-create",
+			RelatedKind: "message_event",
+			RelatedID:   "create",
+		},
+		{
+			Operation:   "tail_message",
+			Source:      "discord",
+			GuildID:     "g1",
+			ChannelID:   "c1",
+			MessageID:   "event-aware-delete",
+			RelatedKind: "message_event",
+			RelatedID:   "delete",
+		},
+	} {
+		require.NoError(t, s.RecordFailure(ctx, ref, errors.New(ref.MessageID)))
+	}
+	_, err = s.DB().ExecContext(ctx, `
+		update failure_ledger
+		set last_seen_at = case message_id
+			when 'legacy' then '2026-07-13 00:00:01.000000000'
+			when 'invalid' then '2026-07-13 00:00:02.000000000'
+			when 'event-aware-create' then '2026-07-13 00:00:03.000000000'
+			else '2026-07-13 00:00:04.000000000'
+		end
+	`)
+	require.NoError(t, err)
+
+	candidates, err := s.ListFailureReplayCandidates(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		[]string{"g1"},
+		1,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	require.Equal(t, "legacy", candidates[0].MessageID)
+
+	candidates, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{
+			Operation:   "tail_message",
+			Source:      "discord",
+			RelatedKind: "message_event",
+		},
+		[]string{"g1"},
+		[]string{"create", "delete", "create", ""},
+		10,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(
+		t,
+		[]string{"event-aware-create", "event-aware-delete"},
+		[]string{candidates[0].MessageID, candidates[1].MessageID},
+	)
+
+	_, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{Operation: "tail_message", Source: "discord"},
+		nil,
+		nil,
+		1,
+	)
+	require.ErrorContains(t, err, "at least one")
+	_, err = s.ListFailureReplayCandidatesMatchingRelatedIDs(
+		ctx,
+		FailureRef{
+			Operation: "tail_message",
+			Source:    "discord",
+			RelatedID: "create",
+		},
+		nil,
+		[]string{"delete"},
+		1,
+	)
+	require.ErrorContains(t, err, "cannot both")
 }
 
 func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {

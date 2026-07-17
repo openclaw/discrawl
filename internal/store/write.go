@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -113,6 +114,8 @@ type WriteOptions struct {
 	AppendEvent      bool
 	EnqueueEmbedding bool
 }
+
+const deleteMessageFTSByRowIDSQL = `delete from message_fts where rowid = ?`
 
 func (s *Store) UpsertGuild(ctx context.Context, guild GuildRecord) error {
 	return s.q.UpsertGuild(ctx, storedb.UpsertGuildParams{
@@ -322,7 +325,7 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 		}
 	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
-		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ?`, rowID); err != nil {
+		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return err
 		}
 		if message.DeletedAt != "" {
@@ -351,22 +354,78 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 }
 
 func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, messageID string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.markMessageDeleted(ctx, guildID, channelID, messageID, string(body), true, false)
+}
+
+// MarkMessageDeletedWithoutEvent applies delete cleanup during recovery without
+// appending a duplicate message event.
+func (s *Store) MarkMessageDeletedWithoutEvent(ctx context.Context, guildID, channelID, messageID string) error {
+	return s.markMessageDeleted(ctx, guildID, channelID, messageID, "", false, true)
+}
+
+func (s *Store) markMessageDeleted(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+	messageID string,
+	eventPayload string,
+	appendDeleteEvent bool,
+	verifyCanonicalScope bool,
+) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
-	now := time.Now().UTC().Format(timeLayout)
-	if err := qtx.MarkMessageDeleted(ctx, storedb.MarkMessageDeletedParams{
-		DeletedAt: sql.NullString{String: now, Valid: true},
-		UpdatedAt: now,
-		ID:        messageID,
-	}); err != nil {
-		return err
+	preserveDeletionTimestamps := false
+	if verifyCanonicalScope {
+		var storedGuildID string
+		var storedChannelID string
+		var storedDeletedAt sql.NullString
+		err := tx.QueryRowContext(
+			ctx,
+			`select guild_id, channel_id, deleted_at from messages where id = ?`,
+			messageID,
+		).Scan(&storedGuildID, &storedChannelID, &storedDeletedAt)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("recover message delete: message %q does not exist", messageID)
+		case err != nil:
+			return fmt.Errorf("recover message delete: verify message scope: %w", err)
+		case storedGuildID != guildID:
+			return fmt.Errorf(
+				"recover message delete: guild mismatch for message %q: supplied=%q stored=%q",
+				messageID,
+				guildID,
+				storedGuildID,
+			)
+		case storedChannelID != channelID:
+			return fmt.Errorf(
+				"recover message delete: channel mismatch for message %q: supplied=%q stored=%q",
+				messageID,
+				channelID,
+				storedChannelID,
+			)
+		}
+		preserveDeletionTimestamps = storedDeletedAt.Valid
+	}
+	if !preserveDeletionTimestamps {
+		now := time.Now().UTC().Format(timeLayout)
+		if err := qtx.MarkMessageDeleted(ctx, storedb.MarkMessageDeletedParams{
+			DeletedAt: sql.NullString{String: now, Valid: true},
+			UpdatedAt: now,
+			ID:        messageID,
+		}); err != nil {
+			return err
+		}
 	}
 	if rowID, ok := messageFTSRowID(messageID); ok {
-		if _, err := tx.ExecContext(ctx, `delete from message_fts where rowid = ? or message_id = ?`, rowID, messageID); err != nil {
+		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return err
 		}
 	}
@@ -376,12 +435,10 @@ func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, mess
 	if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, messageID); err != nil {
 		return err
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	if err := appendEventTx(ctx, qtx, guildID, channelID, messageID, "delete", string(body)); err != nil {
-		return err
+	if appendDeleteEvent {
+		if err := appendEventTx(ctx, qtx, guildID, channelID, messageID, "delete", eventPayload); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
