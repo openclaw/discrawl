@@ -2275,6 +2275,45 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 }
 
+func TestValidateSnapshotRowRejectsMalformedDeletedAtBeforeImport(t *testing.T) {
+	require.NoError(t, validateSnapshotRow("messages", map[string]any{"deleted_at": nil}))
+	blank := map[string]any{"deleted_at": "  "}
+	require.NoError(t, validateSnapshotRow("messages", blank))
+	require.Nil(t, blank["deleted_at"])
+	require.NoError(t, validateSnapshotRow("messages", map[string]any{"deleted_at": "2026-07-14T12:00:00.123456789Z"}))
+	padded := map[string]any{"deleted_at": " 2026-07-14T12:00:00Z "}
+	require.NoError(t, validateSnapshotRow("messages", padded))
+	require.Equal(t, "2026-07-14T12:00:00Z", padded["deleted_at"])
+	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": "not-a-timestamp"}), "must be RFC3339")
+	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": json.Number("123")}), "must be a string or null")
+	require.NoError(t, validateSnapshotRow("guilds", map[string]any{"deleted_at": "not-a-timestamp"}))
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	repo := t.TempDir()
+	rel := filepath.ToSlash(filepath.Join("tables", "messages", "tombstones.jsonl.gz"))
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(repo, filepath.FromSlash(rel))), 0o755))
+	writeGzipJSONLines(t, filepath.Join(repo, filepath.FromSlash(rel)), []string{
+		`{"id":"m1","guild_id":"g1","channel_id":"c1","author_id":null,"message_type":0,"created_at":"2026-07-14T12:00:00Z","edited_at":null,"deleted_at":null,"content":"one","normalized_content":"one","reply_to_message_id":null,"pinned":0,"has_attachments":0,"raw_json":"{}","updated_at":"2026-07-14T12:00:00Z"}`,
+		`{"id":"m2","guild_id":"g1","channel_id":"c1","author_id":null,"message_type":0,"created_at":"2026-07-14T12:00:00Z","edited_at":null,"deleted_at":"not-a-timestamp","content":"two","normalized_content":"two","reply_to_message_id":null,"pinned":0,"has_attachments":0,"raw_json":"{}","updated_at":"2026-07-14T12:00:00Z"}`,
+	})
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	err = importTable(ctx, tx, Options{RepoPath: repo}, TableManifest{
+		Name: "messages", File: rel,
+		Columns: []string{"id", "guild_id", "channel_id", "author_id", "message_type", "created_at", "edited_at", "deleted_at", "content", "normalized_content", "reply_to_message_id", "pinned", "has_attachments", "raw_json", "updated_at"},
+	})
+	require.ErrorContains(t, err, "messages.deleted_at must be RFC3339")
+	var count int
+	require.NoError(t, tx.QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
+	require.Equal(t, 1, count)
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
+	require.Zero(t, count)
+}
+
 func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
 	t.Parallel()
 

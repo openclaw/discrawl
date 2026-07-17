@@ -500,7 +500,13 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			})
 		},
 		Filter: func(table string, row map[string]any) (bool, error) {
-			return !isDirectMessageSnapshotRow(table, row), nil
+			if isDirectMessageSnapshotRow(table, row) {
+				return false, nil
+			}
+			if err := validateSnapshotRow(table, row); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
 			var err error
@@ -1659,6 +1665,9 @@ func importTableFile(ctx context.Context, stmt *sql.Stmt, repoPath string, table
 		if isDirectMessageSnapshotRow(table.Name, row) {
 			continue
 		}
+		if err := validateSnapshotRow(table.Name, row); err != nil {
+			return count, fmt.Errorf("validate %s: %w", rel, err)
+		}
 		values := make([]any, len(columns))
 		for i, column := range columns {
 			values[i] = importValue(row[column])
@@ -1669,6 +1678,31 @@ func importTableFile(ctx context.Context, stmt *sql.Stmt, repoPath string, table
 		count++
 	}
 	return count, nil
+}
+
+func validateSnapshotRow(table string, row map[string]any) error {
+	if table != "messages" {
+		return nil
+	}
+	raw, ok := row["deleted_at"]
+	if !ok || raw == nil {
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return errors.New("messages.deleted_at must be a string or null")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		row["deleted_at"] = nil
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return fmt.Errorf("messages.deleted_at must be RFC3339: %w", err)
+	}
+	row["deleted_at"] = parsed.UTC().Format(time.RFC3339Nano)
+	return nil
 }
 
 func repairImportedGuildIDs(ctx context.Context, tx *sql.Tx) error {
