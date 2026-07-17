@@ -22,6 +22,10 @@ type EventHandler interface {
 	OnMemberDelete(context.Context, string, string) error
 }
 
+type tailGuildFilter interface {
+	TailAllowsGuild(string) bool
+}
+
 type TailReadyHandler interface {
 	OnTailReady(context.Context) error
 }
@@ -521,6 +525,9 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			before,
 		)
 		task.run = func(taskCtx context.Context) error {
+			if filter, ok := handler.(tailGuildFilter); ok && msg != nil && !filter.TailAllowsGuild(msg.GuildID) {
+				return nil
+			}
 			var refetchErr error
 			if msg != nil && msg.Content == "" {
 				UpdateTailFailureStage(taskCtx, TailFailureStageMessageUpdateRefetch)

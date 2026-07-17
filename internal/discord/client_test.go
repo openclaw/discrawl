@@ -2791,6 +2791,58 @@ func TestTailMessageUpdateImmediateHTTPRefetchFailureStillInvokesHandlerAndRecor
 	require.EqualValues(t, 1, handler.recordCalls.Load())
 }
 
+func TestTailMessageUpdateSkipsRefetchForFilteredGuild(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+	tailCtx, cancelTail := context.WithCancel(testCtx)
+	defer cancelTail()
+
+	handler := &guildFilteringUpdateHandler{
+		allowedGuild: "g-selected",
+		filtered:     make(chan struct{}),
+	}
+	var refetchCalls atomic.Int32
+	now := time.Now().UTC().Format(time.RFC3339)
+	server := newTailTestGatewayWithRoutes(
+		t,
+		func(mux *http.ServeMux) {
+			mux.HandleFunc("/api/v10/channels/c1/messages/m1", func(w http.ResponseWriter, _ *http.Request) {
+				refetchCalls.Add(1)
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			})
+		},
+		func(conn *websocket.Conn) {
+			event := messageUpdateEvent(2, "m1", now)
+			event["d"].(map[string]any)["guild_id"] = "g-excluded"
+			if err := conn.WriteJSON(event); err != nil {
+				t.Errorf("write update event: %v", err)
+				return
+			}
+			select {
+			case <-handler.filtered:
+				cancelTail()
+			case <-testCtx.Done():
+				t.Error("guild filter was not consulted")
+			}
+		},
+	)
+	defer server.Close()
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+	client, err := New("token")
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	client.session.ShouldReconnectOnError = false
+	client.session.MaxRestRetries = 0
+	client.tailWorkerCount = 1
+	client.tailQueueSize = 1
+
+	require.NoError(t, client.Tail(tailCtx, handler))
+	require.Zero(t, refetchCalls.Load())
+	require.Zero(t, handler.updates)
+}
+
 func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3856,6 +3908,21 @@ type messageUpdateFailureHandler struct {
 	updates         chan *discordgo.Message
 	failureOnce     sync.Once
 	recordCalls     atomic.Int32
+}
+
+type guildFilteringUpdateHandler struct {
+	recordingHandler
+	allowedGuild string
+	filtered     chan struct{}
+	filterOnce   sync.Once
+}
+
+func (h *guildFilteringUpdateHandler) TailAllowsGuild(guildID string) bool {
+	allowed := guildID == h.allowedGuild
+	if !allowed {
+		h.filterOnce.Do(func() { close(h.filtered) })
+	}
+	return allowed
 }
 
 func (h *messageUpdateFailureHandler) OnTailFailure(failure TailFailure) {

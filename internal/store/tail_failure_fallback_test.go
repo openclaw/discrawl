@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -183,6 +184,9 @@ func TestTailMessageFailureFallbackPathAndNameValidation(t *testing.T) {
 		_, err := (&Store{path: path}).tailMessageFailureFallbackDir()
 		require.ErrorContains(t, err, "requires a filesystem database")
 	}
+	_, err = openTailMessageFailureFallbackDir(filepath.Join(t.TempDir(), "missing"), false)
+	require.ErrorIs(t, err, errTailMessageFailureFallbackDirAbsent)
+	require.NotErrorIs(t, fmt.Errorf("verify opened directory: %w", os.ErrNotExist), errTailMessageFailureFallbackDirAbsent)
 	_, err = (&Store{path: "file://remote/tmp/discrawl.db"}).tailMessageFailureFallbackDir()
 	require.ErrorContains(t, err, "database path is invalid")
 	_, err = (&Store{path: "file://[::1"}).tailMessageFailureFallbackDir()

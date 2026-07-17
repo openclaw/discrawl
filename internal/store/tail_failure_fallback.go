@@ -48,6 +48,8 @@ const importTailMessageFailureSQL = `
 		resolved_at = null
 `
 
+var errTailMessageFailureFallbackDirAbsent = errors.New("tail message failure fallback directory is absent")
+
 // TailMessageFailureFallback is the content-free identity written when the
 // failure ledger cannot be reached from a tail failure path.
 type TailMessageFailureFallback struct {
@@ -198,7 +200,7 @@ func (s *Store) importTailMessageFailureFallbacks(
 		return 0, err
 	}
 	dir, err := openTailMessageFailureFallbackDir(dirPath, false)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, errTailMessageFailureFallbackDirAbsent) {
 		return 0, nil
 	}
 	if err != nil {
@@ -445,6 +447,9 @@ func (s *Store) tailMessageFailureFallbackDir() (string, error) {
 func openTailMessageFailureFallbackDir(path string, create bool) (*tailMessageFailureFallbackDir, error) {
 	info, err := os.Lstat(path)
 	created := false
+	if errors.Is(err, os.ErrNotExist) && !create {
+		return nil, errTailMessageFailureFallbackDirAbsent
+	}
 	if errors.Is(err, os.ErrNotExist) && create {
 		if err := createTailFailureFallbackDir(path); err != nil && !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("create tail message failure fallback directory: %w", err)

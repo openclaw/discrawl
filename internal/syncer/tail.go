@@ -396,6 +396,10 @@ func (t *tailHandler) OnMemberDelete(ctx context.Context, guildID, userID string
 	return t.store.DeleteMember(ctx, guildID, userID)
 }
 
+func (t *tailHandler) TailAllowsGuild(guildID string) bool {
+	return t.allowGuild(guildID)
+}
+
 func (t *tailHandler) allowGuild(guildID string) bool {
 	if len(t.guilds) == 0 {
 		return true
