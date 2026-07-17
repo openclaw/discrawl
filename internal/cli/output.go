@@ -126,7 +126,7 @@ Discover accessible guilds and initialize configuration.
 
 Sync Discord or desktop-cache data into the local archive.
 `,
-	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS]
+	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS] [--replay-failures-only [--replay-limit N]]
 
 Continuously archive new Discord messages.
 `,

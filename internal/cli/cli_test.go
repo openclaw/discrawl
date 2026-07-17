@@ -4168,6 +4168,12 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 	require.Contains(t, stdout.String(), "--stats")
 	require.Empty(t, stderr.String())
 
+	stdout.Reset()
+	require.NoError(t, Run(context.Background(), []string{"tail", "--help"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "--replay-failures-only")
+	require.Contains(t, stdout.String(), "--replay-limit N")
+	require.Empty(t, stderr.String())
+
 	err := Run(context.Background(), []string{"help", "wat"}, &bytes.Buffer{}, &bytes.Buffer{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `unknown help topic "wat"`)
