@@ -300,6 +300,10 @@ type tailReadyConfigurer interface {
 	SetTailReadyCallback(func(context.Context) error)
 }
 
+type tailMessageFailureReplayer interface {
+	ReplayTailMessageFailures(context.Context, []string, int) (syncer.TailMessageReplayStats, error)
+}
+
 type attachmentTextConfigurer interface {
 	SetAttachmentTextEnabled(bool)
 }
@@ -319,7 +323,11 @@ func (r *runtime) dispatch(rest []string) error {
 		}
 		return r.withLocalStoreUpdateLocked(updateMode, true, func() error { return r.runSync(rest[1:]) })
 	case "tail":
-		return r.withServicesLockedOperation(true, "tail-starting", func() error { return r.runTail(rest[1:]) })
+		operation := "tail-starting"
+		if tailReplayOnlyEnabled(rest[1:]) {
+			operation = "tail-failure-replay"
+		}
+		return r.withServicesLockedOperation(true, operation, func() error { return r.runTail(rest[1:]) })
 	case "wiretap":
 		return r.withLocalStoreLocked(false, func() error { return r.runWiretap(rest[1:]) })
 	case "tap", "cache-import":
@@ -422,6 +430,27 @@ func (r *runtime) dispatch(rest []string) error {
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", rest[0]))
 	}
+}
+
+func tailReplayOnlyEnabled(args []string) bool {
+	enabled := false
+	for _, arg := range args {
+		for _, name := range []string{"--replay-failures-only", "-replay-failures-only"} {
+			if arg == name {
+				enabled = true
+				continue
+			}
+			if raw, ok := strings.CutPrefix(arg, name+"="); ok {
+				switch strings.ToLower(strings.TrimSpace(raw)) {
+				case "1", "t", "true", "y", "yes", "on":
+					enabled = true
+				default:
+					enabled = false
+				}
+			}
+		}
+	}
+	return enabled
 }
 
 func (r *runtime) configuredForCloudReadOnly() bool {

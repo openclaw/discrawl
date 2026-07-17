@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -353,7 +354,6 @@ func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
 	}, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 2})
 	require.NoError(t, err)
 	require.Equal(t, 2, stats.Succeeded)
-
 	results, err := s.SearchMessages(ctx, SearchOptions{Query: "needle", Limit: 10})
 	require.NoError(t, err)
 	require.Equal(t, []string{"m1"}, searchResultIDs(results))
@@ -400,6 +400,258 @@ func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
 	_, rows, err := s.ReadOnlyQuery(ctx, "select count(*) from embedding_jobs where message_id = 'm1'")
 	require.NoError(t, err)
 	require.Equal(t, "0", rows[0][0])
+
+	_, rows, err = s.ReadOnlyQuery(ctx, "select count(*), count(deleted_at) from messages where id = 'm1'")
+	require.NoError(t, err)
+	require.Equal(t, []string{"1", "1"}, rows[0])
+	_, rows, err = s.ReadOnlyQuery(ctx, "select count(*) from message_events where message_id = 'm1' and event_type = 'delete'")
+	require.NoError(t, err)
+	require.Equal(t, "1", rows[0][0])
+}
+
+func TestMarkMessageDeletedWithoutEventClearsStateAndSuppressesEvent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
+		ID:                "1469950701764350208",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		Content:           "recoverable delete",
+		NormalizedContent: "recoverable delete",
+		RawJSON:           `{}`,
+	}, WriteOptions{EnqueueEmbedding: true}))
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_embeddings(
+			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
+		) values(?, 'provider', 'model', 'v1', 1, x'00000000', ?)
+	`, "1469950701764350208", time.Now().UTC().Format(timeLayout))
+	require.NoError(t, err)
+
+	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "1469950701764350208"))
+	for _, query := range []string{
+		"select count(*) from message_fts where rowid = 1469950701764350208",
+		"select count(*) from message_embeddings where message_id = '1469950701764350208'",
+		"select count(*) from embedding_jobs where message_id = '1469950701764350208'",
+		"select count(*) from message_events where message_id = '1469950701764350208'",
+	} {
+		_, rows, err := s.ReadOnlyQuery(ctx, query)
+		require.NoError(t, err, query)
+		require.Equal(t, "0", rows[0][0], query)
+	}
+	_, rows, err := s.ReadOnlyQuery(ctx, `
+		select count(*), count(deleted_at)
+		from messages
+		where id = '1469950701764350208'
+	`)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1", "1"}, rows[0])
+
+	var firstDeletedAt string
+	var firstUpdatedAt string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select deleted_at, updated_at
+		from messages
+		where id = '1469950701764350208'
+	`).Scan(&firstDeletedAt, &firstUpdatedAt))
+	require.NotEmpty(t, firstDeletedAt)
+	require.NotEmpty(t, firstUpdatedAt)
+
+	rowID := mustMessageFTSRowID(t, "1469950701764350208")
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_fts(
+			rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content
+		) values(?, '1469950701764350208', 'g1', 'c1', null, '', 'general', 'retry cleanup')
+	`, rowID)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_embeddings(
+			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
+		) values('1469950701764350208', 'provider', 'model', 'v1', 1, x'00000000', ?)
+	`, time.Now().UTC().Format(timeLayout))
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `
+		insert into embedding_jobs(message_id, state, attempts, updated_at)
+		values('1469950701764350208', 'pending', 0, ?)
+	`, time.Now().UTC().Format(timeLayout))
+	require.NoError(t, err)
+
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "1469950701764350208"))
+	var retryDeletedAt string
+	var retryUpdatedAt string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select deleted_at, updated_at
+		from messages
+		where id = '1469950701764350208'
+	`).Scan(&retryDeletedAt, &retryUpdatedAt))
+	require.Equal(t, firstDeletedAt, retryDeletedAt)
+	require.Equal(t, firstUpdatedAt, retryUpdatedAt)
+	for _, query := range []string{
+		"select count(*) from message_fts where rowid = 1469950701764350208",
+		"select count(*) from message_embeddings where message_id = '1469950701764350208'",
+		"select count(*) from embedding_jobs where message_id = '1469950701764350208'",
+		"select count(*) from message_events where message_id = '1469950701764350208'",
+	} {
+		_, rows, err := s.ReadOnlyQuery(ctx, query)
+		require.NoError(t, err, query)
+		require.Equal(t, "0", rows[0][0], query)
+	}
+}
+
+func TestMarkMessageDeletedWithoutEventRejectsAbsentOrMismatchedMessage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		Content:           "must remain",
+		NormalizedContent: "must remain",
+		RawJSON:           `{}`,
+	}))
+
+	require.ErrorContains(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "missing"), "does not exist")
+	require.ErrorContains(t, s.MarkMessageDeletedWithoutEvent(ctx, "wrong", "c1", "m1"), "guild mismatch")
+	require.ErrorContains(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "wrong", "m1"), "channel mismatch")
+
+	_, rows, err := s.ReadOnlyQuery(ctx, "select count(*), count(deleted_at) from messages where id = 'm1'")
+	require.NoError(t, err)
+	require.Equal(t, []string{"1", "0"}, rows[0])
+	var count int
+	require.NoError(t, s.DB().QueryRowContext(
+		ctx,
+		"select count(*) from message_fts where rowid = ?",
+		mustMessageFTSRowID(t, "m1"),
+	).Scan(&count))
+	require.Equal(t, 1, count)
+	_, rows, err = s.ReadOnlyQuery(ctx, "select count(*) from message_events")
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0])
+}
+
+func TestMarkMessageDeletedWithoutEventRollsBackCleanupFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		Content:           "rollback delete",
+		NormalizedContent: "rollback delete",
+		RawJSON:           `{}`,
+	}, WriteOptions{EnqueueEmbedding: true}))
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_embeddings(
+			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
+		) values('m1', 'provider', 'model', 'v1', 1, x'00000000', ?)
+	`, time.Now().UTC().Format(timeLayout))
+	require.NoError(t, err)
+	var originalUpdatedAt string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select updated_at from messages where id = 'm1'
+	`).Scan(&originalUpdatedAt))
+	_, err = s.DB().ExecContext(ctx, `
+		create trigger fail_embedding_job_delete
+		before delete on embedding_jobs
+		begin
+			select raise(abort, 'forced embedding job delete failure');
+		end
+	`)
+	require.NoError(t, err)
+
+	require.Error(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "m1"))
+	for _, query := range []struct {
+		sql  string
+		args []any
+	}{
+		{sql: "select count(*) from messages where id = 'm1' and deleted_at is null"},
+		{sql: "select count(*) from message_fts where rowid = ?", args: []any{mustMessageFTSRowID(t, "m1")}},
+		{sql: "select count(*) from message_embeddings where message_id = 'm1'"},
+		{sql: "select count(*) from embedding_jobs where message_id = 'm1'"},
+	} {
+		var count int
+		require.NoError(t, s.DB().QueryRowContext(ctx, query.sql, query.args...).Scan(&count), query.sql)
+		require.Equal(t, 1, count, query.sql)
+	}
+	var rolledBackUpdatedAt string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select updated_at from messages where id = 'm1'
+	`).Scan(&rolledBackUpdatedAt))
+	require.Equal(t, originalUpdatedAt, rolledBackUpdatedAt)
+}
+
+func TestDeleteMessageFTSByRowIDUsesConstrainedVirtualTablePlan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	populateMessageFTSFiller(t, s, 2048)
+	var count int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_fts`).Scan(&count))
+	require.Equal(t, 2048, count)
+
+	rows, err := s.DB().QueryContext(ctx, "explain query plan "+deleteMessageFTSByRowIDSQL, int64(1))
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var details []string
+	for rows.Next() {
+		var id int
+		var parent int
+		var notUsed int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notUsed, &detail))
+		details = append(details, detail)
+	}
+	require.NoError(t, rows.Err())
+	plan := strings.Join(details, "\n")
+	require.Contains(t, plan, "VIRTUAL TABLE INDEX 0:=")
+}
+
+func mustMessageFTSRowID(t *testing.T, messageID string) int64 {
+	t.Helper()
+	rowID, ok := messageFTSRowID(messageID)
+	require.True(t, ok)
+	return rowID
+}
+
+func populateMessageFTSFiller(t *testing.T, s *Store, count int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer rollback(tx)
+	stmt, err := tx.PrepareContext(ctx, `
+		insert into message_fts(
+			rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content
+		) values(?, ?, 'filler-guild', 'filler-channel', null, '', '', 'filler content')
+	`)
+	require.NoError(t, err)
+	defer func() { _ = stmt.Close() }()
+	for i := range count {
+		_, err := stmt.ExecContext(ctx, int64(1_000_000_000+i), fmt.Sprintf("filler-%d", i))
+		require.NoError(t, err)
+	}
+	require.NoError(t, stmt.Close())
+	require.NoError(t, tx.Commit())
 }
 
 func TestDrainEmbeddingJobsStoresVectorsAndSkipsEmptyInput(t *testing.T) {

@@ -2816,6 +2816,34 @@ func TestTailOpenFailureDoesNotPublishActiveTailOwner(t *testing.T) {
 	require.Empty(t, syncLockOwnerFiles(t, lockPath))
 }
 
+func TestTailFailureReplayUsesExclusiveWriterLockWithoutStartingGateway(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("sync lock timing is flaky on Windows")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	t.Setenv(config.DefaultTokenEnv, "env-token")
+
+	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+	fakeSync := &fakeSyncService{}
+	fakeSync.replayHook = func() {
+		owner, ok := readSyncLockOwner(lockPath)
+		require.True(t, ok)
+		require.Equal(t, "tail-failure-replay", owner.Operation)
+		require.Equal(t, "tail failure replay", owner.Phase)
+		require.Nil(t, fakeSync.tailReady)
+	}
+	rt := tailTestRuntime(ctx, cfgPath, fakeSync)
+	require.NoError(t, rt.dispatch([]string{"tail", "-replay-failures-only", "--replay-limit", "7"}))
+	require.Equal(t, 1, fakeSync.replayCalls)
+	require.Equal(t, 7, fakeSync.lastReplayLimit)
+	require.Zero(t, fakeSync.tailCalls)
+	require.Empty(t, syncLockOwnerFiles(t, lockPath))
+}
+
 func TestTailReadyPromotesOnceAndCleansUpOnCancellation(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("sync lock timing is flaky on Windows")
@@ -3626,6 +3654,13 @@ type fakeSyncService struct {
 	syncCalls             int
 	lastTail              []string
 	lastRepair            time.Duration
+	tailCalls             int
+	lastReplayGuilds      []string
+	lastReplayLimit       int
+	replayCalls           int
+	replayHook            func()
+	replayStats           syncer.TailMessageReplayStats
+	replayErr             error
 	attachmentTextEnabled bool
 	callTailReady         bool
 	tailReadyCalls        int
@@ -3644,6 +3679,7 @@ func (f *fakeSyncService) Sync(_ context.Context, opts syncer.SyncOptions) (sync
 }
 
 func (f *fakeSyncService) RunTail(ctx context.Context, guildIDs []string, repairEvery time.Duration) error {
+	f.tailCalls++
 	f.lastTail = guildIDs
 	f.lastRepair = repairEvery
 	if f.callTailReady && f.tailReady != nil {
@@ -3656,6 +3692,16 @@ func (f *fakeSyncService) RunTail(ctx context.Context, guildIDs []string, repair
 		return f.tailErr
 	}
 	return nil
+}
+
+func (f *fakeSyncService) ReplayTailMessageFailures(_ context.Context, guildIDs []string, limit int) (syncer.TailMessageReplayStats, error) {
+	f.replayCalls++
+	f.lastReplayGuilds = append([]string(nil), guildIDs...)
+	f.lastReplayLimit = limit
+	if f.replayHook != nil {
+		f.replayHook()
+	}
+	return f.replayStats, f.replayErr
 }
 
 func (f *fakeSyncService) SetTailReadyCallback(fn func(context.Context) error) {
@@ -3787,6 +3833,26 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 
 	rt = newRuntime()
 	var out bytes.Buffer
+	rt.stdout = &out
+	fakeSync.replayStats = syncer.TailMessageReplayStats{
+		Candidates:     4,
+		Recovered:      2,
+		Deferred:       1,
+		PolicyDeferred: 1,
+	}
+	require.NoError(t, rt.withServices(true, func() error {
+		return rt.runTail([]string{"--replay-failures-only", "--replay-limit", "7"})
+	}))
+	require.Equal(t, []string{"g2"}, fakeSync.lastReplayGuilds)
+	require.Equal(t, 7, fakeSync.lastReplayLimit)
+	require.Equal(t, "candidates=4\nrecovered=2\ndeferred=1\npolicy_deferred=1\n", out.String())
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{"extra"})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "0"})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "26"})))
+	require.Equal(t, 2, ExitCode(rt.runTail([]string{"--replay-limit", "7"})))
+
+	rt = newRuntime()
+	out.Reset()
 	rt.stdout = &out
 	require.NoError(t, rt.runDoctor(nil))
 	require.Contains(t, out.String(), "discord_auth=ok")
@@ -4097,6 +4163,12 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 	require.Contains(t, stdout.String(), "--path PATH")
 	require.Contains(t, stdout.String(), "--watch-every DURATION")
 	require.Contains(t, stdout.String(), "--stats")
+	require.Empty(t, stderr.String())
+
+	stdout.Reset()
+	require.NoError(t, Run(context.Background(), []string{"tail", "--help"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "--replay-failures-only")
+	require.Contains(t, stdout.String(), "--replay-limit N")
 	require.Empty(t, stderr.String())
 
 	err := Run(context.Background(), []string{"help", "wat"}, &bytes.Buffer{}, &bytes.Buffer{})

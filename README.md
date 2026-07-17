@@ -303,6 +303,7 @@ Runs the live Gateway tail and periodic repair loop.
 discrawl tail
 discrawl tail --guild 123456789012345678
 discrawl tail --repair-every 30m
+discrawl tail --replay-failures-only
 ```
 
 ### `wiretap`

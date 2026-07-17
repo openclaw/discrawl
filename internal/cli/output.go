@@ -126,7 +126,7 @@ Discover accessible guilds and initialize configuration.
 
 Sync Discord or desktop-cache data into the local archive.
 `,
-	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS]
+	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS] [--replay-failures-only [--replay-limit N]]
 
 Continuously archive new Discord messages.
 `,
@@ -400,6 +400,16 @@ func printHuman(w io.Writer, value any) error {
 		return nil
 	case syncer.SyncStats:
 		_, err := fmt.Fprintf(w, "guilds=%d channels=%d threads=%d members=%d messages=%d\n", v.Guilds, v.Channels, v.Threads, v.Members, v.Messages)
+		return err
+	case syncer.TailMessageReplayStats:
+		_, err := fmt.Fprintf(
+			w,
+			"candidates=%d\nrecovered=%d\ndeferred=%d\npolicy_deferred=%d\n",
+			v.Candidates,
+			v.Recovered,
+			v.Deferred,
+			v.PolicyDeferred,
+		)
 		return err
 	case discorddesktop.Stats:
 		_, err := fmt.Fprintf(w, "path=%s\nvisited=%d\nfiles=%d\nskipped=%d\nunchanged=%d\nfast_skipped=%d\nobjects=%d\nguilds=%d\nchannels=%d\nmessages=%d\ndm_messages=%d\ndm_channels=%d\nguild_messages=%d\nskipped_messages=%d\nskipped_channels=%d\ncheckpoints=%d\nfull_cache=%t\ndry_run=%t\n",

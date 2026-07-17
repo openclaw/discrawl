@@ -50,9 +50,7 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = DefaultMaxBytes
 	}
-	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
-	}
+	opts.HTTPClient = attachmentHTTPClient(opts.HTTPClient)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -131,6 +129,29 @@ func Fetch(ctx context.Context, s *store.Store, opts FetchOptions) (FetchStats, 
 		}
 	}
 	return stats, nil
+}
+
+func attachmentHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	clone := *client
+	previous := clone.CheckRedirect
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || !isAllowedAttachmentURL(req.URL.String()) {
+			return errors.New("attachment redirect denied")
+		}
+		if previous != nil {
+			if err := previous(req, via); err != nil {
+				return err
+			}
+			if !isAllowedAttachmentURL(req.URL.String()) {
+				return errors.New("attachment redirect denied")
+			}
+		}
+		return nil
+	}
+	return &clone
 }
 
 func attachmentFailureRef(attachment store.AttachmentRow) store.FailureRef {
@@ -234,6 +255,11 @@ func fetchURL(ctx context.Context, opts FetchOptions, attachment store.Attachmen
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// Injected clients can supply their own redirect policy, so validate the
+	// final response URL at the fetch boundary as well.
+	if resp.Request == nil || resp.Request.URL == nil || !isAllowedAttachmentURL(resp.Request.URL.String()) {
+		return fetchResult{}, errors.New("attachment response URL denied")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fetchResult{}, fmt.Errorf("attachment fetch returned HTTP %d", resp.StatusCode)
 	}
