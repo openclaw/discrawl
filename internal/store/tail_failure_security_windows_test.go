@@ -55,7 +55,7 @@ func TestTailFailureWindowsACLProtectsDirectoryAndFiles(t *testing.T) {
 	require.NoError(t, windows.SetSecurityInfo(
 		writeDACL,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
+		windows.DACL_SECURITY_INFORMATION,
 		nil,
 		nil,
 		dacl,

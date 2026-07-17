@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -42,7 +43,9 @@ func TestPersistTailMessageFailureFallbackIsCanonicalPrivateAndPoolIndependent(t
 	info, err := os.Lstat(fallbackDir)
 	require.NoError(t, err)
 	require.True(t, info.IsDir())
-	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	}
 
 	entries, err := os.ReadDir(fallbackDir)
 	require.NoError(t, err)
