@@ -8,9 +8,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -468,6 +470,60 @@ func TestMediaPathHelpers(t *testing.T) {
 	require.False(t, isAllowedAttachmentURL("https://cdn.discordapp.com:444/attachments/c/file.png"))
 	require.False(t, isAllowedAttachmentURL("https://cdn.discordapp.com.evil.test/attachments/c/file.png"))
 	require.False(t, isAllowedAttachmentURL("https://user@cdn.discordapp.com/attachments/c/file.png"))
+}
+
+func TestFetchURLRejectsAllowedCDNRedirectToMetadataHost(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	client := attachmentHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		headers := make(http.Header)
+		headers.Set("Location", "http://169.254.169.254/computeMetadata/v1/")
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     headers,
+			Body:       io.NopCloser(strings.NewReader("redirect")),
+			Request:    req,
+		}, nil
+	})})
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://cdn.discordapp.com/attachments/c/x.txt", nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	require.ErrorContains(t, err, "attachment redirect denied")
+	require.EqualValues(t, 1, calls.Load())
+}
+
+func TestAttachmentHTTPClientRejectsRedirectCallbackURLMutation(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	client := attachmentHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			headers := make(http.Header)
+			headers.Set("Location", "https://media.discordapp.net/attachments/c/next.txt")
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     headers,
+				Body:       io.NopCloser(strings.NewReader("redirect")),
+				Request:    req,
+			}, nil
+		}),
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			req.URL = &url.URL{Scheme: "http", Host: "169.254.169.254", Path: "/computeMetadata/v1/"}
+			return nil
+		},
+	})
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://cdn.discordapp.com/attachments/c/x.txt", nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	require.ErrorContains(t, err, "attachment redirect denied")
+	require.EqualValues(t, 1, calls.Load())
 }
 
 func TestMediaTargetNeedsWrite(t *testing.T) {
