@@ -13,6 +13,10 @@ HELPER=${MAC_RELEASE_HELPER:-$HOME/Projects/agent-scripts/skills/release-mac-app
   echo "signed releases must run on macOS" >&2
   exit 1
 }
+[[ -n "${NOTARYTOOL_KEYCHAIN_PROFILE:-}" ]] || {
+  echo "NOTARYTOOL_KEYCHAIN_PROFILE is required for official macOS release notarization" >&2
+  exit 1
+}
 [[ -x "$HELPER" ]] || {
   echo "managed-keychain release helper not found: $HELPER" >&2
   exit 1

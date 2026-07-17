@@ -2,6 +2,10 @@
 
 ## 0.11.7 - Unreleased
 
+### Maintenance
+
+- Notarize every signed macOS release binary and require Apple's online ticket verification before publication.
+
 ## 0.11.6 - 2026-07-17
 
 ### Highlights

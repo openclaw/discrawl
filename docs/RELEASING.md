@@ -20,6 +20,7 @@ Assumptions:
 - GitHub CLI authenticated
 - CI green on `main`
 - OpenClaw Foundation Developer ID Application identity available through the managed release keychain
+- A `NOTARYTOOL_KEYCHAIN_PROFILE` runtime value whose credentials are stored in the operator's login keychain
 
 ## 1) Verify build + tests
 
@@ -56,7 +57,7 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
-## 4) Publish signed release artifacts
+## 4) Publish signed and notarized release artifacts
 
 From the clean checkout whose `HEAD` exactly matches the signed tag, publish all
 GoReleaser artifacts through the shared secret-safe keychain helper:
@@ -66,16 +67,25 @@ GoReleaser artifacts through the shared secret-safe keychain helper:
 ```
 
 The script uses an existing GitHub token environment variable or the
-authenticated GitHub CLI without writing credentials to disk.
+authenticated GitHub CLI without writing credentials to disk. Set
+`NOTARYTOOL_KEYCHAIN_PROFILE` only in the private release environment; never
+commit a real profile name or its credentials.
 
-The GoReleaser hook signs only the two macOS binaries. Snapshot builds and all
-non-macOS targets remain credential-free. Production builds fail closed unless
-the macOS artifacts use identifier `org.openclaw.discrawl` and OpenClaw
-Foundation Team ID `FWJYW4S8P8`.
+The GoReleaser hook signs and notarizes both thin macOS binaries. Each binary is
+signed into a temporary candidate with hardened runtime and a trusted timestamp,
+submitted to Apple as an ephemeral ZIP with `notarytool --wait`, and accepted
+only after the response reports `Accepted` and an online ticket check passes.
+Failed signing or notarization leaves the GoReleaser output untouched. Snapshot
+builds and all non-macOS targets remain credential-free. Production builds fail
+closed unless the notary profile is set and the macOS artifacts use identifier
+`org.openclaw.discrawl` and OpenClaw Foundation Team ID `FWJYW4S8P8`.
 
 Publishing the GitHub Release triggers `.github/workflows/release.yml`, which
 downloads both macOS archives on native runners, verifies their checksums and
-Developer ID signatures, then dispatches the Homebrew update.
+Developer ID signatures, hardened-runtime metadata, stable requirement, and
+Apple notarization tickets, then dispatches the Homebrew update. Raw CLI
+binaries cannot carry stapled tickets, so this verification requires network
+access to Apple's ticket service.
 
 ## 5) Verify GitHub Release
 
