@@ -427,7 +427,7 @@ func (s *Store) tailMessageFailureFallbackDir() (string, error) {
 		if err != nil || parsed.Scheme != "file" || (parsed.Host != "" && parsed.Host != "localhost") {
 			return "", errors.New("tail message failure fallback database path is invalid")
 		}
-		path = parsed.Path
+		path = normalizeTailFailureFileURLPath(parsed.Path)
 		if path == "" {
 			path = parsed.Opaque
 		}
@@ -672,7 +672,7 @@ func cleanupTailMessageFailureTemps(
 			return fmt.Errorf("inspect tail message failure fallback temp file: %w", err)
 		}
 		if info.IsDir() {
-			continue
+			return errors.New("tail message failure fallback temp entry must not be a directory")
 		}
 		if err := hooks.removeFile(dir.root, name); err != nil {
 			return fmt.Errorf("remove tail message failure fallback temp file: %w", err)

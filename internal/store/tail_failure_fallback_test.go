@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -152,16 +153,23 @@ func TestPersistTailMessageFailureFallbackRejectsInvalidIdentityAndDirectory(t *
 	require.NoError(t, err)
 	target := filepath.Join(t.TempDir(), "target")
 	require.NoError(t, os.Mkdir(target, 0o700))
-	require.NoError(t, os.Symlink(target, fallbackDir))
-	require.ErrorContains(t, s.PersistTailMessageFailureFallback(valid), "must not be a symlink")
+	if err := os.Symlink(target, fallbackDir); err != nil {
+		if runtime.GOOS != "windows" {
+			require.NoError(t, err)
+		}
+	} else {
+		require.ErrorContains(t, s.PersistTailMessageFailureFallback(valid), "must not be a symlink")
+	}
 
-	insecure, err := Open(ctx, filepath.Join(t.TempDir(), "insecure.db"))
-	require.NoError(t, err)
-	defer func() { _ = insecure.Close() }()
-	insecureDir, err := insecure.tailMessageFailureFallbackDir()
-	require.NoError(t, err)
-	require.NoError(t, os.Mkdir(insecureDir, 0o755))
-	require.ErrorContains(t, insecure.PersistTailMessageFailureFallback(valid), "permissions must be 0700")
+	if runtime.GOOS != "windows" {
+		insecure, err := Open(ctx, filepath.Join(t.TempDir(), "insecure.db"))
+		require.NoError(t, err)
+		defer func() { _ = insecure.Close() }()
+		insecureDir, err := insecure.tailMessageFailureFallbackDir()
+		require.NoError(t, err)
+		require.NoError(t, os.Mkdir(insecureDir, 0o755))
+		require.ErrorContains(t, insecure.PersistTailMessageFailureFallback(valid), "permissions must be 0700")
+	}
 }
 
 func TestTailMessageFailureFallbackPathAndNameValidation(t *testing.T) {
@@ -181,7 +189,12 @@ func TestTailMessageFailureFallbackPathAndNameValidation(t *testing.T) {
 	require.ErrorContains(t, err, "database path is invalid")
 
 	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
-	got, err := (&Store{path: "file://localhost" + dbPath}).tailMessageFailureFallbackDir()
+	uriPath := filepath.ToSlash(dbPath)
+	if runtime.GOOS == "windows" {
+		uriPath = "/" + uriPath
+	}
+	dbURL := (&url.URL{Scheme: "file", Host: "localhost", Path: uriPath}).String()
+	got, err := (&Store{path: dbURL}).tailMessageFailureFallbackDir()
 	require.NoError(t, err)
 	require.Equal(t, dbPath+tailMessageFailureFallbackDirSuffix, got)
 
@@ -235,7 +248,7 @@ func TestTailMessageFailureFallbackNoopAndHookFailures(t *testing.T) {
 
 	dirPath, err := s.tailMessageFailureFallbackDir()
 	require.NoError(t, err)
-	require.NoError(t, os.Mkdir(dirPath, 0o700))
+	createTailFailureTestDir(t, dirPath)
 	imported, err = s.ImportTailMessageFailureFallbacks(ctx)
 	require.NoError(t, err)
 	require.Zero(t, imported)
@@ -265,11 +278,11 @@ func TestTailMessageFailureFallbackNoopAndHookFailures(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = dir.Close() }()
 	require.NoError(t, os.Mkdir(filepath.Join(dirPath, tailMessageFailureFallbackTempPrefix+"dir"), 0o700))
-	require.NoError(t, cleanupTailMessageFailureTemps(
+	require.ErrorContains(t, cleanupTailMessageFailureTemps(
 		dir,
 		[]string{tailMessageFailureFallbackTempPrefix + "dir"},
 		tailMessageFailureFallbackHooks{},
-	))
+	), "must not be a directory")
 
 	tempName := tailMessageFailureFallbackTempPrefix + "remove"
 	require.NoError(t, dir.root.WriteFile(tempName, []byte("temp"), 0o600))
@@ -301,6 +314,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 		name      string
 		create    func(*testing.T, string)
 		errorText string
+		unixOnly  bool
 	}{
 		{
 			name: "symlink",
@@ -310,6 +324,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				require.NoError(t, os.Symlink(target, filepath.Join(dir, committedTailFailureName(validBody))))
 			},
 			errorText: "must not be a symlink",
+			unixOnly:  true,
 		},
 		{
 			name: "nonregular",
@@ -321,17 +336,19 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 		{
 			name: "insecure permissions",
 			create: func(t *testing.T, dir string) {
-				path := filepath.Join(dir, committedTailFailureName(validBody))
-				require.NoError(t, os.WriteFile(path, validBody, 0o600))
+				name := committedTailFailureName(validBody)
+				writeTailFailureTestFile(t, dir, name, validBody, 0o600)
+				path := filepath.Join(dir, name)
 				require.NoError(t, os.Chmod(path, 0o644))
 			},
 			errorText: "permissions are insecure",
+			unixOnly:  true,
 		},
 		{
 			name: "oversize",
 			create: func(t *testing.T, dir string) {
 				body := []byte(strings.Repeat("x", tailMessageFailureFallbackMaxSize+1))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "size is invalid",
 		},
@@ -339,18 +356,20 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 			name: "empty",
 			create: func(t *testing.T, dir string) {
 				body := []byte{}
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "size is invalid",
 		},
 		{
 			name: "digest mismatch",
 			create: func(t *testing.T, dir string) {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(dir, committedTailFailureName(validBody)),
+				writeTailFailureTestFile(
+					t,
+					dir,
+					committedTailFailureName(validBody),
 					[]byte(`{"version":1}`),
 					0o600,
-				))
+				)
 			},
 			errorText: "digest does not match",
 		},
@@ -360,7 +379,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{ "version":1,"event_kind":"create","failure_kind":"timeout","guild_id":"g1","channel_id":"c1","message_id":"m1"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "JSON is not canonical",
 		},
@@ -370,7 +389,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{"version":2,"event_kind":"create","failure_kind":"timeout","guild_id":"g1","channel_id":"c1","message_id":"m1"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "version is unsupported",
 		},
@@ -380,7 +399,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{"version":1,"event_kind":"CREATE","failure_kind":"timeout","guild_id":"g1","channel_id":"c1","message_id":"m1"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "event kind is invalid",
 		},
@@ -390,7 +409,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{"version":1,"event_kind":"create","failure_kind":"PANIC","guild_id":"g1","channel_id":"c1","message_id":"m1"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "failure kind is invalid",
 		},
@@ -400,7 +419,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{"version":1,"event_kind":"create","failure_kind":"timeout","guild_id":" g1","channel_id":"c1","message_id":"m1"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "identity is invalid",
 		},
@@ -410,7 +429,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				body := []byte(
 					`{"version":1,"event_kind":"create","failure_kind":"timeout","guild_id":"g1","channel_id":"c1","message_id":"m1","content":"private"}`,
 				)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "JSON is invalid",
 		},
@@ -418,20 +437,23 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 			name: "trailing data",
 			create: func(t *testing.T, dir string) {
 				body := append(append([]byte(nil), validBody...), []byte(`{}`)...)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, committedTailFailureName(body)), body, 0o600))
+				writeTailFailureTestFile(t, dir, committedTailFailureName(body), body, 0o600)
 			},
 			errorText: "trailing data",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.unixOnly && runtime.GOOS == "windows" {
+				t.Skip("POSIX permission fixture")
+			}
 			ctx := context.Background()
 			s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 			require.NoError(t, err)
 			defer func() { _ = s.Close() }()
 			dir, err := s.tailMessageFailureFallbackDir()
 			require.NoError(t, err)
-			require.NoError(t, os.Mkdir(dir, 0o700))
+			createTailFailureTestDir(t, dir)
 			tt.create(t, dir)
 
 			imported, err := s.ImportTailMessageFailureFallbacks(ctx)
@@ -460,8 +482,8 @@ func TestImportTailMessageFailureFallbacksValidatesAllBeforeMutation(t *testing.
 	dir, err := s.tailMessageFailureFallbackDir()
 	require.NoError(t, err)
 	corrupt := []byte(`{"version":1}`)
-	corruptPath := filepath.Join(dir, committedTailFailureName(corrupt))
-	require.NoError(t, os.WriteFile(corruptPath, corrupt, 0o600))
+	corruptName := committedTailFailureName(corrupt)
+	writeTailFailureTestFile(t, dir, corruptName, corrupt, 0o600)
 
 	imported, err := s.ImportTailMessageFailureFallbacks(ctx)
 	require.Zero(t, imported)
@@ -472,7 +494,7 @@ func TestImportTailMessageFailureFallbacksValidatesAllBeforeMutation(t *testing.
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
-	_, err = os.Stat(corruptPath)
+	_, err = os.Stat(filepath.Join(dir, corruptName))
 	require.NoError(t, err)
 }
 
@@ -601,7 +623,7 @@ func TestImportTailMessageFailureFallbacksMapsEventIdentityAndCleansFiles(t *tes
 	}
 	dir, err := s.tailMessageFailureFallbackDir()
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, tailMessageFailureFallbackTempPrefix+"stale"), []byte("stale"), 0o600))
+	writeTailFailureTestFile(t, dir, tailMessageFailureFallbackTempPrefix+"stale", []byte("stale"), 0o600)
 
 	imported, err := s.ImportTailMessageFailureFallbacks(ctx)
 	require.NoError(t, err)
@@ -778,7 +800,7 @@ func TestImportTailMessageFailureFallbacksIsExactlyOnceAcrossDirectorySyncFailur
 		RelatedKind: tailMessageFailureRelated,
 		RelatedID:   "update",
 	}))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, name), body, 0o600))
+	writeTailFailureTestFile(t, dir, name, body, 0o600)
 
 	imported, err = s.ImportTailMessageFailureFallbacks(ctx)
 	require.NoError(t, err)
@@ -790,6 +812,9 @@ func TestImportTailMessageFailureFallbacksIsExactlyOnceAcrossDirectorySyncFailur
 }
 
 func TestTailMessageFailureFallbackOperationsStayAnchoredToOpenedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents replacement while the directory handle is open")
+	}
 	t.Run("persist", func(t *testing.T) {
 		ctx := context.Background()
 		s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
@@ -797,7 +822,7 @@ func TestTailMessageFailureFallbackOperationsStayAnchoredToOpenedDirectory(t *te
 		defer func() { _ = s.Close() }()
 		dir, err := s.tailMessageFailureFallbackDir()
 		require.NoError(t, err)
-		require.NoError(t, os.Mkdir(dir, 0o700))
+		createTailFailureTestDir(t, dir)
 		openedDir := dir + ".opened"
 
 		require.NoError(t, s.persistTailMessageFailureFallback(TailMessageFailureFallback{
@@ -884,6 +909,23 @@ func TestLinkTailFailureNoReplaceRoot(t *testing.T) {
 func committedTailFailureName(body []byte) string {
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:]) + tailMessageFailureFallbackExtension
+}
+
+func createTailFailureTestDir(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, createTailFailureFallbackDir(path))
+}
+
+func writeTailFailureTestFile(t *testing.T, dir, name string, body []byte, mode os.FileMode) {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	dirFile, err := root.Open(".")
+	require.NoError(t, err)
+	defer func() { _ = dirFile.Close() }()
+	require.NoError(t, root.WriteFile(name, body, mode))
+	require.NoError(t, secureTailFailureFallbackTempFile(dirFile, name))
 }
 
 func assertTailFailureLedgerStatus(

@@ -111,6 +111,14 @@ func syncTailFailureDirectory(_ *os.File) error {
 	return nil
 }
 
+func normalizeTailFailureFileURLPath(path string) string {
+	path = filepath.FromSlash(path)
+	if len(path) >= 3 && os.IsPathSeparator(path[0]) && path[2] == ':' {
+		path = path[1:]
+	}
+	return path
+}
+
 func tailFailureWindowsUserSID() (*windows.SID, error) {
 	user, err := windows.GetCurrentThreadEffectiveToken().GetTokenUser()
 	if err != nil {

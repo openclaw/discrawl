@@ -54,6 +54,41 @@ func TestTailFailureWindowsACLProtectsDirectoryAndFiles(t *testing.T) {
 	insecureInfo, err := insecureDir.Stat()
 	require.NoError(t, err)
 	require.Error(t, validateTailFailureFallbackDir(insecureDir, insecureInfo))
+
+	insecureFile, err := insecureRoot.OpenFile("record.json", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	defer func() { _ = insecureFile.Close() }()
+	permissiveDACL, _, err := permissive.DACL()
+	require.NoError(t, err)
+	insecureHandle, err := openTailFailureWindowsFile(
+		insecureDir,
+		"record.json",
+		windows.WRITE_DAC|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		0,
+	)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(insecureHandle) }()
+	require.NoError(t, windows.SetSecurityInfo(
+		insecureHandle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		permissiveDACL,
+		nil,
+	))
+	insecureFileInfo, err := insecureFile.Stat()
+	require.NoError(t, err)
+	require.Error(t, validateTailFailureFallbackFile(insecureFile, insecureFileInfo))
+}
+
+func TestTailFailureWindowsOpenedDirectoryCannotBeReplaced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fallback")
+	require.NoError(t, createTailFailureFallbackDir(path))
+	root, err := os.OpenRoot(path)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	require.Error(t, os.Rename(path, path+".replaced"))
 }
 
 func TestRenameTailFailureWindowsIsNoReplace(t *testing.T) {
