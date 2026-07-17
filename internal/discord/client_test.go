@@ -2460,6 +2460,11 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 0
 	client.tailHandlerTimeout = 25 * time.Millisecond
+	queueFull := make(chan struct{})
+	var queueFullOnce sync.Once
+	client.tailQueueFullHook = func() {
+		queueFullOnce.Do(func() { close(queueFull) })
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -2471,9 +2476,11 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 		t.Fatal("post-deadline failure recording did not start")
 	}
 	select {
+	case <-queueFull:
 	case err := <-done:
 		t.Fatalf("Tail returned before failure persistence completed: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-testCtx.Done():
+		t.Fatal("tail queue did not overflow")
 	}
 	close(handler.allowRecord)
 	select {
