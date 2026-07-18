@@ -2579,7 +2579,12 @@ func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 					select {
 					case <-handler.failureReported:
 					case <-ctx.Done():
-						t.Error("tail failure was not reported")
+						select {
+						case <-handler.failureReported:
+							// OnTailFailure reports before canceling the shared test context.
+						default:
+							t.Error("tail failure was not reported")
+						}
 					}
 				},
 			)
