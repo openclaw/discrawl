@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -57,6 +58,32 @@ func TestFetchCachesAttachmentMedia(t *testing.T) {
 	stats, err = Fetch(ctx, s, FetchOptions{CacheDir: cacheDir})
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.Reused)
+}
+
+func TestFetchAllowsInjectedRoundTripperWithoutResponseRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, seedAttachment(ctx, s, "https://cdn.discordapp.com/attachments/c1/file.png"))
+
+	body := []byte("image-bytes")
+	stats, err := Fetch(ctx, s, FetchOptions{
+		CacheDir: t.TempDir(),
+		MaxBytes: 1024,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(bytes.NewReader(body)),
+				ContentLength: int64(len(body)),
+			}, nil
+		})},
+	})
+	require.NoError(t, err)
+	require.Equal(t, FetchStats{Attachments: 1, Fetched: 1, Bytes: int64(len(body))}, stats)
 }
 
 func TestFetchLimitAppliesAfterExistingCacheCheck(t *testing.T) {
@@ -524,6 +551,50 @@ func TestAttachmentHTTPClientRejectsRedirectCallbackURLMutation(t *testing.T) {
 	}
 	require.ErrorContains(t, err, "attachment redirect denied")
 	require.EqualValues(t, 1, calls.Load())
+}
+
+func TestAttachmentHTTPClientAllowsThreeRedirectsAndRejectsFourth(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		redirects int
+		wantError bool
+	}{
+		{name: "three redirects", redirects: 3},
+		{name: "fourth redirect", redirects: 4, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			client := attachmentHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				call := int(calls.Add(1))
+				response := &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Request:    req,
+				}
+				if call <= tc.redirects {
+					response.StatusCode = http.StatusFound
+					response.Header.Set("Location", fmt.Sprintf("/attachments/c/%d", call))
+				}
+				return response, nil
+			})})
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://cdn.discordapp.com/attachments/c/0", nil)
+			require.NoError(t, err)
+			response, err := client.Do(request)
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			if tc.wantError {
+				require.ErrorContains(t, err, "attachment redirect denied")
+			} else {
+				require.NoError(t, err)
+			}
+			require.EqualValues(t, 4, calls.Load())
+		})
+	}
 }
 
 func TestMediaTargetNeedsWrite(t *testing.T) {

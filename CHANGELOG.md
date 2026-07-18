@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.8 - Unreleased
+
+### Fixes
+
+- Keep attachment fetches compatible with three allowed Discord CDN redirects and injected HTTP transports while preserving final-response host validation.
+- Reject malformed tombstone timestamps before routine incremental snapshot imports mutate the archive.
+
 ## 0.11.7 - 2026-07-17
 
 ### Highlights

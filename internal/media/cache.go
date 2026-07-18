@@ -138,7 +138,7 @@ func attachmentHTTPClient(client *http.Client) *http.Client {
 	clone := *client
 	previous := clone.CheckRedirect
 	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 || !isAllowedAttachmentURL(req.URL.String()) {
+		if len(via) > 3 || !isAllowedAttachmentURL(req.URL.String()) {
 			return errors.New("attachment redirect denied")
 		}
 		if previous != nil {
@@ -257,7 +257,7 @@ func fetchURL(ctx context.Context, opts FetchOptions, attachment store.Attachmen
 	defer func() { _ = resp.Body.Close() }()
 	// Injected clients can supply their own redirect policy, so validate the
 	// final response URL at the fetch boundary as well.
-	if resp.Request == nil || resp.Request.URL == nil || !isAllowedAttachmentURL(resp.Request.URL.String()) {
+	if resp.Request != nil && (resp.Request.URL == nil || !isAllowedAttachmentURL(resp.Request.URL.String())) {
 		return fetchResult{}, errors.New("attachment response URL denied")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

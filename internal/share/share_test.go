@@ -937,6 +937,43 @@ func TestMergeIfChangedUsesIncrementalTailImport(t *testing.T) {
 	require.Contains(t, state, `"file_manifests"`)
 }
 
+func TestMergeIfChangedRejectsMalformedTombstoneBeforeIncrementalMutation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+
+	repo := filepath.Join(t.TempDir(), "share")
+	initial, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = src.DB().ExecContext(ctx, `update messages set deleted_at = 'not-a-timestamp', updated_at = ? where id = 'm1'`, now)
+	require.NoError(t, err)
+	updated, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	require.NotEqual(t, initial.GeneratedAt, updated.GeneratedAt)
+
+	_, changed, err = MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.ErrorContains(t, err, "messages.deleted_at must be RFC3339")
+	require.False(t, changed)
+
+	var deletedAt string
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select coalesce(deleted_at, '') from messages where id = 'm1'`).Scan(&deletedAt))
+	require.Empty(t, deletedAt)
+	previous, ok := PreviousMergedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.True(t, ok)
+	require.Equal(t, initial.GeneratedAt, previous.GeneratedAt)
+}
+
 func TestMergeIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))

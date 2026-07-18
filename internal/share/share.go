@@ -658,7 +658,13 @@ func importMergePlan(
 			})
 		},
 		Filter: func(table string, row map[string]any) (bool, error) {
-			return !isDirectMessageSnapshotRow(table, row), nil
+			if isDirectMessageSnapshotRow(table, row) {
+				return false, nil
+			}
+			if err := validateSnapshotRow(table, row); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
 			var err error
