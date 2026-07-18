@@ -142,9 +142,9 @@ func (s *Store) ListAttachments(ctx context.Context, opts AttachmentListOptions)
 			m.created_at
 		from message_attachments a
 		left join messages m on m.id = a.message_id
-		left join guilds g on g.id = a.guild_id
+		left join guilds g on g.id = a.guild_id and g.deleted_at is null
 		left join channels c on c.id = a.channel_id
-		left join members mem on mem.guild_id = a.guild_id and mem.user_id = a.author_id
+		left join members mem on mem.guild_id = a.guild_id and mem.user_id = a.author_id and mem.deleted_at is null
 		where ` + strings.Join(clauses, " and ") + `
 		order by m.created_at asc, a.attachment_id asc
 	`

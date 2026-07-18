@@ -460,7 +460,7 @@ var discrawlGuildColumns = []string{"guild_id", "name", "updated_at"}
 const discrawlGuildExportSQL = `
 select id as guild_id, name, updated_at
 from guilds
-where id != '@me'
+where id != '@me' and deleted_at is null
 order by id`
 
 var discrawlChannelColumns = []string{"channel_id", "guild_id", "name", "type", "parent_id", "updated_at"}
@@ -476,7 +476,7 @@ var discrawlMemberColumns = []string{"guild_id", "user_id", "username", "display
 const discrawlMemberExportSQL = `
 select guild_id, user_id, username, coalesce(nullif(display_name, ''), nullif(nick, ''), username) as display_name, updated_at
 from members
-where guild_id != '@me'
+where guild_id != '@me' and deleted_at is null
 order by guild_id, user_id`
 
 var discrawlMessageColumns = []string{"message_id", "channel_id", "guild_id", "author_id", "author_username", "content", "created_at", "edited_at"}

@@ -69,7 +69,7 @@ func (s *Store) ListMentions(ctx context.Context, opts MentionListOptions) ([]Me
 		from mention_events me
 		left join messages m on m.id = me.message_id
 		left join channels c on c.id = me.channel_id
-		left join members mem on mem.guild_id = me.guild_id and mem.user_id = me.author_id
+		left join members mem on mem.guild_id = me.guild_id and mem.user_id = me.author_id and mem.deleted_at is null
 		where `+strings.Join(clauses, " and ")+`
 		order by me.event_at desc, me.event_id desc
 		limit ?

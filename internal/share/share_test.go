@@ -1043,7 +1043,7 @@ func TestMergeIfChangedUsesMixedIncrementalPlanForMetadataChanges(t *testing.T) 
 
 	previous, ok := PreviousMergedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.True(t, ok)
-	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(updated)), false)
+	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(updated)), snapshotManifest(previous), false)
 	require.NoError(t, err)
 	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "channels").Mode)
 	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, planned, "members").Mode)
@@ -1134,7 +1134,7 @@ func TestMergeIfChangedInfersLegacyManifestFilesFromGit(t *testing.T) {
 
 	previous, ok := PreviousMergedManifest(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.True(t, ok)
-	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(enrichManifestFromGit(ctx, repo, "HEAD", stripFileManifests(updated)))), false)
+	planned, err := shareMergePlan(snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(enrichManifestFromGit(ctx, repo, "HEAD", stripFileManifests(updated)))), snapshotManifest(previous), false)
 	require.NoError(t, err)
 	require.True(t, planned.Changed(), "%+v", planned)
 
@@ -2323,7 +2323,17 @@ func TestValidateSnapshotRowRejectsMalformedDeletedAtBeforeImport(t *testing.T) 
 	require.Equal(t, "2026-07-14T12:00:00Z", padded["deleted_at"])
 	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": "not-a-timestamp"}), "must be RFC3339")
 	require.ErrorContains(t, validateSnapshotRow("messages", map[string]any{"deleted_at": json.Number("123")}), "must be a string or null")
-	require.NoError(t, validateSnapshotRow("guilds", map[string]any{"deleted_at": "not-a-timestamp"}))
+	require.ErrorContains(t, validateSnapshotRow("guilds", map[string]any{
+		"updated_at": "2026-07-14T12:00:00Z", "deleted_at": "not-a-timestamp",
+	}), "must be RFC3339")
+	require.ErrorContains(t, validateSnapshotRow("members", map[string]any{
+		"updated_at": "2026-07-14T12:00:00Z", "deleted_at": "2026-07-14T12:00:01Z",
+	}), "deletion_source")
+	offsetRevision := map[string]any{
+		"updated_at": "2026-07-18T11:30:00-02:00", "deleted_at": nil,
+	}
+	require.NoError(t, validateSnapshotRow("guilds", offsetRevision))
+	require.Equal(t, "2026-07-18T13:30:00Z", offsetRevision["updated_at"])
 
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))

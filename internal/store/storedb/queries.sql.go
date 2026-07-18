@@ -82,7 +82,7 @@ func (q *Queries) CountEmbeddingJobsByMessage(ctx context.Context, messageID str
 }
 
 const countGuilds = `-- name: CountGuilds :one
-select count(*) as count from guilds
+select count(*) as count from guilds where deleted_at is null
 `
 
 func (q *Queries) CountGuilds(ctx context.Context) (int64, error) {
@@ -93,7 +93,7 @@ func (q *Queries) CountGuilds(ctx context.Context) (int64, error) {
 }
 
 const countMembers = `-- name: CountMembers :one
-select count(*) as count from members
+select count(*) as count from members where deleted_at is null
 `
 
 func (q *Queries) CountMembers(ctx context.Context) (int64, error) {
@@ -106,7 +106,7 @@ func (q *Queries) CountMembers(ctx context.Context) (int64, error) {
 const countMembersByGuild = `-- name: CountMembersByGuild :one
 select count(*) as count
 from members
-where guild_id = ?
+where guild_id = ? and deleted_at is null
 `
 
 func (q *Queries) CountMembersByGuild(ctx context.Context, guildID string) (int64, error) {
@@ -187,21 +187,6 @@ where id = ?
 
 func (q *Queries) DeleteGuild(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, deleteGuild, id)
-	return err
-}
-
-const deleteMember = `-- name: DeleteMember :exec
-delete from members
-where guild_id = ? and user_id = ?
-`
-
-type DeleteMemberParams struct {
-	GuildID string
-	UserID  string
-}
-
-func (q *Queries) DeleteMember(ctx context.Context, arg DeleteMemberParams) error {
-	_, err := q.db.ExecContext(ctx, deleteMember, arg.GuildID, arg.UserID)
 	return err
 }
 
@@ -303,7 +288,7 @@ func (q *Queries) DeleteSyncState(ctx context.Context, scope string) error {
 const getGuildName = `-- name: GetGuildName :one
 select name
 from guilds
-where id = ?
+where id = ? and deleted_at is null
 `
 
 func (q *Queries) GetGuildName(ctx context.Context, id string) (string, error) {
@@ -373,48 +358,6 @@ func (q *Queries) HasMessageEmbeddings(ctx context.Context, arg HasMessageEmbedd
 	var present bool
 	err := row.Scan(&present)
 	return present, err
-}
-
-const insertMember = `-- name: InsertMember :exec
-insert into members(
-	guild_id, user_id, username, global_name, display_name, nick, discriminator,
-	avatar, bot, joined_at, role_ids_json, raw_json, updated_at
-) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`
-
-type InsertMemberParams struct {
-	GuildID       string
-	UserID        string
-	Username      string
-	GlobalName    sql.NullString
-	DisplayName   sql.NullString
-	Nick          sql.NullString
-	Discriminator sql.NullString
-	Avatar        sql.NullString
-	Bot           int64
-	JoinedAt      sql.NullString
-	RoleIdsJson   string
-	RawJson       string
-	UpdatedAt     string
-}
-
-func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) error {
-	_, err := q.db.ExecContext(ctx, insertMember,
-		arg.GuildID,
-		arg.UserID,
-		arg.Username,
-		arg.GlobalName,
-		arg.DisplayName,
-		arg.Nick,
-		arg.Discriminator,
-		arg.Avatar,
-		arg.Bot,
-		arg.JoinedAt,
-		arg.RoleIdsJson,
-		arg.RawJson,
-		arg.UpdatedAt,
-	)
-	return err
 }
 
 const insertMentionEvent = `-- name: InsertMentionEvent :exec
@@ -758,6 +701,7 @@ func (q *Queries) ListExistingAttachmentMedia(ctx context.Context, messageID str
 const listGuildIDs = `-- name: ListGuildIDs :many
 select id
 from guilds
+where deleted_at is null
 order by id
 `
 
@@ -871,6 +815,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
+where deleted_at is null
 order by coalesce(nullif(display_name, ''), nullif(nick, ''), nullif(global_name, ''), username), username
 limit ?
 `
@@ -932,7 +877,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
-where guild_id = ?
+where guild_id = ? and deleted_at is null
 order by coalesce(nullif(display_name, ''), nullif(nick, ''), nullif(global_name, ''), username), username
 limit ?
 `
@@ -999,7 +944,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
-where user_id = ?
+where user_id = ? and deleted_at is null
 order by guild_id, username
 `
 
@@ -1141,7 +1086,7 @@ select
 	m.pinned
 from messages m
 left join channels c on c.id = m.channel_id
-left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
+left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
 where m.guild_id = ? and m.author_id = ?
 order by m.created_at desc, m.id desc
 limit ?
@@ -1360,6 +1305,74 @@ func (q *Queries) MarkEmptyEmbeddingJobDone(ctx context.Context, arg MarkEmptyEm
 		arg.InputVersion,
 		arg.UpdatedAt,
 		arg.MessageID,
+	)
+	return err
+}
+
+const markGuildDeleted = `-- name: MarkGuildDeleted :exec
+insert into guilds(id, name, icon, raw_json, updated_at, deleted_at, deletion_source, deletion_reason)
+values(
+	?1, ?1, null, '{}', ?2,
+	?3, ?4, ?5
+)
+on conflict(id) do update set
+	deleted_at = excluded.deleted_at,
+	deletion_source = excluded.deletion_source,
+	deletion_reason = excluded.deletion_reason,
+	updated_at = excluded.updated_at
+`
+
+type MarkGuildDeletedParams struct {
+	ID             string
+	UpdatedAt      string
+	DeletedAt      sql.NullString
+	DeletionSource sql.NullString
+	DeletionReason sql.NullString
+}
+
+func (q *Queries) MarkGuildDeleted(ctx context.Context, arg MarkGuildDeletedParams) error {
+	_, err := q.db.ExecContext(ctx, markGuildDeleted,
+		arg.ID,
+		arg.UpdatedAt,
+		arg.DeletedAt,
+		arg.DeletionSource,
+		arg.DeletionReason,
+	)
+	return err
+}
+
+const markMemberDeleted = `-- name: MarkMemberDeleted :exec
+insert into members(
+	guild_id, user_id, username, role_ids_json, raw_json, updated_at,
+	deleted_at, deletion_source, deletion_reason
+) values(
+	?1, ?2, ?2, '[]', '{}', ?3,
+	?4, ?5, ?6
+)
+on conflict(guild_id, user_id) do update set
+	deleted_at = excluded.deleted_at,
+	deletion_source = excluded.deletion_source,
+	deletion_reason = excluded.deletion_reason,
+	updated_at = excluded.updated_at
+`
+
+type MarkMemberDeletedParams struct {
+	GuildID        string
+	UserID         string
+	UpdatedAt      string
+	DeletedAt      sql.NullString
+	DeletionSource sql.NullString
+	DeletionReason sql.NullString
+}
+
+func (q *Queries) MarkMemberDeleted(ctx context.Context, arg MarkMemberDeletedParams) error {
+	_, err := q.db.ExecContext(ctx, markMemberDeleted,
+		arg.GuildID,
+		arg.UserID,
+		arg.UpdatedAt,
+		arg.DeletedAt,
+		arg.DeletionSource,
+		arg.DeletionReason,
 	)
 	return err
 }
@@ -1669,13 +1682,16 @@ func (q *Queries) UpsertEmbeddingJobPending(ctx context.Context, arg UpsertEmbed
 }
 
 const upsertGuild = `-- name: UpsertGuild :exec
-insert into guilds(id, name, icon, raw_json, updated_at)
-values(?, ?, ?, ?, ?)
+insert into guilds(id, name, icon, raw_json, updated_at, deleted_at, deletion_source, deletion_reason)
+values(?, ?, ?, ?, ?, null, null, null)
 on conflict(id) do update set
 	name = excluded.name,
 	icon = excluded.icon,
 	raw_json = excluded.raw_json,
-	updated_at = excluded.updated_at
+	updated_at = excluded.updated_at,
+	deleted_at = null,
+	deletion_source = null,
+	deletion_reason = null
 `
 
 type UpsertGuildParams struct {
@@ -1700,8 +1716,9 @@ func (q *Queries) UpsertGuild(ctx context.Context, arg UpsertGuildParams) error 
 const upsertMember = `-- name: UpsertMember :exec
 insert into members(
 	guild_id, user_id, username, global_name, display_name, nick, discriminator,
-	avatar, bot, joined_at, role_ids_json, raw_json, updated_at
-) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	avatar, bot, joined_at, role_ids_json, raw_json, updated_at,
+	deleted_at, deletion_source, deletion_reason
+) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null)
 on conflict(guild_id, user_id) do update set
 	username = excluded.username,
 	global_name = excluded.global_name,
@@ -1713,7 +1730,10 @@ on conflict(guild_id, user_id) do update set
 	joined_at = excluded.joined_at,
 	role_ids_json = excluded.role_ids_json,
 	raw_json = excluded.raw_json,
-	updated_at = excluded.updated_at
+	updated_at = excluded.updated_at,
+	deleted_at = null,
+	deletion_source = null,
+	deletion_reason = null
 `
 
 type UpsertMemberParams struct {

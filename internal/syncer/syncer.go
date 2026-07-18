@@ -305,9 +305,9 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 	for _, member := range members {
 		converted = append(converted, toMemberRecord(guildID, member))
 	}
-	if err := s.store.ReplaceMembers(ctx, guildID, converted); err != nil {
-		s.logger.Warn("member replace failed", "guild_id", guildID, "err", err)
-		return 0, fmt.Errorf("replace guild members: %w", err)
+	if err := s.store.MergeMembers(ctx, guildID, converted); err != nil {
+		s.logger.Warn("member merge failed", "guild_id", guildID, "err", err)
+		return 0, fmt.Errorf("merge guild members: %w", err)
 	}
 	if s.store != nil {
 		if err := s.store.SetSyncState(ctx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {

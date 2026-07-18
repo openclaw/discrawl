@@ -3,7 +3,10 @@ create table guilds (
 	name text not null,
 	icon text,
 	raw_json text not null,
-	updated_at text not null
+	updated_at text not null,
+	deleted_at text,
+	deletion_source text,
+	deletion_reason text
 );
 
 create table channels (
@@ -38,6 +41,9 @@ create table members (
 	role_ids_json text not null,
 	raw_json text not null,
 	updated_at text not null,
+	deleted_at text,
+	deletion_source text,
+	deletion_reason text,
 	primary key (guild_id, user_id)
 );
 

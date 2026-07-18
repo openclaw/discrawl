@@ -111,9 +111,9 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 			coalesce((select group_concat(a.text_content, char(10)) from message_attachments a where a.message_id = m.id and trim(a.text_content) <> ''), ''),
 			m.pinned
 		from messages m
-		left join guilds g on g.id = m.guild_id
+		left join guilds g on g.id = m.guild_id and g.deleted_at is null
 		left join channels c on c.id = m.channel_id
-		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
+		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
 		where ` + strings.Join(clauses, " and ") + `
 	`
 
@@ -249,9 +249,9 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 			coalesce((select group_concat(a.text_content, char(10)) from message_attachments a where a.message_id = m.id and trim(a.text_content) <> ''), ''),
 			m.pinned
 		from messages m
-		left join guilds g on g.id = m.guild_id
+		left join guilds g on g.id = m.guild_id and g.deleted_at is null
 		left join channels c on c.id = m.channel_id
-		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
+		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
 		where m.id in (` + placeholders(len(rootIDs)) + `)
 		order by m.created_at asc, m.id asc`
 	contextRows, err := s.db.QueryContext(ctx, query, rootIDs...)
@@ -464,7 +464,7 @@ func (s *Store) discordMemberDisplayNames(ctx context.Context, ids map[string]st
 				''
 			)
 		from members
-		where user_id in (` + placeholders(len(args)) + `)
+		where deleted_at is null and user_id in (` + placeholders(len(args)) + `)
 	`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

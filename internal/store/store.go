@@ -17,7 +17,7 @@ const (
 	timeLayout         = "2006-01-02T15:04:05.000000000Z07:00"
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 4
+	storeSchemaVersion = 5
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
@@ -199,6 +199,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.setSchemaVersion(ctx, 4); err != nil {
 			return err
 		}
+		currentVersion = 4
+	}
+	if currentVersion < 5 {
+		if err := s.applyEntityTombstoneMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 5); err != nil {
+			return err
+		}
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
@@ -212,6 +221,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.applyFailureLedgerMigration(ctx); err != nil {
+		return err
+	}
+	if err := s.applyEntityTombstoneMigration(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureFTSRowIDs(ctx); err != nil {
@@ -314,7 +326,10 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 			name text not null,
 			icon text,
 			raw_json text not null,
-			updated_at text not null
+			updated_at text not null,
+			deleted_at text,
+			deletion_source text,
+			deletion_reason text
 		);`,
 		`create table if not exists channels (
 			id text primary key,
@@ -347,6 +362,9 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 			role_ids_json text not null,
 			raw_json text not null,
 			updated_at text not null,
+			deleted_at text,
+			deletion_source text,
+			deletion_reason text,
 			primary key (guild_id, user_id)
 		);`,
 		`create table if not exists messages (
@@ -558,6 +576,29 @@ func (s *Store) applyFailureLedgerMigration(ctx context.Context) error {
 	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate failure ledger: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) applyEntityTombstoneMigration(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, table := range []string{"guilds", "members"} {
+		for _, column := range []string{"deleted_at", "deletion_source", "deletion_reason"} {
+			exists, err := columnExists(ctx, tx, table, column)
+			if err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, "alter table "+table+" add column "+column+" text"); err != nil {
+				return fmt.Errorf("migrate %s.%s: %w", table, column, err)
+			}
 		}
 	}
 	return tx.Commit()

@@ -226,9 +226,9 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 
 	require.Error(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1"}))
 	require.Error(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1"}))
-	require.Error(t, s.ReplaceMembers(ctx, "g1", nil))
+	require.Error(t, s.MergeMembers(ctx, "g1", nil))
 	require.Error(t, s.UpsertMember(ctx, MemberRecord{GuildID: "g1", UserID: "u1"}))
-	require.Error(t, s.DeleteMember(ctx, "g1", "u1"))
+	require.Error(t, s.MarkMemberDeleted(ctx, "g1", "u1", "test", "closed-store"))
 	require.Error(t, s.UpsertMessageWithOptions(ctx, MessageRecord{ID: "m1"}, WriteOptions{}))
 	require.Error(t, s.UpsertMessages(ctx, []MessageMutation{{Record: MessageRecord{ID: "m1"}}}))
 	require.NoError(t, s.UpsertMessages(ctx, nil))
@@ -304,7 +304,7 @@ func TestStoreReadWriteAndSearch(t *testing.T) {
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "t1", GuildID: "g1", Kind: "thread_public", Name: "thread", RawJSON: `{}`}))
-	require.NoError(t, s.ReplaceMembers(ctx, "g1", []MemberRecord{{
+	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
 		GuildID:     "g1",
 		UserID:      "u1",
 		Username:    "peter",
@@ -1401,6 +1401,43 @@ func TestOpenMigratesUnversionedV1SchemaToV2(t *testing.T) {
 	require.Equal(t, "0", rows[0][0])
 }
 
+func TestOpenMigratesV4MemberAndGuildRowsLosslessly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	require.NoError(t, createV1Schema(ctx, dbPath))
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `
+		insert into guilds(id, name, raw_json, updated_at) values('g1', 'Legacy Guild', '{"legacy":true}', '2026-07-17T00:00:00Z');
+		insert into members(guild_id, user_id, username, role_ids_json, raw_json, updated_at)
+		values('g1', 'u1', 'legacy-user', '[]', '{"legacy":true}', '2026-07-17T00:00:01Z');
+		pragma user_version = 4;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	s, err := Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	var version int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
+	require.Equal(t, storeSchemaVersion, version)
+	var guildName, username string
+	var tombstoneFields int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select g.name, m.username,
+		       (g.deleted_at is not null) + (g.deletion_source is not null) + (g.deletion_reason is not null) +
+		       (m.deleted_at is not null) + (m.deletion_source is not null) + (m.deletion_reason is not null)
+		from guilds g join members m on m.guild_id = g.id
+		where g.id = 'g1' and m.user_id = 'u1'
+	`).Scan(&guildName, &username, &tombstoneFields))
+	require.Equal(t, "Legacy Guild", guildName)
+	require.Equal(t, "legacy-user", username)
+	require.Zero(t, tombstoneFields)
+}
+
 func TestOpenHealsVersionTwoMissingEmbeddingStorage(t *testing.T) {
 	t.Parallel()
 
@@ -1607,7 +1644,7 @@ func TestQueryAndExec(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestUpsertAndDeleteMember(t *testing.T) {
+func TestUpsertAndTombstoneMember(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1630,12 +1667,12 @@ func TestUpsertAndDeleteMember(t *testing.T) {
 	require.Equal(t, "steipete", rows[0].GitHubLogin)
 	require.Equal(t, "https://steipete.me", rows[0].Website)
 
-	require.NoError(t, s.DeleteMember(ctx, "g1", "u1"))
+	require.NoError(t, s.MarkMemberDeleted(ctx, "g1", "u1", "test", "explicit-delete"))
 	rows, err = s.MemberByID(ctx, "u1")
 	require.NoError(t, err)
 	require.Empty(t, rows)
 
-	require.NoError(t, s.ReplaceMembers(ctx, "g1", []MemberRecord{{
+	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
 		GuildID:     "g1",
 		UserID:      "u2",
 		Username:    "other",
@@ -1647,6 +1684,71 @@ func TestUpsertAndDeleteMember(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "u2", rows[0].UserID)
 	require.Equal(t, "Other bio", rows[0].Bio)
+}
+
+func TestMemberAndGuildTombstonesRestoreAndMissingRowsStayLive(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.MarkGuildDeleted(ctx, "unseen-guild", "discord-gateway", "guild-delete-event"))
+	require.NoError(t, s.MarkMemberDeleted(ctx, "unseen-guild", "unseen-user", "discord-gateway", "member-remove-event"))
+	var unseenTombstones int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select (select count(*) from guilds where id = 'unseen-guild' and deleted_at is not null) +
+		       (select count(*) from members where guild_id = 'unseen-guild' and user_id = 'unseen-user' and deleted_at is not null)
+	`).Scan(&unseenTombstones))
+	require.Equal(t, 2, unseenTombstones, "explicit removals must survive even when the live row was never observed")
+	for _, userID := range []string{"u1", "u2"} {
+		require.NoError(t, s.UpsertMember(ctx, MemberRecord{
+			GuildID: "g1", UserID: userID, Username: userID, DisplayName: userID,
+			RoleIDsJSON: `[]`, RawJSON: `{}`,
+		}))
+	}
+	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
+		GuildID: "g1", UserID: "u1", Username: "u1-new", DisplayName: "U1 New",
+		RoleIDsJSON: `[]`, RawJSON: `{}`,
+	}}))
+	members, err := s.Members(ctx, "g1", "", 10)
+	require.NoError(t, err)
+	require.Len(t, members, 2, "an omitted member is not an explicit deletion")
+
+	require.NoError(t, s.MarkMemberDeleted(ctx, "g1", "u1", "discord-gateway", "member-remove-event"))
+	require.NoError(t, s.MarkGuildDeleted(ctx, "g1", "discord-gateway", "guild-delete-event"))
+	status, err := s.Status(ctx, "db", "")
+	require.NoError(t, err)
+	require.Zero(t, status.GuildCount)
+	require.Equal(t, 1, status.MemberCount)
+	members, err = s.Members(ctx, "g1", "u1", 10)
+	require.NoError(t, err)
+	require.Empty(t, members)
+	var memberSource, memberReason, guildSource, guildReason string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deletion_source, deletion_reason from members where guild_id = 'g1' and user_id = 'u1'`).Scan(&memberSource, &memberReason))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deletion_source, deletion_reason from guilds where id = 'g1'`).Scan(&guildSource, &guildReason))
+	require.Equal(t, "discord-gateway", memberSource)
+	require.Equal(t, "member-remove-event", memberReason)
+	require.Equal(t, "discord-gateway", guildSource)
+	require.Equal(t, "guild-delete-event", guildReason)
+
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Restored Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMember(ctx, MemberRecord{
+		GuildID: "g1", UserID: "u1", Username: "restored", DisplayName: "Restored",
+		RoleIDsJSON: `[]`, RawJSON: `{}`,
+	}))
+	var tombstoneFields int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `
+		select (g.deleted_at is not null) + (g.deletion_source is not null) + (g.deletion_reason is not null) +
+		       (m.deleted_at is not null) + (m.deletion_source is not null) + (m.deletion_reason is not null)
+		from guilds g join members m on m.guild_id = g.id
+		where g.id = 'g1' and m.user_id = 'u1'
+	`).Scan(&tombstoneFields))
+	require.Zero(t, tombstoneFields)
+	members, err = s.Members(ctx, "g1", "Restored", 10)
+	require.NoError(t, err)
+	require.Len(t, members, 1)
 }
 
 func TestOpenTightensDBFilePerms(t *testing.T) {

@@ -82,6 +82,7 @@ func (s *Store) rebuildMemberFTS(ctx context.Context) error {
 			coalesce(nullif(display_name, ''), nullif(nick, ''), nullif(global_name, ''), username, ''),
 			raw_json
 		from members
+		where deleted_at is null
 		order by guild_id, user_id
 	`)
 	if err != nil {
@@ -163,7 +164,7 @@ func (s *Store) searchMembers(ctx context.Context, guildID, query string, limit 
 			coalesce(m.joined_at, ''),
 			m.raw_json
 		from member_fts
-		join members m on m.guild_id = member_fts.guild_id and m.user_id = member_fts.user_id
+		join members m on m.guild_id = member_fts.guild_id and m.user_id = member_fts.user_id and m.deleted_at is null
 		where `+strings.Join(clauses, " and ")+`
 		order by bm25(member_fts), coalesce(nullif(m.display_name, ''), nullif(m.nick, ''), nullif(m.global_name, ''), m.username), m.username
 		limit ?
@@ -177,7 +178,7 @@ func (s *Store) searchMembers(ctx context.Context, guildID, query string, limit 
 
 func (s *Store) searchMembersFallback(ctx context.Context, guildID, query string, limit int) ([]MemberRow, error) {
 	args := []any{}
-	clauses := []string{"1=1"}
+	clauses := []string{"deleted_at is null"}
 	if guildID != "" {
 		clauses = append(clauses, "guild_id = ?")
 		args = append(args, guildID)

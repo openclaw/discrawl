@@ -17,7 +17,7 @@ func TestMembersSearchesArchivedProfileText(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
-	require.NoError(t, s.ReplaceMembers(ctx, "g1", []MemberRecord{
+	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{
 		{
 			GuildID:     "g1",
 			UserID:      "u1",

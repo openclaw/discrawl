@@ -127,31 +127,69 @@ func (s *Store) UpsertGuild(ctx context.Context, guild GuildRecord) error {
 	})
 }
 
+func (s *Store) MarkGuildDeleted(ctx context.Context, guildID, source, reason string) error {
+	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(source) == "" || strings.TrimSpace(reason) == "" {
+		return errors.New("guild tombstone requires guild id, source, and reason")
+	}
+	now := time.Now().UTC().Format(timeLayout)
+	return s.q.MarkGuildDeleted(ctx, storedb.MarkGuildDeletedParams{
+		DeletedAt:      nullString(now),
+		DeletionSource: nullString(source),
+		DeletionReason: nullString(reason),
+		UpdatedAt:      now,
+		ID:             guildID,
+	})
+}
+
 func (s *Store) UpsertChannel(ctx context.Context, channel ChannelRecord) error {
 	return s.q.UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout)))
 }
 
-func (s *Store) ReplaceMembers(ctx context.Context, guildID string, members []MemberRecord) error {
+// MergeMembers refreshes observed members without treating absence as deletion.
+func (s *Store) MergeMembers(ctx context.Context, guildID string, members []MemberRecord) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
-	if err := qtx.DeleteMembersByGuild(ctx, guildID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `delete from member_fts where guild_id = ?`, guildID); err != nil {
-		return err
-	}
 	now := time.Now().UTC().Format(timeLayout)
 	for _, member := range members {
-		if err := qtx.InsertMember(ctx, insertMemberParams(member, now)); err != nil {
+		if member.GuildID != guildID {
+			return fmt.Errorf("member guild %q does not match refresh guild %q", member.GuildID, guildID)
+		}
+		if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
 			return err
 		}
 		if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) MarkMemberDeleted(ctx context.Context, guildID, userID, source, reason string) error {
+	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(source) == "" || strings.TrimSpace(reason) == "" {
+		return errors.New("member tombstone requires guild id, user id, source, and reason")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	now := time.Now().UTC().Format(timeLayout)
+	if err := s.q.WithTx(tx).MarkMemberDeleted(ctx, storedb.MarkMemberDeletedParams{
+		DeletedAt:      nullString(now),
+		DeletionSource: nullString(source),
+		DeletionReason: nullString(reason),
+		UpdatedAt:      now,
+		GuildID:        guildID,
+		UserID:         userID,
+	}); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from member_fts where rowid = ?`, memberFTSRowID(guildID, userID)); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -218,22 +256,6 @@ func (s *Store) DeleteGuildData(ctx context.Context, guildID string) error {
 
 func (s *Store) DeleteOrphanChannels(ctx context.Context, guildID string) error {
 	return s.q.DeleteOrphanChannels(ctx, guildID)
-}
-
-func (s *Store) DeleteMember(ctx context.Context, guildID, userID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	qtx := s.q.WithTx(tx)
-	if err := qtx.DeleteMember(ctx, storedb.DeleteMemberParams{GuildID: guildID, UserID: userID}); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `delete from member_fts where rowid = ?`, memberFTSRowID(guildID, userID)); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func (s *Store) UpsertMessage(ctx context.Context, message MessageRecord) error {
@@ -679,24 +701,6 @@ func upsertChannelParams(channel ChannelRecord, now string) storedb.UpsertChanne
 		ArchiveTimestamp: nullString(channel.ArchiveTimestamp),
 		RawJson:          channel.RawJSON,
 		UpdatedAt:        now,
-	}
-}
-
-func insertMemberParams(member MemberRecord, now string) storedb.InsertMemberParams {
-	return storedb.InsertMemberParams{
-		GuildID:       member.GuildID,
-		UserID:        member.UserID,
-		Username:      member.Username,
-		GlobalName:    nullString(member.GlobalName),
-		DisplayName:   nullString(member.DisplayName),
-		Nick:          nullString(member.Nick),
-		Discriminator: nullString(member.Discriminator),
-		Avatar:        nullString(member.Avatar),
-		Bot:           int64(boolInt(member.Bot)),
-		JoinedAt:      nullString(member.JoinedAt),
-		RoleIdsJson:   member.RoleIDsJSON,
-		RawJson:       member.RawJSON,
-		UpdatedAt:     now,
 	}
 }
 

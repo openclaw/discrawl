@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- Preserve guild and member history with source-attributed tombstones, explicit restore semantics, omission-safe member refreshes, and revision-aware Git-share merges.
 - Keep attachment fetches compatible with three allowed Discord CDN redirects and injected HTTP transports while preserving final-response host validation.
 - Reject malformed tombstone timestamps before routine incremental snapshot imports mutate the archive.
 

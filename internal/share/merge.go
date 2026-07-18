@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -62,7 +63,7 @@ func MergeIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifest
 		}
 	}
 	plan := snapshot.PlanMergeImport(snapshotManifest(previous), snapshotManifest(manifest))
-	plan, err = shareMergePlan(plan, allowEventMerge)
+	plan, err = shareMergePlan(plan, snapshotManifest(previous), allowEventMerge)
 	if err != nil {
 		if markErr := MarkReplacementPending(ctx, s, manifest, err.Error()); markErr != nil {
 			return Manifest{}, false, errors.Join(err, markErr)
@@ -72,7 +73,7 @@ func MergeIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifest
 	return importMergePlan(ctx, s, opts, previous, manifest, plan)
 }
 
-func shareMergePlan(plan snapshot.ImportPlan, allowEventMerge bool) (snapshot.ImportPlan, error) {
+func shareMergePlan(plan snapshot.ImportPlan, previous snapshot.Manifest, allowEventMerge bool) (snapshot.ImportPlan, error) {
 	if plan.Full {
 		return snapshot.ImportPlan{}, &ReplacementRequiredError{Reason: plan.Reason}
 	}
@@ -104,6 +105,14 @@ func shareMergePlan(plan snapshot.ImportPlan, allowEventMerge bool) (snapshot.Im
 			continue
 		}
 		if tablePlan.Mode == snapshot.TableImportReplace {
+			if (tablePlan.Table.Name == "guilds" || tablePlan.Table.Name == "members") &&
+				tablePlan.Reason == "columns changed" &&
+				isTombstoneColumnAddition(manifestTable(previous, tablePlan.Table.Name).Columns, tablePlan.Table.Columns) {
+				tablePlan.Mode = snapshot.TableImportFiles
+				tablePlan.Reason = "merge tombstone-aware entity rows"
+				out.Tables = append(out.Tables, tablePlan)
+				continue
+			}
 			replacements = append(replacements, tablePlan.Table.Name)
 			continue
 		}
@@ -114,6 +123,43 @@ func shareMergePlan(plan snapshot.ImportPlan, allowEventMerge bool) (snapshot.Im
 		return snapshot.ImportPlan{}, &ReplacementRequiredError{Tables: replacements}
 	}
 	return out, nil
+}
+
+func manifestTable(manifest snapshot.Manifest, name string) snapshot.TableManifest {
+	for _, table := range manifest.Tables {
+		if table.Name == name {
+			return table
+		}
+	}
+	return snapshot.TableManifest{}
+}
+
+func isTombstoneColumnAddition(previous, current []string) bool {
+	if len(current) != len(previous)+3 {
+		return false
+	}
+	base := make([]string, 0, len(previous))
+	tombstones := map[string]bool{
+		"deleted_at":      false,
+		"deletion_source": false,
+		"deletion_reason": false,
+	}
+	for _, column := range current {
+		if _, ok := tombstones[column]; ok {
+			if tombstones[column] {
+				return false
+			}
+			tombstones[column] = true
+			continue
+		}
+		base = append(base, column)
+	}
+	for _, found := range tombstones {
+		if !found {
+			return false
+		}
+	}
+	return slices.Equal(previous, base)
 }
 
 func eventTablesEmpty(ctx context.Context, s *store.Store) (bool, error) {

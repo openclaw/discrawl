@@ -56,27 +56,33 @@ type FailureLedger struct {
 }
 
 type Guild struct {
-	ID        string
-	Name      string
-	Icon      sql.NullString
-	RawJson   string
-	UpdatedAt string
+	ID             string
+	Name           string
+	Icon           sql.NullString
+	RawJson        string
+	UpdatedAt      string
+	DeletedAt      sql.NullString
+	DeletionSource sql.NullString
+	DeletionReason sql.NullString
 }
 
 type Member struct {
-	GuildID       string
-	UserID        string
-	Username      string
-	GlobalName    sql.NullString
-	DisplayName   sql.NullString
-	Nick          sql.NullString
-	Discriminator sql.NullString
-	Avatar        sql.NullString
-	Bot           int64
-	JoinedAt      sql.NullString
-	RoleIdsJson   string
-	RawJson       string
-	UpdatedAt     string
+	GuildID        string
+	UserID         string
+	Username       string
+	GlobalName     sql.NullString
+	DisplayName    sql.NullString
+	Nick           sql.NullString
+	Discriminator  sql.NullString
+	Avatar         sql.NullString
+	Bot            int64
+	JoinedAt       sql.NullString
+	RoleIdsJson    string
+	RawJson        string
+	UpdatedAt      string
+	DeletedAt      sql.NullString
+	DeletionSource sql.NullString
+	DeletionReason sql.NullString
 }
 
 type MemberFt struct {

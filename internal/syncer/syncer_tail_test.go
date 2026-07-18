@@ -82,6 +82,18 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	handler := &tailHandler{store: s}
+	require.NoError(t, handler.OnGuildUpsert(ctx, &discordgo.Guild{ID: "g1", Name: "Guild"}))
+	require.NoError(t, handler.OnGuildDelete(ctx, &discordgo.Guild{ID: "g1", Unavailable: true}))
+	var guildDeleted bool
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at is not null from guilds where id = 'g1'`).Scan(&guildDeleted))
+	require.False(t, guildDeleted, "temporary Discord unavailability is not a deletion")
+	require.NoError(t, handler.OnGuildDelete(ctx, &discordgo.Guild{ID: "g1"}))
+	var guildSource, guildReason string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at is not null, deletion_source, deletion_reason from guilds where id = 'g1'`).Scan(&guildDeleted, &guildSource, &guildReason))
+	require.True(t, guildDeleted)
+	require.Equal(t, "discord-gateway", guildSource)
+	require.Equal(t, "guild-delete-event", guildReason)
+	require.NoError(t, handler.OnGuildUpsert(ctx, &discordgo.Guild{ID: "g1", Name: "Restored Guild"}))
 	msg := &discordgo.Message{
 		ID:        "9",
 		GuildID:   "g1",
@@ -109,6 +121,12 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 		User:    &discordgo.User{ID: "u1", Username: "peter"},
 	}))
 	require.NoError(t, handler.OnMemberDelete(ctx, "g1", "u1"))
+	var memberDeleted bool
+	var memberSource, memberReason string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at is not null, deletion_source, deletion_reason from members where guild_id = 'g1' and user_id = 'u1'`).Scan(&memberDeleted, &memberSource, &memberReason))
+	require.True(t, memberDeleted)
+	require.Equal(t, "discord-gateway", memberSource)
+	require.Equal(t, "member-remove-event", memberReason)
 
 	status, err := s.Status(context.Background(), "db", "")
 	require.NoError(t, err)

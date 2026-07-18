@@ -1687,11 +1687,24 @@ func importTableFile(ctx context.Context, stmt *sql.Stmt, repoPath string, table
 }
 
 func validateSnapshotRow(table string, row map[string]any) error {
-	if table != "messages" {
+	if table != "messages" && table != "guilds" && table != "members" {
 		return nil
+	}
+	if table == "guilds" || table == "members" {
+		for _, column := range []string{"deleted_at", "deletion_source", "deletion_reason"} {
+			if _, ok := row[column]; !ok {
+				row[column] = nil
+			}
+		}
+		if err := validateSnapshotRevision(table, row); err != nil {
+			return err
+		}
 	}
 	raw, ok := row["deleted_at"]
 	if !ok || raw == nil {
+		if table == "guilds" || table == "members" {
+			return validateLiveSnapshotTombstoneMetadata(table, row)
+		}
 		return nil
 	}
 	value, ok := raw.(string)
@@ -1701,13 +1714,54 @@ func validateSnapshotRow(table string, row map[string]any) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		row["deleted_at"] = nil
+		if table == "guilds" || table == "members" {
+			return validateLiveSnapshotTombstoneMetadata(table, row)
+		}
 		return nil
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return fmt.Errorf("messages.deleted_at must be RFC3339: %w", err)
+		return fmt.Errorf("%s.deleted_at must be RFC3339: %w", table, err)
 	}
 	row["deleted_at"] = parsed.UTC().Format(time.RFC3339Nano)
+	if table == "guilds" || table == "members" {
+		for _, column := range []string{"deletion_source", "deletion_reason"} {
+			value, ok := row[column].(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s.%s must be a non-empty string for a tombstone", table, column)
+			}
+			row[column] = strings.TrimSpace(value)
+		}
+	}
+	return nil
+}
+
+func validateSnapshotRevision(table string, row map[string]any) error {
+	raw := row["updated_at"]
+	value, ok := raw.(string)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s.updated_at must be an RFC3339 string", table)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("%s.updated_at must be RFC3339: %w", table, err)
+	}
+	row["updated_at"] = parsed.UTC().Format(time.RFC3339Nano)
+	return nil
+}
+
+func validateLiveSnapshotTombstoneMetadata(table string, row map[string]any) error {
+	for _, column := range []string{"deletion_source", "deletion_reason"} {
+		raw := row[column]
+		if raw == nil {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) != "" {
+			return fmt.Errorf("%s.%s must be null for a live row", table, column)
+		}
+		row[column] = nil
+	}
 	return nil
 }
 
@@ -2509,8 +2563,62 @@ func upsertMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row m
 			return false, err
 		}
 	}
-	protectNewer := slices.Contains([]string{"guilds", "channels", "members", "messages"}, table)
+	if table == "guilds" || table == "members" {
+		apply, err := shouldMergeTombstoneEntityRow(ctx, tx, table, row)
+		if err != nil || !apply {
+			return false, err
+		}
+	}
+	// Guild/member revisions were compared chronologically above. Reapplying the
+	// generic lexical SQL guard would reject valid RFC3339 offset timestamps.
+	protectNewer := slices.Contains([]string{"channels", "messages"}, table)
 	return upsertSnapshotRow(ctx, tx, table, row, protectNewer)
+}
+
+func shouldMergeTombstoneEntityRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) (bool, error) {
+	var query string
+	var args []any
+	switch table {
+	case "guilds":
+		query = `select updated_at, deleted_at is not null from guilds where id = ?`
+		args = []any{importValue(row["id"])}
+	case "members":
+		query = `select updated_at, deleted_at is not null from members where guild_id = ? and user_id = ?`
+		args = []any{importValue(row["guild_id"]), importValue(row["user_id"])}
+	default:
+		return true, nil
+	}
+	var localUpdated string
+	var localTombstone bool
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&localUpdated, &localTombstone)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read existing %s merge revision: %w", table, err)
+	}
+	comparison := compareSnapshotRevisions(stringValue(row["updated_at"]), localUpdated)
+	if comparison != 0 {
+		return comparison > 0, nil
+	}
+	incomingTombstone := row["deleted_at"] != nil && strings.TrimSpace(stringValue(row["deleted_at"])) != ""
+	return !localTombstone || incomingTombstone, nil
+}
+
+func compareSnapshotRevisions(left, right string) int {
+	leftTime, leftErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(left))
+	rightTime, rightErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(right))
+	if leftErr == nil && rightErr == nil {
+		switch {
+		case leftTime.Before(rightTime):
+			return -1
+		case leftTime.After(rightTime):
+			return 1
+		default:
+			return 0
+		}
+	}
+	return strings.Compare(strings.TrimSpace(left), strings.TrimSpace(right))
 }
 
 func preserveIncrementalAttachmentState(ctx context.Context, tx *sql.Tx, row map[string]any) error {

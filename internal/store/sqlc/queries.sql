@@ -56,7 +56,7 @@ select exists(
 ) as present;
 
 -- name: CountGuilds :one
-select count(*) as count from guilds;
+select count(*) as count from guilds where deleted_at is null;
 
 -- name: CountChannels :one
 select count(*) as count from channels;
@@ -65,7 +65,7 @@ select count(*) as count from channels;
 select count(*) as count from messages;
 
 -- name: CountMembers :one
-select count(*) as count from members;
+select count(*) as count from members where deleted_at is null;
 
 -- name: CountThreads :one
 select count(*) as count
@@ -80,11 +80,12 @@ where scope = ?;
 -- name: GetGuildName :one
 select name
 from guilds
-where id = ?;
+where id = ? and deleted_at is null;
 
 -- name: ListGuildIDs :many
 select id
 from guilds
+where deleted_at is null
 order by id;
 
 -- name: CountChannelsByGuild :one
@@ -95,7 +96,7 @@ where guild_id = ?;
 -- name: CountMembersByGuild :one
 select count(*) as count
 from members
-where guild_id = ?;
+where guild_id = ? and deleted_at is null;
 
 -- name: ListMembers :many
 select guild_id, user_id, username, coalesce(global_name, '') as global_name,
@@ -103,6 +104,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
+where deleted_at is null
 order by coalesce(nullif(display_name, ''), nullif(nick, ''), nullif(global_name, ''), username), username
 limit ?;
 
@@ -112,7 +114,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
-where guild_id = ?
+where guild_id = ? and deleted_at is null
 order by coalesce(nullif(display_name, ''), nullif(nick, ''), nullif(global_name, ''), username), username
 limit ?;
 
@@ -122,7 +124,7 @@ select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(discriminator, '') as discriminator, coalesce(avatar, '') as avatar,
        role_ids_json, bot, coalesce(joined_at, '') as joined_at, raw_json
 from members
-where user_id = ?
+where user_id = ? and deleted_at is null
 order by guild_id, username;
 
 -- name: MemberMessageStats :one
@@ -158,7 +160,7 @@ select
 	m.pinned
 from messages m
 left join channels c on c.id = m.channel_id
-left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
+left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
 where m.guild_id = ? and m.author_id = ?
 order by m.created_at desc, m.id desc
 limit ?;
@@ -214,12 +216,27 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 order by c.id;
 
 -- name: UpsertGuild :exec
-insert into guilds(id, name, icon, raw_json, updated_at)
-values(?, ?, ?, ?, ?)
+insert into guilds(id, name, icon, raw_json, updated_at, deleted_at, deletion_source, deletion_reason)
+values(?, ?, ?, ?, ?, null, null, null)
 on conflict(id) do update set
 	name = excluded.name,
 	icon = excluded.icon,
 	raw_json = excluded.raw_json,
+	updated_at = excluded.updated_at,
+	deleted_at = null,
+	deletion_source = null,
+	deletion_reason = null;
+
+-- name: MarkGuildDeleted :exec
+insert into guilds(id, name, icon, raw_json, updated_at, deleted_at, deletion_source, deletion_reason)
+values(
+	sqlc.arg(id), sqlc.arg(id), null, '{}', sqlc.arg(updated_at),
+	sqlc.arg(deleted_at), sqlc.arg(deletion_source), sqlc.arg(deletion_reason)
+)
+on conflict(id) do update set
+	deleted_at = excluded.deleted_at,
+	deletion_source = excluded.deletion_source,
+	deletion_reason = excluded.deletion_reason,
 	updated_at = excluded.updated_at;
 
 -- name: UpsertChannel :exec
@@ -248,17 +265,12 @@ on conflict(id) do update set
 delete from members
 where guild_id = ?;
 
--- name: InsertMember :exec
-insert into members(
-	guild_id, user_id, username, global_name, display_name, nick, discriminator,
-	avatar, bot, joined_at, role_ids_json, raw_json, updated_at
-) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-
 -- name: UpsertMember :exec
 insert into members(
 	guild_id, user_id, username, global_name, display_name, nick, discriminator,
-	avatar, bot, joined_at, role_ids_json, raw_json, updated_at
-) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	avatar, bot, joined_at, role_ids_json, raw_json, updated_at,
+	deleted_at, deletion_source, deletion_reason
+) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null)
 on conflict(guild_id, user_id) do update set
 	username = excluded.username,
 	global_name = excluded.global_name,
@@ -270,11 +282,24 @@ on conflict(guild_id, user_id) do update set
 	joined_at = excluded.joined_at,
 	role_ids_json = excluded.role_ids_json,
 	raw_json = excluded.raw_json,
-	updated_at = excluded.updated_at;
+	updated_at = excluded.updated_at,
+	deleted_at = null,
+	deletion_source = null,
+	deletion_reason = null;
 
--- name: DeleteMember :exec
-delete from members
-where guild_id = ? and user_id = ?;
+-- name: MarkMemberDeleted :exec
+insert into members(
+	guild_id, user_id, username, role_ids_json, raw_json, updated_at,
+	deleted_at, deletion_source, deletion_reason
+) values(
+	sqlc.arg(guild_id), sqlc.arg(user_id), sqlc.arg(user_id), '[]', '{}', sqlc.arg(updated_at),
+	sqlc.arg(deleted_at), sqlc.arg(deletion_source), sqlc.arg(deletion_reason)
+)
+on conflict(guild_id, user_id) do update set
+	deleted_at = excluded.deleted_at,
+	deletion_source = excluded.deletion_source,
+	deletion_reason = excluded.deletion_reason,
+	updated_at = excluded.updated_at;
 
 -- name: DeleteOrphanChannels :exec
 delete from channels

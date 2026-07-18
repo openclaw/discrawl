@@ -22,6 +22,11 @@ type EventHandler interface {
 	OnMemberDelete(context.Context, string, string) error
 }
 
+type guildEventHandler interface {
+	OnGuildUpsert(context.Context, *discordgo.Guild) error
+	OnGuildDelete(context.Context, *discordgo.Guild) error
+}
+
 type tailGuildFilter interface {
 	TailAllowsGuild(string) bool
 }
@@ -601,6 +606,51 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			},
 			channel,
 			before,
+		))
+	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildCreate) {
+		guildHandler, ok := handler.(guildEventHandler)
+		if !ok {
+			return
+		}
+		var guild *discordgo.Guild
+		if evt != nil {
+			guild = evt.Guild
+		}
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newGuildTailTask(
+			"GUILD_CREATE",
+			func(taskCtx context.Context) error { return guildHandler.OnGuildUpsert(taskCtx, guild) },
+			guild,
+		))
+	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildUpdate) {
+		guildHandler, ok := handler.(guildEventHandler)
+		if !ok {
+			return
+		}
+		var guild *discordgo.Guild
+		if evt != nil {
+			guild = evt.Guild
+		}
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newGuildTailTask(
+			"GUILD_UPDATE",
+			func(taskCtx context.Context) error { return guildHandler.OnGuildUpsert(taskCtx, guild) },
+			guild,
+		))
+	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildDelete) {
+		guildHandler, ok := handler.(guildEventHandler)
+		if !ok {
+			return
+		}
+		var guild *discordgo.Guild
+		if evt != nil {
+			guild = evt.Guild
+		}
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newGuildTailTask(
+			"GUILD_DELETE",
+			func(taskCtx context.Context) error { return guildHandler.OnGuildDelete(taskCtx, guild) },
+			guild,
 		))
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildMemberAdd) {
@@ -1293,6 +1343,24 @@ func newChannelTailTask(
 		}
 		setTailTaskID(&task.guildID, channel.GuildID)
 		setTailTaskID(&task.channelID, channel.ID)
+	}
+	return task
+}
+
+func newGuildTailTask(
+	eventType string,
+	run func(context.Context) error,
+	guilds ...*discordgo.Guild,
+) tailTask {
+	task := tailTask{
+		eventType:    eventType,
+		failureClass: tailFailureClassOrdered,
+		run:          run,
+	}
+	for _, guild := range guilds {
+		if guild != nil {
+			setTailTaskID(&task.guildID, guild.ID)
+		}
 	}
 	return task
 }

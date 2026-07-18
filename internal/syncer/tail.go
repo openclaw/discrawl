@@ -382,6 +382,25 @@ func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Ch
 	return t.store.UpsertChannel(ctx, toChannelRecord(channel, marshalJSONString(channel, "{}")))
 }
 
+func (t *tailHandler) OnGuildUpsert(ctx context.Context, guild *discordgo.Guild) error {
+	if guild == nil || guild.Unavailable || !t.allowGuild(guild.ID) {
+		return nil
+	}
+	return t.store.UpsertGuild(ctx, store.GuildRecord{
+		ID:      guild.ID,
+		Name:    guild.Name,
+		Icon:    guild.Icon,
+		RawJSON: marshalJSONString(guild, "{}"),
+	})
+}
+
+func (t *tailHandler) OnGuildDelete(ctx context.Context, guild *discordgo.Guild) error {
+	if guild == nil || guild.Unavailable || !t.allowGuild(guild.ID) {
+		return nil
+	}
+	return t.store.MarkGuildDeleted(ctx, guild.ID, "discord-gateway", "guild-delete-event")
+}
+
 func (t *tailHandler) OnMemberUpsert(ctx context.Context, guildID string, member *discordgo.Member) error {
 	if !t.allowGuild(guildID) || member == nil || member.User == nil {
 		return nil
@@ -393,7 +412,7 @@ func (t *tailHandler) OnMemberDelete(ctx context.Context, guildID, userID string
 	if !t.allowGuild(guildID) {
 		return nil
 	}
-	return t.store.DeleteMember(ctx, guildID, userID)
+	return t.store.MarkMemberDeleted(ctx, guildID, userID, "discord-gateway", "member-remove-event")
 }
 
 func (t *tailHandler) TailAllowsGuild(guildID string) bool {

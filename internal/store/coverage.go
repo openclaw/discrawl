@@ -108,7 +108,7 @@ func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.T
 	rows, err := s.db.QueryContext(queryCtx, `
 		select id, name
 		from guilds
-		where ? = '' or id = ?
+		where deleted_at is null and (? = '' or id = ?)
 		order by lower(name), id
 	`, guildID, guildID)
 	if err != nil {
