@@ -525,6 +525,18 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	return t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update")
 }
 
+func (t *tailHandler) OnMessageUpdateRefetchFailure(
+	ctx context.Context,
+	msg *discordgo.Message,
+	refetchErr error,
+) (bool, error) {
+	if msg == nil || msg.ID == "" || !isUnknownMessage(refetchErr) {
+		return false, t.OnMessageUpdate(ctx, msg)
+	}
+	err := t.reconcileUnknownMessageUpdate(ctx, msg.ID)
+	return err == nil, err
+}
+
 func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.Message) (*discordgo.Message, error) {
 	if t.client == nil || msg.ChannelID == "" || msg.ID == "" {
 		if isPartialMessageUpdate(msg) {

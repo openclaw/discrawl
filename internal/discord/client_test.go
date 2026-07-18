@@ -2729,6 +2729,8 @@ func TestTailMessageUpdateImmediateHTTPRefetchFailureStillInvokesHandlerAndRecor
 		recorded:        make(chan TailFailure, 1),
 		updates:         make(chan *discordgo.Message, 1),
 	}
+	_, consumesRefetchFailures := any(handler).(messageUpdateRefetchFailureHandler)
+	require.False(t, consumesRefetchFailures)
 	var refetchCalls atomic.Int32
 	now := time.Now().UTC().Format(time.RFC3339)
 	server := newTailTestGatewayWithRoutes(

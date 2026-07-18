@@ -13,5 +13,5 @@ func lockedFreeKiB(dbPath string) (uint64, error) {
 	if err := unix.Statfs(filepath.Dir(dbPath), &details); err != nil {
 		return 0, err
 	}
-	return uint64(details.Bavail) * uint64(details.Bsize) / 1024, nil
+	return details.Bavail * uint64(details.Bsize) / 1024, nil
 }

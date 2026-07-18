@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -849,6 +850,115 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 	}
 }
 
+func TestTailHandlerConsumesReconciledUnknownMessageRefetchFailure(t *testing.T) {
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelTest()
+	tailCtx, cancelTail := context.WithCancel(testCtx)
+	defer cancelTail()
+
+	s, err := store.Open(testCtx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	message := &discordgo.Message{
+		ID:        "123456789012345678",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "preserved before deletion",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "u1", Username: "user"},
+	}
+	snapshotClient := &fakeClient{}
+	baseHandler := &tailHandler{
+		guilds: makeGuildSet([]string{"g1"}),
+		store:  s,
+		client: snapshotClient,
+		channels: map[string]tailChannel{
+			"c1": {kind: "text"},
+		},
+		kindExcludedChannelIDs: map[string]struct{}{},
+	}
+	require.NoError(t, baseHandler.OnChannelUpsert(testCtx, &discordgo.Channel{
+		ID:      "c1",
+		GuildID: "g1",
+		Name:    "general",
+		Type:    discordgo.ChannelTypeGuildText,
+	}))
+	require.NoError(t, baseHandler.OnMessageCreate(testCtx, message))
+	require.NoError(t, s.RecordFailure(
+		testCtx,
+		tailMessageFailureIdentity(message.GuildID, message.ChannelID, message.ID, "update"),
+		errors.New("prior update failure"),
+	))
+
+	var clientRefetches atomic.Int32
+	server := newSyncerTailUnknownMessageGateway(t, message.ID, 4, &clientRefetches)
+	defer server.Close()
+	restore := patchSyncerTailDiscordEndpoints(server.URL + "/api/v10/")
+	defer restore()
+
+	eventClient, err := discordclient.New("token")
+	require.NoError(t, err)
+	defer func() { _ = eventClient.Close() }()
+	setDiscordTailHandlerTimeout(t, eventClient, time.Second)
+
+	handler := &reconciledRefetchTailHandler{
+		tailHandler: baseHandler,
+		drained:     make(chan struct{}),
+	}
+	tailDone := make(chan error, 1)
+	go func() {
+		tailDone <- eventClient.Tail(tailCtx, handler)
+	}()
+
+	select {
+	case <-handler.drained:
+	case err := <-tailDone:
+		t.Fatalf("Tail returned before the ordered sentinel: %v", err)
+	case <-testCtx.Done():
+		t.Fatal("ordered sentinel was not handled")
+	}
+	require.Zero(t, handler.failureReports.Load())
+	require.Zero(t, handler.failureRecords.Load())
+	select {
+	case err := <-tailDone:
+		t.Fatalf("Tail returned before cancellation after reconciled updates: %v", err)
+	default:
+	}
+
+	cancelTail()
+	select {
+	case err := <-tailDone:
+		require.NoError(t, err)
+	case <-testCtx.Done():
+		t.Fatal("Tail did not stop after cancellation")
+	}
+
+	require.EqualValues(t, 4, clientRefetches.Load())
+	snapshotClient.mu.Lock()
+	snapshotRefetches := snapshotClient.exactMessageCalls
+	snapshotClient.mu.Unlock()
+	require.Zero(t, snapshotRefetches)
+
+	var deletedAt string
+	require.NoError(t, s.DB().QueryRowContext(
+		context.Background(),
+		`select coalesce(deleted_at, '') from messages where id = ?`,
+		message.ID,
+	).Scan(&deletedAt))
+	require.NotEmpty(t, deletedAt)
+	var deleteEvents int
+	require.NoError(t, s.DB().QueryRowContext(
+		context.Background(),
+		`select count(*) from message_events where message_id = ? and event_type = 'delete'`,
+		message.ID,
+	).Scan(&deleteEvents))
+	require.Positive(t, deleteEvents)
+	report, err := s.ListFailures(context.Background(), store.FailureListOptions{}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+}
+
 func TestTailHandlerResolvesUnknownThreadAndParentBeforeExclusion(t *testing.T) {
 	t.Parallel()
 
@@ -885,9 +995,7 @@ func TestTailHandlerResolvesUnknownThreadAndParentBeforeExclusion(t *testing.T) 
 	var wg sync.WaitGroup
 	errs := make(chan error, messageCount)
 	for i := range messageCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs <- handler.OnMessageCreate(ctx, &discordgo.Message{
 				ID:        string(rune('a' + i)),
 				GuildID:   "g1",
@@ -896,7 +1004,7 @@ func TestTailHandlerResolvesUnknownThreadAndParentBeforeExclusion(t *testing.T) 
 				Timestamp: time.Now().UTC(),
 				Author:    &discordgo.User{ID: "u1", Username: "user"},
 			})
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -1290,9 +1398,7 @@ func TestTailHandlerConcurrentResolutionErrorsFailClosed(t *testing.T) {
 	errs := make(chan error, messageCount)
 	var wg sync.WaitGroup
 	for i := range messageCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs <- handler.OnMessageCreate(ctx, &discordgo.Message{
 				ID:        string(rune('a' + i)),
 				GuildID:   "g1",
@@ -1301,7 +1407,7 @@ func TestTailHandlerConcurrentResolutionErrorsFailClosed(t *testing.T) {
 				Timestamp: time.Now().UTC(),
 				Author:    &discordgo.User{ID: "u1", Username: "user"},
 			})
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -1543,9 +1649,7 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 
 	client.mu.Lock()
 	messageCalls := make(map[string]int, len(client.messageCalls))
-	for channelID, calls := range client.messageCalls {
-		messageCalls[channelID] = calls
-	}
+	maps.Copy(messageCalls, client.messageCalls)
 	client.mu.Unlock()
 
 	require.GreaterOrEqual(t, client.guildThreadCalls, 1)
@@ -1951,8 +2055,7 @@ func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) 
 }
 
 func TestRunTailDetectsGatewayExitWhileRepairIsBlocked(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
@@ -2676,13 +2779,13 @@ func TestRepairOffsetConcurrentAccess(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1_000; i++ {
+		for i := range 1_000 {
 			svc.SetRepairOffset(time.Duration(i%5) * time.Minute)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1_000; i++ {
+		for range 1_000 {
 			_ = svc.repairOffset()
 		}
 	}()
@@ -3295,6 +3398,38 @@ func (h *capturingTailHandler) OnMessageUpdate(ctx context.Context, msg *discord
 	panic("sensitive syncer message update panic")
 }
 
+type reconciledRefetchTailHandler struct {
+	*tailHandler
+	drained        chan struct{}
+	drainOnce      sync.Once
+	failureReports atomic.Int32
+	failureRecords atomic.Int32
+}
+
+func (h *reconciledRefetchTailHandler) OnMessageCreate(
+	ctx context.Context,
+	msg *discordgo.Message,
+) error {
+	if err := h.tailHandler.OnMessageCreate(ctx, msg); err != nil {
+		return err
+	}
+	if msg != nil && msg.ID == syncerTailSentinelMessageID {
+		h.drainOnce.Do(func() { close(h.drained) })
+	}
+	return nil
+}
+
+func (h *reconciledRefetchTailHandler) OnTailFailure(discordclient.TailFailure) {
+	h.failureReports.Add(1)
+}
+
+func (h *reconciledRefetchTailHandler) RecordTailFailure(
+	failure discordclient.TailFailure,
+) error {
+	h.failureRecords.Add(1)
+	return h.tailHandler.RecordTailFailure(failure)
+}
+
 type panicReplayTailHandler struct {
 	*tailHandler
 	panicValue any
@@ -3390,6 +3525,105 @@ func newSyncerTailMessageUpdateGateway(
 	mux.HandleFunc("/gateway/", gatewayHandler)
 	return httptest.NewServer(mux)
 }
+
+func newSyncerTailUnknownMessageGateway(
+	t *testing.T,
+	messageID string,
+	updateCount int,
+	clientRefetches *atomic.Int32,
+) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/channels/c1/messages/"+messageID, func(w http.ResponseWriter, _ *http.Request) {
+		clientRefetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "Unknown Message",
+			"code":    10008,
+		})
+	})
+	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": "ws://" + r.Host + "/gateway"})
+	})
+
+	upgrader := websocket.Upgrader{}
+	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if err := conn.WriteJSON(map[string]any{
+			"op": 10,
+			"d":  map[string]any{"heartbeat_interval": 1000},
+		}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "READY",
+			"s":  1,
+			"d": map[string]any{
+				"session_id": "session",
+				"user":       map[string]any{"id": "bot", "username": "bot"},
+			},
+		}); err != nil {
+			t.Errorf("write ready: %v", err)
+			return
+		}
+		for i := range updateCount {
+			if err := conn.WriteJSON(map[string]any{
+				"op": 0,
+				"t":  "MESSAGE_UPDATE",
+				"s":  i + 2,
+				"d": map[string]any{
+					"id":         messageID,
+					"guild_id":   "g1",
+					"channel_id": "c1",
+				},
+			}); err != nil {
+				t.Errorf("write update: %v", err)
+				return
+			}
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"op": 0,
+			"t":  "MESSAGE_CREATE",
+			"s":  updateCount + 2,
+			"d": map[string]any{
+				"id":         syncerTailSentinelMessageID,
+				"guild_id":   "g1",
+				"channel_id": "c1",
+				"content":    "ordered sentinel",
+				"timestamp":  time.Now().UTC().Format(time.RFC3339),
+				"author":     map[string]any{"id": "u1", "username": "user"},
+			},
+		}); err != nil {
+			t.Errorf("write sentinel: %v", err)
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}
+	mux.HandleFunc("/gateway", gatewayHandler)
+	mux.HandleFunc("/gateway/", gatewayHandler)
+	return httptest.NewServer(mux)
+}
+
+const syncerTailSentinelMessageID = "223456789012345678"
 
 func newSyncerTailMessagePanicGateway(
 	t *testing.T,

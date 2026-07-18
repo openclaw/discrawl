@@ -10,6 +10,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.40.0
+	modernc.org/sqlite v1.54.0
 )
 
 require (
@@ -17,7 +18,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
-	modernc.org/sqlite v1.54.0 // indirect
 )
 
 require (

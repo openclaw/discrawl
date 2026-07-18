@@ -26,6 +26,10 @@ type tailGuildFilter interface {
 	TailAllowsGuild(string) bool
 }
 
+type messageUpdateRefetchFailureHandler interface {
+	OnMessageUpdateRefetchFailure(context.Context, *discordgo.Message, error) (bool, error)
+}
+
 type TailReadyHandler interface {
 	OnTailReady(context.Context) error
 }
@@ -555,10 +559,29 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			if msg == nil {
 				return refetchErr
 			}
-			// A failed refetch does not suppress the partial update, but it remains
-			// an event failure even when the handler accepts that recovery input.
+			// A failed refetch does not suppress the partial update. It remains an
+			// event failure unless an explicitly capable handler reconciles it.
 			UpdateTailFailureStage(taskCtx, TailFailureStageHandler)
-			handlerErr := handler.OnMessageUpdate(taskCtx, msg)
+			var (
+				refetchConsumed bool
+				handlerErr      error
+			)
+			if refetchErr != nil {
+				if refetchHandler, ok := handler.(messageUpdateRefetchFailureHandler); ok {
+					refetchConsumed, handlerErr = refetchHandler.OnMessageUpdateRefetchFailure(
+						taskCtx,
+						msg,
+						refetchErr,
+					)
+				} else {
+					handlerErr = handler.OnMessageUpdate(taskCtx, msg)
+				}
+			} else {
+				handlerErr = handler.OnMessageUpdate(taskCtx, msg)
+			}
+			if refetchConsumed && handlerErr == nil {
+				refetchErr = nil
+			}
 			if refetchErr != nil {
 				UpdateTailFailureStage(taskCtx, TailFailureStageMessageUpdateRefetch)
 			}
