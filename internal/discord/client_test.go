@@ -2547,12 +2547,14 @@ func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelTest()
+			tailCtx, cancelTail := context.WithCancel(testCtx)
+			defer cancelTail()
 
 			handler := &messageUpdateFailureHandler{
 				fail:            tt.fail,
-				cancel:          cancel,
+				cancel:          cancelTail,
 				failureReported: make(chan struct{}),
 				failures:        make(chan TailFailure, 1),
 				recorded:        make(chan TailFailure, 1),
@@ -2578,13 +2580,8 @@ func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 					}
 					select {
 					case <-handler.failureReported:
-					case <-ctx.Done():
-						select {
-						case <-handler.failureReported:
-							// OnTailFailure reports before canceling the shared test context.
-						default:
-							t.Error("tail failure was not reported")
-						}
+					case <-testCtx.Done():
+						t.Error("tail failure was not reported")
 					}
 				},
 			)
@@ -2601,8 +2598,8 @@ func TestTailMessageUpdateFailureUsesRefetchedMetadata(t *testing.T) {
 			client.tailQueueSize = 1
 			client.tailHandlerTimeout = 25 * time.Millisecond
 
-			require.NoError(t, client.Tail(ctx, handler))
-			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.NoError(t, client.Tail(tailCtx, handler))
+			require.ErrorIs(t, tailCtx.Err(), context.Canceled)
 			update := <-handler.updates
 			require.Equal(t, "g-refetched", update.GuildID)
 			require.Equal(t, "u-refetched", update.Author.ID)
@@ -2881,14 +2878,16 @@ func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			testCtx, cancelTest := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelTest()
+			tailCtx, cancelTail := context.WithCancel(testCtx)
+			defer cancelTail()
 
 			handler := &messageUpdateFailureHandler{
 				fail: func(context.Context) error {
 					return nil
 				},
-				cancel:          cancel,
+				cancel:          cancelTail,
 				failureReported: make(chan struct{}),
 				failures:        make(chan TailFailure, 1),
 				recorded:        make(chan TailFailure, 1),
@@ -2913,7 +2912,7 @@ func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
 					}
 					select {
 					case <-handler.failureReported:
-					case <-ctx.Done():
+					case <-testCtx.Done():
 						t.Error("tail failure was not reported")
 					}
 				},
@@ -2930,8 +2929,8 @@ func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
 			client.tailWorkerCount = 1
 			client.tailQueueSize = 1
 
-			require.NoError(t, client.Tail(ctx, handler))
-			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.NoError(t, client.Tail(tailCtx, handler))
+			require.ErrorIs(t, tailCtx.Err(), context.Canceled)
 			update := <-handler.updates
 			require.Equal(t, "m1", update.ID)
 			require.Equal(t, "g1", update.GuildID)
