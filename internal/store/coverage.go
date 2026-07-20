@@ -11,7 +11,50 @@ import (
 
 const wiretapStatsScope = "wiretap:last_stats:v1"
 
-const coverageQueryTimeout = 2 * time.Minute
+const (
+	coverageQueryTimeout       = 2 * time.Minute
+	globalCoverageQueryTimeout = 8 * time.Minute
+)
+
+const filteredCoverageChannelQuery = `
+	select
+		c.id, c.guild_id, c.name, c.kind,
+		case when exists (
+			select 1 from sync_state s
+			where s.scope = 'channel:' || c.id || ':history_complete'
+		) then 1 else 0 end,
+		count(m.id), coalesce(min(m.created_at), ''), coalesce(max(m.created_at), '')
+	from channels c
+	left join messages m on m.channel_id = c.id and m.deleted_at is null
+	where c.guild_id = ?
+	group by c.id, c.guild_id, c.name, c.kind
+	order by c.guild_id, count(m.id) desc, lower(c.name), c.id
+`
+
+const globalCoverageChannelQuery = `
+	with message_coverage as materialized (
+		select
+			channel_id,
+			count(*) as message_count,
+			coalesce(min(created_at), '') as earliest_message_at,
+			coalesce(max(created_at), '') as latest_message_at
+		from messages not indexed
+		where deleted_at is null
+		group by channel_id
+	)
+	select
+		c.id, c.guild_id, c.name, c.kind,
+		case when exists (
+			select 1 from sync_state s
+			where s.scope = 'channel:' || c.id || ':history_complete'
+		) then 1 else 0 end,
+		coalesce(m.message_count, 0),
+		coalesce(m.earliest_message_at, ''),
+		coalesce(m.latest_message_at, '')
+	from channels c
+	left join message_coverage m on m.channel_id = c.id
+	order by c.guild_id, coalesce(m.message_count, 0) desc, lower(c.name), c.id
+`
 
 var messageChannelKinds = map[string]struct{}{
 	"text": {}, "news": {}, "announcement": {}, "dm": {}, "group_dm": {},
@@ -102,7 +145,7 @@ func (s *Store) SetWiretapImportStats(ctx context.Context, stats WiretapImportSt
 
 func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.Time) (CoverageReport, error) {
 	report := CoverageReport{GeneratedAt: generatedAt.UTC(), Guilds: []CoverageGuild{}}
-	queryCtx, cancel := context.WithTimeout(ctx, coverageQueryTimeout)
+	queryCtx, cancel := withCoverageQueryTimeout(ctx, guildID)
 	defer cancel()
 
 	rows, err := s.db.QueryContext(queryCtx, `
@@ -137,20 +180,13 @@ func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.T
 	for i := range report.Guilds {
 		guilds[report.Guilds[i].ID] = &report.Guilds[i]
 	}
-	channelRows, err := s.db.QueryContext(queryCtx, `
-		select
-			c.id, c.guild_id, c.name, c.kind,
-			case when exists (
-				select 1 from sync_state s
-				where s.scope = 'channel:' || c.id || ':history_complete'
-			) then 1 else 0 end,
-			count(m.id), coalesce(min(m.created_at), ''), coalesce(max(m.created_at), '')
-		from channels c
-		left join messages m on m.channel_id = c.id and m.deleted_at is null
-		where ? = '' or c.guild_id = ?
-		group by c.id, c.guild_id, c.name, c.kind
-		order by c.guild_id, count(m.id) desc, lower(c.name), c.id
-	`, guildID, guildID)
+	channelQuery := filteredCoverageChannelQuery
+	channelArgs := []any{guildID}
+	if guildID == "" {
+		channelQuery = globalCoverageChannelQuery
+		channelArgs = nil
+	}
+	channelRows, err := s.db.QueryContext(queryCtx, channelQuery, channelArgs...)
 	if err != nil {
 		return CoverageReport{}, fmt.Errorf("query channel coverage: %w", err)
 	}
@@ -224,6 +260,14 @@ func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.T
 		return CoverageReport{}, err
 	}
 	return report, nil
+}
+
+func withCoverageQueryTimeout(ctx context.Context, guildID string) (context.Context, context.CancelFunc) {
+	timeout := coverageQueryTimeout
+	if guildID == "" {
+		timeout = globalCoverageQueryTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (s *Store) loadKnownFailureCoverage(ctx context.Context, guildID string, report *CoverageReport) error {
