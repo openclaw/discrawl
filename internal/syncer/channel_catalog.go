@@ -18,9 +18,9 @@ const (
 	channelCatalogIncremental
 )
 
-func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode) ([]*discordgo.Channel, bool, error) {
+func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
-		channels, err := s.liveChannelList(ctx, guildID, mode)
+		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
 		if err != nil {
 			return nil, false, err
 		}
@@ -68,7 +68,7 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 	return selected, true, nil
 }
 
-func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode) ([]*discordgo.Channel, error) {
+func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, error) {
 	channels, err := s.client.GuildChannels(ctx, guildID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch channels for guild %s: %w", guildID, err)
@@ -78,7 +78,7 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 		allChannels[channel.ID] = channel
 	}
 	if mode == channelCatalogIncremental {
-		if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, threadParentIDs(channels)); err != nil {
+		if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, scopedThreadParentIDs(channels, exclusions)); err != nil {
 			return nil, err
 		}
 		return mapsToSlice(allChannels), nil
@@ -92,7 +92,7 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 		storedRows = rows
 		mergeStoredThreadChannels(allChannels, rows)
 	}
-	parentIDs := threadParentIDs(channels)
+	parentIDs := scopedThreadParentIDs(channels, exclusions)
 	if len(storedThreadParentIDs(storedRows)) == 0 {
 		if err := s.appendThreadCatalog(ctx, allChannels, parentIDs); err != nil {
 			return nil, err
@@ -101,6 +101,22 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 		return nil, err
 	}
 	return mapsToSlice(allChannels), nil
+}
+
+func scopedThreadParentIDs(channels []*discordgo.Channel, exclusions channelExclusions) []string {
+	channelByID := make(map[string]*discordgo.Channel, len(channels))
+	for _, channel := range channels {
+		if channel != nil {
+			channelByID[channel.ID] = channel
+		}
+	}
+	parents := make([]string, 0, len(channels))
+	for _, channel := range channels {
+		if isThreadParent(channel) && !exclusions.excludesDiscordChannel(channel, channelByID) {
+			parents = append(parents, channel.ID)
+		}
+	}
+	return parents
 }
 
 func (s *Syncer) appendThreadCatalog(ctx context.Context, allChannels map[string]*discordgo.Channel, parents []string) error {

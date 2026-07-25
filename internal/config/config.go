@@ -51,13 +51,17 @@ type DesktopConfig struct {
 }
 
 type SyncConfig struct {
-	Source             string `toml:"source"`
-	Concurrency        int    `toml:"concurrency"`
-	RepairEvery        string `toml:"repair_every"`
-	FullHistory        bool   `toml:"full_history"`
-	AttachmentText     *bool  `toml:"attachment_text"`
-	AttachmentMedia    *bool  `toml:"attachment_media"`
-	MaxAttachmentBytes int64  `toml:"max_attachment_bytes"`
+	Source              string   `toml:"source"`
+	Concurrency         int      `toml:"concurrency"`
+	RepairEvery         string   `toml:"repair_every"`
+	RepairOffset        string   `toml:"repair_offset"`
+	FullHistory         bool     `toml:"full_history"`
+	ExcludeChannelIDs   []string `toml:"exclude_channel_ids,omitempty"`
+	ExcludeChannelKinds []string `toml:"exclude_channel_kinds,omitempty"`
+	IncludeCategoryIDs  []string `toml:"include_category_ids,omitempty"`
+	AttachmentText      *bool    `toml:"attachment_text"`
+	AttachmentMedia     *bool    `toml:"attachment_media"`
+	MaxAttachmentBytes  int64    `toml:"max_attachment_bytes"`
 }
 
 type SearchConfig struct {
@@ -138,6 +142,7 @@ func Default() Config {
 			Source:             "both",
 			Concurrency:        defaultSyncConcurrency(),
 			RepairEvery:        "6h",
+			RepairOffset:       "0s",
 			FullHistory:        true,
 			AttachmentText:     new(true),
 			AttachmentMedia:    new(false),
@@ -268,6 +273,16 @@ func (c *Config) Normalize() error {
 	if c.Sync.RepairEvery == "" {
 		c.Sync.RepairEvery = "6h"
 	}
+	c.Sync.RepairOffset = strings.TrimSpace(c.Sync.RepairOffset)
+	if c.Sync.RepairOffset == "" {
+		c.Sync.RepairOffset = "0s"
+	}
+	if _, err := time.ParseDuration(c.Sync.RepairOffset); err != nil {
+		return fmt.Errorf("parse sync.repair_offset: %w", err)
+	}
+	c.Sync.ExcludeChannelIDs = uniqueStrings(c.Sync.ExcludeChannelIDs)
+	c.Sync.ExcludeChannelKinds = uniqueLowerStrings(c.Sync.ExcludeChannelKinds)
+	c.Sync.IncludeCategoryIDs = uniqueStrings(c.Sync.IncludeCategoryIDs)
 	if c.Sync.AttachmentText == nil {
 		c.Sync.AttachmentText = new(true)
 	}
@@ -438,4 +453,12 @@ func uniqueStrings(in []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func uniqueLowerStrings(in []string) []string {
+	out := uniqueStrings(in)
+	for i := range out {
+		out[i] = strings.ToLower(out[i])
+	}
+	return uniqueStrings(out)
 }

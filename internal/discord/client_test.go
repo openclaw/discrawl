@@ -1099,8 +1099,10 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 			{"op": 0, "t": "MESSAGE_UPDATE", "s": 3, "d": map[string]any{"id": "m1", "guild_id": "g1", "channel_id": "c1", "content": "hello 2", "timestamp": now, "author": map[string]any{"id": "u1", "username": "user"}}},
 			{"op": 0, "t": "MESSAGE_DELETE", "s": 4, "d": map[string]any{"id": "m1", "guild_id": "g1", "channel_id": "c1"}},
 			{"op": 0, "t": "CHANNEL_CREATE", "s": 5, "d": map[string]any{"id": "c1", "guild_id": "g1", "name": "general", "type": 0}},
-			{"op": 0, "t": "GUILD_MEMBER_ADD", "s": 6, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}, "roles": []string{}}},
-			{"op": 0, "t": "GUILD_MEMBER_REMOVE", "s": 7, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}}},
+			{"op": 0, "t": "THREAD_CREATE", "s": 6, "d": map[string]any{"id": "thread-1", "guild_id": "g1", "parent_id": "c1", "name": "support request", "type": 11, "newly_created": true}},
+			{"op": 0, "t": "THREAD_UPDATE", "s": 7, "d": map[string]any{"id": "thread-1", "guild_id": "g1", "parent_id": "c1", "name": "support request", "type": 11}},
+			{"op": 0, "t": "GUILD_MEMBER_ADD", "s": 8, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}, "roles": []string{}}},
+			{"op": 0, "t": "GUILD_MEMBER_REMOVE", "s": 9, "d": map[string]any{"guild_id": "g1", "user": map[string]any{"id": "u1", "username": "user"}}},
 		}
 		for _, event := range events {
 			if err := conn.WriteJSON(event); err != nil {
@@ -1133,7 +1135,7 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Equal(t, 1, handler.creates)
 	require.Equal(t, 1, handler.updates)
 	require.Equal(t, 1, handler.deletes)
-	require.Equal(t, 1, handler.channels)
+	require.Equal(t, 3, handler.channels)
 	require.Equal(t, 1, handler.memberUpserts)
 	require.Equal(t, 1, handler.memberDeletes)
 	require.Equal(t, 1, handler.ready)

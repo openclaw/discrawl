@@ -608,6 +608,34 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			before,
 		))
 	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.ThreadCreate) {
+		var channel *discordgo.Channel
+		if evt != nil {
+			channel = evt.Channel
+		}
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
+			"THREAD_CREATE",
+			func(taskCtx context.Context) error {
+				return handler.OnChannelUpsert(taskCtx, channel)
+			},
+			channel,
+		))
+	})
+	addHandler(func(_ *discordgo.Session, evt *discordgo.ThreadUpdate) {
+		var channel, before *discordgo.Channel
+		if evt != nil {
+			channel = evt.Channel
+			before = evt.BeforeUpdate
+		}
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
+			"THREAD_UPDATE",
+			func(taskCtx context.Context) error {
+				return handler.OnChannelUpsert(taskCtx, channel)
+			},
+			channel,
+			before,
+		))
+	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildCreate) {
 		guildHandler, ok := handler.(guildEventHandler)
 		if !ok {

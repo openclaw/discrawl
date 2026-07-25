@@ -308,6 +308,18 @@ type attachmentTextConfigurer interface {
 	SetAttachmentTextEnabled(bool)
 }
 
+type channelExclusionConfigurer interface {
+	SetChannelExclusions([]string, []string)
+}
+
+type categoryInclusionConfigurer interface {
+	SetIncludedCategories([]string)
+}
+
+type repairOffsetConfigurer interface {
+	SetRepairOffset(time.Duration)
+}
+
 func (r *runtime) dispatch(rest []string) error {
 	switch rest[0] {
 	case "metadata":
@@ -765,6 +777,19 @@ func (r *runtime) ensureDiscordServices() error {
 	r.syncer = syncerFactory(r.client, r.store, r.logger)
 	if configurable, ok := r.syncer.(attachmentTextConfigurer); ok {
 		configurable.SetAttachmentTextEnabled(r.cfg.AttachmentTextEnabled())
+	}
+	if configurable, ok := r.syncer.(channelExclusionConfigurer); ok {
+		configurable.SetChannelExclusions(r.cfg.Sync.ExcludeChannelIDs, r.cfg.Sync.ExcludeChannelKinds)
+	}
+	if configurable, ok := r.syncer.(categoryInclusionConfigurer); ok {
+		configurable.SetIncludedCategories(r.cfg.Sync.IncludeCategoryIDs)
+	}
+	if configurable, ok := r.syncer.(repairOffsetConfigurer); ok {
+		offset, err := time.ParseDuration(r.cfg.Sync.RepairOffset)
+		if err != nil {
+			return configErr(fmt.Errorf("parse sync.repair_offset: %w", err))
+		}
+		configurable.SetRepairOffset(offset)
 	}
 	return nil
 }

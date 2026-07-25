@@ -18,12 +18,18 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		return err
 	}
 	handler := &tailHandler{
-		guilds:                makeGuildSet(guildIDs),
-		store:                 s.store,
-		client:                s.client,
-		attachmentTextEnabled: s.attachmentTextEnabled,
-		onReady:               s.tailReady,
-		logger:                s.logger,
+		guilds:                 makeGuildSet(guildIDs),
+		store:                  s.store,
+		client:                 s.client,
+		attachmentTextEnabled:  s.attachmentTextEnabled,
+		onReady:                s.tailReady,
+		logger:                 s.logger,
+		exclusions:             s.channelExclusions,
+		kindExcludedChannelIDs: map[string]struct{}{},
+		knownChannelIDs:        map[string]struct{}{},
+	}
+	if err := handler.seedChannelExclusions(ctx); err != nil {
+		return fmt.Errorf("seed tail channel exclusions: %w", err)
 	}
 	if repairEvery <= 0 {
 		return s.client.Tail(ctx, handler)
@@ -40,8 +46,8 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	go func() {
 		tailDone <- s.client.Tail(tailCtx, handler)
 	}()
-	ticker := time.NewTicker(repairEvery)
-	defer ticker.Stop()
+	repairTimer := time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
+	defer repairTimer.Stop()
 	var activeRepair *tailRepairRun
 	var repairDone <-chan tailRepairResult
 	for {
@@ -73,14 +79,16 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			s.logTailRepairResult(result)
 			activeRepair = nil
 			repairDone = nil
-		case <-ticker.C:
+		case <-repairTimer.C:
 			if activeRepair != nil {
+				repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
 				continue
 			}
 			activeRepair = s.startTailRepair(ctx, guildIDs)
 			if activeRepair != nil {
 				repairDone = activeRepair.done
 			}
+			repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
 		}
 	}
 }
@@ -123,14 +131,19 @@ func (s *Syncer) startTailRepair(ctx context.Context, guildIDs []string) *tailRe
 	startedAt := time.Now()
 	go func() {
 		defer s.tailRepairMu.Unlock()
-		_, err := s.runTailRepair(repairCtx, SyncOptions{
-			GuildIDs:     guildIDs,
-			Full:         false,
-			RepairReason: "tail_repair",
-		})
+		_, err := s.runTailRepair(repairCtx, tailRepairSyncOptions(guildIDs))
 		done <- tailRepairResult{err: err, elapsed: time.Since(startedAt)}
 	}()
 	return &tailRepairRun{cancel: cancel, done: done}
+}
+
+func tailRepairSyncOptions(guildIDs []string) SyncOptions {
+	return SyncOptions{
+		GuildIDs:     append([]string(nil), guildIDs...),
+		SkipMembers:  true,
+		LatestOnly:   true,
+		RepairReason: "tail_repair",
+	}
 }
 
 func (s *Syncer) runTailRepair(ctx context.Context, opts SyncOptions) (SyncStats, error) {
@@ -190,13 +203,17 @@ func (s *Syncer) logTailRepairResult(result tailRepairResult) {
 }
 
 type tailHandler struct {
-	guilds                map[string]struct{}
-	store                 *store.Store
-	client                Client
-	attachmentTextEnabled bool
-	failureLedgerTimeout  time.Duration
-	onReady               func(context.Context) error
-	logger                *slog.Logger
+	guilds                 map[string]struct{}
+	store                  *store.Store
+	client                 Client
+	attachmentTextEnabled  bool
+	failureLedgerTimeout   time.Duration
+	onReady                func(context.Context) error
+	logger                 *slog.Logger
+	exclusions             channelExclusions
+	exclusionMu            sync.RWMutex
+	kindExcludedChannelIDs map[string]struct{}
+	knownChannelIDs        map[string]struct{}
 }
 
 func (t *tailHandler) OnTailReady(ctx context.Context) error {
@@ -231,7 +248,7 @@ func (t *tailHandler) OnTailFailure(failure discordclient.TailFailure) {
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if !t.allowGuild(msg.GuildID) {
+	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -263,7 +280,7 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if msg == nil {
 		return nil
 	}
-	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
+	if t.excludeChannel(msg.ChannelID) || (msg.GuildID != "" && !t.allowGuild(msg.GuildID)) {
 		return nil
 	}
 	var err error
@@ -271,7 +288,7 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if err != nil {
 		return err
 	}
-	if msg == nil || !t.allowGuild(msg.GuildID) {
+	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -361,7 +378,7 @@ func isPartialMessageUpdate(msg *discordgo.Message) bool {
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if !t.allowGuild(evt.GuildID) {
+	if evt == nil || !t.allowGuild(evt.GuildID) || t.excludeChannel(evt.ChannelID) {
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalDelete)
@@ -376,7 +393,11 @@ func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.Messag
 }
 
 func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Channel) error {
-	if !t.allowGuild(channel.GuildID) {
+	if channel == nil || !t.allowGuild(channel.GuildID) {
+		return nil
+	}
+	t.trackChannelExclusion(channel)
+	if t.excludeChannel(channel.ID) {
 		return nil
 	}
 	return t.store.UpsertChannel(ctx, toChannelRecord(channel, marshalJSONString(channel, "{}")))
@@ -417,6 +438,131 @@ func (t *tailHandler) OnMemberDelete(ctx context.Context, guildID, userID string
 
 func (t *tailHandler) TailAllowsGuild(guildID string) bool {
 	return t.allowGuild(guildID)
+}
+
+func (t *tailHandler) seedChannelExclusions(ctx context.Context) error {
+	if t.store == nil {
+		return nil
+	}
+	channels, err := t.store.Channels(ctx, "")
+	if err != nil {
+		return err
+	}
+	channelByID := make(map[string]store.ChannelRow, len(channels))
+	for _, channel := range channels {
+		channelByID[channel.ID] = channel
+	}
+	t.exclusionMu.Lock()
+	defer t.exclusionMu.Unlock()
+	if t.kindExcludedChannelIDs == nil {
+		t.kindExcludedChannelIDs = map[string]struct{}{}
+	}
+	if t.knownChannelIDs == nil {
+		t.knownChannelIDs = map[string]struct{}{}
+	}
+	for _, channel := range channels {
+		t.knownChannelIDs[channel.ID] = struct{}{}
+		if t.exclusions.excludesStoredChannel(channel, channelByID) {
+			t.kindExcludedChannelIDs[channel.ID] = struct{}{}
+			continue
+		}
+		delete(t.kindExcludedChannelIDs, channel.ID)
+	}
+	return nil
+}
+
+func (t *tailHandler) excludeChannel(channelID string) bool {
+	if t.exclusions.excludesID(channelID) {
+		return true
+	}
+	t.exclusionMu.RLock()
+	defer t.exclusionMu.RUnlock()
+	if _, ok := t.kindExcludedChannelIDs[channelID]; ok {
+		return true
+	}
+	if len(t.exclusions.allowedCategoryIDs) == 0 {
+		return false
+	}
+	_, known := t.knownChannelIDs[channelID]
+	return !known
+}
+
+func (t *tailHandler) trackChannelExclusion(channel *discordgo.Channel) {
+	if channel == nil {
+		return
+	}
+	excluded := t.exclusions.excludesID(channel.ID) || t.exclusions.excludesKind(channelKind(channel))
+	if !excluded && channel.ParentID == "" {
+		excluded = !t.exclusions.allowsUnparentedDiscordChannel(channel)
+	}
+	if !excluded && channel.ParentID != "" {
+		if t.exclusions.excludesID(channel.ParentID) {
+			excluded = true
+		} else if len(t.exclusions.allowedCategoryIDs) > 0 {
+			if _, allowedCategory := t.exclusions.allowedCategoryIDs[channel.ParentID]; allowedCategory {
+				excluded = false
+			} else {
+				excluded = t.excludeChannel(channel.ParentID)
+			}
+		} else {
+			excluded = t.excludeChannel(channel.ParentID)
+		}
+	}
+	t.exclusionMu.Lock()
+	defer t.exclusionMu.Unlock()
+	if t.kindExcludedChannelIDs == nil {
+		t.kindExcludedChannelIDs = map[string]struct{}{}
+	}
+	if t.knownChannelIDs == nil {
+		t.knownChannelIDs = map[string]struct{}{}
+	}
+	t.knownChannelIDs[channel.ID] = struct{}{}
+	if excluded {
+		t.kindExcludedChannelIDs[channel.ID] = struct{}{}
+		return
+	}
+	delete(t.kindExcludedChannelIDs, channel.ID)
+}
+
+func nextTailRepairDelay(now time.Time, repairEvery, repairOffset time.Duration) time.Duration {
+	if repairEvery <= 0 || repairOffset <= 0 {
+		return repairEvery
+	}
+	normalizedOffset := repairOffset % repairEvery
+	civilNow := civilTimelineTime(now)
+	nextCivil := civilNow.Truncate(repairEvery).Add(normalizedOffset)
+	if !nextCivil.After(civilNow) {
+		nextCivil = nextCivil.Add(repairEvery)
+	}
+	for {
+		next := time.Date(
+			nextCivil.Year(),
+			nextCivil.Month(),
+			nextCivil.Day(),
+			nextCivil.Hour(),
+			nextCivil.Minute(),
+			nextCivil.Second(),
+			nextCivil.Nanosecond(),
+			now.Location(),
+		)
+		if civilTimelineTime(next).Equal(nextCivil) && next.After(now) {
+			return next.Sub(now)
+		}
+		nextCivil = nextCivil.Add(repairEvery)
+	}
+}
+
+func civilTimelineTime(value time.Time) time.Time {
+	return time.Date(
+		value.Year(),
+		value.Month(),
+		value.Day(),
+		value.Hour(),
+		value.Minute(),
+		value.Second(),
+		value.Nanosecond(),
+		time.UTC,
+	)
 }
 
 func (t *tailHandler) allowGuild(guildID string) bool {

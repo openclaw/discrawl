@@ -46,23 +46,59 @@ type Syncer struct {
 	tailRepair            func(context.Context, SyncOptions) (SyncStats, error)
 	tailRepairJoinTimeout time.Duration
 	tailRepairMu          sync.Mutex
+	tailRepairOffsetMu    sync.RWMutex
+	tailRepairOffset      time.Duration
+	channelExclusions     channelExclusions
 }
 
 type SyncOptions struct {
-	Full           bool
-	GuildIDs       []string
-	ChannelIDs     []string
-	Concurrency    int
-	Since          time.Time
-	Embeddings     bool
-	SkipMembers    bool
-	RequireMembers bool
-	LatestOnly     bool
-	RepairReason   string
+	Full                bool
+	GuildIDs            []string
+	ChannelIDs          []string
+	Concurrency         int
+	Since               time.Time
+	Embeddings          bool
+	SkipMembers         bool
+	RequireMembers      bool
+	LatestOnly          bool
+	ExcludeChannelIDs   []string
+	ExcludeChannelKinds []string
+	IncludeCategoryIDs  []string
+	RepairReason        string
 }
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
 	s.tailReady = fn
+}
+
+func (s *Syncer) SetChannelExclusions(channelIDs, channelKinds []string) {
+	s.channelExclusions.ids = normalizedStringSet(channelIDs, false)
+	s.channelExclusions.kinds = normalizedStringSet(channelKinds, true)
+}
+
+func (s *Syncer) SetIncludedCategories(categoryIDs []string) {
+	s.channelExclusions.allowedCategoryIDs = normalizedStringSet(categoryIDs, false)
+}
+
+func (s *Syncer) SetRepairOffset(offset time.Duration) {
+	if s == nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	s.tailRepairOffsetMu.Lock()
+	s.tailRepairOffset = offset
+	s.tailRepairOffsetMu.Unlock()
+}
+
+func (s *Syncer) repairOffset() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.tailRepairOffsetMu.RLock()
+	defer s.tailRepairOffsetMu.RUnlock()
+	return s.tailRepairOffset
 }
 
 type SyncStats struct {
@@ -159,10 +195,12 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 			catalogMode = channelCatalogIncremental
 		}
 	}
-	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode)
+	exclusions := s.effectiveChannelExclusions(opts)
+	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode, exclusions)
 	if err != nil {
 		return stats, err
 	}
+	channelList = filterExcludedDiscordChannels(channelList, exclusions)
 	if err := s.storeChannelList(ctx, channelList, &stats); err != nil {
 		return stats, err
 	}
@@ -237,6 +275,10 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 		return SyncStats{}, false, nil
 	}
 	incomplete, err := s.store.IncompleteMessageChannelIDs(ctx, guildID)
+	if err != nil {
+		return SyncStats{}, false, err
+	}
+	incomplete, err = s.filterExcludedStoredChannelIDs(ctx, guildID, incomplete, opts)
 	if err != nil {
 		return SyncStats{}, false, err
 	}

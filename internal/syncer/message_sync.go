@@ -18,7 +18,7 @@ func (s *Syncer) syncMessageChannels(
 	channels []*discordgo.Channel,
 	opts SyncOptions,
 ) (int, error) {
-	messageChannels := filterMessageChannels(channels, opts.ChannelIDs)
+	messageChannels := filterMessageChannels(channels, opts.ChannelIDs, s.effectiveChannelExclusions(opts))
 	if len(messageChannels) == 0 {
 		return 0, nil
 	}
@@ -38,7 +38,11 @@ func (s *Syncer) syncMessageChannels(
 	return total, err
 }
 
-func filterMessageChannels(channels []*discordgo.Channel, requested []string) []*discordgo.Channel {
+func filterMessageChannels(channels []*discordgo.Channel, requested []string, configured ...channelExclusions) []*discordgo.Channel {
+	exclusions := channelExclusions{}
+	if len(configured) > 0 {
+		exclusions = configured[0]
+	}
 	requestedSet := makeGuildSet(requested)
 	channelByID := make(map[string]*discordgo.Channel, len(channels))
 	for _, channel := range channels {
@@ -49,6 +53,9 @@ func filterMessageChannels(channels []*discordgo.Channel, requested []string) []
 	out := make([]*discordgo.Channel, 0, len(channels))
 	for _, channel := range channels {
 		if !isMessageChannel(channel) {
+			continue
+		}
+		if exclusions.excludesDiscordChannel(channel, channelByID) {
 			continue
 		}
 		if len(requestedSet) > 0 && !requestedMessageTarget(channel, channelByID, requestedSet) {
