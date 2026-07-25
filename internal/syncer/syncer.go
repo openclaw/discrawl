@@ -77,7 +77,9 @@ func (s *Syncer) SetChannelExclusions(channelIDs, channelKinds []string) {
 }
 
 func (s *Syncer) SetIncludedCategories(categoryIDs []string) {
-	s.channelExclusions.allowedCategoryIDs = normalizedStringSet(categoryIDs, false)
+	categories := normalizedStringSet(categoryIDs, false)
+	s.channelExclusions.allowedCategoryIDs = categories
+	s.channelExclusions.categoryScopeSet = len(categories) > 0
 }
 
 func (s *Syncer) SetRepairOffset(offset time.Duration) {
@@ -200,7 +202,6 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 	if err != nil {
 		return stats, err
 	}
-	channelList = filterExcludedDiscordChannels(channelList, exclusions)
 	if err := s.storeChannelList(ctx, channelList, &stats); err != nil {
 		return stats, err
 	}

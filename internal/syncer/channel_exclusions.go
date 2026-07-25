@@ -13,13 +13,16 @@ type channelExclusions struct {
 	ids                map[string]struct{}
 	kinds              map[string]struct{}
 	allowedCategoryIDs map[string]struct{}
+	categoryScopeSet   bool
 }
 
 func newChannelScope(ids, kinds, allowedCategoryIDs []string) channelExclusions {
+	categories := normalizedStringSet(allowedCategoryIDs, false)
 	return channelExclusions{
 		ids:                normalizedStringSet(ids, false),
 		kinds:              normalizedStringSet(kinds, true),
-		allowedCategoryIDs: normalizedStringSet(allowedCategoryIDs, false),
+		allowedCategoryIDs: categories,
+		categoryScopeSet:   len(categories) > 0,
 	}
 }
 
@@ -38,10 +41,17 @@ func normalizedStringSet(values []string, lower bool) map[string]struct{} {
 }
 
 func (e channelExclusions) merged(other channelExclusions) channelExclusions {
+	allowedCategoryIDs, categoryScopeSet := intersectOptionalSets(
+		e.allowedCategoryIDs,
+		e.categoryScopeSet,
+		other.allowedCategoryIDs,
+		other.categoryScopeSet,
+	)
 	merged := channelExclusions{
 		ids:                make(map[string]struct{}, len(e.ids)+len(other.ids)),
 		kinds:              make(map[string]struct{}, len(e.kinds)+len(other.kinds)),
-		allowedCategoryIDs: intersectOptionalSets(e.allowedCategoryIDs, other.allowedCategoryIDs),
+		allowedCategoryIDs: allowedCategoryIDs,
+		categoryScopeSet:   categoryScopeSet,
 	}
 	for id := range e.ids {
 		merged.ids[id] = struct{}{}
@@ -58,12 +68,20 @@ func (e channelExclusions) merged(other channelExclusions) channelExclusions {
 	return merged
 }
 
-func intersectOptionalSets(left, right map[string]struct{}) map[string]struct{} {
-	if len(left) == 0 {
-		return cloneStringSet(right)
+func intersectOptionalSets(
+	left map[string]struct{},
+	leftSet bool,
+	right map[string]struct{},
+	rightSet bool,
+) (map[string]struct{}, bool) {
+	if !leftSet && !rightSet {
+		return nil, false
 	}
-	if len(right) == 0 {
-		return cloneStringSet(left)
+	if !leftSet {
+		return cloneStringSet(right), true
+	}
+	if !rightSet {
+		return cloneStringSet(left), true
 	}
 	out := make(map[string]struct{}, min(len(left), len(right)))
 	for value := range left {
@@ -71,7 +89,7 @@ func intersectOptionalSets(left, right map[string]struct{}) map[string]struct{} 
 			out[value] = struct{}{}
 		}
 	}
-	return out
+	return out, true
 }
 
 func cloneStringSet(in map[string]struct{}) map[string]struct{} {
@@ -140,7 +158,7 @@ func (e channelExclusions) excludesStoredChannel(channel store.ChannelRow, chann
 }
 
 func (e channelExclusions) allowsUnparentedDiscordChannel(channel *discordgo.Channel) bool {
-	if len(e.allowedCategoryIDs) == 0 {
+	if !e.categoryScopeSet {
 		return true
 	}
 	if channel == nil {
@@ -151,7 +169,7 @@ func (e channelExclusions) allowsUnparentedDiscordChannel(channel *discordgo.Cha
 }
 
 func (e channelExclusions) allowsUnparentedStoredChannel(channel store.ChannelRow) bool {
-	if len(e.allowedCategoryIDs) == 0 {
+	if !e.categoryScopeSet {
 		return true
 	}
 	_, ok := e.allowedCategoryIDs[channel.ID]
@@ -159,7 +177,7 @@ func (e channelExclusions) allowsUnparentedStoredChannel(channel store.ChannelRo
 }
 
 func (e channelExclusions) allowsDiscordCategory(channel *discordgo.Channel, channelByID map[string]*discordgo.Channel) bool {
-	if len(e.allowedCategoryIDs) == 0 {
+	if !e.categoryScopeSet {
 		return true
 	}
 	for current, seen := channel, map[string]struct{}{}; current != nil; {
@@ -179,7 +197,7 @@ func (e channelExclusions) allowsDiscordCategory(channel *discordgo.Channel, cha
 }
 
 func (e channelExclusions) allowsStoredCategory(channel store.ChannelRow, channelByID map[string]store.ChannelRow) bool {
-	if len(e.allowedCategoryIDs) == 0 {
+	if !e.categoryScopeSet {
 		return true
 	}
 	for current, seen := channel, map[string]struct{}{}; ; {
@@ -209,14 +227,22 @@ func (s *Syncer) effectiveChannelExclusions(opts SyncOptions) channelExclusions 
 }
 
 func filterExcludedDiscordChannels(channels []*discordgo.Channel, exclusions channelExclusions) []*discordgo.Channel {
-	if len(exclusions.ids) == 0 && len(exclusions.kinds) == 0 && len(exclusions.allowedCategoryIDs) == 0 {
-		return channels
-	}
 	channelByID := make(map[string]*discordgo.Channel, len(channels))
 	for _, channel := range channels {
 		if channel != nil {
 			channelByID[channel.ID] = channel
 		}
+	}
+	return filterExcludedDiscordChannelsWithCatalog(channels, channelByID, exclusions)
+}
+
+func filterExcludedDiscordChannelsWithCatalog(
+	channels []*discordgo.Channel,
+	channelByID map[string]*discordgo.Channel,
+	exclusions channelExclusions,
+) []*discordgo.Channel {
+	if len(exclusions.ids) == 0 && len(exclusions.kinds) == 0 && !exclusions.categoryScopeSet {
+		return channels
 	}
 	out := make([]*discordgo.Channel, 0, len(channels))
 	for _, channel := range channels {
@@ -229,7 +255,7 @@ func filterExcludedDiscordChannels(channels []*discordgo.Channel, exclusions cha
 
 func (s *Syncer) filterExcludedStoredChannelIDs(ctx context.Context, guildID string, channelIDs []string, opts SyncOptions) ([]string, error) {
 	exclusions := s.effectiveChannelExclusions(opts)
-	if len(exclusions.ids) == 0 && len(exclusions.kinds) == 0 && len(exclusions.allowedCategoryIDs) == 0 {
+	if len(exclusions.ids) == 0 && len(exclusions.kinds) == 0 && !exclusions.categoryScopeSet {
 		return channelIDs, nil
 	}
 	channels, err := s.store.Channels(ctx, guildID)

@@ -3662,6 +3662,10 @@ type fakeSyncService struct {
 	replayStats           syncer.TailMessageReplayStats
 	replayErr             error
 	attachmentTextEnabled bool
+	excludeChannelIDs     []string
+	excludeChannelKinds   []string
+	includeCategoryIDs    []string
+	repairOffset          time.Duration
 	callTailReady         bool
 	tailReadyCalls        int
 	tailReady             func(context.Context) error
@@ -3710,6 +3714,19 @@ func (f *fakeSyncService) SetTailReadyCallback(fn func(context.Context) error) {
 
 func (f *fakeSyncService) SetAttachmentTextEnabled(enabled bool) {
 	f.attachmentTextEnabled = enabled
+}
+
+func (f *fakeSyncService) SetChannelExclusions(channelIDs, channelKinds []string) {
+	f.excludeChannelIDs = append([]string(nil), channelIDs...)
+	f.excludeChannelKinds = append([]string(nil), channelKinds...)
+}
+
+func (f *fakeSyncService) SetIncludedCategories(categoryIDs []string) {
+	f.includeCategoryIDs = append([]string(nil), categoryIDs...)
+}
+
+func (f *fakeSyncService) SetRepairOffset(offset time.Duration) {
+	f.repairOffset = offset
 }
 
 type hybridSyncService struct {
@@ -3797,6 +3814,10 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.Equal(t, "g2", cfg.DefaultGuildID)
 	require.True(t, cfg.Search.Embeddings.Enabled)
 	cfg.Desktop.Path = filepath.Join(dir, "empty-discord")
+	cfg.Sync.ExcludeChannelIDs = []string{"blocked-channel"}
+	cfg.Sync.ExcludeChannelKinds = []string{"announcement"}
+	cfg.Sync.IncludeCategoryIDs = []string{"category-a"}
+	cfg.Sync.RepairOffset = "45m"
 	require.NoError(t, os.MkdirAll(cfg.Desktop.Path, 0o755))
 	require.NoError(t, config.Write(cfgPath, cfg))
 
@@ -3806,6 +3827,10 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.True(t, fakeSync.lastSync.LatestOnly)
 	require.True(t, fakeSync.lastSync.SkipMembers)
 	require.True(t, fakeSync.attachmentTextEnabled)
+	require.Equal(t, []string{"blocked-channel"}, fakeSync.excludeChannelIDs)
+	require.Equal(t, []string{"announcement"}, fakeSync.excludeChannelKinds)
+	require.Equal(t, []string{"category-a"}, fakeSync.includeCategoryIDs)
+	require.Equal(t, 45*time.Minute, fakeSync.repairOffset)
 
 	rt = newRuntime()
 	require.NoError(t, rt.withServices(true, func() error { return rt.runSync([]string{"--guilds", "g2", "--with-members"}) }))
@@ -4166,9 +4191,19 @@ func TestCommandHelpDoesNotOpenConfigOrStore(t *testing.T) {
 	require.Empty(t, stderr.String())
 
 	stdout.Reset()
+	require.NoError(t, Run(context.Background(), []string{"sync", "--help"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "sync.include_category_ids")
+	require.Contains(t, stdout.String(), "sync.exclude_channel_ids")
+	require.Contains(t, stdout.String(), "sync.exclude_channel_kinds")
+	require.Empty(t, stderr.String())
+
+	stdout.Reset()
 	require.NoError(t, Run(context.Background(), []string{"tail", "--help"}, &stdout, &stderr))
 	require.Contains(t, stdout.String(), "--replay-failures-only")
 	require.Contains(t, stdout.String(), "--replay-limit N")
+	require.Contains(t, stdout.String(), "sync.include_category_ids")
+	require.Contains(t, stdout.String(), "sync.exclude_channel_ids")
+	require.Contains(t, stdout.String(), "sync.exclude_channel_kinds")
 	require.Empty(t, stderr.String())
 
 	err := Run(context.Background(), []string{"help", "wat"}, &bytes.Buffer{}, &bytes.Buffer{})

@@ -125,10 +125,14 @@ Discover accessible guilds and initialize configuration.
 	"sync": `Usage: discrawl sync [--full] [--all] [--all-channels] [--since RFC3339] [--channels IDS] [--concurrency N] [--source SOURCE] [--with-embeddings] [--with-media] [--skip-members|--with-members] [--latest-only] [--guild ID|--guilds IDS] [--update MODE|--no-update]
 
 Sync Discord or desktop-cache data into the local archive.
+Configure Discord collection scope with sync.include_category_ids,
+sync.exclude_channel_ids, and sync.exclude_channel_kinds; exclusions win.
 `,
 	"tail": `Usage: discrawl tail [--repair-every DURATION] [--guild ID|--guilds IDS] [--replay-failures-only [--replay-limit N]]
 
 Continuously archive new Discord messages.
+The sync.include_category_ids, sync.exclude_channel_ids, and
+sync.exclude_channel_kinds settings apply to live events and repair syncs.
 `,
 	"wiretap": `Usage:
   discrawl wiretap [flags]

@@ -480,7 +480,7 @@ func (t *tailHandler) excludeChannel(channelID string) bool {
 	if _, ok := t.kindExcludedChannelIDs[channelID]; ok {
 		return true
 	}
-	if len(t.exclusions.allowedCategoryIDs) == 0 {
+	if !t.exclusions.categoryScopeSet {
 		return false
 	}
 	_, known := t.knownChannelIDs[channelID]
@@ -496,15 +496,9 @@ func (t *tailHandler) trackChannelExclusion(channel *discordgo.Channel) {
 		excluded = !t.exclusions.allowsUnparentedDiscordChannel(channel)
 	}
 	if !excluded && channel.ParentID != "" {
-		if t.exclusions.excludesID(channel.ParentID) {
-			excluded = true
-		} else if len(t.exclusions.allowedCategoryIDs) > 0 {
-			if _, allowedCategory := t.exclusions.allowedCategoryIDs[channel.ParentID]; allowedCategory {
-				excluded = false
-			} else {
-				excluded = t.excludeChannel(channel.ParentID)
-			}
-		} else {
+		excluded = t.exclusions.excludesID(channel.ParentID)
+		_, allowedCategory := t.exclusions.allowedCategoryIDs[channel.ParentID]
+		if !excluded && (!t.exclusions.categoryScopeSet || !allowedCategory) {
 			excluded = t.excludeChannel(channel.ParentID)
 		}
 	}

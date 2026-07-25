@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -24,20 +25,22 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 		if err != nil {
 			return nil, false, err
 		}
-		return channels, false, nil
+		return filterExcludedDiscordChannels(channels, exclusions), false, nil
 	}
 
 	requestedSet := makeGuildSet(requested)
 	storedByID := map[string]*discordgo.Channel{}
+	storedCatalog := map[string]*discordgo.Channel{}
 	if s.store != nil {
 		rows, err := s.store.Channels(ctx, guildID)
 		if err != nil {
 			return nil, false, err
 		}
+		storedCatalog = storedChannelCatalog(rows)
 		storedByID = selectStoredChannels(rows, requestedSet)
 		if canUseStoredTargets(storedByID, requestedSet) {
 			selected := selectRequestedChannels(nil, storedByID, requestedSet)
-			return selected, true, nil
+			return filterExcludedDiscordChannelsWithCatalog(selected, storedCatalog, exclusions), true, nil
 		}
 	}
 
@@ -65,7 +68,11 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 		}
 		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	}
-	return selected, true, nil
+	return filterExcludedDiscordChannelsWithCatalog(
+		selected,
+		mergedChannelCatalog(storedCatalog, allChannels),
+		exclusions,
+	), true, nil
 }
 
 func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, error) {
@@ -244,6 +251,24 @@ func selectStoredChannels(rows []store.ChannelRow, requested map[string]struct{}
 		}
 		out[row.ID] = channelFromRow(row)
 	}
+	return out
+}
+
+func storedChannelCatalog(rows []store.ChannelRow) map[string]*discordgo.Channel {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make(map[string]*discordgo.Channel, len(rows))
+	for _, row := range rows {
+		out[row.ID] = channelFromRow(row)
+	}
+	return out
+}
+
+func mergedChannelCatalog(base, overlay map[string]*discordgo.Channel) map[string]*discordgo.Channel {
+	out := make(map[string]*discordgo.Channel, len(base)+len(overlay))
+	maps.Copy(out, base)
+	maps.Copy(out, overlay)
 	return out
 }
 

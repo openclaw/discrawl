@@ -325,6 +325,10 @@ func TestWriteAndLoadRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.DefaultGuildID = "g1"
 	cfg.GuildIDs = []string{"g1", "g2"}
+	cfg.Sync.RepairOffset = "45m"
+	cfg.Sync.ExcludeChannelIDs = []string{"c1", "c2"}
+	cfg.Sync.ExcludeChannelKinds = []string{"announcement"}
+	cfg.Sync.IncludeCategoryIDs = []string{"category-a"}
 	require.NoError(t, Write(path, cfg))
 
 	loaded, err := Load(path)
@@ -334,6 +338,28 @@ func TestWriteAndLoadRoundTrip(t *testing.T) {
 	require.Equal(t, DefaultRemoteTokenEnv, loaded.Remote.TokenEnv)
 	require.NotNil(t, loaded.Sync.AttachmentText)
 	require.True(t, *loaded.Sync.AttachmentText)
+	require.Equal(t, "45m", loaded.Sync.RepairOffset)
+	require.Equal(t, []string{"c1", "c2"}, loaded.Sync.ExcludeChannelIDs)
+	require.Equal(t, []string{"announcement"}, loaded.Sync.ExcludeChannelKinds)
+	require.Equal(t, []string{"category-a"}, loaded.Sync.IncludeCategoryIDs)
+}
+
+func TestNormalizeSyncCollectionScope(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Sync.RepairOffset = " 30m "
+	cfg.Sync.ExcludeChannelIDs = []string{" c1 ", "", "c1", "c2"}
+	cfg.Sync.ExcludeChannelKinds = []string{" Announcement ", "TEXT", "announcement"}
+	cfg.Sync.IncludeCategoryIDs = []string{" category-a ", "category-a", "category-b"}
+	require.NoError(t, cfg.Normalize())
+	require.Equal(t, "30m", cfg.Sync.RepairOffset)
+	require.Equal(t, []string{"c1", "c2"}, cfg.Sync.ExcludeChannelIDs)
+	require.Equal(t, []string{"announcement", "text"}, cfg.Sync.ExcludeChannelKinds)
+	require.Equal(t, []string{"category-a", "category-b"}, cfg.Sync.IncludeCategoryIDs)
+
+	cfg.Sync.RepairOffset = "later"
+	require.ErrorContains(t, cfg.Normalize(), "parse sync.repair_offset")
 }
 
 func TestWriteRejectsNonPositiveEmbeddingTimeout(t *testing.T) {
