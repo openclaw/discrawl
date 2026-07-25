@@ -796,6 +796,10 @@ token_keyring_account = "discord_bot_token"
 source = "both" # use "discord" for bot-only sync or "wiretap" for desktop-cache-only import
 concurrency = 16
 repair_every = "6h"
+repair_offset = "0s" # non-zero values align repairs to local wall-clock boundaries
+include_category_ids = []
+exclude_channel_ids = []
+exclude_channel_kinds = []
 full_history = true
 attachment_text = true
 attachment_media = false
@@ -833,6 +837,18 @@ stale_after = ""
 ```
 
 The value above is an example. `init` writes an auto-sized default based on the host: `min(32, max(8, GOMAXPROCS*2))`.
+
+Discord collection can be restricted with `sync.include_category_ids`, which
+keeps the listed categories and their channel/thread descendants. Root-level
+channels and channels under other categories are skipped while the allowlist is
+set. `sync.exclude_channel_ids` and `sync.exclude_channel_kinds` apply to both
+historical sync and live tail events and always win over category inclusion.
+Kinds use Discrawl's channel names such as `text`, `announcement`, `forum`,
+`thread_public`, `thread_private`, and `thread_announcement`.
+
+`sync.repair_offset` shifts a non-zero periodic tail repair interval onto local
+wall-clock boundaries. For example, `repair_every = "6h"` with
+`repair_offset = "2h"` runs around 02:00, 08:00, 14:00, and 20:00 local time.
 
 Config override rules:
 

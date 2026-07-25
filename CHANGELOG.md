@@ -2,6 +2,10 @@
 
 ## 0.11.9 - Unreleased
 
+### Changes
+
+- Scope Discord history and live tail collection with category allowlists and channel id/kind exclusions, capture new and updated threads immediately, and support wall-clock repair offsets. Thanks @hannesrudolph.
+
 ## 0.11.8 - 2026-07-20
 
 ### Highlights

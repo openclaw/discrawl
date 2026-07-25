@@ -598,6 +598,10 @@ token_keyring_account = "discord_bot_token"
 [sync]
 concurrency = 4
 repair_every = "6h"
+repair_offset = "0s"
+include_category_ids = []
+exclude_channel_ids = []
+exclude_channel_kinds = []
 full_history = true
 
 [search]

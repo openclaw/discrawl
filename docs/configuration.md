@@ -60,6 +60,10 @@ token_keyring_account = "discord_bot_token"
 source = "both" # "discord" for bot-only sync, "wiretap" for desktop-cache-only import
 concurrency = 16
 repair_every = "6h"
+repair_offset = "0s"
+include_category_ids = []
+exclude_channel_ids = []
+exclude_channel_kinds = []
 full_history = true
 attachment_text = true
 attachment_media = false
@@ -130,6 +134,10 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 
 - `default_guild_id` is the implicit scope for `sync`, `tail`, `digest`, and `analytics` when `--guild` is not passed
 - `guild_ids` is reserved for explicit multi-guild fan-out; usually you do not set this directly
+- `sync.include_category_ids` limits Discord sync and tail collection to the listed categories and all channel/thread descendants; root-level and unrelated channels are skipped
+- `sync.exclude_channel_ids` and `sync.exclude_channel_kinds` apply to historical sync, live tail events, and repair syncs; exclusions always win over category inclusion
+- `sync.exclude_channel_kinds` accepts Discrawl kinds such as `text`, `announcement`, `forum`, `thread_public`, `thread_private`, and `thread_announcement`
+- a non-zero `sync.repair_offset` aligns periodic repairs to local wall-clock boundaries; for example, `repair_every = "6h"` with `repair_offset = "2h"` targets 02:00, 08:00, 14:00, and 20:00 local time
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search
 - `[search.embeddings].vector_backend` accepts `exact` or optional `turbovec`; turbovec requires Python plus the `turbovec` package and embedding dimensions divisible by 8.
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
