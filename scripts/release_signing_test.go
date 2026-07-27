@@ -209,7 +209,7 @@ func TestCodesignReleaseBinaryPreservesArtifactOnNotaryRejection(t *testing.T) {
 	}
 }
 
-func TestReleaseSignedFailsClosedWithoutNotaryProfile(t *testing.T) {
+func TestReleaseSignedRedirectsToUnifiedWorkflow(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release-signed.sh is a POSIX shell script")
 	}
@@ -219,22 +219,16 @@ func TestReleaseSignedFailsClosedWithoutNotaryProfile(t *testing.T) {
 		t.Skip("bash is not available")
 	}
 
-	tempDir := t.TempDir()
-	stubDir := filepath.Join(tempDir, "bin")
-	if err := os.Mkdir(stubDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeExecutable(t, filepath.Join(stubDir, "uname"), "#!/bin/sh\nprintf 'Darwin\\n'\n")
-
-	cmd := exec.CommandContext(t.Context(), bash, "./release-signed.sh", "v0.0.0")
+	cmd := exec.CommandContext(t.Context(), bash, "./release-signed.sh")
 	cmd.Dir = signingScriptDir(t)
-	cmd.Env = signingTestEnv("PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH"))
+	cmd.Env = signingTestEnv()
 	output, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("release entrypoint accepted a missing notary profile: %s", output)
+		t.Fatalf("local release entrypoint unexpectedly succeeded: %s", output)
 	}
-	if !strings.Contains(string(output), "NOTARYTOOL_KEYCHAIN_PROFILE is required") {
-		t.Fatalf("unexpected release entrypoint failure: %s", output)
+	want := "gh workflow run release-unified.yml --repo openclaw/discrawl -f version=X.Y.Z"
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("local release entrypoint did not print %q: %s", want, output)
 	}
 }
 

@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.11.10 - Unreleased
+## 0.11.10 - 2026-07-27
+
+### Maintenance
+
+- Move official releases to the shared signed, notarized, independently verified GitHub Actions pipeline while preserving archive names, contents, checksums, and Homebrew delivery.
 
 ## 0.11.9 - 2026-07-26
 

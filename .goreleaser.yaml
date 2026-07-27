@@ -13,12 +13,6 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w -X github.com/openclaw/discrawl/internal/cli.version={{ .Version }}
-    hooks:
-      post:
-        - cmd: ./scripts/codesign-release-binary.sh "{{ .Target }}" "{{ .Path }}"
-          output: true
-          env:
-            - DISCRAWL_CODESIGN_REQUIRED={{ if .IsSnapshot }}0{{ else }}1{{ end }}
     targets:
       - darwin_amd64
       - darwin_arm64

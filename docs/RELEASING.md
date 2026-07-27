@@ -1,151 +1,44 @@
 ---
-summary: "Release checklist for discrawl (GitHub release binaries via GoReleaser + Homebrew tap update)"
+summary: "Official Discrawl releases through the shared GitHub Actions pipeline"
 ---
 
 # Releasing `discrawl`
 
-Always do all steps below. No partial releases.
+`.github/workflows/release-unified.yml` is the only official release path. It calls `openclaw/release-workflows@v1` from protected `main`, requires the existing SSH-signed version tag, builds the exact GoReleaser matrix, signs and notarizes both thin macOS binaries as `org.openclaw.discrawl`, verifies the complete asset inventory independently on arm64 and Intel macOS, publishes `checksums.txt`, and waits for the `openclaw/homebrew-tap` handoff to succeed.
 
-Assumptions:
-- Repo: `openclaw/discrawl`
-- Binary: `discrawl`
-- GoReleaser config: `.goreleaser.yaml`
-- Homebrew tap repo: `~/Projects/homebrew-tap`
-- Official releases run from macOS through the shared managed-keychain helper
+The public compatibility contract remains:
 
-## 0) Prereqs
+- `discrawl_VERSION_{darwin,linux}_{amd64,arm64}.tar.gz`
+- `discrawl_VERSION_windows_{amd64,arm64}.zip`
+- `checksums.txt`
+- `CHANGELOG.md`, `LICENSE`, `README.md`, and `discrawl` inside every platform archive
+- OpenClaw Foundation Team ID `FWJYW4S8P8` and code identifier `org.openclaw.discrawl`
 
-- Clean working tree on `main`
-- Go toolchain from `go.mod`
-- GitHub CLI authenticated
-- CI green on `main`
-- OpenClaw Foundation Developer ID Application identity available through the managed release keychain
-- A `NOTARYTOOL_KEYCHAIN_PROFILE` runtime value whose credentials are stored in the operator's login keychain
+The shared pipeline also publishes verifier control assets (`ASSET-INVENTORY.json`, `SIGNING-MANIFEST.json`, and `RELEASE-NOTES.md`).
 
-## 1) Verify build + tests
+## Release
+
+Prepare a dated changelog section and land it on protected `main`. The signing key configured by `user.signingkey` must be the SSH key listed for your principal in `.github/release-allowed-signers`. Create and push an annotated SSH-signed tag whose commit is reachable from `main`, verify it explicitly against the repository allowlist, then dispatch the workflow:
 
 ```sh
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run
-go test -count=1 ./... -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -n 1
-go test -count=1 -race ./...
-go build -o /tmp/discrawl ./cmd/discrawl
-gh run list -L 5 --branch main
-```
-
-Coverage floor: `85%+`
-
-## 2) Finalize changelog and release notes
-
-Replace the current `Unreleased` heading in `CHANGELOG.md` with the release
-version and date. Use that exact section as the GitHub Release body and append a
-link to the full changelog at the tagged commit.
-
-Example:
-
-- `## 0.2.0 - 2026-03-08`
-
-## 3) Commit, tag, push
-
-```sh
-git checkout main
-git pull --ff-only origin main
-git commit -am "chore(release): vX.Y.Z"
-git tag -s vX.Y.Z -m "Release X.Y.Z"
-git tag -v vX.Y.Z
-git push origin main
+git -c gpg.format=ssh tag -s vX.Y.Z -m "Release X.Y.Z"
+git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers tag -v vX.Y.Z
 git push origin vX.Y.Z
+gh workflow run release-unified.yml --repo openclaw/discrawl -f version=X.Y.Z
 ```
 
-## 4) Publish signed and notarized release artifacts
+Watch the exact run through publication and Homebrew handoff. The release is complete only when the GitHub Release contains the full asset set, both native macOS verification jobs pass, and the tap's `update-formula.yml` run is green.
 
-From the clean checkout whose `HEAD` exactly matches the signed tag, publish all
-GoReleaser artifacts through the shared secret-safe keychain helper:
+## Local diagnostics
+
+Local publishing is disabled. `make release` and the compatibility alias `make release-artifacts` refuse and print the official workflow command.
+
+Use these credential-free or read-only diagnostics:
 
 ```sh
-./scripts/release-signed.sh vX.Y.Z
+make check
+make snapshot
+make verify-release VERSION=vX.Y.Z ARTIFACT_DIR=/path/to/downloaded-assets
 ```
 
-The script uses an existing GitHub token environment variable or the
-authenticated GitHub CLI without writing credentials to disk. Set
-`NOTARYTOOL_KEYCHAIN_PROFILE` only in the private release environment; never
-commit a real profile name or its credentials.
-
-The GoReleaser hook signs and notarizes both thin macOS binaries. Each binary is
-signed into a temporary candidate with hardened runtime and a trusted timestamp,
-submitted to Apple as an ephemeral ZIP with `notarytool --wait`, and accepted
-only after the response reports `Accepted` and an online ticket check passes.
-Failed signing or notarization leaves the GoReleaser output untouched. Snapshot
-builds and all non-macOS targets remain credential-free. Production builds fail
-closed unless the notary profile is set and the macOS artifacts use identifier
-`org.openclaw.discrawl` and OpenClaw Foundation Team ID `FWJYW4S8P8`.
-
-Publishing the GitHub Release triggers `.github/workflows/release.yml`, which
-downloads both macOS archives on native runners, verifies their checksums and
-Developer ID signatures, hardened-runtime metadata, stable requirement, and
-Apple notarization tickets, then dispatches the Homebrew update. Raw CLI
-binaries cannot carry stapled tickets, so this verification requires network
-access to Apple's ticket service.
-
-## 5) Verify GitHub Release
-
-```sh
-gh run list -L 5 --workflow release.yml
-gh release view vX.Y.Z --json url,body,assets
-```
-
-Before closeout, confirm the Release body contains the exact `X.Y.Z`
-changelog section and a full-changelog link. If it is missing or stale, prepare
-the corrected body in a reviewed file and run:
-
-```sh
-gh release edit vX.Y.Z --notes-file /tmp/discrawl-release-notes.md
-```
-
-Confirm checksums plus assets exist for:
-
-- `darwin_amd64`
-- `darwin_arm64`
-- `linux_amd64`
-- `linux_arm64`
-- `windows_amd64`
-- `windows_arm64`
-
-## 6) Verify Homebrew tap update
-
-`discrawl` ships a binary formula in `~/Projects/homebrew-tap/Formula/discrawl.rb` that points at the GitHub release archives.
-
-The release workflow dispatches `openclaw/homebrew-tap`'s
-`update-formula.yml` and waits for it to finish. Verify the formula version and
-per-platform checksums landed, then test the installed binary. Do not manually
-duplicate a successful automated update.
-
-Useful commands:
-
-```sh
-curl -L -o /tmp/discrawl-darwin-arm64.tgz https://github.com/openclaw/discrawl/releases/download/vX.Y.Z/discrawl_X.Y.Z_darwin_arm64.tar.gz
-shasum -a 256 /tmp/discrawl-darwin-arm64.tgz
-brew uninstall discrawl || true
-brew install openclaw/tap/discrawl
-discrawl --version
-brew info openclaw/tap/discrawl
-```
-
-## 7) Close out the release
-
-Only after the GitHub Release, release notes, assets, and Homebrew formula are
-verified, add the next patch section at the top of `CHANGELOG.md`. For example,
-after `0.11.4`:
-
-- `## 0.11.5 - Unreleased`
-
-Commit that closeout with a conventional `chore:` message and push `main`.
-
-## Notes
-
-- Build-time version stamping comes from `-X github.com/openclaw/discrawl/internal/cli.version={{ .Version }}`
-- If release workflow needs a rerun:
-
-```sh
-gh workflow run release.yml -f tag=vX.Y.Z
-```
+`make snapshot` builds without release credentials. `make verify-release` rechecks downloaded Darwin archives against `checksums.txt`, the stable Foundation designated requirement, hardened runtime, architecture, embedded version, and Apple's online notarization ticket.
