@@ -135,11 +135,18 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 
 	archiveAt := time.Now().UTC().Add(-time.Hour)
 	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guilds: []*discordgo.UserGuild{
+			{ID: "g-other", Name: "Other Guild"},
+			{ID: "g1", Name: "Guild"},
+		},
 		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+			"g-other": {ID: "g-other", Name: "Other Guild"},
+			"g1":      {ID: "g1", Name: "Guild"},
 		},
 		channels: map[string][]*discordgo.Channel{
+			"g-other": {
+				{ID: "f-other", GuildID: "g-other", Name: "other forum", Type: discordgo.ChannelTypeGuildForum},
+			},
 			"g1": {
 				{ID: "f1", GuildID: "g1", Name: "support", Type: discordgo.ChannelTypeGuildForum},
 				{ID: "c2", GuildID: "g1", Name: "random", Type: discordgo.ChannelTypeGuildText},
@@ -174,15 +181,16 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{
 		Full:       true,
-		GuildIDs:   []string{"g1"},
+		GuildIDs:   []string{"g-other", "g1"},
 		ChannelIDs: []string{"t-archived"},
 	})
 	require.NoError(t, err)
+	require.Equal(t, 2, stats.Guilds)
 	require.Equal(t, 1, stats.Channels)
 	require.Equal(t, 1, stats.Threads)
 	require.Equal(t, 1, stats.Messages)
-	require.Equal(t, 1, client.guildChanCalls)
-	require.Equal(t, 1, client.channelCalls["t-archived"])
+	require.Equal(t, 2, client.guildChanCalls)
+	require.Equal(t, 2, client.channelCalls["t-archived"])
 	require.Zero(t, client.threadCalls)
 	require.Empty(t, client.archivedCalls)
 	require.Equal(t, 1, client.messageCalls["t-archived"])
@@ -191,6 +199,13 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "t-archived", results[0].ChannelID)
+
+	_, err = svc.Sync(ctx, SyncOptions{
+		Full:       true,
+		GuildIDs:   []string{"g-other"},
+		ChannelIDs: []string{"t-archived"},
+	})
+	require.ErrorContains(t, err, "requested channel t-archived belongs to guild g1, not g-other")
 }
 
 func TestSyncToleratesArchivedThread403(t *testing.T) {

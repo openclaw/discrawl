@@ -19,7 +19,7 @@ const (
 	channelCatalogIncremental
 )
 
-func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, bool, error) {
+func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode, exclusions channelExclusions, selectedGuildIDs map[string]struct{}) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
 		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
 		if err != nil {
@@ -63,7 +63,7 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 	}
 
 	if unresolvedRequestedIDs(selected, requestedSet) > 0 {
-		if err := s.appendDirectRequestedChannels(ctx, guildID, allChannels, requestedSet); err != nil {
+		if err := s.appendDirectRequestedChannels(ctx, guildID, allChannels, requestedSet, selectedGuildIDs); err != nil {
 			return nil, false, err
 		}
 		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
@@ -87,6 +87,7 @@ func (s *Syncer) appendDirectRequestedChannels(
 	guildID string,
 	allChannels map[string]*discordgo.Channel,
 	requested map[string]struct{},
+	selectedGuildIDs map[string]struct{},
 ) error {
 	for requestedID := range requested {
 		if _, ok := allChannels[requestedID]; ok {
@@ -100,7 +101,14 @@ func (s *Syncer) appendDirectRequestedChannels(
 			continue
 		}
 		if channel.GuildID != "" && guildID != "" && channel.GuildID != guildID {
-			return fmt.Errorf("requested channel %s belongs to guild %s, not %s", channel.ID, channel.GuildID, guildID)
+			if _, selected := selectedGuildIDs[channel.GuildID]; !selected {
+				return fmt.Errorf("requested channel %s belongs to guild %s, not %s", channel.ID, channel.GuildID, guildID)
+			}
+			// requested is rebuilt by channelList for each selected guild. Exclude
+			// the target only from this guild's fallback discovery; its owning guild
+			// gets a fresh request set and performs the same direct lookup.
+			delete(requested, requestedID)
+			continue
 		}
 		allChannels[channel.ID] = channel
 	}
