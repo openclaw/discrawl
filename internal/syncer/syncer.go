@@ -53,20 +53,21 @@ type Syncer struct {
 }
 
 type SyncOptions struct {
-	Full                bool
-	GuildIDs            []string
-	ChannelIDs          []string
-	Concurrency         int
-	Since               time.Time
-	Embeddings          bool
-	SkipMembers         bool
-	RequireMembers      bool
-	LatestOnly          bool
-	ExcludeChannelIDs   []string
-	ExcludeChannelKinds []string
-	IncludeCategoryIDs  []string
-	RepairReason        string
-	selectedGuildIDs    map[string]struct{}
+	Full                 bool
+	GuildIDs             []string
+	ChannelIDs           []string
+	Concurrency          int
+	Since                time.Time
+	Embeddings           bool
+	SkipMembers          bool
+	RequireMembers       bool
+	LatestOnly           bool
+	ExcludeChannelIDs    []string
+	ExcludeChannelKinds  []string
+	IncludeCategoryIDs   []string
+	RepairReason         string
+	selectedGuildIDs     map[string]struct{}
+	directChannelResults map[string]directChannelResult
 }
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
@@ -157,6 +158,7 @@ func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) 
 	}
 	targets := selectGuilds(guilds, opts.GuildIDs)
 	opts.selectedGuildIDs = make(map[string]struct{}, len(targets))
+	opts.directChannelResults = make(map[string]directChannelResult, len(opts.ChannelIDs))
 	for _, guild := range targets {
 		opts.selectedGuildIDs[guild.ID] = struct{}{}
 	}
@@ -204,7 +206,15 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		}
 	}
 	exclusions := s.effectiveChannelExclusions(opts)
-	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode, exclusions, opts.selectedGuildIDs)
+	channelList, targeted, err := s.channelList(
+		ctx,
+		guildID,
+		opts.ChannelIDs,
+		catalogMode,
+		exclusions,
+		opts.selectedGuildIDs,
+		opts.directChannelResults,
+	)
 	if err != nil {
 		return stats, err
 	}

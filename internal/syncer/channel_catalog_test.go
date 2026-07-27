@@ -190,7 +190,7 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 	require.Equal(t, 1, stats.Threads)
 	require.Equal(t, 1, stats.Messages)
 	require.Equal(t, 2, client.guildChanCalls)
-	require.Equal(t, 2, client.channelCalls["t-archived"])
+	require.Equal(t, 1, client.channelCalls["t-archived"])
 	require.Zero(t, client.threadCalls)
 	require.Empty(t, client.archivedCalls)
 	require.Equal(t, 1, client.messageCalls["t-archived"])
@@ -206,6 +206,14 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 		ChannelIDs: []string{"t-archived"},
 	})
 	require.ErrorContains(t, err, "requested channel t-archived belongs to guild g1, not g-other")
+
+	client.channelByID["dm"] = &discordgo.Channel{ID: "dm", Type: discordgo.ChannelTypeDM}
+	_, err = svc.Sync(ctx, SyncOptions{
+		Full:       true,
+		GuildIDs:   []string{"g1"},
+		ChannelIDs: []string{"dm"},
+	})
+	require.ErrorContains(t, err, "requested channel dm is not a guild channel")
 }
 
 func TestSyncToleratesArchivedThread403(t *testing.T) {
