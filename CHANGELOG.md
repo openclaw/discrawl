@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.11.10 - 2026-07-27
 
 ### Maintenance
