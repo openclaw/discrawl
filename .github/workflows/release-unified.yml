@@ -30,6 +30,7 @@ jobs:
       stable-identifier: org.openclaw.discrawl
       require-signed-tag: true
       darwin-universal: disabled
+      ci-check-events: '["push","pull_request"]'
     secrets:
       MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
       MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
