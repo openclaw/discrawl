@@ -56,6 +56,8 @@ func TestMainCancelsWatchOnSIGTERM(t *testing.T) {
 		cfg.CacheDir = filepath.Join(dir, "cache")
 		cfg.LogDir = filepath.Join(dir, "logs")
 		cfg.Desktop.Path = filepath.Join(dir, "discord")
+		cfg.Discord.TokenSource = "none"
+		cfg.Share.AutoUpdate = false
 		requireNoError(t, os.MkdirAll(cfg.Desktop.Path, 0o755))
 		requireNoError(t, config.Write(cfgPath, cfg))
 
