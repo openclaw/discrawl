@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Mark stale unassigned issues and pull requests
-        uses: actions/stale@v10
+        uses: actions/stale@v11
         with:
           days-before-issue-stale: 14
           days-before-issue-close: 7
@@ -44,7 +44,7 @@ jobs:
             If this PR should be revived, reopen it with current context and validation.
 
       - name: Mark stale assigned issues
-        uses: actions/stale@v10
+        uses: actions/stale@v11
         with:
           days-before-issue-stale: 30
           days-before-issue-close: 10
@@ -65,7 +65,7 @@ jobs:
           close-issue-reason: not_planned
 
       - name: Mark stale assigned pull requests
-        uses: actions/stale@v10
+        uses: actions/stale@v11
         with:
           days-before-issue-stale: -1
           days-before-issue-close: -1
