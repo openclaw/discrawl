@@ -18,6 +18,25 @@ echo 'select guild_id, count(*) from messages group by guild_id' | discrawl sql 
 - the schema is multi-guild ready; threads are stored as channels because that matches the Discord model
 - proven DMs use the synthetic guild id `@me`
 - SQLite schema migrations are versioned with `PRAGMA user_version`; startup fails fast when a local DB schema is newer than the supported binary
+- before treating a zero-row identity query as authoritative, run `discrawl diagnostics --json` and require `safe_for_identity_queries: true`
+
+Message queries that need channel metadata must start from `messages` and use a
+left join so incomplete channel metadata does not silently discard archived
+messages:
+
+```sql
+select m.id, m.created_at, m.channel_id, c.name as channel_name, m.content
+from messages m
+left join channels c on c.id = m.channel_id
+where m.guild_id = 'GUILD_ID'
+  and m.author_id = 'AUTHOR_ID'
+  and m.content = 'EXACT PHRASE';
+```
+
+`join channels` intentionally drops messages whose channel metadata is
+incomplete. `discrawl sql` warns on zero-row output when it can confirm such
+orphaned references; an `undetermined` note means the catalog probe exceeded
+its bounded budget, not that completeness was established.
 
 ## See also
 

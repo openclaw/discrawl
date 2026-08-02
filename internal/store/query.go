@@ -18,6 +18,7 @@ import (
 const (
 	queryTimeout                         = 15 * time.Second
 	semanticQueryTimeout                 = 2 * time.Minute
+	catalogIntegrityProbeTimeout         = 2 * time.Second
 	queryRowLimit                        = 50000
 	searchCandidateFloor                 = 200
 	searchCandidateCap                   = 5000
@@ -64,6 +65,37 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 		return "", "", err
 	}
 	return row.OldestID, row.NewestID, nil
+}
+
+func (s *Store) CatalogIntegrity(ctx context.Context) (CatalogIntegrity, error) {
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	row, err := s.q.CatalogIntegrity(queryCtx)
+	if err != nil {
+		return CatalogIntegrity{}, err
+	}
+	return CatalogIntegrity{
+		OrphanedMessageCount: int(row.OrphanedMessageCount),
+		OrphanedChannelCount: int(row.OrphanedChannelCount),
+		OldestAffectedAt:     parseTime(row.OldestAffectedAt),
+		NewestAffectedAt:     parseTime(row.NewestAffectedAt),
+	}, nil
+}
+
+func (s *Store) HasOrphanedMessageChannels(ctx context.Context) (CatalogCompleteness, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, catalogIntegrityProbeTimeout)
+	defer cancel()
+	present, err := s.q.HasOrphanedMessageChannels(queryCtx)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return CatalogUndetermined, nil
+	}
+	if err != nil {
+		return CatalogUndetermined, err
+	}
+	if present {
+		return CatalogIncomplete, nil
+	}
+	return CatalogComplete, nil
 }
 
 func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {

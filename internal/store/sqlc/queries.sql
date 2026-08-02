@@ -64,6 +64,25 @@ select count(*) as count from channels;
 -- name: CountMessages :one
 select count(*) as count from messages;
 
+-- name: CatalogIntegrity :one
+select
+	count(*) as orphaned_message_count,
+	count(distinct m.channel_id) as orphaned_channel_count,
+	cast(coalesce(min(m.created_at), '') as text) as oldest_affected_at,
+	cast(coalesce(max(m.created_at), '') as text) as newest_affected_at
+from messages m
+left join channels c on c.id = m.channel_id
+where c.id is null;
+
+-- name: HasOrphanedMessageChannels :one
+select exists(
+	select 1
+	from messages m
+	left join channels c on c.id = m.channel_id
+	where c.id is null
+	limit 1
+) as present;
+
 -- name: CountMembers :one
 select count(*) as count from members where deleted_at is null;
 

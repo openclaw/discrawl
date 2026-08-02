@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,9 @@ type diagnosticsReport struct {
 	Database                  diagnosticsDatabase  `json:"database"`
 	SyncLock                  diagnosticsSyncLock  `json:"sync_lock"`
 	Freshness                 diagnosticsFreshness `json:"freshness"`
+	Catalog                   diagnosticsCatalog   `json:"catalog"`
 	SafeForReadOnlyInspection bool                 `json:"safe_for_read_only_inspection"`
+	SafeForIdentityQueries    bool                 `json:"safe_for_identity_queries"`
 	Warnings                  []string             `json:"warnings,omitempty"`
 }
 
@@ -62,6 +65,13 @@ type diagnosticsFreshness struct {
 	LastSyncAt      string `json:"last_sync_at,omitempty"`
 	LastTailEventAt string `json:"last_tail_event_at,omitempty"`
 	Error           string `json:"error,omitempty"`
+}
+
+type diagnosticsCatalog struct {
+	OrphanedMessageCount int    `json:"orphaned_message_count"`
+	OrphanedChannelCount int    `json:"orphaned_channel_count"`
+	OldestAffectedAt     string `json:"oldest_affected_at,omitempty"`
+	NewestAffectedAt     string `json:"newest_affected_at,omitempty"`
 }
 
 func (r *runtime) runDiagnostics(args []string) error {
@@ -152,6 +162,7 @@ func (r *runtime) runDiagnostics(args []string) error {
 		report.Database.Integrity = "failed"
 		report.Warnings = append(report.Warnings, "SQLite quick_check reported integrity errors")
 	}
+	catalogKnown := false
 	db, openErr := store.OpenReadOnly(r.ctx, dbPath)
 	if openErr != nil {
 		report.Freshness.Error = openErr.Error()
@@ -169,8 +180,27 @@ func (r *runtime) runDiagnostics(args []string) error {
 				report.Freshness.LastTailEventAt = status.LastTailEventAt.UTC().Format(time.RFC3339)
 			}
 		}
+		if catalog, catalogErr := db.CatalogIntegrity(r.ctx); catalogErr != nil {
+			report.Warnings = append(report.Warnings, "catalog integrity could not be read")
+		} else {
+			catalogKnown = true
+			report.Catalog = diagnosticsCatalog{
+				OrphanedMessageCount: catalog.OrphanedMessageCount,
+				OrphanedChannelCount: catalog.OrphanedChannelCount,
+			}
+			if !catalog.OldestAffectedAt.IsZero() {
+				report.Catalog.OldestAffectedAt = catalog.OldestAffectedAt.UTC().Format(time.RFC3339)
+			}
+			if !catalog.NewestAffectedAt.IsZero() {
+				report.Catalog.NewestAffectedAt = catalog.NewestAffectedAt.UTC().Format(time.RFC3339)
+			}
+			if catalog.OrphanedMessageCount > 0 {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("catalog has %d orphaned messages across %d channel IDs", catalog.OrphanedMessageCount, catalog.OrphanedChannelCount))
+			}
+		}
 	}
 	report.SafeForReadOnlyInspection = report.Database.Integrity == "ok"
+	report.SafeForIdentityQueries = report.SafeForReadOnlyInspection && catalogKnown && report.Catalog.OrphanedMessageCount == 0 && report.Catalog.OrphanedChannelCount == 0 && report.Freshness.Error == ""
 	if report.SafeForReadOnlyInspection && len(report.Warnings) == 0 {
 		report.Status = "ok"
 	}

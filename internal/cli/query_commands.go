@@ -244,6 +244,7 @@ func (r *runtime) runSQL(args []string) error {
 		if err != nil {
 			return err
 		}
+		r.warnOnZeroRowSQL(rows)
 		if r.json {
 			return r.print(map[string]any{"columns": cols, "rows": rows})
 		}
@@ -258,6 +259,7 @@ func (r *runtime) runSQL(args []string) error {
 		if err != nil {
 			return err
 		}
+		r.warnOnZeroRowSQL(rows)
 		if r.json {
 			return r.print(map[string]any{"columns": cols, "rows": rows})
 		}
@@ -269,6 +271,20 @@ func (r *runtime) runSQL(args []string) error {
 		return err
 	}
 	return r.print(map[string]any{"rows_affected": affected})
+}
+
+func (r *runtime) warnOnZeroRowSQL(rows [][]string) {
+	if len(rows) != 0 {
+		return
+	}
+	state, err := r.store.HasOrphanedMessageChannels(r.ctx)
+	if err != nil || state == store.CatalogUndetermined {
+		_, _ = fmt.Fprintln(r.stderr, "note: catalog completeness not determined; a zero-row SQL result is not authoritative for identity queries")
+		return
+	}
+	if state == store.CatalogIncomplete {
+		_, _ = fmt.Fprintln(r.stderr, "warning: catalog identity joins may be incomplete; a zero-row SQL result is not authoritative")
+	}
 }
 
 func (r *runtime) runMembers(args []string) error {

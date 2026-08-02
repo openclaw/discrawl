@@ -4,7 +4,7 @@ ARTIFACT_DIR ?= dist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-race test-coverage fmt lint tidy-check smoke check snapshot release verify-release release-artifacts release-snapshot generate-sqlc clean
+.PHONY: help build test test-large test-race test-coverage fmt lint tidy-check smoke check snapshot release verify-release release-artifacts release-snapshot generate-sqlc clean
 
 help:
 	@printf '%s\n' \
@@ -12,6 +12,7 @@ help:
 		'  help              Print available targets (default).' \
 		'  build             Build the CLI into $(BINARY).' \
 		'  test              Run the full Go test suite.' \
+		'  test-large        Run the opt-in catalog-integrity calibration fixture.' \
 		'  fmt               Check Go formatting.' \
 		'  lint              Run the static-analysis and vulnerability gates.' \
 		'  check             Run every local gate enforced by CI.' \
@@ -29,6 +30,9 @@ build:
 
 test:
 	GOWORK=off go test -count=1 ./...
+
+test-large:
+	DISCRAWL_TEST_LARGE=1 GOWORK=off go test -count=1 -run '^TestCatalogIntegrityProbeLargeCompleteFixture$$' -timeout=30m ./internal/store
 
 test-race:
 	GOWORK=off go test -count=1 -race ./...

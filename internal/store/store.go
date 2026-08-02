@@ -28,6 +28,21 @@ type Store struct {
 	path string
 }
 
+type CatalogIntegrity struct {
+	OrphanedMessageCount int       `json:"orphaned_message_count"`
+	OrphanedChannelCount int       `json:"orphaned_channel_count"`
+	OldestAffectedAt     time.Time `json:"oldest_affected_at,omitzero"`
+	NewestAffectedAt     time.Time `json:"newest_affected_at,omitzero"`
+}
+
+type CatalogCompleteness string
+
+const (
+	CatalogComplete     CatalogCompleteness = "complete"
+	CatalogIncomplete   CatalogCompleteness = "incomplete"
+	CatalogUndetermined CatalogCompleteness = "undetermined"
+)
+
 type Status struct {
 	DBPath             string    `json:"db_path"`
 	GuildCount         int       `json:"guild_count"`
