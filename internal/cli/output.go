@@ -464,11 +464,11 @@ func printHuman(w io.Writer, value any) error {
 			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt))
 		return err
 	case diagnosticsReport:
-		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\ncatalog_orphaned_messages=%d\ncatalog_orphaned_channel_ids=%d\nsafe_for_read_only_inspection=%t\nsafe_for_identity_queries=%t\n",
+		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\ncatalog_state=%s\ncatalog_orphaned_messages=%d\ncatalog_orphaned_channel_ids=%d\nsafe_for_read_only_inspection=%t\nsafe_for_identity_queries=%t\n",
 			v.Status, v.Database.Path, v.Database.Exists, v.Database.Bytes, v.Database.JournalMode,
 			v.Database.SchemaVersion,
 			v.Database.WAL.Path, v.Database.WAL.Exists, v.Database.WAL.Bytes, v.Database.Integrity,
-			v.SyncLock.Path, v.SyncLock.Held, v.SyncLock.State, v.Catalog.OrphanedMessageCount, v.Catalog.OrphanedChannelCount,
+			v.SyncLock.Path, v.SyncLock.Held, v.SyncLock.State, v.Catalog.State, v.Catalog.OrphanedMessageCount, v.Catalog.OrphanedChannelCount,
 			v.SafeForReadOnlyInspection, v.SafeForIdentityQueries)
 		if err != nil {
 			return err

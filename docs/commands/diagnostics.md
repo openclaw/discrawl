@@ -40,8 +40,9 @@ fields carry a separate compatibility error when this binary cannot read them.
 `safe_for_read_only_inspection` reports SQLite-byte integrity only. It does not
 prove every message has a channel record. `safe_for_identity_queries` is false
 when the catalog has orphaned message/channel references, catalog completeness
-cannot be determined, or the archive freshness metadata cannot be read; inspect
-the `catalog` counts before relying on a zero-row identity query.
+cannot be determined, or the archive freshness metadata cannot be read; require
+`catalog.state: "complete"` and inspect the counts before relying on a zero-row
+identity query.
 
 ## See also
 

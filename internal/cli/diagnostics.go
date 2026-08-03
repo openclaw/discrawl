@@ -68,10 +68,11 @@ type diagnosticsFreshness struct {
 }
 
 type diagnosticsCatalog struct {
-	OrphanedMessageCount int    `json:"orphaned_message_count"`
-	OrphanedChannelCount int    `json:"orphaned_channel_count"`
-	OldestAffectedAt     string `json:"oldest_affected_at,omitempty"`
-	NewestAffectedAt     string `json:"newest_affected_at,omitempty"`
+	State                store.CatalogCompleteness `json:"state"`
+	OrphanedMessageCount int                       `json:"orphaned_message_count"`
+	OrphanedChannelCount int                       `json:"orphaned_channel_count"`
+	OldestAffectedAt     string                    `json:"oldest_affected_at,omitempty"`
+	NewestAffectedAt     string                    `json:"newest_affected_at,omitempty"`
 }
 
 func (r *runtime) runDiagnostics(args []string) error {
@@ -100,6 +101,7 @@ func (r *runtime) runDiagnostics(args []string) error {
 			Integrity: "not_checked",
 			WAL:       statDiagnosticsFile(dbPath + "-wal"),
 		},
+		Catalog: diagnosticsCatalog{State: store.CatalogUndetermined},
 		SyncLock: diagnosticsSyncLock{
 			Path:         lockPath,
 			MetadataPath: syncLockMetadataPath(lockPath),
@@ -184,7 +186,12 @@ func (r *runtime) runDiagnostics(args []string) error {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("catalog integrity could not be read: %v", catalogErr))
 		} else {
 			catalogKnown = true
+			state := store.CatalogComplete
+			if catalog.OrphanedMessageCount > 0 {
+				state = store.CatalogIncomplete
+			}
 			report.Catalog = diagnosticsCatalog{
+				State:                state,
 				OrphanedMessageCount: catalog.OrphanedMessageCount,
 				OrphanedChannelCount: catalog.OrphanedChannelCount,
 			}

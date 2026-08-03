@@ -32,7 +32,8 @@ test:
 	GOWORK=off go test -count=1 ./...
 
 test-large:
-	@output_file="$$(mktemp)"; trap 'rm -f "$$output_file"' EXIT; \
+	@command -v jq >/dev/null || { echo 'test-large requires jq'; exit 1; }; \
+	output_file="$$(mktemp)"; trap 'rm -f "$$output_file"' EXIT; \
 	DISCRAWL_TEST_LARGE=1 GOWORK=off go test -json -count=1 -run '^TestCatalogIntegrityProbeLargeCompleteFixture$$' -timeout=30m ./internal/store >"$$output_file"; \
 	cat "$$output_file"; \
 	jq -e 'select(.Action == "pass" and .Test == "TestCatalogIntegrityProbeLargeCompleteFixture")' "$$output_file" >/dev/null
