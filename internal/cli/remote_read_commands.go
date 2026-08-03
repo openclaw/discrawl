@@ -42,14 +42,15 @@ func (r *runtime) runRemoteSearch(opts store.SearchOptions, mode string, dm bool
 	out := make([]store.SearchResult, 0, len(result.Values))
 	for _, value := range result.Values {
 		out = append(out, store.SearchResult{
-			MessageID:   remoteString(value, "message_id"),
-			GuildID:     remoteString(value, "guild_id"),
-			ChannelID:   remoteString(value, "channel_id"),
-			ChannelName: remoteString(value, "channel_name"),
-			AuthorID:    remoteString(value, "author_id"),
-			AuthorName:  remoteString(value, "author_username"),
-			Content:     remoteString(value, "content"),
-			CreatedAt:   remoteTime(value, "created_at"),
+			MessageID:              remoteString(value, "message_id"),
+			GuildID:                remoteString(value, "guild_id"),
+			ChannelID:              remoteString(value, "channel_id"),
+			ChannelName:            remoteString(value, "channel_name"),
+			ChannelMetadataPresent: true,
+			AuthorID:               remoteString(value, "author_id"),
+			AuthorName:             remoteString(value, "author_username"),
+			Content:                remoteString(value, "content"),
+			CreatedAt:              remoteTime(value, "created_at"),
 		})
 	}
 	return out, nil
@@ -91,15 +92,16 @@ func (r *runtime) runRemoteMessages(opts store.MessageListOptions, dm bool) ([]s
 	out := make([]store.MessageRow, 0, len(result.Values))
 	for _, value := range result.Values {
 		out = append(out, store.MessageRow{
-			MessageID:   remoteString(value, "message_id"),
-			GuildID:     remoteString(value, "guild_id"),
-			ChannelID:   remoteString(value, "channel_id"),
-			ChannelName: remoteString(value, "channel_name"),
-			AuthorID:    remoteString(value, "author_id"),
-			AuthorName:  remoteString(value, "author_username"),
-			Content:     remoteString(value, "content"),
-			CreatedAt:   remoteTime(value, "created_at"),
-			Source:      "remote",
+			MessageID:              remoteString(value, "message_id"),
+			GuildID:                remoteString(value, "guild_id"),
+			ChannelID:              remoteString(value, "channel_id"),
+			ChannelName:            remoteString(value, "channel_name"),
+			ChannelMetadataPresent: true,
+			AuthorID:               remoteString(value, "author_id"),
+			AuthorName:             remoteString(value, "author_username"),
+			Content:                remoteString(value, "content"),
+			CreatedAt:              remoteTime(value, "created_at"),
+			Source:                 "remote",
 		})
 	}
 	return out, nil

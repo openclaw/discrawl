@@ -35,22 +35,23 @@ type MentionListOptions struct {
 }
 
 type MessageRow struct {
-	MessageID       string    `json:"message_id"`
-	GuildID         string    `json:"guild_id"`
-	GuildName       string    `json:"guild_name,omitempty"`
-	ChannelID       string    `json:"channel_id"`
-	ChannelName     string    `json:"channel_name"`
-	AuthorID        string    `json:"author_id"`
-	AuthorName      string    `json:"author_name"`
-	Content         string    `json:"content"`
-	DisplayContent  string    `json:"display_content,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	ReplyToMessage  string    `json:"reply_to_message_id,omitempty"`
-	Source          string    `json:"source,omitempty"`
-	HasAttachments  bool      `json:"has_attachments"`
-	AttachmentNames string    `json:"attachment_names,omitempty"`
-	AttachmentText  string    `json:"attachment_text,omitempty"`
-	Pinned          bool      `json:"pinned"`
+	MessageID              string    `json:"message_id"`
+	GuildID                string    `json:"guild_id"`
+	GuildName              string    `json:"guild_name,omitempty"`
+	ChannelID              string    `json:"channel_id"`
+	ChannelName            string    `json:"channel_name"`
+	ChannelMetadataPresent bool      `json:"-"`
+	AuthorID               string    `json:"author_id"`
+	AuthorName             string    `json:"author_name"`
+	Content                string    `json:"content"`
+	DisplayContent         string    `json:"display_content,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	ReplyToMessage         string    `json:"reply_to_message_id,omitempty"`
+	Source                 string    `json:"source,omitempty"`
+	HasAttachments         bool      `json:"has_attachments"`
+	AttachmentNames        string    `json:"attachment_names,omitempty"`
+	AttachmentText         string    `json:"attachment_text,omitempty"`
+	Pinned                 bool      `json:"pinned"`
 }
 
 func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]MessageRow, error) {
@@ -89,6 +90,7 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 			coalesce(g.name, ''),
 			m.channel_id,
 			coalesce(c.name, ''),
+			c.id is not null,
 			coalesce(m.author_id, ''),
 			coalesce(
 				nullif(mem.display_name, ''),
@@ -158,6 +160,7 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 			&row.GuildName,
 			&row.ChannelID,
 			&row.ChannelName,
+			&row.ChannelMetadataPresent,
 			&row.AuthorID,
 			&row.AuthorName,
 			&row.Content,
@@ -227,6 +230,7 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 			coalesce(g.name, ''),
 			m.channel_id,
 			coalesce(c.name, ''),
+			c.id is not null,
 			coalesce(m.author_id, ''),
 			coalesce(
 				nullif(mem.display_name, ''),
@@ -285,6 +289,7 @@ func scanMessageRows(rows rowScanner) ([]MessageRow, error) {
 			&row.GuildName,
 			&row.ChannelID,
 			&row.ChannelName,
+			&row.ChannelMetadataPresent,
 			&row.AuthorID,
 			&row.AuthorName,
 			&row.Content,

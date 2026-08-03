@@ -82,7 +82,7 @@ func (s *Store) CatalogIntegrity(ctx context.Context) (CatalogIntegrity, error) 
 	}, nil
 }
 
-func (s *Store) HasOrphanedMessageChannels(ctx context.Context) (CatalogCompleteness, error) {
+func (s *Store) HasOrphanedMessageChannels(ctx context.Context) (CatalogIntegrityState, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, catalogIntegrityProbeTimeout)
 	defer cancel()
 	present, err := s.q.HasOrphanedMessageChannels(queryCtx)
@@ -95,7 +95,7 @@ func (s *Store) HasOrphanedMessageChannels(ctx context.Context) (CatalogComplete
 	if present {
 		return CatalogIncomplete, nil
 	}
-	return CatalogComplete, nil
+	return CatalogConsistent, nil
 }
 
 func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
@@ -141,6 +141,7 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 		)
 		select
 			m.id, m.guild_id, m.channel_id, coalesce(c.name, recent_matches.channel_name),
+			c.id is not null,
 			coalesce(m.author_id, ''), recent_matches.author_name,
 			case
 				when trim(coalesce(m.content, '')) <> '' then m.content
@@ -171,7 +172,7 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 	for rows.Next() {
 		var row SearchResult
 		var created string
-		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
+		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.ChannelMetadataPresent, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
 			return nil, err
 		}
 		row.CreatedAt = parseTime(created)
@@ -395,6 +396,7 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 			m.guild_id,
 			m.channel_id,
 			coalesce(c.name, ''),
+			c.id is not null,
 			coalesce(m.author_id, ''),
 			`+authorExpr+`,
 			case
@@ -415,7 +417,7 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 	for rows.Next() {
 		var row SearchResult
 		var created string
-		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
+		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.ChannelMetadataPresent, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
 			return nil, err
 		}
 		row.CreatedAt = parseTime(created)
@@ -637,6 +639,7 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 			m.guild_id,
 			m.channel_id,
 			coalesce(c.name, ''),
+			c.id is not null,
 			coalesce(m.author_id, ''),
 			'',
 			case
@@ -658,7 +661,7 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 	for rows.Next() {
 		var row SearchResult
 		var created string
-		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
+		if err := rows.Scan(&row.MessageID, &row.GuildID, &row.ChannelID, &row.ChannelName, &row.ChannelMetadataPresent, &row.AuthorID, &row.AuthorName, &row.Content, &created); err != nil {
 			return nil, err
 		}
 		row.CreatedAt = parseTime(created)

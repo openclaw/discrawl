@@ -45,6 +45,11 @@ func TestCatalogIntegrityReportsOrphanedMessageChannels(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Empty(t, results[0].ChannelName)
+	require.False(t, results[0].ChannelMetadataPresent)
+	messages, err := s.ListMessages(ctx, MessageListOptions{IncludeEmpty: true})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.False(t, messages[0].ChannelMetadataPresent)
 
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{
 		ID: "missing-channel", GuildID: "guild-1", Kind: "thread_public", Name: "recovered-thread", RawJSON: `{}`,
@@ -54,11 +59,16 @@ func TestCatalogIntegrityReportsOrphanedMessageChannels(t *testing.T) {
 	require.Equal(t, CatalogIntegrity{}, integrity)
 	state, err = s.HasOrphanedMessageChannels(ctx)
 	require.NoError(t, err)
-	require.Equal(t, CatalogComplete, state)
+	require.Equal(t, CatalogConsistent, state)
 	results, err = s.SearchMessages(ctx, SearchOptions{Query: "catalog witness", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "recovered-thread", results[0].ChannelName)
+	require.True(t, results[0].ChannelMetadataPresent)
+	messages, err = s.ListMessages(ctx, MessageListOptions{IncludeEmpty: true})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.True(t, messages[0].ChannelMetadataPresent)
 	_, rows, err := s.ReadOnlyQuery(ctx, `
 		select m.id
 		from messages m
@@ -140,6 +150,6 @@ func TestCatalogIntegrityProbeLargeCompleteFixture(t *testing.T) {
 	state, err := s.HasOrphanedMessageChannels(ctx)
 	probeDuration := time.Since(probeStarted)
 	require.NoError(t, err)
-	require.Equalf(t, CatalogComplete, state, "healthy-catalog probe duration: %s", probeDuration)
+	require.Equalf(t, CatalogConsistent, state, "healthy-catalog probe duration: %s", probeDuration)
 	t.Logf("healthy-catalog probe duration: %s", probeDuration)
 }

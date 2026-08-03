@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changes
+
+- Surface stored message-to-channel catalog integrity in diagnostics, annotate output whose channel metadata is missing, and warn when zero-row SQL results may hide orphaned messages. Thanks @htydev.
+
 ## 0.12.0 - 2026-08-02
 
 ### Changes

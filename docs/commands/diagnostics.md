@@ -19,7 +19,7 @@ discrawl diagnostics --json
 - sync-lock path and whether its operating-system file lock is held
 - active writer PID, operation, phase, and timestamps from Discrawl lock metadata
 - whether the archive passed integrity checks and is safe for read-only inspection
-- orphaned message-to-channel references and whether identity-filtered queries are safe to treat as authoritative
+- orphaned message-to-channel references in the stored archive
 
 An active writer can be `sync`, `tail`, `wiretap`, an import, or another
 Discrawl operation. The operation and phase come from the same lock metadata
@@ -38,11 +38,10 @@ healthy older or newer archive can still report `integrity: "ok"`; freshness
 fields carry a separate compatibility error when this binary cannot read them.
 
 `safe_for_read_only_inspection` reports SQLite-byte integrity only. It does not
-prove every message has a channel record. `safe_for_identity_queries` is false
-when the catalog has orphaned message/channel references, catalog completeness
-cannot be determined, or the archive freshness metadata cannot be read; require
-`catalog.state: "complete"` and inspect the counts before relying on a zero-row
-identity query.
+prove every message has a channel record. `catalog.state: "consistent"` means
+every stored message has a stored channel record; it does not prove that a sync
+captured every source channel or message. A zero-row query therefore describes
+the local snapshot, not authoritative absence from Discord.
 
 ## See also
 

@@ -36,7 +36,6 @@ func TestDiagnosticsReportsCatalogIncompletenessWithoutChangingSQLiteSafety(t *t
 	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
 	require.Equal(t, "warning", report.Status)
 	require.True(t, report.SafeForReadOnlyInspection)
-	require.False(t, report.SafeForIdentityQueries)
 	require.Equal(t, store.CatalogIncomplete, report.Catalog.State)
 	require.Equal(t, 1, report.Catalog.OrphanedMessageCount)
 	require.Equal(t, 1, report.Catalog.OrphanedChannelCount)
@@ -44,7 +43,7 @@ func TestDiagnosticsReportsCatalogIncompletenessWithoutChangingSQLiteSafety(t *t
 	require.NotEmpty(t, report.Catalog.NewestAffectedAt)
 }
 
-func TestDiagnosticsReportsIdentityQueriesSafeForCompleteCatalog(t *testing.T) {
+func TestDiagnosticsReportsConsistentStoredCatalog(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg, cfgPath := writeTestConfig(t, dir)
@@ -64,8 +63,7 @@ func TestDiagnosticsReportsIdentityQueriesSafeForCompleteCatalog(t *testing.T) {
 	var report diagnosticsReport
 	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
 	require.Equal(t, "ok", report.Status)
-	require.True(t, report.SafeForIdentityQueries)
-	require.Equal(t, store.CatalogComplete, report.Catalog.State)
+	require.Equal(t, store.CatalogConsistent, report.Catalog.State)
 	require.Empty(t, report.Warnings)
 	require.Empty(t, report.Freshness.Error)
 }
@@ -139,7 +137,7 @@ func TestWarnOnZeroRowSQLReportsUndeterminedCatalog(t *testing.T) {
 	cancel()
 
 	r.warnOnZeroRowSQL(nil)
-	require.Contains(t, stderr.String(), "catalog completeness not determined")
+	require.Contains(t, stderr.String(), "catalog integrity not determined")
 }
 
 func TestHumanOutputShowsChannelIDWhenMetadataIsMissing(t *testing.T) {
@@ -153,4 +151,25 @@ func TestHumanOutputShowsChannelIDWhenMetadataIsMissing(t *testing.T) {
 		GuildID: "guild-1", ChannelID: "missing-thread", AuthorName: "author", Content: "catalog witness",
 	}}))
 	require.Contains(t, out.String(), "channel:missing-thread (metadata missing)")
+
+	out.Reset()
+	require.NoError(t, printHuman(&out, []store.SearchResult{{
+		GuildID: "guild-1", ChannelID: "missing-thread", ChannelName: "stale-name", AuthorName: "author", Content: "catalog witness",
+	}}))
+	require.Contains(t, out.String(), "channel:missing-thread (metadata missing)")
+	require.NotContains(t, out.String(), "stale-name")
+
+	out.Reset()
+	require.NoError(t, printHuman(&out, []store.SearchResult{{
+		GuildID: "guild-1", ChannelID: "dm-channel", ChannelMetadataPresent: true, AuthorName: "author", Content: "catalog witness",
+	}}))
+	require.Contains(t, out.String(), "channel:dm-channel")
+	require.NotContains(t, out.String(), "metadata missing")
+
+	out.Reset()
+	require.NoError(t, printHuman(&out, []store.MessageRow{{
+		GuildID: "guild-1", ChannelID: "dm-channel", ChannelMetadataPresent: true, AuthorName: "author", Content: "catalog witness",
+	}}))
+	require.Contains(t, out.String(), "channel:dm-channel")
+	require.NotContains(t, out.String(), "metadata missing")
 }

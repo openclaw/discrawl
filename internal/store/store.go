@@ -35,12 +35,12 @@ type CatalogIntegrity struct {
 	NewestAffectedAt     time.Time `json:"newest_affected_at,omitzero"`
 }
 
-type CatalogCompleteness string
+type CatalogIntegrityState string
 
 const (
-	CatalogComplete     CatalogCompleteness = "complete"
-	CatalogIncomplete   CatalogCompleteness = "incomplete"
-	CatalogUndetermined CatalogCompleteness = "undetermined"
+	CatalogConsistent   CatalogIntegrityState = "consistent"
+	CatalogIncomplete   CatalogIntegrityState = "incomplete"
+	CatalogUndetermined CatalogIntegrityState = "undetermined"
 )
 
 type Status struct {
@@ -68,14 +68,15 @@ type SearchOptions struct {
 }
 
 type SearchResult struct {
-	MessageID   string    `json:"message_id"`
-	GuildID     string    `json:"guild_id"`
-	ChannelID   string    `json:"channel_id"`
-	ChannelName string    `json:"channel_name"`
-	AuthorID    string    `json:"author_id"`
-	AuthorName  string    `json:"author_name"`
-	Content     string    `json:"content"`
-	CreatedAt   time.Time `json:"created_at"`
+	MessageID              string    `json:"message_id"`
+	GuildID                string    `json:"guild_id"`
+	ChannelID              string    `json:"channel_id"`
+	ChannelName            string    `json:"channel_name"`
+	ChannelMetadataPresent bool      `json:"-"`
+	AuthorID               string    `json:"author_id"`
+	AuthorName             string    `json:"author_name"`
+	Content                string    `json:"content"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 type MentionRow struct {

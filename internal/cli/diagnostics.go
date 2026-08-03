@@ -21,7 +21,6 @@ type diagnosticsReport struct {
 	Freshness                 diagnosticsFreshness `json:"freshness"`
 	Catalog                   diagnosticsCatalog   `json:"catalog"`
 	SafeForReadOnlyInspection bool                 `json:"safe_for_read_only_inspection"`
-	SafeForIdentityQueries    bool                 `json:"safe_for_identity_queries"`
 	Warnings                  []string             `json:"warnings,omitempty"`
 }
 
@@ -68,11 +67,11 @@ type diagnosticsFreshness struct {
 }
 
 type diagnosticsCatalog struct {
-	State                store.CatalogCompleteness `json:"state"`
-	OrphanedMessageCount int                       `json:"orphaned_message_count"`
-	OrphanedChannelCount int                       `json:"orphaned_channel_count"`
-	OldestAffectedAt     string                    `json:"oldest_affected_at,omitempty"`
-	NewestAffectedAt     string                    `json:"newest_affected_at,omitempty"`
+	State                store.CatalogIntegrityState `json:"state"`
+	OrphanedMessageCount int                         `json:"orphaned_message_count"`
+	OrphanedChannelCount int                         `json:"orphaned_channel_count"`
+	OldestAffectedAt     string                      `json:"oldest_affected_at,omitempty"`
+	NewestAffectedAt     string                      `json:"newest_affected_at,omitempty"`
 }
 
 func (r *runtime) runDiagnostics(args []string) error {
@@ -164,7 +163,6 @@ func (r *runtime) runDiagnostics(args []string) error {
 		report.Database.Integrity = "failed"
 		report.Warnings = append(report.Warnings, "SQLite quick_check reported integrity errors")
 	}
-	catalogKnown := false
 	db, openErr := store.OpenReadOnly(r.ctx, dbPath)
 	if openErr != nil {
 		report.Freshness.Error = openErr.Error()
@@ -185,8 +183,7 @@ func (r *runtime) runDiagnostics(args []string) error {
 		if catalog, catalogErr := db.CatalogIntegrity(r.ctx); catalogErr != nil {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("catalog integrity could not be read: %v", catalogErr))
 		} else {
-			catalogKnown = true
-			state := store.CatalogComplete
+			state := store.CatalogConsistent
 			if catalog.OrphanedMessageCount > 0 {
 				state = store.CatalogIncomplete
 			}
@@ -207,7 +204,6 @@ func (r *runtime) runDiagnostics(args []string) error {
 		}
 	}
 	report.SafeForReadOnlyInspection = report.Database.Integrity == "ok"
-	report.SafeForIdentityQueries = report.SafeForReadOnlyInspection && catalogKnown && report.Catalog.OrphanedMessageCount == 0 && report.Catalog.OrphanedChannelCount == 0 && report.Freshness.Error == ""
 	if report.SafeForReadOnlyInspection && len(report.Warnings) == 0 {
 		report.Status = "ok"
 	}

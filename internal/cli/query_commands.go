@@ -279,7 +279,7 @@ func (r *runtime) warnOnZeroRowSQL(rows [][]string) {
 	}
 	state, err := r.store.HasOrphanedMessageChannels(r.ctx)
 	if err != nil || state == store.CatalogUndetermined {
-		_, _ = fmt.Fprintln(r.stderr, "note: catalog completeness not determined; a zero-row SQL result is not authoritative for identity queries")
+		_, _ = fmt.Fprintln(r.stderr, "note: catalog integrity not determined; a zero-row SQL result is not authoritative for identity queries")
 		return
 	}
 	if state == store.CatalogIncomplete {

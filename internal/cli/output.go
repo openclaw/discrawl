@@ -369,11 +369,14 @@ Writes a read-only cloud archive config. This does not create or import a local 
 `,
 }
 
-func channelDisplayName(channelID, channelName string) string {
+func channelDisplayName(channelID, channelName string, metadataPresent bool) string {
+	if !metadataPresent {
+		return fmt.Sprintf("channel:%s (metadata missing)", channelID)
+	}
 	if strings.TrimSpace(channelName) != "" {
 		return channelName
 	}
-	return fmt.Sprintf("channel:%s (metadata missing)", channelID)
+	return "channel:" + channelID
 }
 
 func printRows(w io.Writer, cols []string, rows [][]string) error {
@@ -464,12 +467,12 @@ func printHuman(w io.Writer, value any) error {
 			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt))
 		return err
 	case diagnosticsReport:
-		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\ncatalog_state=%s\ncatalog_orphaned_messages=%d\ncatalog_orphaned_channel_ids=%d\nsafe_for_read_only_inspection=%t\nsafe_for_identity_queries=%t\n",
+		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\ncatalog_state=%s\ncatalog_orphaned_messages=%d\ncatalog_orphaned_channel_ids=%d\nsafe_for_read_only_inspection=%t\n",
 			v.Status, v.Database.Path, v.Database.Exists, v.Database.Bytes, v.Database.JournalMode,
 			v.Database.SchemaVersion,
 			v.Database.WAL.Path, v.Database.WAL.Exists, v.Database.WAL.Bytes, v.Database.Integrity,
 			v.SyncLock.Path, v.SyncLock.Held, v.SyncLock.State, v.Catalog.State, v.Catalog.OrphanedMessageCount, v.Catalog.OrphanedChannelCount,
-			v.SafeForReadOnlyInspection, v.SafeForIdentityQueries)
+			v.SafeForReadOnlyInspection)
 		if err != nil {
 			return err
 		}
@@ -542,14 +545,14 @@ func printHuman(w io.Writer, value any) error {
 		return err
 	case []store.SearchResult:
 		for _, row := range v {
-			if _, err := fmt.Fprintf(w, "[%s/%s] %s %s\n%s\n\n", row.GuildID, channelDisplayName(row.ChannelID, row.ChannelName), row.AuthorName, formatTime(row.CreatedAt), row.Content); err != nil {
+			if _, err := fmt.Fprintf(w, "[%s/%s] %s %s\n%s\n\n", row.GuildID, channelDisplayName(row.ChannelID, row.ChannelName, row.ChannelMetadataPresent), row.AuthorName, formatTime(row.CreatedAt), row.Content); err != nil {
 				return err
 			}
 		}
 		return nil
 	case []store.MessageRow:
 		for _, row := range v {
-			if _, err := fmt.Fprintf(w, "[%s/%s] %s %s\n%s\n\n", row.GuildID, channelDisplayName(row.ChannelID, row.ChannelName), row.AuthorName, formatTime(row.CreatedAt), row.Content); err != nil {
+			if _, err := fmt.Fprintf(w, "[%s/%s] %s %s\n%s\n\n", row.GuildID, channelDisplayName(row.ChannelID, row.ChannelName, row.ChannelMetadataPresent), row.AuthorName, formatTime(row.CreatedAt), row.Content); err != nil {
 				return err
 			}
 		}
