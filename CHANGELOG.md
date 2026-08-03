@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Documentation
+
+- Rewrite the README as a concise front door to installation, archive sources, search, and the existing documentation site.
+
 ## 0.12.0 - 2026-08-02
 
 ### Changes
