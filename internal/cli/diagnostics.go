@@ -181,7 +181,7 @@ func (r *runtime) runDiagnostics(args []string) error {
 			}
 		}
 		if catalog, catalogErr := db.CatalogIntegrity(r.ctx); catalogErr != nil {
-			report.Warnings = append(report.Warnings, "catalog integrity could not be read")
+			report.Warnings = append(report.Warnings, fmt.Sprintf("catalog integrity could not be read: %v", catalogErr))
 		} else {
 			catalogKnown = true
 			report.Catalog = diagnosticsCatalog{

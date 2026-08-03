@@ -72,6 +72,27 @@ func TestCatalogIntegrityReportsOrphanedMessageChannels(t *testing.T) {
 	require.Equal(t, [][]string{{"orphan-message"}}, rows)
 }
 
+func TestCatalogIntegrityOrdersVariablePrecisionTimestampsChronologically(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, message := range []MessageRecord{
+		{ID: "first", GuildID: "guild-1", ChannelID: "missing-first", MessageType: 0, CreatedAt: "2026-08-02T12:00:00Z", RawJSON: `{}`},
+		{ID: "second", GuildID: "guild-1", ChannelID: "missing-second", MessageType: 0, CreatedAt: "2026-08-02T12:00:00.5Z", RawJSON: `{}`},
+	} {
+		require.NoError(t, s.UpsertMessage(ctx, message))
+	}
+
+	integrity, err := s.CatalogIntegrity(ctx)
+	require.NoError(t, err)
+	require.Equal(t, time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC), integrity.OldestAffectedAt)
+	require.Equal(t, time.Date(2026, 8, 2, 12, 0, 0, 500_000_000, time.UTC), integrity.NewestAffectedAt)
+}
+
 func TestHasOrphanedMessageChannelsReturnsUndeterminedOnCancelledContext(t *testing.T) {
 	t.Parallel()
 
@@ -117,7 +138,8 @@ func TestCatalogIntegrityProbeLargeCompleteFixture(t *testing.T) {
 
 	probeStarted := time.Now()
 	state, err := s.HasOrphanedMessageChannels(ctx)
+	probeDuration := time.Since(probeStarted)
 	require.NoError(t, err)
-	require.Equal(t, CatalogComplete, state)
-	t.Logf("healthy-catalog probe duration: %s", time.Since(probeStarted))
+	require.Equalf(t, CatalogComplete, state, "healthy-catalog probe duration: %s", probeDuration)
+	t.Logf("healthy-catalog probe duration: %s", probeDuration)
 }

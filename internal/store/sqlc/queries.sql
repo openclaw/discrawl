@@ -67,9 +67,23 @@ select count(*) as count from messages;
 -- name: CatalogIntegrity :one
 select
 	count(*) as orphaned_message_count,
-	count(distinct m.channel_id) as orphaned_channel_count,
-	cast(coalesce(min(m.created_at), '') as text) as oldest_affected_at,
-	cast(coalesce(max(m.created_at), '') as text) as newest_affected_at
+	count(distinct coalesce(m.channel_id, '')) as orphaned_channel_count,
+	cast(coalesce((
+		select m2.created_at
+		from messages m2
+		left join channels c2 on c2.id = m2.channel_id
+		where c2.id is null
+		order by julianday(m2.created_at), m2.id
+		limit 1
+	), '') as text) as oldest_affected_at,
+	cast(coalesce((
+		select m2.created_at
+		from messages m2
+		left join channels c2 on c2.id = m2.channel_id
+		where c2.id is null
+		order by julianday(m2.created_at) desc, m2.id desc
+		limit 1
+	), '') as text) as newest_affected_at
 from messages m
 left join channels c on c.id = m.channel_id
 where c.id is null;

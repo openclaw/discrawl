@@ -36,7 +36,9 @@ where m.guild_id = 'GUILD_ID'
 `join channels` intentionally drops messages whose channel metadata is
 incomplete. `discrawl sql` warns on zero-row output when it can confirm such
 orphaned references; an `undetermined` note means the catalog probe exceeded
-its bounded budget, not that completeness was established.
+its bounded two-second budget, not that completeness was established. The
+warning covers empty results only: a non-empty inner join can still omit
+orphaned messages, so use the left join or check diagnostics first.
 
 ## See also
 
