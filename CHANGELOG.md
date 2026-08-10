@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.13.1 - 2026-08-09
 
 **Highlight:** `tail --verbose` now tells you *why* a message was not archived.
