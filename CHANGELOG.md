@@ -8,7 +8,7 @@
 
 ### Maintenance
 
-- Update Crawlkit to v0.14.6, the modernc SQLite stack to v1.56.0, and refresh Go analysis tooling.
+- Update Crawlkit to v0.14.6, Kong to v1.16.1, the modernc SQLite stack to v1.56.0, and refresh Go analysis tooling.
 
 ## 0.13.0 - 2026-08-03
 
