@@ -249,9 +249,34 @@ func (t *tailHandler) OnTailFailure(failure discordclient.TailFailure) {
 	t.logger.Warn("tail event handler failed", attrs...)
 }
 
+func (t *tailHandler) OnTailEventObserved(event discordclient.TailEventObservation) {
+	stage := event.Stage
+	if stage == "" {
+		stage = "gateway_received"
+	}
+	t.logTailEvent(
+		event.EventType,
+		stage,
+		event.Reason,
+		event.GuildID,
+		event.ChannelID,
+		event.MessageID,
+	)
+}
+
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
+	t.logTailMessage("MESSAGE_CREATE", "handler_started", "", msg)
+	if msg == nil {
+		t.logTailMessage("MESSAGE_CREATE", "ignored", "missing_event", msg)
+		return nil
+	}
+	if !t.allowGuild(msg.GuildID) {
+		t.logTailMessage("MESSAGE_CREATE", "ignored", "guild_scope", msg)
+		return nil
+	}
+	if t.excludeChannel(msg.ChannelID) {
+		t.logTailMessage("MESSAGE_CREATE", "ignored", "channel_scope", msg)
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -275,15 +300,26 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
 		return err
 	}
-	return t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create")
+	if err := t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create"); err != nil {
+		return err
+	}
+	t.logTailMessage("MESSAGE_CREATE", "archived", "", msg)
+	return nil
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
+	t.logTailMessage("MESSAGE_UPDATE", "handler_started", "", msg)
 	if msg == nil {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "missing_event", msg)
 		return nil
 	}
-	if t.excludeChannel(msg.ChannelID) || (msg.GuildID != "" && !t.allowGuild(msg.GuildID)) {
+	if msg.GuildID != "" && !t.allowGuild(msg.GuildID) {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "guild_scope", msg)
+		return nil
+	}
+	if t.excludeChannel(msg.ChannelID) {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "channel_scope", msg)
 		return nil
 	}
 	var err error
@@ -291,7 +327,16 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if err != nil {
 		return err
 	}
-	if msg == nil || !t.allowGuild(msg.GuildID) || t.excludeChannel(msg.ChannelID) {
+	if msg == nil {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "incomplete_event", msg)
+		return nil
+	}
+	if !t.allowGuild(msg.GuildID) {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "guild_scope", msg)
+		return nil
+	}
+	if t.excludeChannel(msg.ChannelID) {
+		t.logTailMessage("MESSAGE_UPDATE", "ignored", "channel_scope", msg)
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
@@ -311,7 +356,11 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
 		return err
 	}
-	return t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update")
+	if err := t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "update"); err != nil {
+		return err
+	}
+	t.logTailMessage("MESSAGE_UPDATE", "archived", "", msg)
+	return nil
 }
 
 func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.Message) (*discordgo.Message, error) {
@@ -381,7 +430,17 @@ func isPartialMessageUpdate(msg *discordgo.Message) bool {
 
 func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.MessageDelete) error {
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageHandler)
-	if evt == nil || !t.allowGuild(evt.GuildID) || t.excludeChannel(evt.ChannelID) {
+	t.logTailDelete("MESSAGE_DELETE", "handler_started", "", evt)
+	if evt == nil {
+		t.logTailDelete("MESSAGE_DELETE", "ignored", "missing_event", evt)
+		return nil
+	}
+	if !t.allowGuild(evt.GuildID) {
+		t.logTailDelete("MESSAGE_DELETE", "ignored", "guild_scope", evt)
+		return nil
+	}
+	if t.excludeChannel(evt.ChannelID) {
+		t.logTailDelete("MESSAGE_DELETE", "ignored", "channel_scope", evt)
 		return nil
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalDelete)
@@ -392,7 +451,47 @@ func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.Messag
 	if err := t.store.SetSyncState(ctx, "tail:last_event", evt.ID); err != nil {
 		return err
 	}
-	return t.resolveMessageFailure(ctx, evt.GuildID, evt.ChannelID, evt.ID, "delete")
+	if err := t.resolveMessageFailure(ctx, evt.GuildID, evt.ChannelID, evt.ID, "delete"); err != nil {
+		return err
+	}
+	t.logTailDelete("MESSAGE_DELETE", "archived", "", evt)
+	return nil
+}
+
+func (t *tailHandler) logTailMessage(eventType, stage, reason string, msg *discordgo.Message) {
+	if msg == nil {
+		t.logTailEvent(eventType, stage, reason, "", "", "")
+		return
+	}
+	t.logTailEvent(eventType, stage, reason, msg.GuildID, msg.ChannelID, msg.ID)
+}
+
+func (t *tailHandler) logTailDelete(eventType, stage, reason string, evt *discordgo.MessageDelete) {
+	if evt == nil {
+		t.logTailEvent(eventType, stage, reason, "", "", "")
+		return
+	}
+	t.logTailEvent(eventType, stage, reason, evt.GuildID, evt.ChannelID, evt.ID)
+}
+
+func (t *tailHandler) logTailEvent(eventType, stage, reason, guildID, channelID, messageID string) {
+	if t == nil || t.logger == nil || !t.logger.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	attrs := []any{"event_type", eventType, "stage", stage}
+	if reason != "" {
+		attrs = append(attrs, "reason", reason)
+	}
+	if guildID != "" {
+		attrs = append(attrs, "guild_id", guildID)
+	}
+	if channelID != "" {
+		attrs = append(attrs, "channel_id", channelID)
+	}
+	if messageID != "" {
+		attrs = append(attrs, "message_id", messageID)
+	}
+	t.logger.Debug("tail event trace", attrs...)
 }
 
 func (t *tailHandler) OnChannelUpsert(ctx context.Context, channel *discordgo.Channel) error {

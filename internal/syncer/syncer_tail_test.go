@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1748,6 +1749,66 @@ func TestTailReadyCallback(t *testing.T) {
 
 	handler.onReady = nil
 	require.NoError(t, handler.OnTailReady(context.Background()))
+}
+
+func TestTailEventTraceLogsSafeStagesAndScopeOutcomes(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	out := &lockedBuffer{}
+	logger := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attr
+		},
+	}))
+	handler := &tailHandler{
+		guilds:     makeGuildSet([]string{"g1"}),
+		store:      s,
+		logger:     logger,
+		exclusions: newChannelScope([]string{"blocked"}, nil, nil),
+	}
+	message := &discordgo.Message{
+		ID:        "100000000000000001",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		Content:   "sensitive canary content",
+		Timestamp: time.Now().UTC(),
+		Author:    &discordgo.User{ID: "private-user", Username: "private-name"},
+	}
+	handler.OnTailEventObserved(discordclient.TailEventObservation{
+		EventType: "MESSAGE_CREATE",
+		GuildID:   message.GuildID,
+		ChannelID: message.ChannelID,
+		MessageID: message.ID,
+	})
+	require.NoError(t, handler.OnMessageCreate(ctx, message))
+
+	wrongGuild := *message
+	wrongGuild.ID = "100000000000000002"
+	wrongGuild.GuildID = "g2"
+	require.NoError(t, handler.OnMessageCreate(ctx, &wrongGuild))
+
+	blocked := *message
+	blocked.ID = "100000000000000003"
+	blocked.ChannelID = "blocked"
+	require.NoError(t, handler.OnMessageCreate(ctx, &blocked))
+
+	logged := out.String()
+	require.Contains(t, logged, `level=DEBUG msg="tail event trace" event_type=MESSAGE_CREATE stage=gateway_received`)
+	require.Contains(t, logged, "stage=handler_started")
+	require.Contains(t, logged, "stage=archived")
+	require.Contains(t, logged, "stage=ignored reason=guild_scope")
+	require.Contains(t, logged, "stage=ignored reason=channel_scope")
+	require.Contains(t, logged, "message_id=100000000000000001")
+	require.NotContains(t, logged, message.Content)
+	require.NotContains(t, logged, message.Author.ID)
+	require.NotContains(t, logged, message.Author.Username)
 }
 
 func TestRunTailLogsSafeEventFailureMetadata(t *testing.T) {

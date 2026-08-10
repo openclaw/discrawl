@@ -1126,7 +1126,9 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handler := &recordingHandler{}
+	handler := &observingRecordingHandler{
+		observations: make(chan TailEventObservation, 3),
+	}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		cancel()
@@ -1139,6 +1141,16 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	require.Equal(t, 1, handler.memberUpserts)
 	require.Equal(t, 1, handler.memberDeletes)
 	require.Equal(t, 1, handler.ready)
+	require.Len(t, handler.observations, 3)
+	require.Equal(t, TailEventObservation{
+		EventType: "MESSAGE_CREATE",
+		Stage:     "gateway_received",
+		GuildID:   "g1",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, <-handler.observations)
+	require.Equal(t, "MESSAGE_UPDATE", (<-handler.observations).EventType)
+	require.Equal(t, "MESSAGE_DELETE", (<-handler.observations).EventType)
 	require.Zero(t, discordSessionHandlerCount(client.session))
 }
 
@@ -2804,6 +2816,7 @@ func TestTailMessageUpdateSkipsRefetchForFilteredGuild(t *testing.T) {
 	handler := &guildFilteringUpdateHandler{
 		allowedGuild: "g-selected",
 		filtered:     make(chan struct{}),
+		observations: make(chan TailEventObservation, 3),
 	}
 	var refetchCalls atomic.Int32
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -2845,6 +2858,17 @@ func TestTailMessageUpdateSkipsRefetchForFilteredGuild(t *testing.T) {
 	require.NoError(t, client.Tail(tailCtx, handler))
 	require.Zero(t, refetchCalls.Load())
 	require.Zero(t, handler.updates)
+	require.Equal(t, TailEventObservation{
+		EventType: "MESSAGE_UPDATE",
+		Stage:     "gateway_received",
+		GuildID:   "g-excluded",
+		ChannelID: "c1",
+		MessageID: "m1",
+	}, <-handler.observations)
+	require.Equal(t, "handler_started", (<-handler.observations).Stage)
+	ignored := <-handler.observations
+	require.Equal(t, "ignored", ignored.Stage)
+	require.Equal(t, "guild_scope", ignored.Reason)
 }
 
 func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
@@ -3399,6 +3423,15 @@ type recordingHandler struct {
 	ready         int
 }
 
+type observingRecordingHandler struct {
+	recordingHandler
+	observations chan TailEventObservation
+}
+
+func (h *observingRecordingHandler) OnTailEventObserved(event TailEventObservation) {
+	h.observations <- event
+}
+
 type gatewayOpenFailureHandler struct {
 	recordingHandler
 	recordCalls atomic.Int32
@@ -3920,7 +3953,12 @@ type guildFilteringUpdateHandler struct {
 	recordingHandler
 	allowedGuild string
 	filtered     chan struct{}
+	observations chan TailEventObservation
 	filterOnce   sync.Once
+}
+
+func (h *guildFilteringUpdateHandler) OnTailEventObserved(event TailEventObservation) {
+	h.observations <- event
 }
 
 func (h *guildFilteringUpdateHandler) TailAllowsGuild(guildID string) bool {

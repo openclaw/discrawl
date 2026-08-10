@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Trace live Discord message receipt, handling, scope filtering, and archive completion in verbose tail logs without exposing message content or author metadata.
+
 ### Maintenance
 
 - Update Crawlkit to v0.14.6, the modernc SQLite stack to v1.56.0, and refresh Go analysis tooling.

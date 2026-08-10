@@ -35,6 +35,21 @@ type TailReadyHandler interface {
 	OnTailReady(context.Context) error
 }
 
+// TailEventObservation identifies a message event received from the Gateway.
+// It intentionally excludes message content and author metadata.
+type TailEventObservation struct {
+	EventType string
+	Stage     string
+	Reason    string
+	GuildID   string
+	ChannelID string
+	MessageID string
+}
+
+type tailEventObserver interface {
+	OnTailEventObserved(TailEventObservation)
+}
+
 type TailFailureStage string
 
 const (
@@ -401,6 +416,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	orderedWorkCh := make(chan tailTask, c.tailQueueSize)
 	failureHandler, _ := handler.(tailFailureHandler)
 	failureRecorder, _ := handler.(tailFailureRecorder)
+	eventObserver, _ := handler.(tailEventObserver)
 	failureCircuits := map[tailFailureClass]*tailFailureCircuit{
 		tailFailureClassOrdered: {limit: defaultTailHandlerFailureLimit},
 		tailFailureClassMember:  {limit: defaultTailHandlerFailureLimit},
@@ -515,13 +531,15 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		if evt != nil {
 			msg = evt.Message
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newMessageTailTask(
+		task := newMessageTailTask(
 			"MESSAGE_CREATE",
 			func(taskCtx context.Context) error {
 				return handler.OnMessageCreate(taskCtx, msg)
 			},
 			msg,
-		))
+		)
+		reportTailEventObserved(eventObserver, task, "gateway_received", "")
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
 	addHandler(func(session *discordgo.Session, evt *discordgo.MessageUpdate) {
 		var msg, before *discordgo.Message
@@ -537,6 +555,8 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		)
 		task.run = func(taskCtx context.Context) error {
 			if filter, ok := handler.(tailGuildFilter); ok && msg != nil && !filter.TailAllowsGuild(msg.GuildID) {
+				reportTailEventObserved(eventObserver, task, "handler_started", "")
+				reportTailEventObserved(eventObserver, task, "ignored", "guild_scope")
 				return nil
 			}
 			var refetchErr error
@@ -569,6 +589,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			}
 			return errors.Join(refetchErr, handlerErr)
 		}
+		reportTailEventObserved(eventObserver, task, "gateway_received", "")
 		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageDelete) {
@@ -577,14 +598,16 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			msg = evt.Message
 			before = evt.BeforeDelete
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newMessageTailTask(
+		task := newMessageTailTask(
 			"MESSAGE_DELETE",
 			func(taskCtx context.Context) error {
 				return handler.OnMessageDelete(taskCtx, evt)
 			},
 			msg,
 			before,
-		))
+		)
+		reportTailEventObserved(eventObserver, task, "gateway_received", "")
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelCreate) {
 		var channel *discordgo.Channel
@@ -779,6 +802,20 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		return err
 	}
 	return nil
+}
+
+func reportTailEventObserved(observer tailEventObserver, task tailTask, stage, reason string) {
+	if observer == nil {
+		return
+	}
+	observer.OnTailEventObserved(TailEventObservation{
+		EventType: task.eventType,
+		Stage:     stage,
+		Reason:    reason,
+		GuildID:   task.guildID,
+		ChannelID: task.channelID,
+		MessageID: task.messageID,
+	})
 }
 
 func (c *Client) enqueueTailTask(
