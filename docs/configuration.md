@@ -93,6 +93,7 @@ remote = ""
 repo_path = "~/.local/share/discrawl/share" # macOS: "~/Library/Application Support/discrawl/share"
 branch = "main"
 auto_update = true
+update_mode = "merge" # "exact" for a dedicated snapshot-only cache
 stale_after = "15m"
 media = true
 
@@ -145,6 +146,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - changing `db_path` does not migrate existing data; copy the file yourself if you want to keep history
 - `sync.attachment_media = true` makes `sync` behave like `sync --with-media`; media bytes are cached under `cache_dir/media`, and CDN `404`/other fetch failures are recorded on attachment rows
 - `share.media = false` makes publish/update/auto-update omit or skip restoring cached media; `subscribe --no-media` writes this for Git-only readers. With the default `share.media = true`, publish/update include cached non-DM media as gzip-compressed snapshot files, but publish does not fetch missing Discord files by itself.
+- `share.update_mode = "merge"` preserves destination-only rows during update and auto-update. Set it to `"exact"` only for a dedicated snapshot reader whose public tables must mirror the current snapshot; exact updates remove non-DM rows that the publisher omits. `subscribe --exact` writes this setting.
 - `[share.filter]` narrows only `publish` output; sync can still keep a richer local archive
 - `share.filter.public_only` exports only channels visible to the guild
   `@everyone` role after category/channel permission overwrites; private

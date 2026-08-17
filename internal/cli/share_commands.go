@@ -172,6 +172,7 @@ func (r *runtime) runSubscribe(args []string) error {
 	staleAfter := fs.String("stale-after", "15m", "")
 	noAutoUpdate := fs.Bool("no-auto-update", false, "")
 	noImport := fs.Bool("no-import", false, "")
+	exact := fs.Bool("exact", false, "")
 	force := fs.Bool("force", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", false, "")
@@ -192,6 +193,10 @@ func (r *runtime) runSubscribe(args []string) error {
 	cfg.Share.Remote = remote
 	cfg.Share.Branch = *branch
 	cfg.Share.AutoUpdate = !*noAutoUpdate
+	cfg.Share.UpdateMode = config.ShareUpdateModeMerge
+	if *exact {
+		cfg.Share.UpdateMode = config.ShareUpdateModeExact
+	}
 	cfg.Share.StaleAfter = *staleAfter
 	if *noMedia {
 		cfg.Share.Media = new(false)
@@ -235,7 +240,7 @@ func (r *runtime) runSubscribe(args []string) error {
 		r.setSyncLockPhase("share import")
 		var manifest share.Manifest
 		var imported bool
-		if *force {
+		if *force || cfg.ShareUpdatesExact() {
 			manifest, imported, err = share.Replace(r.ctx, s, opts)
 		} else {
 			manifest, imported, err = share.MergeIfChanged(r.ctx, s, opts)
@@ -256,6 +261,7 @@ func (r *runtime) runSubscribe(args []string) error {
 			"embeddings":   manifest.Embeddings,
 			"imported":     imported,
 			"forced":       *force,
+			"update_mode":  cfg.Share.UpdateMode,
 		})
 	})
 }
@@ -298,7 +304,8 @@ func (r *runtime) runUpdate(args []string) error {
 			return err
 		}
 		r.setSyncLockPhase("share import")
-		if *force {
+		exact := *force || r.cfg.ShareUpdatesExact()
+		if exact {
 			manifest, imported, err = share.Replace(r.ctx, r.store, opts)
 		} else {
 			manifest, imported, err = share.MergeIfChanged(r.ctx, r.store, opts)
@@ -327,6 +334,7 @@ func (r *runtime) runUpdate(args []string) error {
 		"imported":     imported,
 		"ref":          strings.TrimSpace(*ref),
 		"forced":       *force,
+		"update_mode":  r.cfg.Share.UpdateMode,
 	})
 }
 

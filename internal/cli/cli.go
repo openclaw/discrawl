@@ -820,7 +820,8 @@ func (r *runtime) autoUpdateShare(mode shareUpdateMode) error {
 		return err
 	}
 	r.setSyncLockPhase("share import")
-	if mode == shareUpdateForce {
+	exact := mode == shareUpdateForce || r.cfg.ShareUpdatesExact()
+	if exact {
 		_, _, err = share.Replace(r.ctx, r.store, opts)
 	} else {
 		_, _, err = share.MergeIfChanged(r.ctx, r.store, opts)
@@ -828,7 +829,7 @@ func (r *runtime) autoUpdateShare(mode shareUpdateMode) error {
 	if errors.Is(err, share.ErrNoManifest) {
 		return nil
 	}
-	if errors.Is(err, share.ErrReplacementRequired) && mode != shareUpdateForce {
+	if errors.Is(err, share.ErrReplacementRequired) && !exact {
 		r.logger.Warn("share update requires forced exact reconciliation", "error", err)
 		return nil
 	}

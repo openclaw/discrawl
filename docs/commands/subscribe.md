@@ -14,6 +14,7 @@ discrawl subscribe --branch main https://github.com/example/discord-archive.git
 discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.git
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
 discrawl subscribe --no-import https://github.com/example/discord-archive.git
+discrawl subscribe --exact https://github.com/example/public-archive.git
 discrawl subscribe --force https://github.com/example/discord-archive.git
 discrawl subscribe --with-embeddings https://github.com/example/discord-archive.git
 discrawl subscribe --no-media https://github.com/example/discord-archive.git
@@ -22,8 +23,9 @@ discrawl subscribe --no-media https://github.com/example/discord-archive.git
 ## What it does
 
 - writes a config with `discord.token_source = "none"` (so no bot token is required)
-- safely merges the latest snapshot into the local SQLite archive without deleting destination-only rows
+- safely merges the latest snapshot into the local SQLite archive without deleting destination-only rows by default
 - enables auto-refresh: read commands fetch and import when the local share import is older than `share.stale_after` (default `15m`)
+- with `--exact`, persists `share.update_mode = "exact"` and makes the initial import plus later manual and automatic updates mirror the current snapshot
 
 ## Flags
 
@@ -32,13 +34,16 @@ discrawl subscribe --no-media https://github.com/example/discord-archive.git
 - `--stale-after <duration>` - how stale the local import can get before read commands auto-refresh
 - `--no-auto-update` - disable auto-refresh (use [`update`](update.html) manually)
 - `--no-import` - write config only; skip the initial pull/import
-- `--force` - replace public snapshot tables so the local database exactly matches the snapshot
+- `--exact` - persist exact replacement for this dedicated reader; rows omitted by later snapshots are removed
+- `--force` - replace public snapshot tables for the initial import only; later updates still use the configured update mode
 - `--with-embeddings` - import vectors that match your local `[search.embeddings]` identity
 - `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 
 ## Disabled in this mode
 
 `sync` and `tail` are disabled when `discord.token_source = "none"` because they need live Discord access. Switch to a token-equipped config to re-enable them.
+
+Use `--exact` for a cache that must expose exactly the publisher's current privacy-filtered view. Do not enable it on a richer local archive: exact updates intentionally remove non-DM rows that are absent from the snapshot. The default merge mode remains appropriate for archives that also ingest Discord or desktop-cache data.
 
 ## After subscribing
 

@@ -95,7 +95,7 @@ discrawl publish --check
 discrawl publish
 ```
 
-The preflight is read-only and reports the export scope before any snapshot is written. Published snapshots exclude wiretap direct messages and local failure history. See [Git snapshots](docs/guides/git-snapshots.md) for repository layout, filters, media handling, and update behavior.
+The preflight is read-only and reports the export scope before any snapshot is written. Published snapshots exclude wiretap direct messages and local failure history. Dedicated readers of privacy-filtered snapshots can subscribe with `--exact` so later omissions remove previously shared rows; normal subscriptions preserve richer local rows. See [Git snapshots](docs/guides/git-snapshots.md) for repository layout, filters, media handling, and update behavior.
 
 ## Automation
 

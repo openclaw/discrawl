@@ -132,6 +132,68 @@ func TestMergeIfChangedPreservesLocalRowsUntilForcedReplacement(t *testing.T) {
 	require.Equal(t, "0", rows[0][0], "force must reconcile even when the manifest is unchanged")
 }
 
+func TestExactReplacementRemovesRowsOmittedByNewPublicSnapshot(t *testing.T) {
+	ctx := context.Background()
+	src, err := store.Open(ctx, filepath.Join(t.TempDir(), "src.db"))
+	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
+	require.NoError(t, src.UpsertGuild(ctx, store.GuildRecord{
+		ID:      "g1",
+		Name:    "Guild",
+		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
+	}))
+	channel := store.ChannelRecord{ID: "c-formerly-public", GuildID: "g1", Kind: "text", Name: "formerly-public", RawJSON: `{}`}
+	require.NoError(t, src.UpsertChannel(ctx, channel))
+	upsertSnapshotFilterMessage(t, ctx, src, "m-formerly-public", channel.ID, "u1", "formerly public content")
+	stableChannel := store.ChannelRecord{ID: "c-still-public", GuildID: "g1", Kind: "text", Name: "still-public", RawJSON: `{}`}
+	require.NoError(t, src.UpsertChannel(ctx, stableChannel))
+	upsertSnapshotFilterMessage(t, ctx, src, "m-still-public", stableChannel.ID, "u2", "still public content")
+
+	repo := filepath.Join(t.TempDir(), "share")
+	opts := Options{RepoPath: repo, Branch: "main", Filter: FilterOptions{PublicOnly: true}}
+	first, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	require.Contains(t, snapshotTableText(t, repo, tableEntry(t, first, "channels")), channel.ID)
+	require.Contains(t, snapshotTableText(t, repo, tableEntry(t, first, "messages")), "m-formerly-public")
+
+	mergeReader, err := store.Open(ctx, filepath.Join(t.TempDir(), "merge-reader.db"))
+	require.NoError(t, err)
+	defer func() { _ = mergeReader.Close() }()
+	exactReader, err := store.Open(ctx, filepath.Join(t.TempDir(), "exact-reader.db"))
+	require.NoError(t, err)
+	defer func() { _ = exactReader.Close() }()
+	_, _, err = MergeIfChanged(ctx, mergeReader, opts)
+	require.NoError(t, err)
+	_, _, err = MergeIfChanged(ctx, exactReader, opts)
+	require.NoError(t, err)
+
+	channel.RawJSON = `{"permission_overwrites":[{"id":"g1","type":0,"deny":"1024"}]}`
+	require.NoError(t, src.UpsertChannel(ctx, channel))
+	second, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, second, "channels")), channel.ID)
+	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, second, "messages")), "m-formerly-public")
+
+	_, changed, err := MergeIfChanged(ctx, mergeReader, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+	assertSnapshotRows(t, ctx, mergeReader, 1, 1)
+
+	_, changed, err = Replace(ctx, exactReader, opts)
+	require.NoError(t, err)
+	require.True(t, changed)
+	assertSnapshotRows(t, ctx, exactReader, 0, 0)
+}
+
+func assertSnapshotRows(t *testing.T, ctx context.Context, s *store.Store, channels, messages int) {
+	t.Helper()
+	var channelCount, messageCount int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from channels where id = 'c-formerly-public'`).Scan(&channelCount))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages where id = 'm-formerly-public'`).Scan(&messageCount))
+	require.Equal(t, channels, channelCount)
+	require.Equal(t, messages, messageCount)
+}
+
 func TestMemberAndGuildTombstonesMergeByRevisionAndRestore(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))

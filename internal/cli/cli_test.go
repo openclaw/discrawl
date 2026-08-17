@@ -1279,17 +1279,19 @@ func TestReadCommandsCanDisableAutoImportWithEnv(t *testing.T) {
 	require.Empty(t, lastImport)
 }
 
-func TestSubscribeNoMediaPersistsShareMediaOptOut(t *testing.T) {
+func TestSubscribePersistsExactModeAndMediaOptOut(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 
 	var out bytes.Buffer
-	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "subscribe", "--no-import", "--no-media", "https://github.com/example/archive.git"}, &out, &bytes.Buffer{}))
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "subscribe", "--no-import", "--exact", "--no-media", "https://github.com/example/archive.git"}, &out, &bytes.Buffer{}))
 
 	cfg, err := config.Load(cfgPath)
 	require.NoError(t, err)
 	require.False(t, cfg.ShareMediaEnabled())
+	require.Equal(t, config.ShareUpdateModeExact, cfg.Share.UpdateMode)
+	require.True(t, cfg.ShareUpdatesExact())
 }
 
 func TestSubscribeCloudDoesNotCreateLocalDB(t *testing.T) {
@@ -2332,6 +2334,18 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "newer snapshot"}, &out, &bytes.Buffer{}))
 	require.Contains(t, out.String(), "newer git snapshot arrived")
+
+	readerCfg.Share.UpdateMode = config.ShareUpdateModeExact
+	readerCfg.Share.StaleAfter = "1ns"
+	require.NoError(t, config.Write(readerCfgPath, readerCfg))
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "search", "newer snapshot"}, &out, &bytes.Buffer{}))
+	reader, err = store.Open(ctx, readerCfg.DBPath)
+	require.NoError(t, err)
+	_, rows, err = reader.ReadOnlyQuery(ctx, `select count(*) from messages where id = 'local-only'`)
+	require.NoError(t, err)
+	require.Equal(t, "0", rows[0][0], "configured exact auto-update must remove destination-only rows")
+	require.NoError(t, reader.Close())
 
 	out.Reset()
 	require.NoError(t, Run(ctx, []string{"--config", readerCfgPath, "update", "--force"}, &out, &bytes.Buffer{}))

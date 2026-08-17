@@ -19,6 +19,8 @@ const (
 	DefaultRemoteTokenEnv      = "DISCRAWL_REMOTE_TOKEN"
 	DefaultTokenKeyringService = "discrawl"
 	DefaultTokenKeyringAccount = "discord_bot_token"
+	ShareUpdateModeMerge       = "merge"
+	ShareUpdateModeExact       = "exact"
 )
 
 type Config struct {
@@ -74,6 +76,7 @@ type ShareConfig struct {
 	RepoPath   string            `toml:"repo_path,omitempty"`
 	Branch     string            `toml:"branch,omitempty"`
 	AutoUpdate bool              `toml:"auto_update"`
+	UpdateMode string            `toml:"update_mode"`
 	StaleAfter string            `toml:"stale_after"`
 	Media      *bool             `toml:"media"`
 	Filter     ShareFilterConfig `toml:"filter"`
@@ -166,6 +169,7 @@ func Default() Config {
 			RepoPath:   paths.ShareDir,
 			Branch:     "main",
 			AutoUpdate: true,
+			UpdateMode: ShareUpdateModeMerge,
 			StaleAfter: "15m",
 			Media:      new(true),
 		},
@@ -331,6 +335,13 @@ func (c *Config) Normalize() error {
 	if c.Share.Branch == "" {
 		c.Share.Branch = "main"
 	}
+	c.Share.UpdateMode = strings.ToLower(strings.TrimSpace(c.Share.UpdateMode))
+	if c.Share.UpdateMode == "" {
+		c.Share.UpdateMode = ShareUpdateModeMerge
+	}
+	if c.Share.UpdateMode != ShareUpdateModeMerge && c.Share.UpdateMode != ShareUpdateModeExact {
+		return fmt.Errorf("unsupported share.update_mode %q; use merge or exact", c.Share.UpdateMode)
+	}
 	if c.Share.StaleAfter == "" {
 		c.Share.StaleAfter = "15m"
 	}
@@ -410,6 +421,10 @@ func (c Config) AttachmentMediaEnabled() bool {
 
 func (c Config) ShareMediaEnabled() bool {
 	return c.Share.Media == nil || *c.Share.Media
+}
+
+func (c Config) ShareUpdatesExact() bool {
+	return c.Share.UpdateMode == ShareUpdateModeExact
 }
 
 func (c Config) ShareEnabled() bool {

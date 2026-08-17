@@ -207,7 +207,7 @@ Generate the archive activity report.
 
 Check configuration, storage, credentials, and optional services.
 `,
-	"subscribe": `Usage: discrawl subscribe [--repo PATH] [--branch NAME] [--stale-after DURATION] [--no-auto-update] [--no-import] [--force] [--with-embeddings] [--no-media] REMOTE
+	"subscribe": `Usage: discrawl subscribe [--repo PATH] [--branch NAME] [--stale-after DURATION] [--no-auto-update] [--no-import] [--exact] [--force] [--with-embeddings] [--no-media] REMOTE
 
 Configure and optionally import a read-only snapshot subscription.
 `,

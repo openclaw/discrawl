@@ -28,6 +28,8 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.True(t, *cfg.Sync.AttachmentText)
 	require.Equal(t, "fts", cfg.Search.DefaultMode)
 	require.Equal(t, "main", cfg.Share.Branch)
+	require.Equal(t, ShareUpdateModeMerge, cfg.Share.UpdateMode)
+	require.False(t, cfg.ShareUpdatesExact())
 	require.Equal(t, "15m", cfg.Share.StaleAfter)
 	require.Empty(t, cfg.Share.Filter.IncludeChannelIDs)
 	require.Empty(t, cfg.Share.Filter.ExcludeChannelIDs)
@@ -48,6 +50,19 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.Equal(t, 12000, cfg.Search.Embeddings.MaxInputChars)
 	require.Equal(t, "2m", cfg.Search.Embeddings.RequestTimeout)
 	require.Equal(t, "exact", cfg.Search.Embeddings.VectorBackend)
+}
+
+func TestNormalizeShareUpdateMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Share.UpdateMode = " EXACT "
+	require.NoError(t, cfg.Normalize())
+	require.Equal(t, ShareUpdateModeExact, cfg.Share.UpdateMode)
+	require.True(t, cfg.ShareUpdatesExact())
+
+	cfg.Share.UpdateMode = "replace-sometimes"
+	require.ErrorContains(t, cfg.Normalize(), "unsupported share.update_mode")
 }
 
 func TestDefaultPathsUseXDGDirs(t *testing.T) {

@@ -61,13 +61,14 @@ Once `share.remote` is configured, read commands auto-fetch and import when the 
 ```bash
 discrawl subscribe --stale-after 15m https://github.com/example/discord-archive.git
 discrawl subscribe --no-auto-update https://github.com/example/discord-archive.git
+discrawl subscribe --exact https://github.com/example/public-archive.git
 ```
 
-`discrawl update` runs the same safe pull/merge step manually. `discrawl update --force --ref <tag-or-commit>` reads historical Git objects directly and leaves the share checkout unchanged. Snapshot imports are delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports changed canonical shards. Routine merges preserve destination-only rows and do not replay generated event history or remote sync cursors.
+`discrawl update` runs the configured pull/import step manually. The default `share.update_mode = "merge"` is delta-planned from crawlkit shard fingerprints. Older manifests without those fields fall back to Git blob identity, so the common publish shape only imports changed canonical shards. Routine merges preserve destination-only rows and do not replay generated event history or remote sync cursors. `subscribe --exact` persists exact replacement for a dedicated snapshot-only cache, so rows omitted from newer privacy-filtered snapshots are removed during both manual and automatic updates.
 
-Discrawl does not silently fall back to a full import. Removed shards and incompatible table changes leave the current database intact and require `discrawl update --force`. Forced updates replace public snapshot tables and rebuild search indexes; local DM rows remain untouched.
+Discrawl does not silently fall back from merge mode to a full import. Removed shards and incompatible table changes leave the current database intact and require `discrawl update --force`. Forced and configured exact updates replace public snapshot tables and rebuild search indexes; local DM rows remain untouched. Exact mode intentionally removes other destination-only rows, so do not use it on a richer archive that also ingests live Discord or desktop-cache data. `--force` is a one-shot override; `--exact` is the persistent subscription contract.
 
-`discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided. Auto mode uses the safe merge; force mode performs exact replacement before live deltas.
+`discrawl sync` does **not** auto-import the share unless `--update=auto` or `--update=force` is provided. Auto mode uses the configured update mode (merge by default); force mode performs exact replacement before live deltas.
 
 ## Hybrid mode
 
