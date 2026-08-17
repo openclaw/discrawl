@@ -23,8 +23,8 @@ func TestDiagnosticsKeepsUnknownStateWhenLockProbeFails(t *testing.T) {
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte("locked"), 0o600))
 	writeSyncLockMetadata(t, lockPath, "wiretap", os.Getpid())
-	require.NoError(t, os.Chmod(lockPath, 0))
-	t.Cleanup(func() { _ = os.Chmod(lockPath, 0o600) })
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.Symlink(filepath.Base(lockPath), lockPath))
 
 	var out bytes.Buffer
 	require.NoError(t, Run(context.Background(), []string{"--config", cfgPath, "diagnostics", "--json"}, &out, &bytes.Buffer{}))
