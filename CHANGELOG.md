@@ -1,12 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.13.3 - 2026-08-17
 
 ### Fixes
 
 - Add persistent exact snapshot updates for dedicated Git-only readers so rows omitted by a newer filtered snapshot are removed without changing the merge-by-default behavior of richer local archives.
 - Skip Discord members with a missing user object during pagination and record conversion so public sync no longer panics on a nil `User`. Thanks @SebTardif.
-
 ## v0.13.2 - 2026-08-14
 
 ### Maintenance
