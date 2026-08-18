@@ -145,7 +145,8 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `sync.exclude_channel_kinds` accepts Discrawl kinds such as `text`, `announcement`, `forum`, `thread_public`, `thread_private`, and `thread_announcement`
 - a non-zero `sync.repair_offset` aligns periodic repairs to local wall-clock boundaries; for example, `repair_every = "6h"` with `repair_offset = "2h"` targets 02:00, 08:00, 14:00, and 20:00 local time
 - `[search.lexical].languages` enables opt-in multilingual FTS fields. Supported presets are Korean (`ko`, Kiwi), Japanese (`ja`, Sudachi), Chinese (`zh`, Jieba), and Arabic (`ar`, Snowball plus proclitic splitting).
-- Multilingual lexical search requires the configured Python interpreter to provide `kiwipiepy`, `sudachipy`, `sudachidict_core`, `jieba`, and `snowballstemmer` for the enabled languages. Discrawl reports the missing module while opening the archive instead of silently falling back.
+- `discrawl lexical install` installs only the pinned packages required by the configured languages and refuses system-Python installation. Search and sync never install packages implicitly.
+- Tokenizer workers load lazily on first indexing or search use. Commands that only inspect metadata do not start Python or require tokenizer modules.
 - Each enabled language adds an independent FTS5 table. Index and query text pass through the same tokenizer, and results from the default plus language-specific tables are merged with reciprocal rank fusion.
 - After adding or changing `search.lexical.languages`, run a writer command such as `discrawl sync` once so the configured lexical tables are built. Read-only commands never mutate the archive; new and edited messages update the tables automatically during later syncs.
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search

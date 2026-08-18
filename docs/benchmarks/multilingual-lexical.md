@@ -46,3 +46,26 @@ duplicated while postings scale with enabled analyzers.
 The benchmark therefore supports a narrow claim: configured language fields
 substantially improve recall for these segmentation cases. It does not claim a
 universal 100-point gain on natural Discord query distributions.
+
+## Live verification transcript
+
+Captured from the command above:
+
+```text
+=== RUN   TestMultilingualLexicalQualityBenchmark
+database pages: unicode61=233472 bytes multilingual=319488 bytes (1.37x)
+ko recall@5: unicode61=0/5 multilingual=5/5
+ja recall@5: unicode61=0/5 multilingual=5/5
+zh recall@5: unicode61=0/5 multilingual=5/5
+ar recall@5: unicode61=0/5 multilingual=5/5
+--- PASS: TestMultilingualLexicalQualityBenchmark
+=== RUN   TestPythonMultilingualLexicalSearchE2E
+--- PASS: TestPythonMultilingualLexicalSearchE2E
+PASS
+```
+
+The selected-install path was separately exercised from an empty virtual
+environment with `languages = ["ko"]`. `discrawl lexical install` installed
+`kiwipiepy==0.23.2` plus its runtime dependencies, did not install Sudachi,
+Jieba, or Snowball, and a subsequent CLI search for `저녁` returned the fixture
+`오늘 저녁먹음 기록`.

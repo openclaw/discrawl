@@ -128,6 +128,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "cache-import", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "wiretap", description: "Import Discord Desktop cache data."},
 	{name: "search", description: "Search archived messages."},
+	{name: "lexical", description: "Install configured multilingual lexical tokenizers."},
 	{name: "tui", description: "Explore the archive in an interactive terminal UI."},
 	{name: "messages", description: "List archived messages."},
 	{name: "digest", description: "Summarize recent archive activity."},
@@ -248,28 +249,29 @@ func parseKongArgs(target any, args []string, name string, stdout, stderr io.Wri
 }
 
 type runtime struct {
-	ctx           context.Context
-	configPath    string
-	cfg           config.Config
-	stdout        io.Writer
-	stderr        io.Writer
-	json          bool
-	plain         bool
-	logger        *slog.Logger
-	store         *store.Store
-	client        discordClient
-	syncer        syncService
-	dbLockHeld    bool
-	lockStarted   time.Time
-	lockOperation string
-	lockToken     string
-	lockTokenFree func() error
-	openStore     func(context.Context, string) (*store.Store, error)
-	newDiscord    func(config.Config) (discordClient, error)
-	newRemote     func(config.Config) (remoteArchiveClient, error)
-	newSyncer     func(syncer.Client, *store.Store, *slog.Logger) syncService
-	newEmbed      func(config.EmbeddingsConfig) (embed.Provider, error)
-	now           func() time.Time
+	ctx            context.Context
+	configPath     string
+	cfg            config.Config
+	stdout         io.Writer
+	stderr         io.Writer
+	json           bool
+	plain          bool
+	logger         *slog.Logger
+	store          *store.Store
+	client         discordClient
+	syncer         syncService
+	dbLockHeld     bool
+	lockStarted    time.Time
+	lockOperation  string
+	lockToken      string
+	lockTokenFree  func() error
+	openStore      func(context.Context, string) (*store.Store, error)
+	newDiscord     func(config.Config) (discordClient, error)
+	newRemote      func(config.Config) (remoteArchiveClient, error)
+	newSyncer      func(syncer.Client, *store.Store, *slog.Logger) syncService
+	newEmbed       func(config.EmbeddingsConfig) (embed.Provider, error)
+	installLexical func(context.Context, string, []string) (store.LexicalInstallResult, error)
+	now            func() time.Time
 }
 
 func crawlkitEmbeddingConfig(cfg config.EmbeddingsConfig) embed.Config {
@@ -358,6 +360,11 @@ func (r *runtime) dispatch(rest []string) error {
 		}
 		autoShareUpdate := !hasBoolFlag(rest[1:], "--dm")
 		return r.withLocalStoreRead(autoShareUpdate, func() error { return r.runSearch(rest[1:]) })
+	case "lexical":
+		if hasHelpFlag(rest[1:]) {
+			return printCommandUsage(r.stdout, []string{"lexical"})
+		}
+		return r.withConfig(func() error { return r.runLexical(rest[1:]) })
 	case "tui":
 		if hasHelpArg(rest[1:]) {
 			return r.runTUI(rest[1:])

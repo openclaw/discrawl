@@ -97,6 +97,44 @@ func TestMultilingualIndexVersionSurvivesReopen(t *testing.T) {
 	require.Equal(t, []string{"ko"}, searchResultIDs(results))
 }
 
+func TestMultilingualIndexRebuildsAfterDisabledWrites(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discrawl.db")
+	tokenizers := func() map[string]LexicalTokenizer {
+		return map[string]LexicalTokenizer{
+			"ko": stubLexicalTokenizer{tokenize: replaceLexicalTerms(map[string]string{
+				"저녁먹음": "저녁 먹 음",
+				"회의기록": "회의 기록",
+			})},
+		}
+	}
+
+	enabled, err := openWithLexicalTokenizers(ctx, path, tokenizers())
+	require.NoError(t, err)
+	require.NoError(t, enabled.UpsertMessage(ctx, MessageRecord{
+		ID: "before", GuildID: "g1", ChannelID: "c1",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content:   "저녁먹음", NormalizedContent: "저녁먹음", RawJSON: `{}`,
+	}))
+	require.NoError(t, enabled.Close())
+
+	disabled, err := openWithLexicalTokenizers(ctx, path, nil)
+	require.NoError(t, err)
+	require.NoError(t, disabled.UpsertMessage(ctx, MessageRecord{
+		ID: "during", GuildID: "g1", ChannelID: "c1",
+		CreatedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+		Content:   "회의기록", NormalizedContent: "회의기록", RawJSON: `{}`,
+	}))
+	require.NoError(t, disabled.Close())
+
+	reenabled, err := openWithLexicalTokenizers(ctx, path, tokenizers())
+	require.NoError(t, err)
+	defer func() { _ = reenabled.Close() }()
+	results, err := reenabled.SearchMessages(ctx, SearchOptions{Query: "기록", Limit: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"during"}, searchResultIDs(results))
+}
+
 func TestMultilingualIndexesSearchThroughReadOnlyStore(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "discrawl.db")
@@ -122,6 +160,33 @@ func TestMultilingualIndexesSearchThroughReadOnlyStore(t *testing.T) {
 	results, err := reader.SearchMessages(ctx, SearchOptions{Query: "저녁", Limit: 10})
 	require.NoError(t, err)
 	require.Equal(t, []string{"ko"}, searchResultIDs(results))
+}
+
+func TestOpenReadOnlyWithOptionsWithoutLexicalLanguages(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discrawl.db")
+	writer, err := Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	reader, err := OpenReadOnlyWithOptions(ctx, path, OpenOptions{})
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+}
+
+func TestOpenReadOnlyWithOptionsKeepsMissingTokenizerLazy(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discrawl.db")
+	writer, err := Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	reader, err := OpenReadOnlyWithOptions(ctx, path, OpenOptions{
+		LexicalLanguages: []string{"ko"},
+		LexicalPython:    "/definitely/missing/discrawl-python",
+	})
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
 }
 
 func TestMultilingualTokenizerFailureAbortsWrite(t *testing.T) {

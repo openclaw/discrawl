@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +27,14 @@ func TestPythonLexicalTokenizerCommandProtocol(t *testing.T) {
 	require.NoError(t, tokenizer.Close())
 }
 
+func TestLockedBuffer(t *testing.T) {
+	var buffer lockedBuffer
+	written, err := buffer.Write([]byte("tokenizer stderr"))
+	require.NoError(t, err)
+	require.Equal(t, len("tokenizer stderr"), written)
+	require.Equal(t, "tokenizer stderr", buffer.String())
+}
+
 func TestPythonLexicalTokenizerCommandStartupError(t *testing.T) {
 	tokenizer, err := startPythonLexicalTokenizerCommand(
 		lexicalHelperCommand("startup-error"),
@@ -33,6 +42,24 @@ func TestPythonLexicalTokenizerCommandStartupError(t *testing.T) {
 	)
 	require.Nil(t, tokenizer)
 	require.ErrorContains(t, err, "missing tokenizer package")
+}
+
+func TestPythonLexicalTokenizerCommandMalformedStartup(t *testing.T) {
+	tokenizer, err := startPythonLexicalTokenizerCommand(
+		lexicalHelperCommand("malformed-startup"),
+		"test",
+	)
+	require.Nil(t, tokenizer)
+	require.ErrorContains(t, err, "decode tokenizer response")
+}
+
+func TestPythonLexicalTokenizerCommandStartupStderr(t *testing.T) {
+	tokenizer, err := startPythonLexicalTokenizerCommand(
+		lexicalHelperCommand("stderr-startup"),
+		"test",
+	)
+	require.Nil(t, tokenizer)
+	require.ErrorContains(t, err, "tokenizer stderr")
 }
 
 func TestPythonLexicalTokenizerCommandResponseError(t *testing.T) {
@@ -59,6 +86,18 @@ func TestPythonLexicalTokenizerHonorsCanceledContext(t *testing.T) {
 	cancel()
 	_, err = tokenizer.Tokenize(ctx, "mixed text")
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestPythonLexicalTokenizerReportsWriteAfterClose(t *testing.T) {
+	tokenizer, err := startPythonLexicalTokenizerCommand(
+		lexicalHelperCommand("ready"),
+		"test",
+	)
+	require.NoError(t, err)
+	require.NoError(t, tokenizer.Close())
+
+	_, err = tokenizer.Tokenize(context.Background(), "mixed text")
+	require.ErrorContains(t, err, "write tokenizer request")
 }
 
 func TestNewPythonLexicalTokenizersDisabled(t *testing.T) {
@@ -93,12 +132,21 @@ func TestNewPythonLexicalTokenizersExpandsHomePath(t *testing.T) {
 	closeLexicalTokenizers(tokenizers)
 }
 
-func TestOpenWithOptionsReportsMissingPython(t *testing.T) {
-	_, err := OpenWithOptions(context.Background(), filepath.Join(t.TempDir(), "discrawl.db"), OpenOptions{
+func TestOpenWithOptionsLoadsPythonLazily(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenWithOptions(ctx, filepath.Join(t.TempDir(), "discrawl.db"), OpenOptions{
 		LexicalLanguages: []string{"ko"},
 		LexicalPython:    "/definitely/missing/discrawl-python",
 	})
-	require.ErrorContains(t, err, "initialize ko lexical tokenizer")
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	err = s.UpsertMessage(ctx, MessageRecord{
+		ID: "ko", GuildID: "g1", ChannelID: "c1",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content:   "저녁먹음", NormalizedContent: "저녁먹음", RawJSON: `{}`,
+	})
+	require.ErrorContains(t, err, "start ko lexical tokenizer")
 }
 
 func lexicalHelperCommand(mode string) *exec.Cmd {
@@ -116,6 +164,14 @@ func TestLexicalTokenizerHelperProcess(t *testing.T) {
 	mode := os.Args[len(os.Args)-1]
 	if mode == "startup-error" {
 		fmt.Println(`{"error":"missing tokenizer package"}`)
+		os.Exit(2)
+	}
+	if mode == "malformed-startup" {
+		fmt.Println(`not-json`)
+		os.Exit(2)
+	}
+	if mode == "stderr-startup" {
+		_, _ = fmt.Fprintln(os.Stderr, "tokenizer stderr")
 		os.Exit(2)
 	}
 	fmt.Println(`{"ready":true}`)

@@ -41,6 +41,10 @@ func openWithLexicalTokenizers(
 		_ = store.Close()
 		return nil, err
 	}
+	if err := store.invalidateDisabledLexicalVersions(ctx); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -91,6 +95,66 @@ func (s *Store) ensureLexicalFTS(ctx context.Context) error {
 				updated_at = excluded.updated_at
 		`, lexicalFTSScope(language), lexicalFTSVersion, time.Now().UTC().Format(timeLayout)); err != nil {
 			return fmt.Errorf("stamp %s lexical index version: %w", language, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) invalidateDisabledLexicalVersions(ctx context.Context) error {
+	enabled := make(map[string]struct{}, len(s.lexicalTokenizers))
+	for language := range s.lexicalTokenizers {
+		enabled[language] = struct{}{}
+	}
+	knownScopes := map[string]string{
+		lexicalFTSScope("ko"): "ko",
+		lexicalFTSScope("ja"): "ja",
+		lexicalFTSScope("zh"): "zh",
+		lexicalFTSScope("ar"): "ar",
+	}
+	disabledScopes, err := func() ([]string, error) {
+		rows, err := s.db.QueryContext(ctx, `
+			select scope
+			from sync_state
+			where scope in (?, ?, ?, ?)
+		`,
+			lexicalFTSScope("ko"),
+			lexicalFTSScope("ja"),
+			lexicalFTSScope("zh"),
+			lexicalFTSScope("ar"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("query lexical index versions: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		var scopes []string
+		for rows.Next() {
+			var scope string
+			if err := rows.Scan(&scope); err != nil {
+				return nil, fmt.Errorf("scan lexical index version: %w", err)
+			}
+			language, ok := knownScopes[scope]
+			if !ok {
+				continue
+			}
+			if _, ok := enabled[language]; !ok {
+				scopes = append(scopes, scope)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate lexical index versions: %w", err)
+		}
+		return scopes, nil
+	}()
+	if err != nil {
+		return err
+	}
+	for _, scope := range disabledScopes {
+		if _, err := s.db.ExecContext(
+			ctx,
+			`delete from sync_state where scope = ?`,
+			scope,
+		); err != nil {
+			return fmt.Errorf("invalidate disabled lexical index %s: %w", scope, err)
 		}
 	}
 	return nil

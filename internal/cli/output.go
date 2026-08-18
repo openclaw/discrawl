@@ -249,6 +249,12 @@ Flags:
   --guild ID                  Restrict to one guild id.
   --guilds ID,ID              Restrict to guild ids.
 `,
+	"lexical": `Usage:
+  discrawl lexical install
+
+Install pinned tokenizer packages for the languages in search.lexical.languages.
+The configured Python interpreter must belong to a virtual environment.
+`,
 	"attachments": `Usage:
   discrawl attachments [flags]
   discrawl attachments fetch [flags]

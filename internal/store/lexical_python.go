@@ -73,27 +73,32 @@ func newPythonLexicalTokenizers(opts OpenOptions) (map[string]LexicalTokenizer, 
 	if len(opts.LexicalLanguages) == 0 {
 		return nil, nil
 	}
-	python := strings.TrimSpace(opts.LexicalPython)
-	if python == "" {
-		python = "python3"
-	}
-	if strings.HasPrefix(python, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve lexical Python home directory: %w", err)
-		}
-		python = filepath.Join(home, strings.TrimPrefix(python, "~/"))
+	python, err := expandLexicalPython(opts.LexicalPython)
+	if err != nil {
+		return nil, err
 	}
 	tokenizers := make(map[string]LexicalTokenizer, len(opts.LexicalLanguages))
 	for _, language := range opts.LexicalLanguages {
-		tokenizer, err := startPythonLexicalTokenizer(python, language)
-		if err != nil {
-			closeLexicalTokenizers(tokenizers)
-			return nil, err
-		}
-		tokenizers[language] = tokenizer
+		tokenizers[language] = newLazyLexicalTokenizer(func() (LexicalTokenizer, error) {
+			return startPythonLexicalTokenizer(python, language)
+		})
 	}
 	return tokenizers, nil
+}
+
+func expandLexicalPython(python string) (string, error) {
+	python = strings.TrimSpace(python)
+	if python == "" {
+		return "python3", nil
+	}
+	if !strings.HasPrefix(python, "~/") {
+		return python, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve lexical Python home directory: %w", err)
+	}
+	return filepath.Join(home, strings.TrimPrefix(python, "~/")), nil
 }
 
 func startPythonLexicalTokenizer(

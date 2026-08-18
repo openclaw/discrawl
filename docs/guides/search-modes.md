@@ -19,12 +19,10 @@
 
 ### Optional multilingual lexical fields
 
-Create an isolated Python environment and install only the tokenizer presets you enable:
+Create an isolated Python environment:
 
 ```bash
 python3 -m venv ~/.local/share/discrawl/tokenizers
-~/.local/share/discrawl/tokenizers/bin/python -m pip install \
-  kiwipiepy sudachipy sudachidict_core jieba snowballstemmer
 ```
 
 Then configure the fields:
@@ -35,11 +33,21 @@ languages = ["ko", "ja", "zh", "ar"]
 python = "~/.local/share/discrawl/tokenizers/bin/python" # ~ is expanded
 ```
 
+Install only the packages selected by `languages`:
+
+```bash
+discrawl lexical install
+```
+
 Every message is analyzed into each configured field. This deliberately avoids
 language detection, so mixed-language Discord messages remain searchable
 through every enabled analyzer. Disk usage and indexing work increase with the
 number of fields; query-time RRF deduplicates message ids without mixing the
 different BM25 term statistics into one field.
+
+Discrawl never installs packages during archive open, sync, or search. Workers
+are loaded lazily on first use, while `lexical install` is an explicit,
+virtual-environment-only network operation.
 
 See [Multilingual lexical benchmark](../benchmarks/multilingual-lexical.html)
 for the reproducible targeted quality check and its storage tradeoff.
