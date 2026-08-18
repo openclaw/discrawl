@@ -23,9 +23,11 @@ const (
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
 
 type Store struct {
-	db   *sql.DB
-	q    *storedb.Queries
-	path string
+	db                *sql.DB
+	q                 *storedb.Queries
+	path              string
+	baseClose         func() error
+	lexicalTokenizers map[string]LexicalTokenizer
 }
 
 type CatalogIntegrity struct {
@@ -132,31 +134,48 @@ type ChannelRow struct {
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
+	return openWithLexicalTokenizers(ctx, path, nil)
+}
+
+func openBaseStore(ctx context.Context, path string) (*crawlstore.Store, error) {
 	base, err := crawlstore.Open(ctx, crawlstore.Options{Path: path})
 	if err != nil {
 		return nil, err
 	}
-	db := base.DB()
-	store := &Store{db: db, q: storedb.New(db), path: path}
-	if err := store.migrate(ctx); err != nil {
-		_ = base.Close()
-		return nil, err
-	}
-	return store, nil
+	return base, nil
+}
+
+func newStoreQueries(db *sql.DB) *storedb.Queries {
+	return storedb.New(db)
 }
 
 func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
+	return openReadOnlyWithLexicalTokenizers(ctx, path, nil)
+}
+
+func openReadOnlyWithLexicalTokenizers(
+	ctx context.Context,
+	path string,
+	tokenizers map[string]LexicalTokenizer,
+) (*Store, error) {
 	base, err := crawlstore.OpenReadOnly(ctx, path)
 	if err != nil {
+		closeLexicalTokenizers(tokenizers)
 		return nil, err
 	}
 	db := base.DB()
-	store := &Store{db: db, q: storedb.New(db), path: path}
+	store := &Store{
+		db:                db,
+		q:                 storedb.New(db),
+		path:              path,
+		baseClose:         base.Close,
+		lexicalTokenizers: tokenizers,
+	}
 	if version, err := store.schemaVersion(ctx); err != nil {
-		_ = base.Close()
+		_ = store.Close()
 		return nil, err
 	} else if version != storeSchemaVersion {
-		_ = base.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("%w: got %d want %d", ErrSchemaVersionMismatch, version, storeSchemaVersion)
 	}
 	return store, nil
@@ -165,6 +184,10 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	closeLexicalTokenizers(s.lexicalTokenizers)
+	if s.baseClose != nil {
+		return s.baseClose()
 	}
 	return s.db.Close()
 }
@@ -258,6 +281,9 @@ func (s *Store) RebuildSearchIndexes(ctx context.Context) error {
 	if err := s.rebuildFTS(ctx); err != nil {
 		return err
 	}
+	if err := s.rebuildLexicalIndexes(ctx); err != nil {
+		return err
+	}
 	if err := s.rebuildMemberFTS(ctx); err != nil {
 		return err
 	}
@@ -266,6 +292,9 @@ func (s *Store) RebuildSearchIndexes(ctx context.Context) error {
 
 func (s *Store) RebuildMessageSearchIndex(ctx context.Context) error {
 	if err := s.rebuildFTS(ctx); err != nil {
+		return err
+	}
+	if err := s.rebuildLexicalIndexes(ctx); err != nil {
 		return err
 	}
 	return s.stampSearchIndexVersions(ctx, true, false)
@@ -845,7 +874,7 @@ func (s *Store) rebuildFTS(ctx context.Context) error {
 }
 
 func configureFTSBulkLoad(ctx context.Context, tx *sql.Tx, table string) error {
-	if table != "message_fts" && table != "member_fts" {
+	if !isMessageFTSTable(table) && table != "member_fts" {
 		return fmt.Errorf("unsupported fts table %q", table)
 	}
 	stmts := []string{
@@ -862,7 +891,7 @@ func configureFTSBulkLoad(ctx context.Context, tx *sql.Tx, table string) error {
 }
 
 func optimizeFTS(ctx context.Context, tx *sql.Tx, table string) error {
-	if table != "message_fts" && table != "member_fts" {
+	if !isMessageFTSTable(table) && table != "member_fts" {
 		return fmt.Errorf("unsupported fts table %q", table)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("insert into %s(%s) values('optimize')", table, table)); err != nil {

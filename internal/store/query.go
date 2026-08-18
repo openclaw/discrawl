@@ -105,6 +105,9 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 	if opts.Limit <= 0 {
 		opts.Limit = 20
 	}
+	if len(s.lexicalTokenizers) > 0 {
+		return s.searchMessagesMultilingual(ctx, opts)
+	}
 	args := []any{normalizeFTSQuery(opts.Query)}
 	clauses := []string{"message_fts match ?"}
 	if len(opts.GuildIDs) > 0 {

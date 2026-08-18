@@ -249,6 +249,43 @@ func TestDefaultSyncConcurrencyBounds(t *testing.T) {
 	require.Equal(t, 32, defaultSyncConcurrency())
 }
 
+func TestLoadConfigMultilingualLexicalSearch(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+version = 1
+
+[discord]
+token_source = "env"
+
+[search.lexical]
+languages = ["ko", "ja", "zh", "ar"]
+python = "/opt/discrawl-tokenizers/bin/python"
+`), 0o600))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ko", "ja", "zh", "ar"}, cfg.Search.Lexical.Languages)
+	require.Equal(t, "/opt/discrawl-tokenizers/bin/python", cfg.Search.Lexical.Python)
+}
+
+func TestNormalizeRejectsUnsupportedLexicalLanguage(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Search.Lexical.Languages = []string{"ko", "klingon"}
+	require.ErrorContains(t, cfg.Normalize(), `unsupported search.lexical language "klingon"`)
+}
+
+func TestNormalizeRejectsDuplicateLexicalLanguages(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Search.Lexical.Languages = []string{"ko", "ko"}
+	require.ErrorContains(t, cfg.Normalize(), `duplicate search.lexical language "ko"`)
+}
+
 func TestResolveDiscordTokenFromEnv(t *testing.T) {
 	cfg := Default()
 	t.Setenv(DefaultTokenEnv, "Bot env-token")

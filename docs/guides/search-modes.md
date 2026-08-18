@@ -11,9 +11,38 @@
 ## FTS details
 
 - backed by SQLite FTS5 with the default `unicode61` tokenizer
+- optional `[search.lexical]` languages add independent tokenizer-specific FTS tables and merge their ranked results with reciprocal rank fusion
+- supported presets are Korean with Kiwi, Japanese with Sudachi A-mode, Chinese with Jieba search mode, and Arabic with Snowball stemming plus proclitic splitting
 - user query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators
 - punctuation still follows FTS5 tokenization rules
 - by default, `search` skips rows with no searchable content (attachment text, attachment filenames, embeds, and replies still count as content); use `--include-empty` to opt back in
+
+### Optional multilingual lexical fields
+
+Create an isolated Python environment and install only the tokenizer presets you enable:
+
+```bash
+python3 -m venv ~/.local/share/discrawl/tokenizers
+~/.local/share/discrawl/tokenizers/bin/python -m pip install \
+  kiwipiepy sudachipy sudachidict_core jieba snowballstemmer
+```
+
+Then configure the fields:
+
+```toml
+[search.lexical]
+languages = ["ko", "ja", "zh", "ar"]
+python = "~/.local/share/discrawl/tokenizers/bin/python" # ~ is expanded
+```
+
+Every message is analyzed into each configured field. This deliberately avoids
+language detection, so mixed-language Discord messages remain searchable
+through every enabled analyzer. Disk usage and indexing work increase with the
+number of fields; query-time RRF deduplicates message ids without mixing the
+different BM25 term statistics into one field.
+
+See [Multilingual lexical benchmark](../benchmarks/multilingual-lexical.html)
+for the reproducible targeted quality check and its storage tradeoff.
 
 ## Semantic and hybrid prerequisites
 
