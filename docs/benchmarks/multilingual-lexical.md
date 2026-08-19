@@ -11,17 +11,16 @@ cannot retrieve as independent terms.
 ## Reproduce
 
 ```bash
-python3 -m venv /tmp/discrawl-tokenizer-e2e
-/tmp/discrawl-tokenizer-e2e/bin/python -m pip install \
-  sudachipy==0.6.11 \
-  sudachidict_core==20260723 \
-  jieba==0.42.1 \
-  snowballstemmer==3.1.1
+# Korean helper: official Kiwi 0.23.2 + discrawl-kiwi
+# Japanese helper: go build ./tools/discrawl-ja
+# Chinese helper: go build ./tools/discrawl-zh
+# Arabic: in-process, no helper
 
 DISCRAWL_TOKENIZER_E2E=1 \
-DISCRAWL_TOKENIZER_PYTHON=/tmp/discrawl-tokenizer-e2e/bin/python \
 DISCRAWL_KIWI_HELPER=/tmp/discrawl-kiwi \
 DISCRAWL_KIWI_MODEL=/tmp/kiwi-model/models/cong/base \
+DISCRAWL_JA_HELPER=/tmp/discrawl-ja \
+DISCRAWL_ZH_HELPER=/tmp/discrawl-zh \
 go test ./internal/store \
   -run TestMultilingualLexicalQualityBenchmark \
   -count=1 -v
@@ -29,45 +28,18 @@ go test ./internal/store \
 
 ## Result
 
-Measured on macOS arm64 with Kiwi 0.23.2 through `kiwigo`; the remaining
-analyzers used Python 3.13.2:
+Measured on macOS arm64 with native Kiwi 0.23.2, Kagome Search, GSE CutSearch,
+and the in-process Arabic analyzer:
 
 | Language | `unicode61` recall@5 | Multilingual recall@5 |
 | --- | ---: | ---: |
-| Korean / Kiwi | 0/5 | 5/5 |
-| Japanese / Sudachi A | 0/5 | 5/5 |
-| Chinese / Jieba search mode | 0/5 | 5/5 |
-| Arabic / Snowball + proclitics | 0/5 | 5/5 |
+| Korean / Kiwi via kiwigo | 0/5 | 5/5 |
+| Japanese / Kagome Search | 0/5 | 5/5 |
+| Chinese / GSE search mode | 0/5 | 5/5 |
+| Arabic / in-process light stem | 0/5 | 5/5 |
 | **Total** | **0/20** | **20/20** |
-
-Across repeated runs of this 20-message fixture, the database with four extra
-FTS tables used 1.36-1.37x the SQLite pages of the baseline. Real corpora will
-have different ratios because base tables, attachments, and metadata are not
-duplicated while postings scale with enabled analyzers.
 
 The benchmark therefore supports a narrow claim: configured language fields
 substantially improve recall for these segmentation cases. It does not claim a
-universal 100-point gain on natural Discord query distributions.
-
-## Live verification transcript
-
-Captured from the command above:
-
-```text
-=== RUN   TestMultilingualLexicalQualityBenchmark
-database pages: unicode61=233472 bytes multilingual=319488 bytes (1.37x)
-ko recall@5: unicode61=0/5 multilingual=5/5
-ja recall@5: unicode61=0/5 multilingual=5/5
-zh recall@5: unicode61=0/5 multilingual=5/5
-ar recall@5: unicode61=0/5 multilingual=5/5
---- PASS: TestMultilingualLexicalQualityBenchmark
-=== RUN   TestMultilingualLexicalSearchE2E
---- PASS: TestMultilingualLexicalSearchE2E
-PASS
-```
-
-The Korean path now uses the published `github.com/codingpot/kiwigo` Go binding
-against Kiwi 0.23.2. The live helper returned `오늘 저녁 먹 음 기록` for
-`오늘 저녁먹음 기록`; a subsequent CLI search for `저녁` returned that fixture.
-No Python process or `kiwipiepy` package is involved in Korean indexing or
-query analysis.
+universal 100-point gain on natural Discord query distributions. No Python
+tokenizer is used.

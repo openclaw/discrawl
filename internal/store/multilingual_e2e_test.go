@@ -17,9 +17,10 @@ func TestMultilingualLexicalSearchE2E(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenWithOptions(ctx, filepath.Join(t.TempDir(), "discrawl.db"), OpenOptions{
 		LexicalLanguages:   []string{"ko", "ja", "zh", "ar"},
-		LexicalPython:      os.Getenv("DISCRAWL_TOKENIZER_PYTHON"),
 		LexicalKiwiCommand: os.Getenv("DISCRAWL_KIWI_HELPER"),
 		LexicalKiwiModel:   os.Getenv("DISCRAWL_KIWI_MODEL"),
+		LexicalJaCommand:   os.Getenv("DISCRAWL_JA_HELPER"),
+		LexicalZhCommand:   os.Getenv("DISCRAWL_ZH_HELPER"),
 	})
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()

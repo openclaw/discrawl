@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const lexicalFTSVersion = "1"
+const lexicalFTSVersion = "2"
 
 type LexicalTokenizer interface {
 	Tokenize(context.Context, string) (string, error)

@@ -252,8 +252,9 @@ Flags:
 	"lexical": `Usage:
   discrawl lexical install
 
-Install pinned Python packages for configured Japanese, Chinese, and Arabic fields.
-Korean uses the separately built discrawl-kiwi Go helper and requires no Python package.
+Show the Go helpers required by search.lexical.languages.
+Korean uses discrawl-kiwi, Japanese uses discrawl-ja, Chinese uses discrawl-zh, and Arabic is in-process.
+Discrawl never downloads tokenizers.
 `,
 	"attachments": `Usage:
   discrawl attachments [flags]

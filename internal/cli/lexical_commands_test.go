@@ -3,17 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/openclaw/discrawl/internal/config"
-	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
-func TestRunLexicalInstallUsesConfiguredLanguages(t *testing.T) {
+func TestRunLexicalInstallReportsConfiguredHelpers(t *testing.T) {
 	var stdout bytes.Buffer
 	r := &runtime{
 		ctx:    context.Background(),
@@ -21,49 +19,30 @@ func TestRunLexicalInstallUsesConfiguredLanguages(t *testing.T) {
 		stdout: &stdout,
 	}
 	r.cfg.Search.Lexical.Languages = []string{"ko", "zh"}
-	r.cfg.Search.Lexical.Python = "/tmp/tokenizers/bin/python"
-	r.installLexical = func(
-		_ context.Context,
-		python string,
-		languages []string,
-	) (store.LexicalInstallResult, error) {
-		require.Equal(t, "/tmp/tokenizers/bin/python", python)
-		require.Equal(t, []string{"ko", "zh"}, languages)
-		return store.LexicalInstallResult{
-			Packages: []string{"jieba==0.42.1"},
-		}, nil
-	}
+	r.cfg.Search.Lexical.ZhCommand = "/tmp/discrawl-zh"
 
 	require.NoError(t, r.runLexical([]string{"install"}))
-	require.Contains(t, stdout.String(), "jieba==0.42.1")
+	require.Contains(t, stdout.String(), "discrawl-kiwi")
+	require.Contains(t, stdout.String(), "/tmp/discrawl-zh")
+	require.NotContains(t, stdout.String(), "python")
 }
 
 func TestRunLexicalInstallRequiresConfiguredLanguages(t *testing.T) {
 	r := &runtime{
 		ctx: context.Background(),
 		cfg: config.Default(),
-		installLexical: func(context.Context, string, []string) (store.LexicalInstallResult, error) {
-			return store.LexicalInstallResult{}, errors.New("must not run")
-		},
 	}
-
 	err := r.runLexical([]string{"install"})
 	require.ErrorContains(t, err, "search.lexical.languages is empty")
 }
 
-func TestRunLexicalInstallReportsInstallerError(t *testing.T) {
+func TestRunLexicalInstallReportsUsage(t *testing.T) {
 	r := &runtime{
 		ctx: context.Background(),
 		cfg: config.Default(),
-		installLexical: func(context.Context, string, []string) (store.LexicalInstallResult, error) {
-			return store.LexicalInstallResult{}, errors.New("pip unavailable")
-		},
 	}
 	r.cfg.Search.Lexical.Languages = []string{"ko"}
-
-	err := r.runLexical([]string{"install"})
-	require.ErrorContains(t, err, "pip unavailable")
-	err = r.runLexical([]string{"unknown"})
+	err := r.runLexical([]string{"unknown"})
 	require.ErrorContains(t, err, "usage: discrawl lexical install")
 }
 
@@ -74,18 +53,16 @@ func TestRunLexicalInstallJSONOutput(t *testing.T) {
 		cfg:    config.Default(),
 		stdout: &stdout,
 		json:   true,
-		installLexical: func(context.Context, string, []string) (store.LexicalInstallResult, error) {
-			return store.LexicalInstallResult{}, nil
-		},
 	}
-	r.cfg.Search.Lexical.Languages = []string{"ko"}
+	r.cfg.Search.Lexical.Languages = []string{"ko", "ar"}
 
 	require.NoError(t, r.runLexical([]string{"install"}))
 	require.JSONEq(t, `{
-		"languages": ["ko"],
-		"packages": [],
-		"python": "python3",
-		"kiwi": "discrawl-kiwi"
+		"languages": ["ko", "ar"],
+		"helpers": [
+			{"language":"ko","runtime":"helper","command":"discrawl-kiwi"},
+			{"language":"ar","runtime":"in-process"}
+		]
 	}`, stdout.String())
 }
 
@@ -93,6 +70,8 @@ func TestLexicalHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	require.NoError(t, Run(context.Background(), []string{"help", "lexical"}, &stdout, &bytes.Buffer{}))
 	require.Contains(t, stdout.String(), "discrawl lexical install")
+	require.Contains(t, stdout.String(), "discrawl-ja")
+	require.NotContains(t, stdout.String(), "Python packages")
 }
 
 func TestRunDispatchesLexicalInstall(t *testing.T) {

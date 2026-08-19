@@ -128,7 +128,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "cache-import", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "wiretap", description: "Import Discord Desktop cache data."},
 	{name: "search", description: "Search archived messages."},
-	{name: "lexical", description: "Install configured Python lexical tokenizers."},
+	{name: "lexical", description: "Show configured Go lexical helpers."},
 	{name: "tui", description: "Explore the archive in an interactive terminal UI."},
 	{name: "messages", description: "List archived messages."},
 	{name: "digest", description: "Summarize recent archive activity."},
@@ -249,29 +249,28 @@ func parseKongArgs(target any, args []string, name string, stdout, stderr io.Wri
 }
 
 type runtime struct {
-	ctx            context.Context
-	configPath     string
-	cfg            config.Config
-	stdout         io.Writer
-	stderr         io.Writer
-	json           bool
-	plain          bool
-	logger         *slog.Logger
-	store          *store.Store
-	client         discordClient
-	syncer         syncService
-	dbLockHeld     bool
-	lockStarted    time.Time
-	lockOperation  string
-	lockToken      string
-	lockTokenFree  func() error
-	openStore      func(context.Context, string) (*store.Store, error)
-	newDiscord     func(config.Config) (discordClient, error)
-	newRemote      func(config.Config) (remoteArchiveClient, error)
-	newSyncer      func(syncer.Client, *store.Store, *slog.Logger) syncService
-	newEmbed       func(config.EmbeddingsConfig) (embed.Provider, error)
-	installLexical func(context.Context, string, []string) (store.LexicalInstallResult, error)
-	now            func() time.Time
+	ctx           context.Context
+	configPath    string
+	cfg           config.Config
+	stdout        io.Writer
+	stderr        io.Writer
+	json          bool
+	plain         bool
+	logger        *slog.Logger
+	store         *store.Store
+	client        discordClient
+	syncer        syncService
+	dbLockHeld    bool
+	lockStarted   time.Time
+	lockOperation string
+	lockToken     string
+	lockTokenFree func() error
+	openStore     func(context.Context, string) (*store.Store, error)
+	newDiscord    func(config.Config) (discordClient, error)
+	newRemote     func(config.Config) (remoteArchiveClient, error)
+	newSyncer     func(syncer.Client, *store.Store, *slog.Logger) syncService
+	newEmbed      func(config.EmbeddingsConfig) (embed.Provider, error)
+	now           func() time.Time
 }
 
 func crawlkitEmbeddingConfig(cfg config.EmbeddingsConfig) embed.Config {
@@ -695,9 +694,10 @@ func (r *runtime) openConfiguredReadOnlyStore(path string) (*store.Store, error)
 	}
 	return store.OpenReadOnlyWithOptions(r.ctx, path, store.OpenOptions{
 		LexicalLanguages:   r.cfg.Search.Lexical.Languages,
-		LexicalPython:      r.cfg.Search.Lexical.Python,
 		LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
 		LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
+		LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
+		LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
 	})
 }
 
@@ -774,9 +774,10 @@ func (r *runtime) localStoreFactory() func(context.Context, string) (*store.Stor
 	return func(ctx context.Context, path string) (*store.Store, error) {
 		return store.OpenWithOptions(ctx, path, store.OpenOptions{
 			LexicalLanguages:   r.cfg.Search.Lexical.Languages,
-			LexicalPython:      r.cfg.Search.Lexical.Python,
 			LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
 			LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
+			LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
+			LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
 		})
 	}
 }

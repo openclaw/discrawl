@@ -2,16 +2,13 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
 
 type lexicalInstallOutput struct {
-	Languages []string `json:"languages"`
-	Packages  []string `json:"packages"`
-	Python    string   `json:"python"`
-	Kiwi      string   `json:"kiwi,omitempty"`
+	Languages []string                    `json:"languages"`
+	Helpers   []store.LexicalHelperStatus `json:"helpers"`
 }
 
 func (r *runtime) runLexical(args []string) error {
@@ -21,22 +18,14 @@ func (r *runtime) runLexical(args []string) error {
 	if len(r.cfg.Search.Lexical.Languages) == 0 {
 		return configErr(errors.New("search.lexical.languages is empty"))
 	}
-	install := r.installLexical
-	if install == nil {
-		install = store.InstallLexicalPackages
-	}
-	result, err := install(
-		r.ctx,
-		r.cfg.Search.Lexical.Python,
-		r.cfg.Search.Lexical.Languages,
-	)
-	if err != nil {
-		return configErr(fmt.Errorf("install lexical tokenizers: %w", err))
-	}
 	return r.print(lexicalInstallOutput{
 		Languages: append([]string(nil), r.cfg.Search.Lexical.Languages...),
-		Packages:  append([]string{}, result.Packages...),
-		Python:    r.cfg.Search.Lexical.Python,
-		Kiwi:      r.cfg.Search.Lexical.KiwiCommand,
+		Helpers: store.LexicalHelperStatuses(store.OpenOptions{
+			LexicalLanguages:   r.cfg.Search.Lexical.Languages,
+			LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
+			LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
+			LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
+			LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
+		}),
 	})
 }
