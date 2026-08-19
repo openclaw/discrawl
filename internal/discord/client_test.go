@@ -152,11 +152,11 @@ func TestClientRESTWrappers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, guildActive, 1)
 
-	publicArchived, err := client.ThreadsArchived(ctx, "c1", false)
+	publicArchived, err := client.ThreadsArchived(ctx, "c1", false, time.Time{})
 	require.NoError(t, err)
 	require.Len(t, publicArchived, 1)
 
-	privateArchived, err := client.ThreadsArchived(ctx, "c1", true)
+	privateArchived, err := client.ThreadsArchived(ctx, "c1", true, time.Time{})
 	require.NoError(t, err)
 	require.Len(t, privateArchived, 1)
 
@@ -167,6 +167,54 @@ func TestClientRESTWrappers(t *testing.T) {
 	message, err := client.ChannelMessage(ctx, "c1", "m1")
 	require.NoError(t, err)
 	require.Equal(t, "m1", message.ID)
+}
+
+func TestThreadsArchivedStopsAtAfterCursor(t *testing.T) {
+	after := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/channels/c1/threads/archived/public", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeJSON(map[string]any{
+			"threads": []map[string]any{
+				archivedThreadJSON("new", after.Add(time.Minute)),
+				archivedThreadJSON("cursor", after),
+				archivedThreadJSON("old", after.Add(-time.Minute)),
+			},
+			"members":  []any{},
+			"has_more": true,
+		})(w, r)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	threads, err := client.ThreadsArchived(context.Background(), "c1", false, after)
+	require.NoError(t, err)
+	require.Len(t, threads, 1)
+	require.Equal(t, "new", threads[0].ID)
+	require.Equal(t, 1, requests)
+}
+
+func archivedThreadJSON(id string, archiveAt time.Time) map[string]any {
+	return map[string]any{
+		"id":        id,
+		"guild_id":  "g1",
+		"parent_id": "c1",
+		"name":      id,
+		"type":      11,
+		"thread_metadata": map[string]any{
+			"archived":              true,
+			"auto_archive_duration": 60,
+			"archive_timestamp":     archiveAt.Format(time.RFC3339Nano),
+			"locked":                false,
+		},
+	}
 }
 
 func TestGuildMembersSkipsNilUser(t *testing.T) {

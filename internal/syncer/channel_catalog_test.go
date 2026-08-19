@@ -691,7 +691,7 @@ func TestFullSyncUsesGuildActiveThreadsForStoredParents(t *testing.T) {
 	_, err = svc.Sync(ctx, SyncOptions{Full: true, GuildIDs: []string{"g1"}})
 	require.NoError(t, err)
 	require.Equal(t, 1, client.guildThreadCalls)
-	require.Zero(t, client.threadCalls)
+	require.Equal(t, 2, client.threadCalls)
 }
 
 func TestFullSyncDiscoversActiveThreadUnderNewParent(t *testing.T) {
@@ -772,7 +772,7 @@ func TestFullSyncDiscoversActiveThreadUnderNewParent(t *testing.T) {
 	require.Equal(t, 2, stats.Threads)
 	require.Equal(t, 1, stats.Messages)
 	require.Equal(t, 1, client.guildThreadCalls)
-	require.Zero(t, client.threadCalls)
+	require.Equal(t, 4, client.threadCalls)
 	require.Equal(t, 1, client.messageCalls["t2"])
 
 	results, err := s.SearchMessages(ctx, store.SearchOptions{Query: "new parent thread"})

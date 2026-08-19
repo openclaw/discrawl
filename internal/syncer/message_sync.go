@@ -237,6 +237,9 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 		return 0, nil
 	}
 	if latestOnly {
+		if isThreadChannel(channel) && !state.BackfillComplete {
+			return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, progress)
+		}
 		if state.Latest == "" {
 			return s.syncLatestChannelHistory(ctx, channel, embeddings, since, progress)
 		}

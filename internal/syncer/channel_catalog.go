@@ -149,8 +149,12 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 	for _, channel := range channels {
 		allChannels[channel.ID] = channel
 	}
+	parentIDs := scopedThreadParentIDs(channels, exclusions)
 	if mode == channelCatalogIncremental {
-		if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, scopedThreadParentIDs(channels, exclusions)); err != nil {
+		if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, parentIDs); err != nil {
+			return nil, err
+		}
+		if err := s.appendIncrementalArchivedThreadCatalog(ctx, allChannels, parentIDs); err != nil {
 			return nil, err
 		}
 		return mapsToSlice(allChannels), nil
@@ -164,7 +168,6 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 		storedRows = rows
 		mergeStoredThreadChannels(allChannels, rows)
 	}
-	parentIDs := scopedThreadParentIDs(channels, exclusions)
 	if len(storedThreadParentIDs(storedRows)) == 0 {
 		if err := s.appendThreadCatalog(ctx, allChannels, parentIDs); err != nil {
 			return nil, err
@@ -202,19 +205,9 @@ func (s *Syncer) appendThreadCatalog(ctx context.Context, allChannels map[string
 			return err
 		}
 		failed := unavailable
-		for _, private := range []bool{false, true} {
-			archived, err := s.client.ThreadsArchived(ctx, channel.ID, private)
-			if err != nil {
-				if s.skipThreadCatalogUnavailableChannelByID(ctx, channel.ID, err, "thread archive crawl failed") {
-					failed = true
-					continue
-				}
-				s.logger.Warn("thread archive crawl failed", "channel_id", channel.ID, "private", private, "err", err)
+		for _, private := range archivedThreadPrivacy(channel) {
+			if s.appendArchivedThreads(ctx, allChannels, channel.ID, private, time.Time{}) {
 				failed = true
-				continue
-			}
-			for _, thread := range archived {
-				allChannels[thread.ID] = thread
 			}
 		}
 		if !failed {
@@ -224,6 +217,95 @@ func (s *Syncer) appendThreadCatalog(ctx context.Context, allChannels map[string
 		}
 	}
 	return nil
+}
+
+func (s *Syncer) appendIncrementalArchivedThreadCatalog(ctx context.Context, allChannels map[string]*discordgo.Channel, parents []string) error {
+	scanStartedAt := time.Now().UTC()
+	initialCursor, err := s.archivedThreadInitialCursor(ctx, scanStartedAt)
+	if err != nil {
+		return err
+	}
+	for _, parentID := range uniqueIDs(parents) {
+		channel := allChannels[parentID]
+		if !isThreadParent(channel) {
+			continue
+		}
+		failed := false
+		for _, private := range archivedThreadPrivacy(channel) {
+			scope := channelArchivedThreadCursorScope(channel.ID, private)
+			after, err := s.archivedThreadCursor(ctx, scope, initialCursor)
+			if err != nil {
+				return err
+			}
+			if s.appendArchivedThreads(ctx, allChannels, channel.ID, private, after) {
+				failed = true
+				continue
+			}
+			if err := s.store.SetSyncState(ctx, scope, scanStartedAt.Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
+		if !failed {
+			if err := s.clearThreadCatalogUnavailableChannel(ctx, channel.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Syncer) archivedThreadInitialCursor(ctx context.Context, fallback time.Time) (time.Time, error) {
+	raw, err := s.store.GetSyncState(ctx, "sync:last_success")
+	if err != nil {
+		return time.Time{}, err
+	}
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse last successful sync time: %w", err)
+	}
+	return parsed, nil
+}
+
+func (s *Syncer) appendArchivedThreads(ctx context.Context, allChannels map[string]*discordgo.Channel, channelID string, private bool, after time.Time) bool {
+	archived, err := s.client.ThreadsArchived(ctx, channelID, private, after)
+	if err != nil {
+		if !s.skipThreadCatalogUnavailableChannelByID(ctx, channelID, err, "thread archive crawl failed") {
+			s.logger.Warn("thread archive crawl failed", "channel_id", channelID, "private", private, "err", err)
+		}
+		return true
+	}
+	for _, thread := range archived {
+		allChannels[thread.ID] = thread
+	}
+	return false
+}
+
+func (s *Syncer) archivedThreadCursor(ctx context.Context, scope string, initial time.Time) (time.Time, error) {
+	raw, err := s.store.GetSyncState(ctx, scope)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if raw == "" {
+		if err := s.store.SetSyncState(ctx, scope, initial.Format(time.RFC3339Nano)); err != nil {
+			return time.Time{}, err
+		}
+		return initial, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse archived thread cursor %s: %w", scope, err)
+	}
+	return parsed, nil
+}
+
+func archivedThreadPrivacy(channel *discordgo.Channel) []bool {
+	if channel.Type == discordgo.ChannelTypeGuildText {
+		return []bool{false, true}
+	}
+	return []bool{false}
 }
 
 func (s *Syncer) appendActiveThreadCatalog(ctx context.Context, allChannels map[string]*discordgo.Channel, guildID string, parents []string) error {

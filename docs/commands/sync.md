@@ -43,7 +43,7 @@ discrawl sync --with-media
 
 | Command | Use when | Behavior |
 | --- | --- | --- |
-| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, fetches one newest page when no cursor exists, and otherwise fetches only new messages |
+| `discrawl sync` | routine refresh | skips member refreshes, discovers active and newly archived threads, fully indexes new threads, fetches one newest page for other cursorless channels, and otherwise fetches only new messages |
 | `discrawl sync --update=auto` | hybrid Git/live refresh | applies the configured stale snapshot update mode first, then runs the routine live refresh |
 | `discrawl sync --update=force` | intentional exact reconciliation | replaces public snapshot tables first, then runs the routine live refresh |
 | `discrawl sync --all-channels` | repair pass | broad incremental sweep across every stored channel/thread, including archived threads |
@@ -79,7 +79,8 @@ discrawl sync --with-media
 - Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
 - Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
 - Member refresh is best-effort and gives up after five minutes without a caller-supplied deadline. Routine latest-only syncs skip it unless `--with-members` is set.
-- When the archive is already complete, `sync --full` reuses backlog markers and limits steady-state refresh to live top-level channels plus active threads.
+- Routine refreshes keep a per-parent archived-thread cursor, so they discover threads archived between runs without rescanning the historical thread catalog.
+- When the archive is already complete, `sync --full` reuses backlog markers and the same incremental thread discovery instead of revisiting every stored archived thread.
 
 ## See also
 

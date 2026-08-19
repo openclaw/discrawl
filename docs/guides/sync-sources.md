@@ -18,7 +18,7 @@ Sync modes control the Discord bot API side of a run. When `wiretap` is selected
 
 | Command | Use when | Behavior |
 | --- | --- | --- |
-| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, fetches one newest page when no cursor exists, and otherwise fetches only new messages |
+| `discrawl sync` | routine refresh | skips member refreshes, discovers active and newly archived threads, fully indexes new threads, fetches one newest page for other cursorless channels, and otherwise fetches only new messages |
 | `discrawl sync --update=auto` | hybrid Git/live refresh | imports a stale Git snapshot first, usually as a changed-shard delta, then runs the routine live refresh |
 | `discrawl sync --all-channels` | repair pass | broad incremental sweep across every stored channel/thread, including archived threads |
 | `discrawl sync --full` | historical backfill | crawls older history until channels are complete; can take a long time on large servers |
@@ -46,7 +46,8 @@ Run one explicit `--full` pass when you want a complete historical guild archive
 - Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
 - Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
 - Full sync member refresh is best-effort and gives up after five minutes without a caller-supplied deadline, so message sync completion is not held hostage by a slow guild member crawl.
-- When the archive is already complete, `sync --full` reuses backlog markers and limits steady-state refresh to live top-level channels plus active threads instead of revisiting every stored archived thread.
+- Routine refreshes keep a per-parent archived-thread cursor, so they discover threads archived between runs without rescanning the historical thread catalog.
+- When the archive is already complete, `sync --full` reuses backlog markers and the same incremental thread discovery instead of revisiting every stored archived thread.
 - If a guild already has a local member snapshot, routine syncs reuse it and skip another full member crawl until that snapshot ages out.
 
 ## See also

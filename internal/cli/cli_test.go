@@ -3646,7 +3646,7 @@ func (f *fakeDiscordClient) GuildThreadsActive(context.Context, string) ([]*disc
 	return nil, nil
 }
 
-func (f *fakeDiscordClient) ThreadsArchived(context.Context, string, bool) ([]*discordgo.Channel, error) {
+func (f *fakeDiscordClient) ThreadsArchived(context.Context, string, bool, time.Time) ([]*discordgo.Channel, error) {
 	return nil, nil
 }
 

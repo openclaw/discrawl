@@ -340,7 +340,7 @@ func (c *Client) GuildThreadsActive(ctx context.Context, guildID string) ([]*dis
 	return list.Threads, nil
 }
 
-func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private bool) ([]*discordgo.Channel, error) {
+func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private bool, after time.Time) ([]*discordgo.Channel, error) {
 	var out []*discordgo.Channel
 	var before *time.Time
 	for {
@@ -359,8 +359,15 @@ func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private 
 		if len(list.Threads) == 0 {
 			return out, nil
 		}
-		out = append(out, list.Threads...)
-		if !list.HasMore {
+		reachedAfter := false
+		for _, thread := range list.Threads {
+			if !after.IsZero() && thread != nil && thread.ThreadMetadata != nil && !thread.ThreadMetadata.ArchiveTimestamp.After(after) {
+				reachedAfter = true
+				break
+			}
+			out = append(out, thread)
+		}
+		if reachedAfter || !list.HasMore {
 			return uniqueChannels(out), nil
 		}
 		oldest := list.Threads[len(list.Threads)-1]

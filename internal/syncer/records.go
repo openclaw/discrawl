@@ -220,6 +220,14 @@ func channelThreadCatalogUnavailableScope(channelID string) string {
 	return "channel:" + channelID + ":thread_catalog_unavailable"
 }
 
+func channelArchivedThreadCursorScope(channelID string, private bool) string {
+	kind := "public"
+	if private {
+		kind = "private"
+	}
+	return "channel:" + channelID + ":archived_" + kind + "_threads_after"
+}
+
 func makeGuildSet(ids []string) map[string]struct{} {
 	if len(ids) == 0 {
 		return nil
