@@ -30,12 +30,11 @@ func TestRunLexicalInstallUsesConfiguredLanguages(t *testing.T) {
 		require.Equal(t, "/tmp/tokenizers/bin/python", python)
 		require.Equal(t, []string{"ko", "zh"}, languages)
 		return store.LexicalInstallResult{
-			Packages: []string{"kiwipiepy==0.23.2", "jieba==0.42.1"},
+			Packages: []string{"jieba==0.42.1"},
 		}, nil
 	}
 
 	require.NoError(t, r.runLexical([]string{"install"}))
-	require.Contains(t, stdout.String(), "kiwipiepy==0.23.2")
 	require.Contains(t, stdout.String(), "jieba==0.42.1")
 }
 
@@ -76,7 +75,7 @@ func TestRunLexicalInstallJSONOutput(t *testing.T) {
 		stdout: &stdout,
 		json:   true,
 		installLexical: func(context.Context, string, []string) (store.LexicalInstallResult, error) {
-			return store.LexicalInstallResult{Packages: []string{"kiwipiepy==0.23.2"}}, nil
+			return store.LexicalInstallResult{}, nil
 		},
 	}
 	r.cfg.Search.Lexical.Languages = []string{"ko"}
@@ -84,8 +83,9 @@ func TestRunLexicalInstallJSONOutput(t *testing.T) {
 	require.NoError(t, r.runLexical([]string{"install"}))
 	require.JSONEq(t, `{
 		"languages": ["ko"],
-		"packages": ["kiwipiepy==0.23.2"],
-		"python": "python3"
+		"packages": [],
+		"python": "python3",
+		"kiwi": "discrawl-kiwi"
 	}`, stdout.String())
 }
 

@@ -27,8 +27,10 @@ func TestMultilingualLexicalQualityBenchmark(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = baseline.Close() }()
 	multilingual, err := OpenWithOptions(ctx, filepath.Join(root, "multilingual.db"), OpenOptions{
-		LexicalLanguages: []string{"ko", "ja", "zh", "ar"},
-		LexicalPython:    os.Getenv("DISCRAWL_TOKENIZER_PYTHON"),
+		LexicalLanguages:   []string{"ko", "ja", "zh", "ar"},
+		LexicalPython:      os.Getenv("DISCRAWL_TOKENIZER_PYTHON"),
+		LexicalKiwiCommand: os.Getenv("DISCRAWL_KIWI_HELPER"),
+		LexicalKiwiModel:   os.Getenv("DISCRAWL_KIWI_MODEL"),
 	})
 	require.NoError(t, err)
 	defer func() { _ = multilingual.Close() }()

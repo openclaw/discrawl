@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -36,7 +37,10 @@ func installLexicalPackagesWithRunner(
 		return LexicalInstallResult{}, err
 	}
 	if len(packages) == 0 {
-		return LexicalInstallResult{}, errors.New("no search.lexical languages are configured")
+		if len(languages) == 0 {
+			return LexicalInstallResult{}, errors.New("no search.lexical languages are configured")
+		}
+		return LexicalInstallResult{}, nil
 	}
 	python, err = expandLexicalPython(python)
 	if err != nil {
@@ -88,7 +92,7 @@ func lexicalPythonPackages(languages []string) ([]string, error) {
 		seen[language] = struct{}{}
 		switch language {
 		case "ko":
-			packages = append(packages, "kiwipiepy==0.23.2")
+			continue
 		case "ja":
 			packages = append(packages, "sudachipy==0.6.11", "sudachidict_core==20260723")
 		case "zh":
@@ -107,6 +111,7 @@ func runLexicalCommand(ctx context.Context, path string, args ...string) ([]byte
 	cmd := &exec.Cmd{
 		Path:   path,
 		Args:   append([]string{path}, args...),
+		Env:    lexicalWorkerEnvironment(os.Environ()),
 		Stdout: &output,
 		Stderr: &output,
 	}

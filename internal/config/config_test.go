@@ -262,12 +262,16 @@ token_source = "env"
 [search.lexical]
 languages = ["ko", "ja", "zh", "ar"]
 python = "/opt/discrawl-tokenizers/bin/python"
+kiwi_command = "/opt/discrawl/bin/discrawl-kiwi"
+kiwi_model = "/opt/discrawl/models/kiwi/base"
 `), 0o600))
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
 	require.Equal(t, []string{"ko", "ja", "zh", "ar"}, cfg.Search.Lexical.Languages)
 	require.Equal(t, "/opt/discrawl-tokenizers/bin/python", cfg.Search.Lexical.Python)
+	require.Equal(t, "/opt/discrawl/bin/discrawl-kiwi", cfg.Search.Lexical.KiwiCommand)
+	require.Equal(t, "/opt/discrawl/models/kiwi/base", cfg.Search.Lexical.KiwiModel)
 }
 
 func TestNormalizeRejectsUnsupportedLexicalLanguage(t *testing.T) {

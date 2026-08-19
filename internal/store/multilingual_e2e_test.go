@@ -10,14 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPythonMultilingualLexicalSearchE2E(t *testing.T) {
+func TestMultilingualLexicalSearchE2E(t *testing.T) {
 	if os.Getenv("DISCRAWL_TOKENIZER_E2E") != "1" {
 		t.Skip("set DISCRAWL_TOKENIZER_E2E=1 with optional tokenizer packages installed")
 	}
 	ctx := context.Background()
 	s, err := OpenWithOptions(ctx, filepath.Join(t.TempDir(), "discrawl.db"), OpenOptions{
-		LexicalLanguages: []string{"ko", "ja", "zh", "ar"},
-		LexicalPython:    os.Getenv("DISCRAWL_TOKENIZER_PYTHON"),
+		LexicalLanguages:   []string{"ko", "ja", "zh", "ar"},
+		LexicalPython:      os.Getenv("DISCRAWL_TOKENIZER_PYTHON"),
+		LexicalKiwiCommand: os.Getenv("DISCRAWL_KIWI_HELPER"),
+		LexicalKiwiModel:   os.Getenv("DISCRAWL_KIWI_MODEL"),
 	})
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()

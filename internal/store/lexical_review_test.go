@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,9 +17,9 @@ func TestLexicalPythonPackagesSelectOnlyConfiguredLanguages(t *testing.T) {
 	packages, err := lexicalPythonPackages([]string{"ko", "zh"})
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		"kiwipiepy==0.23.2",
 		"jieba==0.42.1",
 	}, packages)
+	require.NotContains(t, packages, "kiwipiepy==0.23.2")
 	require.NotContains(t, packages, "sudachipy==0.6.11")
 	require.NotContains(t, packages, "snowballstemmer==3.1.1")
 }
@@ -37,11 +38,17 @@ func TestInstallLexicalPackagesRejectsNoConfiguredLanguages(t *testing.T) {
 	require.ErrorContains(t, err, "no search.lexical languages")
 }
 
+func TestInstallLexicalPackagesSkipsKiwiOnlyConfiguration(t *testing.T) {
+	result, err := InstallLexicalPackages(context.Background(), "python3", []string{"ko"})
+	require.NoError(t, err)
+	require.Empty(t, result.Packages)
+}
+
 func TestInstallLexicalPackagesRequiresVirtualEnvironment(t *testing.T) {
 	_, err := installLexicalPackagesWithRunner(
 		context.Background(),
 		"/tmp/python",
-		[]string{"ko"},
+		[]string{"zh"},
 		func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("false\n"), nil
 		},
@@ -98,7 +105,7 @@ func TestInstallLexicalPackagesReportsBoundaryFailures(t *testing.T) {
 	_, err = installLexicalPackagesWithRunner(
 		context.Background(),
 		"sh",
-		[]string{"ko"},
+		[]string{"zh"},
 		func(context.Context, string, ...string) ([]byte, error) {
 			return nil, errors.New("must not run")
 		},
@@ -108,7 +115,7 @@ func TestInstallLexicalPackagesReportsBoundaryFailures(t *testing.T) {
 	_, err = installLexicalPackagesWithRunner(
 		context.Background(),
 		"/tmp/python",
-		[]string{"ko"},
+		[]string{"zh"},
 		func(context.Context, string, ...string) ([]byte, error) {
 			return nil, errors.New("probe failed")
 		},
@@ -119,7 +126,7 @@ func TestInstallLexicalPackagesReportsBoundaryFailures(t *testing.T) {
 	_, err = installLexicalPackagesWithRunner(
 		context.Background(),
 		"/tmp/python",
-		[]string{"ko"},
+		[]string{"zh"},
 		func(context.Context, string, ...string) ([]byte, error) {
 			calls++
 			if calls == 1 {
@@ -175,6 +182,103 @@ func TestLexicalWorkerEnvironmentDropsParentSecrets(t *testing.T) {
 	require.NotContains(t, joined, "password")
 }
 
+func TestKiwiCommandUsesGoHelperAndConfiguredModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	command, err := newKiwiLexicalCommand(
+		"/opt/discrawl/bin/discrawl-kiwi",
+		"~/models/kiwi/base",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "/opt/discrawl/bin/discrawl-kiwi", command.Path)
+	require.Equal(t, []string{
+		"/opt/discrawl/bin/discrawl-kiwi",
+		"--model",
+		filepath.Join(home, "models/kiwi/base"),
+	}, command.Args)
+}
+
+func TestKiwiCommandRejectsArbitraryRelativeCommand(t *testing.T) {
+	_, err := newKiwiLexicalCommand("sh", "/tmp/model")
+	require.ErrorContains(t, err, "unsupported Kiwi helper")
+}
+
+func TestKiwiTokenizerCommandProtocol(t *testing.T) {
+	tokenizer, err := startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("ready"),
+	)
+	require.NoError(t, err)
+
+	tokens, err := tokenizer.Tokenize(context.Background(), "오늘 저녁먹음 기록")
+	require.NoError(t, err)
+	require.Equal(t, "오늘 저녁 먹 음 기록", tokens)
+	require.NoError(t, tokenizer.Close())
+	_, err = tokenizer.Tokenize(context.Background(), "text")
+	require.ErrorContains(t, err, "write ko tokenizer request")
+}
+
+func TestKiwiTokenizerCommandStartupFailures(t *testing.T) {
+	tokenizer, err := startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("startup-error"),
+	)
+	require.Nil(t, tokenizer)
+	require.ErrorContains(t, err, "missing tokenizer package")
+
+	tokenizer, err = startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("malformed-startup"),
+	)
+	require.Nil(t, tokenizer)
+	require.ErrorContains(t, err, "decode Kiwi tokenizer response")
+
+	tokenizer, err = startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("stderr-startup"),
+	)
+	require.Nil(t, tokenizer)
+	require.ErrorContains(t, err, "tokenizer stderr")
+}
+
+func TestKiwiTokenizerCommandResponseErrorAndCancellation(t *testing.T) {
+	tokenizer, err := startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("response-error"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = tokenizer.Close() }()
+
+	_, err = tokenizer.Tokenize(context.Background(), "text")
+	require.ErrorContains(t, err, "tokenization failed")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = tokenizer.Tokenize(ctx, "text")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestKiwiTokenizerCommandMalformedResponse(t *testing.T) {
+	tokenizer, err := startKiwiLexicalTokenizerCommand(
+		lexicalHelperCommand("malformed-response"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = tokenizer.Close() }()
+
+	_, err = tokenizer.Tokenize(context.Background(), "text")
+	require.ErrorContains(t, err, "decode Kiwi tokenizer response")
+
+	var nilTokenizer *externalLexicalTokenizer
+	require.NoError(t, nilTokenizer.Close())
+}
+
+func TestKiwiCommandDefaultHelperAndOptionalModel(t *testing.T) {
+	bin := t.TempDir()
+	helper := filepath.Join(bin, "discrawl-kiwi")
+	require.NoError(t, os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700))
+	t.Setenv("PATH", bin)
+
+	command, err := newKiwiLexicalCommand("", "")
+	require.NoError(t, err)
+	require.Equal(t, helper, command.Path)
+	require.Equal(t, []string{helper}, command.Args)
+}
+
 func TestRunLexicalCommandCapturesOutputAndFailure(t *testing.T) {
 	t.Setenv("DISCRAWL_INSTALL_HELPER", "1")
 	output, err := runLexicalCommand(
@@ -185,7 +289,7 @@ func TestRunLexicalCommandCapturesOutputAndFailure(t *testing.T) {
 		"success",
 	)
 	require.NoError(t, err)
-	require.Equal(t, "installed\n", string(output))
+	require.Contains(t, string(output), "installed\n")
 
 	output, err = runLexicalCommand(
 		context.Background(),
@@ -201,8 +305,23 @@ func TestRunLexicalCommandCapturesOutputAndFailure(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRunLexicalCommandDropsParentSecrets(t *testing.T) {
+	t.Setenv("DISCORD_BOT_TOKEN", "discord-secret")
+	t.Setenv("OPENAI_API_KEY", "openai-secret")
+	t.Setenv("PIP_INDEX_URL", "https://user:password@example.invalid/simple")
+	output, err := runLexicalCommand(
+		context.Background(),
+		os.Args[0],
+		"-test.run=TestLexicalInstallCommandHelperProcess",
+		"--",
+		"environment",
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(output), "clean\n")
+}
+
 func TestLexicalInstallCommandHelperProcess(t *testing.T) {
-	if os.Getenv("DISCRAWL_INSTALL_HELPER") != "1" {
+	if !slices.Contains(os.Args, "-test.run=TestLexicalInstallCommandHelperProcess") {
 		return
 	}
 	switch os.Args[len(os.Args)-1] {
@@ -212,6 +331,15 @@ func TestLexicalInstallCommandHelperProcess(t *testing.T) {
 	case "failure":
 		fmt.Println("install failed")
 		os.Exit(2)
+	case "environment":
+		for _, key := range []string{"DISCORD_BOT_TOKEN", "OPENAI_API_KEY", "PIP_INDEX_URL"} {
+			if os.Getenv(key) != "" {
+				fmt.Println(key)
+				os.Exit(4)
+			}
+		}
+		fmt.Println("clean")
+		os.Exit(0)
 	default:
 		os.Exit(3)
 	}

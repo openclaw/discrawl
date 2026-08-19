@@ -73,8 +73,10 @@ type SearchConfig struct {
 }
 
 type LexicalSearchConfig struct {
-	Languages []string `toml:"languages,omitempty"`
-	Python    string   `toml:"python"`
+	Languages   []string `toml:"languages,omitempty"`
+	Python      string   `toml:"python"`
+	KiwiCommand string   `toml:"kiwi_command"`
+	KiwiModel   string   `toml:"kiwi_model"`
 }
 
 type ShareConfig struct {
@@ -161,7 +163,8 @@ func Default() Config {
 		Search: SearchConfig{
 			DefaultMode: "fts",
 			Lexical: LexicalSearchConfig{
-				Python: "python3",
+				Python:      "python3",
+				KiwiCommand: "discrawl-kiwi",
 			},
 			Embeddings: EmbeddingsConfig{
 				Enabled:        false,
@@ -313,6 +316,11 @@ func (c *Config) Normalize() error {
 	if c.Search.Lexical.Python == "" {
 		c.Search.Lexical.Python = "python3"
 	}
+	c.Search.Lexical.KiwiCommand = strings.TrimSpace(c.Search.Lexical.KiwiCommand)
+	if c.Search.Lexical.KiwiCommand == "" {
+		c.Search.Lexical.KiwiCommand = "discrawl-kiwi"
+	}
+	c.Search.Lexical.KiwiModel = strings.TrimSpace(c.Search.Lexical.KiwiModel)
 	seenLexicalLanguages := make(map[string]struct{}, len(c.Search.Lexical.Languages))
 	normalizedLexicalLanguages := make([]string, 0, len(c.Search.Lexical.Languages))
 	for _, language := range c.Search.Lexical.Languages {

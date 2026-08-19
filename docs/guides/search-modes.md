@@ -12,28 +12,43 @@
 
 - backed by SQLite FTS5 with the default `unicode61` tokenizer
 - optional `[search.lexical]` languages add independent tokenizer-specific FTS tables and merge their ranked results with reciprocal rank fusion
-- supported presets are Korean with Kiwi, Japanese with Sudachi A-mode, Chinese with Jieba search mode, and Arabic with Snowball stemming plus proclitic splitting
+- supported presets are Korean with the native Kiwi engine through the `kiwigo` Go binding, Japanese with Sudachi A-mode, Chinese with Jieba search mode, and Arabic with Snowball stemming plus proclitic splitting
 - user query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators
 - punctuation still follows FTS5 tokenization rules
 - by default, `search` skips rows with no searchable content (attachment text, attachment filenames, embeds, and replies still count as content); use `--include-empty` to opt back in
 
 ### Optional multilingual lexical fields
 
-Create an isolated Python environment:
+Install Kiwi 0.23.2's dynamic library and base model, then build the Go helper:
+
+```bash
+git clone https://github.com/openclaw/discrawl
+cd discrawl/tools/discrawl-kiwi
+go build -o ~/.local/share/discrawl/bin/discrawl-kiwi .
+```
+
+`github.com/codingpot/kiwigo` links to the system Kiwi C API. Its upstream
+installation expects Kiwi headers and dynamic libraries under `/usr/local`;
+the model is the `kiwi_model_v0.23.2_base.tgz` release asset.
+
+Create an isolated Python environment only if Japanese, Chinese, or Arabic is
+enabled:
 
 ```bash
 python3 -m venv ~/.local/share/discrawl/tokenizers
 ```
 
-Then configure the fields:
+Configure the fields:
 
 ```toml
 [search.lexical]
 languages = ["ko", "ja", "zh", "ar"]
 python = "~/.local/share/discrawl/tokenizers/bin/python" # ~ is expanded
+kiwi_command = "~/.local/share/discrawl/bin/discrawl-kiwi"
+kiwi_model = "~/.local/share/discrawl/models/kiwi/base"
 ```
 
-Install only the packages selected by `languages`:
+Install only the Python packages selected by non-Korean languages:
 
 ```bash
 discrawl lexical install
@@ -45,9 +60,11 @@ through every enabled analyzer. Disk usage and indexing work increase with the
 number of fields; query-time RRF deduplicates message ids without mixing the
 different BM25 term statistics into one field.
 
-Discrawl never installs packages during archive open, sync, or search. Workers
-are loaded lazily on first use, while `lexical install` is an explicit,
-virtual-environment-only network operation.
+Korean text never crosses a Python boundary: `discrawl-kiwi` is a persistent
+Go helper built against `github.com/codingpot/kiwigo` and dynamically linked to
+Kiwi. Discrawl never installs packages during archive open, sync, or search.
+All helpers are loaded lazily on first use, while `lexical install` is an
+explicit, virtual-environment-only operation for the remaining analyzers.
 
 See [Multilingual lexical benchmark](../benchmarks/multilingual-lexical.html)
 for the reproducible targeted quality check and its storage tradeoff.

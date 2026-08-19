@@ -128,7 +128,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "cache-import", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "wiretap", description: "Import Discord Desktop cache data."},
 	{name: "search", description: "Search archived messages."},
-	{name: "lexical", description: "Install configured multilingual lexical tokenizers."},
+	{name: "lexical", description: "Install configured Python lexical tokenizers."},
 	{name: "tui", description: "Explore the archive in an interactive terminal UI."},
 	{name: "messages", description: "List archived messages."},
 	{name: "digest", description: "Summarize recent archive activity."},
@@ -694,8 +694,10 @@ func (r *runtime) openConfiguredReadOnlyStore(path string) (*store.Store, error)
 		return store.OpenReadOnly(r.ctx, path)
 	}
 	return store.OpenReadOnlyWithOptions(r.ctx, path, store.OpenOptions{
-		LexicalLanguages: r.cfg.Search.Lexical.Languages,
-		LexicalPython:    r.cfg.Search.Lexical.Python,
+		LexicalLanguages:   r.cfg.Search.Lexical.Languages,
+		LexicalPython:      r.cfg.Search.Lexical.Python,
+		LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
+		LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
 	})
 }
 
@@ -771,8 +773,10 @@ func (r *runtime) localStoreFactory() func(context.Context, string) (*store.Stor
 	}
 	return func(ctx context.Context, path string) (*store.Store, error) {
 		return store.OpenWithOptions(ctx, path, store.OpenOptions{
-			LexicalLanguages: r.cfg.Search.Lexical.Languages,
-			LexicalPython:    r.cfg.Search.Lexical.Python,
+			LexicalLanguages:   r.cfg.Search.Lexical.Languages,
+			LexicalPython:      r.cfg.Search.Lexical.Python,
+			LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
+			LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
 		})
 	}
 }

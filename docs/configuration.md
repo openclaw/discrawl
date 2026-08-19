@@ -80,6 +80,8 @@ default_mode = "fts"
 [search.lexical]
 languages = [] # optional: "ko", "ja", "zh", "ar"
 python = "python3"
+kiwi_command = "discrawl-kiwi"
+kiwi_model = ""
 
 [search.embeddings]
 enabled = false
@@ -144,9 +146,10 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `sync.exclude_channel_ids` and `sync.exclude_channel_kinds` apply to historical sync, live tail events, and repair syncs; exclusions always win over category inclusion
 - `sync.exclude_channel_kinds` accepts Discrawl kinds such as `text`, `announcement`, `forum`, `thread_public`, `thread_private`, and `thread_announcement`
 - a non-zero `sync.repair_offset` aligns periodic repairs to local wall-clock boundaries; for example, `repair_every = "6h"` with `repair_offset = "2h"` targets 02:00, 08:00, 14:00, and 20:00 local time
-- `[search.lexical].languages` enables opt-in multilingual FTS fields. Supported presets are Korean (`ko`, Kiwi), Japanese (`ja`, Sudachi), Chinese (`zh`, Jieba), and Arabic (`ar`, Snowball plus proclitic splitting).
-- `discrawl lexical install` installs only the pinned packages required by the configured languages and refuses system-Python installation. Search and sync never install packages implicitly.
-- Tokenizer workers load lazily on first indexing or search use. Commands that only inspect metadata do not start Python or require tokenizer modules.
+- `[search.lexical].languages` enables opt-in multilingual FTS fields. Supported presets are Korean (`ko`, Kiwi through the `github.com/codingpot/kiwigo` Go binding), Japanese (`ja`, Sudachi), Chinese (`zh`, Jieba), and Arabic (`ar`, Snowball plus proclitic splitting).
+- Korean requires the separately built `discrawl-kiwi` helper plus Kiwi 0.23.2's dynamic library and base model. Set `kiwi_command` and `kiwi_model` to their installed paths. Korean does not use Python or `kiwipiepy`.
+- `discrawl lexical install` installs only the pinned Python packages required by configured Japanese, Chinese, or Arabic fields and refuses system-Python installation. Search and sync never install packages implicitly.
+- Tokenizer workers load lazily on first indexing or search use. Commands that only inspect metadata do not start the Kiwi helper or Python modules.
 - Each enabled language adds an independent FTS5 table. Index and query text pass through the same tokenizer, and results from the default plus language-specific tables are merged with reciprocal rank fusion.
 - After adding or changing `search.lexical.languages`, run a writer command such as `discrawl sync` once so the configured lexical tables are built. Read-only commands never mutate the archive; new and edited messages update the tables automatically during later syncs.
 - changing `[search.embeddings]` provider/model/input version retargets pending jobs and resets prior attempts; existing vectors for another identity remain in SQLite but are not used for semantic search

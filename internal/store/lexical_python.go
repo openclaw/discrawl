@@ -17,8 +17,10 @@ import (
 )
 
 type OpenOptions struct {
-	LexicalLanguages []string
-	LexicalPython    string
+	LexicalLanguages   []string
+	LexicalPython      string
+	LexicalKiwiCommand string
+	LexicalKiwiModel   string
 }
 
 type pythonLexicalTokenizer struct {
@@ -54,7 +56,7 @@ type pythonLexicalResponse struct {
 }
 
 func OpenWithOptions(ctx context.Context, path string, opts OpenOptions) (*Store, error) {
-	tokenizers, err := newPythonLexicalTokenizers(opts)
+	tokenizers, err := newLexicalTokenizers(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -62,14 +64,14 @@ func OpenWithOptions(ctx context.Context, path string, opts OpenOptions) (*Store
 }
 
 func OpenReadOnlyWithOptions(ctx context.Context, path string, opts OpenOptions) (*Store, error) {
-	tokenizers, err := newPythonLexicalTokenizers(opts)
+	tokenizers, err := newLexicalTokenizers(opts)
 	if err != nil {
 		return nil, err
 	}
 	return openReadOnlyWithLexicalTokenizers(ctx, path, tokenizers)
 }
 
-func newPythonLexicalTokenizers(opts OpenOptions) (map[string]LexicalTokenizer, error) {
+func newLexicalTokenizers(opts OpenOptions) (map[string]LexicalTokenizer, error) {
 	if len(opts.LexicalLanguages) == 0 {
 		return nil, nil
 	}
@@ -79,9 +81,22 @@ func newPythonLexicalTokenizers(opts OpenOptions) (map[string]LexicalTokenizer, 
 	}
 	tokenizers := make(map[string]LexicalTokenizer, len(opts.LexicalLanguages))
 	for _, language := range opts.LexicalLanguages {
-		tokenizers[language] = newLazyLexicalTokenizer(func() (LexicalTokenizer, error) {
-			return startPythonLexicalTokenizer(python, language)
-		})
+		switch language {
+		case "ko":
+			command := opts.LexicalKiwiCommand
+			model := opts.LexicalKiwiModel
+			tokenizers[language] = newLazyLexicalTokenizer(func() (LexicalTokenizer, error) {
+				tokenizer, err := startKiwiLexicalTokenizer(command, model)
+				if err != nil {
+					return nil, fmt.Errorf("start ko lexical tokenizer: %w", err)
+				}
+				return tokenizer, nil
+			})
+		default:
+			tokenizers[language] = newLazyLexicalTokenizer(func() (LexicalTokenizer, error) {
+				return startPythonLexicalTokenizer(python, language)
+			})
+		}
 	}
 	return tokenizers, nil
 }
@@ -250,9 +265,6 @@ language = sys.argv[1]
 try:
     if language == "default":
         engine = None
-    elif language == "ko":
-        from kiwipiepy import Kiwi
-        engine = Kiwi()
     elif language == "ja":
         from sudachipy import dictionary, tokenizer as sudachi_tokenizer
         engine = dictionary.Dictionary().create()
@@ -284,8 +296,6 @@ def unique(tokens):
 def tokenize(text):
     if language == "default":
         return unique(re.findall(r"[^\W\d_]+", text, flags=re.UNICODE))
-    if language == "ko":
-        return unique(token.form for token in engine.tokenize(text) if not token.tag.startswith("S"))
     if language == "ja":
         output = []
         for token in engine.tokenize(text, split_mode):

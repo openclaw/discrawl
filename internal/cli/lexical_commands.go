@@ -11,6 +11,7 @@ type lexicalInstallOutput struct {
 	Languages []string `json:"languages"`
 	Packages  []string `json:"packages"`
 	Python    string   `json:"python"`
+	Kiwi      string   `json:"kiwi,omitempty"`
 }
 
 func (r *runtime) runLexical(args []string) error {
@@ -34,7 +35,8 @@ func (r *runtime) runLexical(args []string) error {
 	}
 	return r.print(lexicalInstallOutput{
 		Languages: append([]string(nil), r.cfg.Search.Lexical.Languages...),
-		Packages:  result.Packages,
+		Packages:  append([]string{}, result.Packages...),
 		Python:    r.cfg.Search.Lexical.Python,
+		Kiwi:      r.cfg.Search.Lexical.KiwiCommand,
 	})
 }

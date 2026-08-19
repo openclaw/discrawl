@@ -252,8 +252,8 @@ Flags:
 	"lexical": `Usage:
   discrawl lexical install
 
-Install pinned tokenizer packages for the languages in search.lexical.languages.
-The configured Python interpreter must belong to a virtual environment.
+Install pinned Python packages for configured Japanese, Chinese, and Arabic fields.
+Korean uses the separately built discrawl-kiwi Go helper and requires no Python package.
 `,
 	"attachments": `Usage:
   discrawl attachments [flags]

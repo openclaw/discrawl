@@ -13,7 +13,6 @@ cannot retrieve as independent terms.
 ```bash
 python3 -m venv /tmp/discrawl-tokenizer-e2e
 /tmp/discrawl-tokenizer-e2e/bin/python -m pip install \
-  kiwipiepy==0.23.2 \
   sudachipy==0.6.11 \
   sudachidict_core==20260723 \
   jieba==0.42.1 \
@@ -21,6 +20,8 @@ python3 -m venv /tmp/discrawl-tokenizer-e2e
 
 DISCRAWL_TOKENIZER_E2E=1 \
 DISCRAWL_TOKENIZER_PYTHON=/tmp/discrawl-tokenizer-e2e/bin/python \
+DISCRAWL_KIWI_HELPER=/tmp/discrawl-kiwi \
+DISCRAWL_KIWI_MODEL=/tmp/kiwi-model/models/cong/base \
 go test ./internal/store \
   -run TestMultilingualLexicalQualityBenchmark \
   -count=1 -v
@@ -28,7 +29,8 @@ go test ./internal/store \
 
 ## Result
 
-Measured on macOS arm64 with Python 3.13.2:
+Measured on macOS arm64 with Kiwi 0.23.2 through `kiwigo`; the remaining
+analyzers used Python 3.13.2:
 
 | Language | `unicode61` recall@5 | Multilingual recall@5 |
 | --- | ---: | ---: |
@@ -59,13 +61,13 @@ ja recall@5: unicode61=0/5 multilingual=5/5
 zh recall@5: unicode61=0/5 multilingual=5/5
 ar recall@5: unicode61=0/5 multilingual=5/5
 --- PASS: TestMultilingualLexicalQualityBenchmark
-=== RUN   TestPythonMultilingualLexicalSearchE2E
---- PASS: TestPythonMultilingualLexicalSearchE2E
+=== RUN   TestMultilingualLexicalSearchE2E
+--- PASS: TestMultilingualLexicalSearchE2E
 PASS
 ```
 
-The selected-install path was separately exercised from an empty virtual
-environment with `languages = ["ko"]`. `discrawl lexical install` installed
-`kiwipiepy==0.23.2` plus its runtime dependencies, did not install Sudachi,
-Jieba, or Snowball, and a subsequent CLI search for `저녁` returned the fixture
-`오늘 저녁먹음 기록`.
+The Korean path now uses the published `github.com/codingpot/kiwigo` Go binding
+against Kiwi 0.23.2. The live helper returned `오늘 저녁 먹 음 기록` for
+`오늘 저녁먹음 기록`; a subsequent CLI search for `저녁` returned that fixture.
+No Python process or `kiwipiepy` package is involved in Korean indexing or
+query analysis.

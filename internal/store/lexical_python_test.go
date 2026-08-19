@@ -100,8 +100,8 @@ func TestPythonLexicalTokenizerReportsWriteAfterClose(t *testing.T) {
 	require.ErrorContains(t, err, "write tokenizer request")
 }
 
-func TestNewPythonLexicalTokenizersDisabled(t *testing.T) {
-	tokenizers, err := newPythonLexicalTokenizers(OpenOptions{})
+func TestNewLexicalTokenizersDisabled(t *testing.T) {
+	tokenizers, err := newLexicalTokenizers(OpenOptions{})
 	require.NoError(t, err)
 	require.Nil(t, tokenizers)
 }
@@ -116,14 +116,14 @@ func TestPythonLexicalTokenizerDefaultWorker(t *testing.T) {
 	require.Equal(t, "mixed case", tokens)
 }
 
-func TestNewPythonLexicalTokenizersExpandsHomePath(t *testing.T) {
+func TestNewLexicalTokenizersExpandsPythonHomePath(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	require.NoError(t, err)
 	home := t.TempDir()
 	require.NoError(t, os.Symlink(python, filepath.Join(home, "python3")))
 	t.Setenv("HOME", home)
 
-	tokenizers, err := newPythonLexicalTokenizers(OpenOptions{
+	tokenizers, err := newLexicalTokenizers(OpenOptions{
 		LexicalLanguages: []string{"default"},
 		LexicalPython:    "~/python3",
 	})
@@ -132,11 +132,12 @@ func TestNewPythonLexicalTokenizersExpandsHomePath(t *testing.T) {
 	closeLexicalTokenizers(tokenizers)
 }
 
-func TestOpenWithOptionsLoadsPythonLazily(t *testing.T) {
+func TestOpenWithOptionsLoadsKiwiHelperLazily(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenWithOptions(ctx, filepath.Join(t.TempDir(), "discrawl.db"), OpenOptions{
-		LexicalLanguages: []string{"ko"},
-		LexicalPython:    "/definitely/missing/discrawl-python",
+		LexicalLanguages:   []string{"ko"},
+		LexicalKiwiCommand: "/definitely/missing/discrawl-kiwi",
+		LexicalKiwiModel:   "/definitely/missing/kiwi-model",
 	})
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
@@ -147,6 +148,7 @@ func TestOpenWithOptionsLoadsPythonLazily(t *testing.T) {
 		Content:   "저녁먹음", NormalizedContent: "저녁먹음", RawJSON: `{}`,
 	})
 	require.ErrorContains(t, err, "start ko lexical tokenizer")
+	require.NotContains(t, err.Error(), "Python")
 }
 
 func lexicalHelperCommand(mode string) *exec.Cmd {
@@ -186,8 +188,17 @@ func TestLexicalTokenizerHelperProcess(t *testing.T) {
 			fmt.Println(`{"error":"tokenization failed"}`)
 			continue
 		}
+		if mode == "malformed-response" {
+			fmt.Println(`not-json`)
+			continue
+		}
 		response, err := json.Marshal(map[string]string{
-			"tokens": request["text"] + " tokenized",
+			"tokens": func() string {
+				if request["text"] == "오늘 저녁먹음 기록" {
+					return "오늘 저녁 먹 음 기록"
+				}
+				return request["text"] + " tokenized"
+			}(),
 		})
 		if err != nil {
 			fmt.Printf("{\"error\":%q}\n", err.Error())

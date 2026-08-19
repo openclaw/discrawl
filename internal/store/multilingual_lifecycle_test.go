@@ -182,8 +182,9 @@ func TestOpenReadOnlyWithOptionsKeepsMissingTokenizerLazy(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	reader, err := OpenReadOnlyWithOptions(ctx, path, OpenOptions{
-		LexicalLanguages: []string{"ko"},
-		LexicalPython:    "/definitely/missing/discrawl-python",
+		LexicalLanguages:   []string{"ko"},
+		LexicalKiwiCommand: "/definitely/missing/discrawl-kiwi",
+		LexicalKiwiModel:   "/definitely/missing/kiwi-model",
 	})
 	require.NoError(t, err)
 	require.NoError(t, reader.Close())
