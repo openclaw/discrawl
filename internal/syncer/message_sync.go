@@ -233,11 +233,16 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 		}
 		return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, progress)
 	}
-	if latestOnly && state.Latest == "" {
+	if shouldSkipChannelSync(channel, state) {
 		return 0, nil
 	}
-	if shouldSkipChannelSync(channel, state) || (latestOnly && shouldSkipLatestOnlyChannelSync(channel, state)) {
-		return 0, nil
+	if latestOnly {
+		if state.Latest == "" {
+			return s.syncLatestChannelHistory(ctx, channel, embeddings, since, progress)
+		}
+		if shouldSkipLatestOnlyChannelSync(channel, state) {
+			return 0, nil
+		}
 	}
 	return s.syncIncrementalChannelHistory(ctx, channel, state, embeddings, since, progress)
 }
@@ -331,7 +336,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 		if before == "" && state.Latest != "" {
 			before = state.Latest
 		}
-		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, progress)
+		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, 0, progress)
 		messageCount += count
 		newest = maxSnowflake(newest, latest)
 		if err != nil {
@@ -350,6 +355,17 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 		}
 	}
 	return messageCount, nil
+}
+
+func (s *Syncer) syncLatestChannelHistory(ctx context.Context, channel *discordgo.Channel, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
+	count, newest, err := s.syncBackfillPages(ctx, channel, "", "", channel.Name, embeddings, since, 1, progress)
+	if err != nil || newest == "" {
+		return count, err
+	}
+	if err := s.advanceChannelLatest(ctx, channel.ID, newest); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
 func (s *Syncer) syncIncrementalChannelHistory(ctx context.Context, channel *discordgo.Channel, state channelSyncState, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
@@ -445,9 +461,10 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 	return messageCount, newest, nil
 }
 
-func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, progress *messageSyncProgress) (int, string, error) {
+func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, pageLimit int, progress *messageSyncProgress) (int, string, error) {
 	messageCount := 0
 	newest := ""
+	pages := 0
 	for {
 		page, err := s.client.ChannelMessages(ctx, channel.ID, 100, before, "")
 		if err != nil {
@@ -465,6 +482,7 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			return messageCount, newest, err
 		}
 		progress.touch(channel, len(eligible))
+		pages++
 		newest = maxSnowflake(newest, pageNewest)
 		messageCount += len(eligible)
 		// Backfill pages are older than any previously synced head, so only
@@ -494,6 +512,9 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
 				return messageCount, newest, err
 			}
+			break
+		}
+		if pageLimit > 0 && pages >= pageLimit {
 			break
 		}
 	}

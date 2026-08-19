@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Archive the newest page from newly discovered channels and threads during routine syncs while preserving older history for later full backfill.
+
 ## v0.13.3 - 2026-08-17
 
 ### Fixes

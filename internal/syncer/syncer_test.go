@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -589,7 +590,7 @@ func TestSyncSkipMembersFlagSkipsMemberRefresh(t *testing.T) {
 	require.Zero(t, client.memberCalls)
 }
 
-func TestSyncLatestOnlySkipsChannelsWithoutLatestCursor(t *testing.T) {
+func TestSyncLatestOnlyBootstrapsNewestPageWithoutCompletingHistory(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -597,33 +598,65 @@ func TestSyncLatestOnlySkipsChannelsWithoutLatestCursor(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
+	messages := make([]*discordgo.Message, 0, 101)
+	for id := 200; id >= 100; id-- {
+		messages = append(messages, &discordgo.Message{
+			ID:        fmt.Sprintf("%03d", id),
+			GuildID:   "g1",
+			ChannelID: "thread",
+			Content:   fmt.Sprintf("message %d", id),
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		})
+	}
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
 		guildByID: map[string]*discordgo.Guild{
 			"g1": {ID: "g1", Name: "Guild"},
 		},
 		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "empty", Type: discordgo.ChannelTypeGuildText},
-			},
+			"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
 		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "100",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "would bootstrap without latest-only",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
+		guildThreads: map[string][]*discordgo.Channel{
+			"g1": {{
+				ID:            "thread",
+				GuildID:       "g1",
+				ParentID:      "forum",
+				Name:          "Beta Feedback",
+				Type:          discordgo.ChannelTypeGuildPublicThread,
+				LastMessageID: "200",
 			}},
 		},
+		messages: map[string][]*discordgo.Message{"thread": messages},
 	}
 
 	svc := New(client, s, nil)
-	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true})
+	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, SkipMembers: true})
 	require.NoError(t, err)
-	require.Zero(t, stats.Messages)
-	require.Zero(t, client.messageCalls["c1"])
+	require.Equal(t, 100, stats.Messages)
+	require.Equal(t, 1, client.messageCalls["thread"])
+
+	oldest, newest, err := s.ChannelMessageBounds(ctx, "thread")
+	require.NoError(t, err)
+	require.Equal(t, "101", oldest)
+	require.Equal(t, "200", newest)
+	backfill, err := s.GetSyncState(ctx, channelBackfillScope("thread"))
+	require.NoError(t, err)
+	require.Equal(t, "101", backfill)
+	complete, err := s.GetSyncState(ctx, channelHistoryCompleteScope("thread"))
+	require.NoError(t, err)
+	require.Empty(t, complete)
+
+	stats, err = svc.Sync(ctx, SyncOptions{Full: true, SkipMembers: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Messages)
+	oldest, newest, err = s.ChannelMessageBounds(ctx, "thread")
+	require.NoError(t, err)
+	require.Equal(t, "100", oldest)
+	require.Equal(t, "200", newest)
+	complete, err = s.GetSyncState(ctx, channelHistoryCompleteScope("thread"))
+	require.NoError(t, err)
+	require.Equal(t, "1", complete)
 }
 
 func TestSyncLatestOnlySkipsUnchangedIncompleteChannel(t *testing.T) {
