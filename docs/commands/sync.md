@@ -43,7 +43,7 @@ discrawl sync --with-media
 
 | Command | Use when | Behavior |
 | --- | --- | --- |
-| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, only fetches new messages for channels with a stored cursor |
+| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, fetches one newest page when no cursor exists, and otherwise fetches only new messages |
 | `discrawl sync --update=auto` | hybrid Git/live refresh | applies the configured stale snapshot update mode first, then runs the routine live refresh |
 | `discrawl sync --update=force` | intentional exact reconciliation | replaces public snapshot tables first, then runs the routine live refresh |
 | `discrawl sync --all-channels` | repair pass | broad incremental sweep across every stored channel/thread, including archived threads |
