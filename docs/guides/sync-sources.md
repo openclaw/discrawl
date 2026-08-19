@@ -18,7 +18,7 @@ Sync modes control the Discord bot API side of a run. When `wiretap` is selected
 
 | Command | Use when | Behavior |
 | --- | --- | --- |
-| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, only fetches new messages for channels with a stored latest cursor |
+| `discrawl sync` | routine refresh | skips member refreshes, checks live top-level channels plus active threads, fetches one newest page when no cursor exists, and otherwise fetches only new messages |
 | `discrawl sync --update=auto` | hybrid Git/live refresh | imports a stale Git snapshot first, usually as a changed-shard delta, then runs the routine live refresh |
 | `discrawl sync --all-channels` | repair pass | broad incremental sweep across every stored channel/thread, including archived threads |
 | `discrawl sync --full` | historical backfill | crawls older history until channels are complete; can take a long time on large servers |
