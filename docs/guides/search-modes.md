@@ -49,8 +49,8 @@ ja_command = "~/.local/share/discrawl/bin/discrawl-ja"
 zh_command = "~/.local/share/discrawl/bin/discrawl-zh"
 ```
 
-`discrawl lexical install` reports those helper paths. It does not download
-packages.
+Discrawl does not download or install helper packages; build the optional
+helpers separately and configure their absolute paths.
 
 Every message is analyzed into each configured field. This deliberately avoids
 language detection, so mixed-language Discord messages remain searchable

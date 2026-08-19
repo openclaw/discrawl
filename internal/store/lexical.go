@@ -148,8 +148,17 @@ func (s *Store) invalidateDisabledLexicalVersions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
 	for _, scope := range disabledScopes {
-		if _, err := s.db.ExecContext(
+		language := knownScopes[scope]
+		if _, err := tx.ExecContext(ctx, "drop table if exists "+lexicalFTSTable(language)); err != nil {
+			return fmt.Errorf("drop disabled %s lexical index: %w", language, err)
+		}
+		if _, err := tx.ExecContext(
 			ctx,
 			`delete from sync_state where scope = ?`,
 			scope,
@@ -157,7 +166,7 @@ func (s *Store) invalidateDisabledLexicalVersions(ctx context.Context) error {
 			return fmt.Errorf("invalidate disabled lexical index %s: %w", scope, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) rebuildLexicalIndexes(ctx context.Context) error {

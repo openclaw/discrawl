@@ -249,13 +249,6 @@ Flags:
   --guild ID                  Restrict to one guild id.
   --guilds ID,ID              Restrict to guild ids.
 `,
-	"lexical": `Usage:
-  discrawl lexical install
-
-Show the Go helpers required by search.lexical.languages.
-Korean uses discrawl-kiwi, Japanese uses discrawl-ja, Chinese uses discrawl-zh, and Arabic is in-process.
-Discrawl never downloads tokenizers.
-`,
 	"attachments": `Usage:
   discrawl attachments [flags]
   discrawl attachments fetch [flags]

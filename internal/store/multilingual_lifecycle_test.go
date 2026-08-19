@@ -70,6 +70,35 @@ func TestMultilingualIndexesTrackBatchDeletesAndGuildPurge(t *testing.T) {
 	require.Empty(t, results)
 }
 
+func TestDisabledLexicalIndexDoesNotRetainPurgedGuildData(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discrawl.db")
+	enabled, err := openWithLexicalTokenizers(ctx, path, map[string]LexicalTokenizer{
+		"ko": stubLexicalTokenizer{tokenize: replaceLexicalTerms(map[string]string{
+			"회의기록": "회의 기록",
+		})},
+	})
+	require.NoError(t, err)
+	require.NoError(t, enabled.UpsertMessage(ctx, MessageRecord{
+		ID: "message", GuildID: "guild", ChannelID: "channel",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content:   "회의기록", NormalizedContent: "회의기록", RawJSON: `{}`,
+	}))
+	require.NoError(t, enabled.Close())
+
+	disabled, err := openWithLexicalTokenizers(ctx, path, nil)
+	require.NoError(t, err)
+	defer func() { _ = disabled.Close() }()
+	require.NoError(t, disabled.DeleteGuildData(ctx, "guild"))
+
+	var tables int
+	require.NoError(t, disabled.DB().QueryRowContext(
+		ctx,
+		`select count(*) from sqlite_schema where type = 'table' and name = 'message_fts_ko'`,
+	).Scan(&tables))
+	require.Zero(t, tables)
+}
+
 func TestMultilingualIndexVersionSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "discrawl.db")
@@ -208,4 +237,36 @@ func TestMultilingualTokenizerFailureAbortsWrite(t *testing.T) {
 	var count int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
 	require.Zero(t, count)
+}
+
+func TestMultilingualDeleteUpsertDoesNotRequireTokenizer(t *testing.T) {
+	ctx := context.Background()
+	s, err := openWithLexicalTokenizers(ctx, filepath.Join(t.TempDir(), "discrawl.db"), map[string]LexicalTokenizer{
+		"ko": stubLexicalTokenizer{tokenize: replaceLexicalTerms(map[string]string{
+			"저녁먹음": "저녁 먹 음",
+		})},
+	})
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	message := MessageRecord{
+		ID: "ko", GuildID: "g1", ChannelID: "c1",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content:   "저녁먹음", NormalizedContent: "저녁먹음", RawJSON: `{}`,
+	}
+	require.NoError(t, s.UpsertMessage(ctx, message))
+	s.lexicalTokenizers["ko"] = failingLexicalTokenizer{err: errors.New("tokenizer unavailable")}
+
+	message.DeletedAt = time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessage(ctx, message))
+	var lexicalRows int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_fts_ko`).Scan(&lexicalRows))
+	require.Zero(t, lexicalRows)
+	s.lexicalTokenizers["ko"] = stubLexicalTokenizer{tokenize: replaceLexicalTerms(map[string]string{
+		"저녁먹음": "저녁 먹 음",
+	})}
+
+	results, err := s.SearchMessages(ctx, SearchOptions{Query: "저녁", Limit: 10})
+	require.NoError(t, err)
+	require.Empty(t, results)
 }

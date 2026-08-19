@@ -149,7 +149,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - a non-zero `sync.repair_offset` aligns periodic repairs to local wall-clock boundaries; for example, `repair_every = "6h"` with `repair_offset = "2h"` targets 02:00, 08:00, 14:00, and 20:00 local time
 - `[search.lexical].languages` enables opt-in multilingual FTS fields. Supported presets are Korean (`ko`, Kiwi through `github.com/codingpot/kiwigo`), Japanese (`ja`, Kagome Search through `discrawl-ja`), Chinese (`zh`, GSE CutSearch through `discrawl-zh`), and Arabic (`ar`, in-process light stemming).
 - Korean, Japanese, and Chinese use separately built Go helpers so the default Discrawl binary stays small and CGO-free. Arabic is implemented in-process.
-- `discrawl lexical install` reports the required helpers. It never downloads packages.
+- Optional lexical helpers are installed and built separately; Discrawl never downloads packages.
 - Tokenizer helpers load lazily on first indexing or search use. Commands that only inspect metadata do not start helpers.
 - Each enabled language adds an independent FTS5 table. Index and query text pass through the same tokenizer, and results from the default plus language-specific tables are merged with reciprocal rank fusion.
 - After adding or changing `search.lexical.languages`, run a writer command such as `discrawl sync` once so the configured lexical tables are built. Read-only commands never mutate the archive; new and edited messages update the tables automatically during later syncs.

@@ -10,20 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLexicalHelperStatusesDescribeRuntimes(t *testing.T) {
-	statuses := LexicalHelperStatuses(OpenOptions{
-		LexicalLanguages:   []string{"ko", "ja", "zh", "ar"},
-		LexicalKiwiCommand: "discrawl-kiwi",
-		LexicalJaCommand:   "/opt/discrawl-ja",
-	})
-	require.Equal(t, []LexicalHelperStatus{
-		{Language: "ko", Runtime: "helper", Command: "discrawl-kiwi"},
-		{Language: "ja", Runtime: "helper", Command: "/opt/discrawl-ja"},
-		{Language: "zh", Runtime: "helper", Command: "discrawl-zh"},
-		{Language: "ar", Runtime: "in-process"},
-	}, statuses)
-}
-
 func TestLexicalWorkerEnvironmentDropsParentSecrets(t *testing.T) {
 	environment := lexicalWorkerEnvironment([]string{
 		"PATH=/usr/bin",

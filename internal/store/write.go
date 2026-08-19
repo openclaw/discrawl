@@ -266,9 +266,13 @@ func (s *Store) UpsertMessage(ctx context.Context, message MessageRecord) error 
 }
 
 func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRecord, opts WriteOptions) error {
-	tokenized, err := s.tokenizeLexical(ctx, message.NormalizedContent)
-	if err != nil {
-		return err
+	var tokenized map[string]string
+	if message.DeletedAt == "" {
+		var err error
+		tokenized, err = s.tokenizeLexical(ctx, message.NormalizedContent)
+		if err != nil {
+			return err
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -287,10 +291,12 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	}
 	tokenized := make([]map[string]string, len(messages))
 	for i, message := range messages {
-		var err error
-		tokenized[i], err = s.tokenizeLexical(ctx, message.Record.NormalizedContent)
-		if err != nil {
-			return err
+		if message.Record.DeletedAt == "" {
+			var err error
+			tokenized[i], err = s.tokenizeLexical(ctx, message.Record.NormalizedContent)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -372,6 +378,9 @@ func (s *Store) upsertMessageTx(
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return err
 		}
+		if err := s.upsertLexicalMessageTx(ctx, tx, message, tokenized); err != nil {
+			return err
+		}
 		if message.DeletedAt != "" {
 			if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
 				return err
@@ -385,9 +394,6 @@ func (s *Store) upsertMessageTx(
 			insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
 			values(?, ?, ?, ?, ?, ?, ?, ?)
 		`, rowID, message.ID, message.GuildID, message.ChannelID, nullable(message.AuthorID), message.AuthorName, message.ChannelName, message.NormalizedContent); err != nil {
-			return err
-		}
-		if err := s.upsertLexicalMessageTx(ctx, tx, message, tokenized); err != nil {
 			return err
 		}
 	}

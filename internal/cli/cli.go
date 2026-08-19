@@ -128,7 +128,6 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "cache-import", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "wiretap", description: "Import Discord Desktop cache data."},
 	{name: "search", description: "Search archived messages."},
-	{name: "lexical", description: "Show configured Go lexical helpers."},
 	{name: "tui", description: "Explore the archive in an interactive terminal UI."},
 	{name: "messages", description: "List archived messages."},
 	{name: "digest", description: "Summarize recent archive activity."},
@@ -359,11 +358,6 @@ func (r *runtime) dispatch(rest []string) error {
 		}
 		autoShareUpdate := !hasBoolFlag(rest[1:], "--dm")
 		return r.withLocalStoreRead(autoShareUpdate, func() error { return r.runSearch(rest[1:]) })
-	case "lexical":
-		if hasHelpFlag(rest[1:]) {
-			return printCommandUsage(r.stdout, []string{"lexical"})
-		}
-		return r.withConfig(func() error { return r.runLexical(rest[1:]) })
 	case "tui":
 		if hasHelpArg(rest[1:]) {
 			return r.runTUI(rest[1:])
