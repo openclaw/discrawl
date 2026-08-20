@@ -14,6 +14,9 @@ on conflict(scope) do update set
 delete from sync_state
 where scope = ?;
 
+-- name: ChannelHasMessages :one
+select exists(select 1 from messages where channel_id = ? limit 1) as has_messages;
+
 -- name: ChannelMessageBounds :one
 select cast(coalesce(min(id), '') as text) as oldest_id,
        cast(coalesce(max(id), '') as text) as newest_id

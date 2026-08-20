@@ -59,6 +59,16 @@ func (s *Store) GetSyncState(ctx context.Context, scope string) (string, error) 
 	return cursor, nil
 }
 
+// ChannelHasMessages reports whether any message rows are stored for the
+// channel. It is an O(1) existence probe against idx_messages_channel_id and is
+// safe to call once per channel per sync.
+func (s *Store) ChannelHasMessages(ctx context.Context, channelID string) (bool, error) {
+	if channelID == "" {
+		return false, nil
+	}
+	return s.q.ChannelHasMessages(ctx, channelID)
+}
+
 func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (string, string, error) {
 	row, err := s.q.ChannelMessageBounds(ctx, channelID)
 	if err != nil {

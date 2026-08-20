@@ -54,6 +54,17 @@ func (q *Queries) CatalogIntegrity(ctx context.Context) (CatalogIntegrityRow, er
 	return i, err
 }
 
+const channelHasMessages = `-- name: ChannelHasMessages :one
+select exists(select 1 from messages where channel_id = ? limit 1) as has_messages
+`
+
+func (q *Queries) ChannelHasMessages(ctx context.Context, channelID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, channelHasMessages, channelID)
+	var has_messages bool
+	err := row.Scan(&has_messages)
+	return has_messages, err
+}
+
 const channelMessageBounds = `-- name: ChannelMessageBounds :one
 select cast(coalesce(min(id), '') as text) as oldest_id,
        cast(coalesce(max(id), '') as text) as newest_id

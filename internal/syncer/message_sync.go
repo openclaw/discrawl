@@ -225,6 +225,45 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 		return 0, err
 	}
 	if full {
+		// An explicit full run re-checks a channel previously verified empty.
+		state.VerifiedEmpty = false
+	}
+	verifying := needsHistoryVerification(channel, state)
+	if verifying {
+		// The stored cursors describe a history that is not actually present,
+		// so discard them and crawl the channel from scratch. Dropping them is
+		// safe: AdvanceChannelLatestMessageID only ever moves the stored
+		// pointer forward, so it cannot be rewound from here.
+		state = channelSyncState{}
+	}
+	count, err := s.syncChannelHistory(ctx, channel, state, full, embeddings, since, latestOnly, progress)
+	if err != nil || !verifying {
+		return count, err
+	}
+	return count, s.recordVerifiedEmptyChannel(ctx, channel.ID, since)
+}
+
+// recordVerifiedEmptyChannel marks a channel whose verification crawl completed
+// without storing anything, so needsHistoryVerification stops re-crawling it on
+// every run. It is deliberately not written when the crawl was windowed by
+// since: filterMessagesSince can drop every fetched message before it is
+// persisted, which is not evidence that the channel is empty.
+func (s *Syncer) recordVerifiedEmptyChannel(ctx context.Context, channelID string, since time.Time) error {
+	if s == nil || s.store == nil || channelID == "" || !since.IsZero() {
+		return nil
+	}
+	hasMessages, err := s.store.ChannelHasMessages(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	if hasMessages {
+		return nil
+	}
+	return s.store.SetSyncState(ctx, channelVerifiedEmptyScope(channelID), "1")
+}
+
+func (s *Syncer) syncChannelHistory(ctx context.Context, channel *discordgo.Channel, state channelSyncState, full bool, embeddings bool, since time.Time, latestOnly bool, progress *messageSyncProgress) (int, error) {
+	if full {
 		if err := s.seedChannelSyncState(ctx, channel.ID, &state); err != nil {
 			return 0, err
 		}
@@ -255,10 +294,37 @@ type channelSyncState struct {
 	StoredLatest     string
 	BackfillCursor   string
 	BackfillComplete bool
+	// HasMessages reports whether any message rows exist locally for the
+	// channel. history_complete alone is not evidence that the history was
+	// actually stored: a channel can carry the marker with zero local rows.
+	HasMessages bool
+	// VerifiedEmpty reports that a previous verification pass re-fetched the
+	// channel from scratch and still found nothing, so it must not be
+	// re-fetched every run.
+	VerifiedEmpty bool
+}
+
+// needsHistoryVerification reports whether a channel marked history_complete
+// must be re-fetched because nothing is stored locally while Discord still
+// reports the channel holds content. Without this, a channel whose messages are
+// missing is skipped forever, including under --full.
+func needsHistoryVerification(channel *discordgo.Channel, state channelSyncState) bool {
+	if channel == nil || !state.BackfillComplete {
+		return false
+	}
+	if state.HasMessages || state.VerifiedEmpty {
+		return false
+	}
+	// Discord reporting no last message is consistent with an empty channel,
+	// so there is nothing to recover.
+	return channel.LastMessageID != ""
 }
 
 func shouldSkipChannelSync(channel *discordgo.Channel, state channelSyncState) bool {
 	if !state.BackfillComplete || channel == nil {
+		return false
+	}
+	if needsHistoryVerification(channel, state) {
 		return false
 	}
 	if channel.LastMessageID == "" {
@@ -290,12 +356,33 @@ func (s *Syncer) loadChannelSyncState(ctx context.Context, channelID string) (ch
 	if err != nil {
 		return channelSyncState{}, err
 	}
-	return channelSyncState{
+	state := channelSyncState{
 		Latest:           latest,
 		StoredLatest:     latest,
 		BackfillCursor:   backfillCursor,
 		BackfillComplete: backfillComplete != "",
-	}, nil
+	}
+	if !state.BackfillComplete {
+		// Only a completed channel can be wrongly trusted, so the probes below
+		// are unnecessary work for every other channel.
+		return state, nil
+	}
+	hasMessages, err := s.store.ChannelHasMessages(ctx, channelID)
+	if err != nil {
+		return channelSyncState{}, err
+	}
+	state.HasMessages = hasMessages
+	if hasMessages {
+		return state, nil
+	}
+	// Rare path: complete but empty. Only these channels pay for the extra
+	// lookup, so it costs nothing across a normal fleet-wide sync.
+	verifiedEmpty, err := s.store.GetSyncState(ctx, channelVerifiedEmptyScope(channelID))
+	if err != nil {
+		return channelSyncState{}, err
+	}
+	state.VerifiedEmpty = verifiedEmpty != ""
+	return state, nil
 }
 
 func (s *Syncer) seedChannelSyncState(ctx context.Context, channelID string, state *channelSyncState) error {

@@ -212,6 +212,14 @@ func channelHistoryCompleteScope(channelID string) string {
 	return "channel:" + channelID + ":history_complete"
 }
 
+// channelVerifiedEmptyScope records that a channel marked history_complete was
+// re-fetched from scratch and genuinely yielded no messages. It stops the
+// history verification in needsHistoryVerification from re-fetching such a
+// channel on every run.
+func channelVerifiedEmptyScope(channelID string) string {
+	return "channel:" + channelID + ":verified_empty"
+}
+
 func channelMessageUnavailableScope(channelID string) string {
 	return "channel:" + channelID + ":unavailable"
 }
