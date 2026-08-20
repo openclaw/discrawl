@@ -261,7 +261,11 @@ func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Ch
 	}
 	count, err := s.syncFullChannelHistory(ctx, channel, channelSyncState{}, embeddings, time.Time{}, progress)
 	if err != nil {
-		return count, errors.Join(err, s.restoreHistoryCompleteAfterFailedVerification(ctx, channel.ID))
+		// The crawl now spans every page rather than one, so the per-channel
+		// deadline in messageChannelContext is a likely way for it to fail.
+		// The restore has to outlive that: on a cancelled context both of its
+		// queries fail, and the marker this function removed stays removed.
+		return count, errors.Join(err, s.restoreHistoryCompleteAfterFailedVerification(context.WithoutCancel(ctx), channel.ID))
 	}
 	return count, s.recordVerifiedEmptyChannel(ctx, channel.ID)
 }

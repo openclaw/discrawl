@@ -456,3 +456,23 @@ func TestHistoryVerificationLeavesMarkerClearedAfterPartialCrawl(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1", complete)
 }
+
+// The per-channel deadline is the likeliest way a full verification crawl
+// fails, so the marker restore must survive a cancelled context.
+func TestHistoryVerificationRestoresMarkerAfterContextDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx, s, client, svc, channel := verificationFixtureAt(t, storedMessages(250), "1249")
+	blocked := make(chan struct{})
+	defer close(blocked)
+	client.messageBlocks = map[string]chan struct{}{"c1": blocked}
+
+	crawlCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err := svc.syncChannelMessages(crawlCtx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	complete, err := s.GetSyncState(ctx, channelHistoryCompleteScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, "1", complete, "a crawl killed by its deadline must leave the channel verifiable")
+}
