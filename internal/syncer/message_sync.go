@@ -225,6 +225,19 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 	if err != nil {
 		return 0, err
 	}
+	if state.HasMessages && state.VerifiedEmpty {
+		// The channel holds rows, so the marker describes a state that has
+		// since gone away. Clearing it here, before anything is decided from
+		// it, is what keeps it honest on every path: rows also arrive from the
+		// gateway tail and from ordinary incremental syncs, neither of which
+		// passes through verification, and a marker left over from before them
+		// would suppress the verification that recovers those rows if they are
+		// lost again.
+		if err := s.store.DeleteSyncState(ctx, channelVerifiedEmptyScope(channel.ID)); err != nil {
+			return 0, err
+		}
+		state.VerifiedEmpty = false
+	}
 	if full {
 		// An explicit full run re-checks a channel previously verified empty.
 		state.VerifiedEmpty = false
@@ -294,9 +307,12 @@ func (s *Syncer) restoreHistoryCompleteAfterFailedVerification(ctx context.Conte
 	return s.store.SetSyncState(ctx, channelHistoryCompleteScope(channelID), "1")
 }
 
-// recordVerifiedEmptyChannel marks a channel whose verification crawl completed
-// without storing anything, so needsHistoryVerification stops re-crawling it on
-// every run. It needs no since guard of its own: needsHistoryVerification
+// recordVerifiedEmptyChannel records the outcome of a verification crawl. A
+// crawl that stored nothing marks the channel, so needsHistoryVerification
+// stops re-crawling it on every run; a crawl that recovered rows clears any
+// marker instead, because a channel that holds messages is not empty and a
+// marker saying otherwise would suppress a later recovery. It needs no since
+// guard of its own: needsHistoryVerification
 // declines to verify a windowed sync at all, so a channel can never be recorded
 // empty because filterMessagesSince dropped everything before it was persisted.
 func (s *Syncer) recordVerifiedEmptyChannel(ctx context.Context, channelID string) error {
@@ -308,7 +324,9 @@ func (s *Syncer) recordVerifiedEmptyChannel(ctx context.Context, channelID strin
 		return err
 	}
 	if hasMessages {
-		return nil
+		// The crawl disproved the marker, so retire it in the same run rather
+		// than leaving a stale one for the next load to reconcile.
+		return s.store.DeleteSyncState(ctx, channelVerifiedEmptyScope(channelID))
 	}
 	return s.store.SetSyncState(ctx, channelVerifiedEmptyScope(channelID), "1")
 }
@@ -432,11 +450,10 @@ func (s *Syncer) loadChannelSyncState(ctx context.Context, channelID string) (ch
 		return channelSyncState{}, err
 	}
 	state.HasMessages = hasMessages
-	if hasMessages {
-		return state, nil
-	}
-	// Rare path: complete but empty. Only these channels pay for the extra
-	// lookup, so it costs nothing across a normal fleet-wide sync.
+	// The marker is read even when rows are stored, so a stale one can be
+	// spotted and cleared. It is a point read on the sync_state primary key,
+	// paid only by channels already marked complete, and it is the single place
+	// the marker is read, so no caller can act on one this load did not see.
 	verifiedEmpty, err := s.store.GetSyncState(ctx, channelVerifiedEmptyScope(channelID))
 	if err != nil {
 		return channelSyncState{}, err

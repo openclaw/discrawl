@@ -143,6 +143,12 @@ func TestHistoryVerificationStopsAfterGenuinelyEmptyChannel(t *testing.T) {
 		require.Zero(t, count)
 	}
 	require.Equal(t, firstRun, client.messageCalls["c1"])
+
+	// The channel is still empty, so nothing may retire the marker that stops
+	// the re-fetch loop.
+	marker, err = s.GetSyncState(ctx, channelVerifiedEmptyScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, "1", marker)
 }
 
 func TestHistoryVerificationSkipsChannelWithMessages(t *testing.T) {
@@ -196,6 +202,11 @@ func TestHistoryVerificationFullRunRechecksVerifiedEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 	require.Positive(t, client.messageCalls["c1"])
+
+	// The crawl disproved the marker, so it is retired in the same run.
+	marker, err := svc.store.GetSyncState(ctx, channelVerifiedEmptyScope("c1"))
+	require.NoError(t, err)
+	require.Empty(t, marker)
 }
 
 func TestVerifiedEmptyNotWrittenForWindowedSync(t *testing.T) {
@@ -475,4 +486,47 @@ func TestHistoryVerificationRestoresMarkerAfterContextDeadline(t *testing.T) {
 	complete, err := s.GetSyncState(ctx, channelHistoryCompleteScope("c1"))
 	require.NoError(t, err)
 	require.Equal(t, "1", complete, "a crawl killed by its deadline must leave the channel verifiable")
+}
+
+// verified_empty must describe the channel as it is now, not as it was. A
+// channel that gains messages after being marked keeps no marker, so losing
+// those messages later still triggers a verification.
+func TestVerifiedEmptyMarkerClearedOnceMessagesArrive(t *testing.T) {
+	t.Parallel()
+
+	ctx, s, client, svc, channel := verificationFixture(t, []*discordgo.Message{storedMessage("400")})
+	require.NoError(t, s.SetSyncState(ctx, channelVerifiedEmptyScope("c1"), "1"))
+	channel.LastMessageID = "400"
+
+	// An ordinary incremental run stores the new message. It never consults
+	// verified_empty and never calls recordVerifiedEmptyChannel, which is why
+	// clearing the marker there alone would leave this channel stale.
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	has, err := s.ChannelHasMessages(ctx, "c1")
+	require.NoError(t, err)
+	require.True(t, has)
+
+	// Whatever that run left behind, the next load reconciles the marker
+	// against the rows now on disk.
+	_, err = svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	marker, err := s.GetSyncState(ctx, channelVerifiedEmptyScope("c1"))
+	require.NoError(t, err)
+	require.Empty(t, marker, "a channel holding messages must not stay marked verified empty")
+
+	// Losing the rows again puts the channel back into the stranded shape, and
+	// with no stale marker in the way it is verified rather than skipped.
+	require.NoError(t, s.DeleteGuildData(ctx, "g1"))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
+	calls := client.messageCalls["c1"]
+
+	count, err = svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Greater(t, client.messageCalls["c1"], calls, "the channel must be re-crawled, not skipped")
+	has, err = s.ChannelHasMessages(ctx, "c1")
+	require.NoError(t, err)
+	require.True(t, has)
 }
