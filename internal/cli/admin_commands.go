@@ -561,6 +561,45 @@ func (r *runtime) runEmbed(args []string) error {
 	return r.print(stats)
 }
 
+const (
+	// messageUnavailableSuffix matches channel:<id>:unavailable and, because
+	// the ':' is literal, never channel:<id>:thread_catalog_unavailable.
+	messageUnavailableSuffix = ":unavailable"
+	// unavailableMarkerWindow mirrors the seven-day window applied in
+	// queries.sql. It is used only to describe markers in the doctor report.
+	unavailableMarkerWindow = 7 * 24 * time.Hour
+)
+
+// unavailableMarkerSummary describes the channel-unavailable markers for the
+// doctor report. printHuman renders map values with %v, so this returns a
+// preformatted string. It returns "" when there is nothing to report.
+func unavailableMarkerSummary(markers []store.SyncStateEntry, now time.Time) string {
+	if len(markers) == 0 {
+		return ""
+	}
+	excluded := 0
+	oldest := time.Time{}
+	for _, marker := range markers {
+		if marker.UpdatedAt.IsZero() {
+			continue
+		}
+		if now.Sub(marker.UpdatedAt) < unavailableMarkerWindow {
+			excluded++
+		}
+		if oldest.IsZero() || marker.UpdatedAt.Before(oldest) {
+			oldest = marker.UpdatedAt
+		}
+	}
+	summary := fmt.Sprintf(
+		"%d channels marked unavailable, %d excluded from backfill, %d past the %dd window",
+		len(markers), excluded, len(markers)-excluded, int(unavailableMarkerWindow.Hours()/24),
+	)
+	if !oldest.IsZero() {
+		summary += fmt.Sprintf(", oldest %dd", int(now.Sub(oldest).Hours()/24))
+	}
+	return summary
+}
+
 func (r *runtime) runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -650,6 +689,11 @@ func (r *runtime) runDoctor(args []string) error {
 				report["fts"] = ftsErr.Error()
 			} else {
 				report["fts"] = "ok"
+			}
+			if markers, markerErr := db.SyncStateBySuffix(r.ctx, messageUnavailableSuffix); markerErr != nil {
+				report["stale_sync_markers"] = markerErr.Error()
+			} else if summary := unavailableMarkerSummary(markers, r.nowUTC()); summary != "" {
+				report["stale_sync_markers"] = summary
 			}
 			report["vector"] = "not configured"
 			_ = db.Close()
