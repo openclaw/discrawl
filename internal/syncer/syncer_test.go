@@ -1155,11 +1155,16 @@ func TestSyncSuppressesRepeatedMissingAccessWarnings(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := store.Open(ctx, dbPath)
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("c2"), "missing_access"))
+	// A fresh marker skips the channel outright, so age it past the retry
+	// window: this test is about the retry logging as debug rather than
+	// repeating the warning, which only happens once the channel is attempted.
+	backdateMarker(ctx, t, dbPath, channelMessageUnavailableScope("c2"), 8*24*time.Hour)
 
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
@@ -1295,11 +1300,15 @@ func TestSyncClearsUnavailableMarkerAfterSuccessfulRead(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := store.Open(ctx, dbPath)
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.SetSyncState(ctx, "channel:c1:unavailable", "missing_access"))
+	// Only a run that actually attempts the channel can clear the marker, and a
+	// fresh marker suppresses the attempt, so age it past the retry window.
+	backdateMarker(ctx, t, dbPath, "channel:c1:unavailable", 8*24*time.Hour)
 
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
