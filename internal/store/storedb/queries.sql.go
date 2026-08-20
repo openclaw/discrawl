@@ -789,6 +789,40 @@ func (q *Queries) ListExistingAttachmentMedia(ctx context.Context, messageID str
 	return items, nil
 }
 
+const listFreshUnavailableChannelIDs = `-- name: ListFreshUnavailableChannelIDs :many
+select replace(replace(scope, 'channel:', ''), ':unavailable', '') as channel_id
+from sync_state
+where scope like 'channel:%:unavailable'
+  and updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+order by channel_id
+`
+
+// Channels carrying a message-unavailable marker written inside the retry
+// window. Markers older than the window are omitted so the channel is retried
+// once; a retry that fails again refreshes updated_at for another window.
+func (q *Queries) ListFreshUnavailableChannelIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listFreshUnavailableChannelIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var channel_id string
+		if err := rows.Scan(&channel_id); err != nil {
+			return nil, err
+		}
+		items = append(items, channel_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGuildIDs = `-- name: ListGuildIDs :many
 select id
 from guilds
@@ -832,6 +866,7 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	select 1
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':unavailable'
+	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
   )
 order by c.id
 `
@@ -873,6 +908,7 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	select 1
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':unavailable'
+	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
   )
 order by c.id
 `
@@ -1226,6 +1262,41 @@ func (q *Queries) ListRecentMemberMessages(ctx context.Context, arg ListRecentMe
 			&i.HasAttachments,
 			&i.Pinned,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSyncStateBySuffix = `-- name: ListSyncStateBySuffix :many
+select scope, updated_at
+from sync_state
+where scope like '%' || ?1
+order by updated_at
+`
+
+type ListSyncStateBySuffixRow struct {
+	Scope     string
+	UpdatedAt string
+}
+
+func (q *Queries) ListSyncStateBySuffix(ctx context.Context, suffix sql.NullString) ([]ListSyncStateBySuffixRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSyncStateBySuffix, suffix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSyncStateBySuffixRow
+	for rows.Next() {
+		var i ListSyncStateBySuffixRow
+		if err := rows.Scan(&i.Scope, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

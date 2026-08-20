@@ -839,6 +839,42 @@ func (s *Store) IncompleteMessageChannelIDs(ctx context.Context, guildID string)
 	return s.q.ListIncompleteMessageChannelIDs(ctx)
 }
 
+// SyncStateEntry is one sync_state row, exposed for diagnostics.
+type SyncStateEntry struct {
+	Scope     string
+	UpdatedAt time.Time
+}
+
+// FreshUnavailableChannelIDs lists channels whose message-unavailable marker is
+// still inside the retry window. Callers use it to skip channels that are known
+// to be inaccessible without re-attempting them on every sync. Markers past the
+// window are deliberately absent so the channel is retried once more.
+func (s *Store) FreshUnavailableChannelIDs(ctx context.Context) ([]string, error) {
+	return s.q.ListFreshUnavailableChannelIDs(ctx)
+}
+
+// SyncStateBySuffix lists sync_state rows whose scope ends with suffix, oldest
+// first. Rows with an unparsable timestamp are returned with a zero UpdatedAt
+// rather than failing the whole listing.
+func (s *Store) SyncStateBySuffix(ctx context.Context, suffix string) ([]SyncStateEntry, error) {
+	if suffix == "" {
+		return nil, nil
+	}
+	rows, err := s.q.ListSyncStateBySuffix(ctx, sql.NullString{String: suffix, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]SyncStateEntry, 0, len(rows))
+	for _, row := range rows {
+		entry := SyncStateEntry{Scope: row.Scope}
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, row.UpdatedAt); parseErr == nil {
+			entry.UpdatedAt = parsed
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
 func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Status, error) {
 	status := Status{DBPath: dbPath, DefaultGuildID: defaultGuildID}
 	guildCount, err := s.q.CountGuilds(ctx)
