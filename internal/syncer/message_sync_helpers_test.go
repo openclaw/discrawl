@@ -54,10 +54,10 @@ func TestChannelSyncStateHelpers(t *testing.T) {
 	t.Parallel()
 
 	channel := &discordgo.Channel{ID: "c1", LastMessageID: "200"}
-	require.False(t, shouldSkipChannelSync(nil, channelSyncState{BackfillComplete: true}))
-	require.True(t, shouldSkipChannelSync(&discordgo.Channel{ID: "c1"}, channelSyncState{BackfillComplete: true, Latest: ""}))
-	require.False(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: ""}))
-	require.True(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: "300", HasMessages: true}))
+	require.False(t, shouldSkipChannelSync(nil, channelSyncState{BackfillComplete: true}, time.Time{}))
+	require.True(t, shouldSkipChannelSync(&discordgo.Channel{ID: "c1"}, channelSyncState{BackfillComplete: true, Latest: ""}, time.Time{}))
+	require.False(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: ""}, time.Time{}))
+	require.True(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: "300", HasMessages: true}, time.Time{}))
 	require.False(t, shouldSkipLatestOnlyChannelSync(nil, channelSyncState{Latest: "300"}))
 	require.False(t, shouldSkipLatestOnlyChannelSync(channel, channelSyncState{}))
 	require.True(t, shouldSkipLatestOnlyChannelSync(channel, channelSyncState{Latest: "300"}))
