@@ -2445,3 +2445,63 @@ func TestSearchMessagesTreatsFTSSyntaxAsTerms(t *testing.T) {
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"panic-token", "panic-star"}, searchResultIDs(results))
 }
+
+func TestChannelMessageStats(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	stats, err := s.ChannelMessageStats(ctx, "empty-channel")
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.Count)
+	require.True(t, stats.Newest.IsZero())
+
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m1",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u1",
+		CreatedAt:         "2026-01-01T00:00:00Z",
+		Content:           "one",
+		NormalizedContent: "one",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m2",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u1",
+		CreatedAt:         "2026-01-02T00:00:00Z",
+		Content:           "two",
+		NormalizedContent: "two",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+		ID:                "m3",
+		GuildID:           "g1",
+		ChannelID:         "c1",
+		ChannelName:       "general",
+		AuthorID:          "u1",
+		CreatedAt:         "2026-01-03T00:00:00Z",
+		Content:           "three",
+		NormalizedContent: "three",
+		RawJSON:           `{}`,
+	}))
+
+	stats, err = s.ChannelMessageStats(ctx, "c1")
+	require.NoError(t, err)
+	require.Equal(t, 3, stats.Count)
+	require.Equal(t, parseTime("2026-01-03T00:00:00Z"), stats.Newest)
+
+	// Soft-deleted messages should not count as visible.
+	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "m3"))
+	stats, err = s.ChannelMessageStats(ctx, "c1")
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Count)
+	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
+}

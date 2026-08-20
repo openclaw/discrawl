@@ -147,6 +147,12 @@ func (r *runtime) runMessages(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		stats, explained := r.explainEmptyChannel(opts.Channel)
+		if !explained {
+			r.explainEmptyDateWindow(*days, *since, sinceTime, stats)
+		}
+	}
 	return r.print(rows)
 }
 

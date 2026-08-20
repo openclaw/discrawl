@@ -77,6 +77,30 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 	return row.OldestID, row.NewestID, nil
 }
 
+// ChannelMessageStats holds a cheap summary of a channel's visible (not
+// soft-deleted) messages, used to explain otherwise-silent zero-result
+// queries: how many messages the channel has and when the newest one landed.
+type ChannelMessageStats struct {
+	Count  int
+	Newest time.Time
+}
+
+func (s *Store) ChannelMessageStats(ctx context.Context, channelID string) (ChannelMessageStats, error) {
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	row := s.db.QueryRowContext(queryCtx, `
+		select count(*), coalesce(max(created_at), '')
+		from messages
+		where channel_id = ? and deleted_at is null
+	`, channelID)
+	var count int
+	var newest string
+	if err := row.Scan(&count, &newest); err != nil {
+		return ChannelMessageStats{}, err
+	}
+	return ChannelMessageStats{Count: count, Newest: parseTime(newest)}, nil
+}
+
 func (s *Store) CatalogIntegrity(ctx context.Context) (CatalogIntegrity, error) {
 	queryCtx, cancel := withQueryTimeout(ctx)
 	defer cancel()
