@@ -172,6 +172,7 @@ func TestSnapshotFinalizeAndCommitBranches(t *testing.T) {
 
 	require.NoError(t, checkpointScannedCandidates(ctx, s, Options{DryRun: true}, state, candidates, stats))
 	require.NoError(t, checkpointScannedCandidates(ctx, s, Options{}, state, candidates, stats))
+	require.False(t, isImportedFingerprint(state.current["Cache_Data/entry"]))
 }
 
 func TestRouteHintCollectionBranches(t *testing.T) {

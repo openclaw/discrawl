@@ -118,7 +118,7 @@ type scanTotals struct {
 
 type unresolvedMessages map[string]string
 
-const wiretapFileIndexScope = "wiretap:file_index:v1"
+const wiretapFileIndexScope = "wiretap:file_index:v2"
 
 const (
 	fileStatusImported = "imported"
@@ -686,7 +686,7 @@ func checkpointScannedCandidates(ctx context.Context, st *store.Store, opts Opti
 		return err
 	}
 	for _, candidate := range candidates {
-		state.current[candidate.relKey] = importedFingerprint(candidate.fingerprint)
+		state.current[candidate.relKey] = skippedFingerprint(candidate.fingerprint)
 	}
 	if err := saveFileIndex(ctx, st, opts, state.current); err != nil {
 		return err

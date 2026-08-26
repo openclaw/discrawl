@@ -231,8 +231,22 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 1, stats.SkippedMessages)
+	require.Equal(t, 0, stats.FilesUnchanged)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
+{"id":"%s","guild_id":"999999999999999996","type":0,"name":"later-resolved"}
+`, channelID, channelID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.FilesScanned)
+	require.Equal(t, 1, stats.Messages)
+
+	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "later-resolved", results[0].ChannelName)
 }
 
 func TestImportDoesNotAppendEventsForSkippedMixedBatch(t *testing.T) {
@@ -269,8 +283,8 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 0, stats.FilesUnchanged)
 	requireMessageCount(t, ctx, st, "message_events", 0)
 }
 
