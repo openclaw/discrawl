@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Maintenance
+
+- Require Go 1.27.0, refresh SQLite and terminal dependencies, and update container, analyzer, security-scan, and docs-build tooling.
+
 ## v0.13.3 - 2026-08-17
 
 ### Fixes

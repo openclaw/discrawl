@@ -25,7 +25,7 @@ and non-TTY runs skip the passive notice. Set `DISCRAWL_NO_UPDATE_CHECK=1` or
 
 ## From source
 
-Requires Go `1.26+`.
+Requires Go `1.27.0+`.
 
 ```bash
 git clone https://github.com/openclaw/discrawl.git

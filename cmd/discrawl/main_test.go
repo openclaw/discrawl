@@ -38,8 +38,7 @@ func TestMainHelpAndVersion(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), exe, "-test.run=TestMainHelpAndVersion")
 	cmd.Env = append(os.Environ(), "DISCRAWL_MAIN_ERROR=1")
 	err = cmd.Run()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if exitErr.ExitCode() == 2 {
 			return
 		}
