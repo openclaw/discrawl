@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/openclaw/crawlkit v0.14.7
+	github.com/openclaw/crawlkit v0.14.8
 	github.com/stretchr/testify v1.12.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.47.0
