@@ -1828,7 +1828,31 @@ func TestOpenCreatesQueryIndexes(t *testing.T) {
 	require.Contains(t, messageIndexes, "idx_messages_created_id")
 	require.Contains(t, messageIndexes, "idx_messages_guild_created_id")
 	require.Contains(t, messageIndexes, "idx_messages_channel_created_id")
+	require.Contains(t, messageIndexes, "idx_messages_channel_updated_id")
 	require.Contains(t, messageIndexes, "idx_messages_author_created_id")
+
+	rows, err := s.DB().QueryContext(ctx, `
+		explain query plan
+		select id
+		from messages
+		where channel_id = ?
+		  and (updated_at > ? or (updated_at = ? and id > ?))
+		order by updated_at, id
+		limit 500
+	`, "c1", "2026-09-02T00:00:00Z", "2026-09-02T00:00:00Z", "m1")
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var plan []string
+	for rows.Next() {
+		var selectID, parentID, unused int
+		var detail string
+		require.NoError(t, rows.Scan(&selectID, &parentID, &unused, &detail))
+		plan = append(plan, detail)
+	}
+	require.NoError(t, rows.Err())
+	queryPlan := strings.Join(plan, "\n")
+	require.Contains(t, queryPlan, "idx_messages_channel_updated_id")
+	require.NotContains(t, queryPlan, "USE TEMP B-TREE")
 
 	mentionIndexes := indexNames(t, ctx, s.DB(), "mention_events")
 	require.Contains(t, mentionIndexes, "idx_mentions_guild_event")
@@ -1849,6 +1873,7 @@ func TestOpenMigratesLegacyQueryIndexes(t *testing.T) {
 	for _, indexName := range []string{
 		"idx_messages_guild_created_id",
 		"idx_messages_channel_created_id",
+		"idx_messages_channel_updated_id",
 		"idx_messages_author_created_id",
 		"idx_messages_created_id",
 		"idx_mentions_guild_event",
@@ -1868,6 +1893,7 @@ func TestOpenMigratesLegacyQueryIndexes(t *testing.T) {
 	require.Equal(t, storeSchemaVersion, version)
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_created_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_channel_created_id")
+	require.Contains(t, indexNames(t, ctx, s.DB(), "messages"), "idx_messages_channel_updated_id")
 	require.Contains(t, indexNames(t, ctx, s.DB(), "mention_events"), "idx_mentions_guild_event")
 }
 
