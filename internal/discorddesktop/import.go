@@ -118,7 +118,15 @@ type scanTotals struct {
 
 type unresolvedMessages map[string]string
 
-const wiretapFileIndexScope = "wiretap:file_index:v2"
+const (
+	wiretapFileIndexScope = "wiretap:file_index:v2"
+	// v1 は「走査済み」と「取り込み済み」を区別しなかったため、解決できなかった
+	// キャッシュ項目が imported として恒久的に checkpoint され再試行されなかった。
+	// v2 は区別するが、キーを変えるだけだと v1 の checkpoint が全て消えたように見え、
+	// 取り込み済みファイルまで再走査される。再走査は message は upsert される一方で
+	// message_events を重複追記するため、v1 を読み込んで引き継ぐ。
+	wiretapFileIndexScopeV1 = "wiretap:file_index:v1"
+)
 
 const (
 	fileStatusImported = "imported"
@@ -214,6 +222,12 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
 			state.previous = map[string]fileFingerprint{}
 		}
+	} else {
+		migrated, err := migrateFileIndexFromV1(ctx, st)
+		if err != nil {
+			return state, err
+		}
+		state.previous = migrated
 	}
 	channels, err := st.Channels(ctx, "")
 	if err != nil {
@@ -228,6 +242,36 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		}
 	}
 	return state, nil
+}
+
+// migrateFileIndexFromV1 は v2 の索引が未作成のとき v1 の索引を読み、
+// 取り込み済み (imported) の checkpoint だけを引き継ぐ。
+//
+// v1 は解決できなかった項目も imported として記録していたため、そのまま引き継ぐと
+// 再試行できない。一方で全て捨てると取り込み済みファイルまで再走査され、
+// message は upsert されるが message_events が重複追記される (アップグレード時の
+// イベント履歴の複製)。v1 の記録は「取り込み済み」以外を区別できないので、
+// 引き継ぎ対象は imported のみとし、v1 に無いファイルは通常どおり走査される。
+func migrateFileIndexFromV1(ctx context.Context, st *store.Store) (map[string]fileFingerprint, error) {
+	migrated := map[string]fileFingerprint{}
+	raw, err := st.GetSyncState(ctx, wiretapFileIndexScopeV1)
+	if err != nil {
+		return migrated, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return migrated, nil
+	}
+	legacy := map[string]fileFingerprint{}
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return migrated, nil
+	}
+	for relKey, fingerprint := range legacy {
+		if !isImportedFingerprint(fingerprint) {
+			continue
+		}
+		migrated[relKey] = importedFingerprint(fingerprint)
+	}
+	return migrated, nil
 }
 
 func fileIndexScope(Options) string {

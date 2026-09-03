@@ -413,3 +413,61 @@ func requireMessageCount(t *testing.T, ctx context.Context, st *store.Store, tab
 func bytesf(format string, args ...any) []byte {
 	return fmt.Appendf(nil, format, args...)
 }
+
+// v1 の索引しか持たないアーカイブを v2 へ上げたとき、取り込み済みファイルが
+// 再走査されて message_events が重複追記されないことを固定する。
+//
+// v2 でスコープキーを変えるだけだと v1 の checkpoint が消えたように見え、
+// 取り込み済みキャッシュまで再走査される。message は upsert されるので件数は
+// 変わらないが、解析済みメッセージは AppendEvent: true を立てるため
+// message_events だけが増える。アップグレード時のイベント履歴の複製になる。
+func TestImportMigratesV1FileIndexWithoutReplayingEvents(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+	entry := filepath.Join(cachePath, "entry_0")
+	require.NoError(t, os.WriteFile(entry, []byte(`
+{"id":"111111111111111121","guild_id":"999999999999999996","type":0,"name":"migrated"}
+{"id":"333333333333333346","channel_id":"111111111111111121","content":"already imported before upgrade","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"}}
+`), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	// v1 相当の取り込みを再現する。
+	stats, err := Import(ctx, st, Options{Path: dir, FullCache: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Messages)
+
+	countEvents := func() int {
+		_, rows, err := st.ReadOnlyQuery(ctx, "select count(*) from message_events")
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		n, err := strconv.Atoi(fmt.Sprint(rows[0][0]))
+		require.NoError(t, err)
+		return n
+	}
+	before := countEvents()
+	require.Positive(t, before, "上流の取り込みでイベントが1件以上入っている前提")
+
+	// v2 の索引を消し、v1 のキーへ移し替えて「アップグレード直前」を作る。
+	v2, err := st.GetSyncState(ctx, wiretapFileIndexScope)
+	require.NoError(t, err)
+	require.NotEmpty(t, v2)
+	require.NoError(t, st.SetSyncState(ctx, wiretapFileIndexScopeV1, v2))
+	require.NoError(t, st.SetSyncState(ctx, wiretapFileIndexScope, ""))
+
+	// アップグレード後の初回走査。
+	stats, err = Import(ctx, st, Options{Path: dir, FullCache: true})
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.FilesScanned, "v1 で取り込み済みのファイルは再走査しない")
+	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, before, countEvents(), "アップグレードで message_events が増えてはいけない")
+
+	// メッセージ件数も変わらない。
+	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "already imported", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+}
