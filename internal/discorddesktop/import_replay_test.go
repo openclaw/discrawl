@@ -3,6 +3,7 @@ package discorddesktop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -162,4 +163,43 @@ func TestImportRetryPreservesDeletedMessage(t *testing.T) {
 	require.NotEmpty(t, deleted)
 	requireMessageCount(t, ctx, st, "message_fts", 0)
 	requireMessageCount(t, ctx, st, "message_events", 0)
+}
+
+func TestFullCacheRetriesOnlyUnresolvedSourceFiles(t *testing.T) {
+	for _, copies := range []int{1, 2} {
+		t.Run(fmt.Sprintf("unresolved-copies=%d", copies), func(t *testing.T) {
+			ctx, st, dir := replayStore(t)
+			known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
+			replayCacheEntry(t, dir, "Cache/Cache_Data/a-known", known+replayPayload(t, replayChannel, "completed file", ""))
+			unresolved := `{"id":"333333333333333347","channel_id":"` + replayUnknownChannel + `","content":"unresolved","timestamp":"2026-04-23T18:20:44Z","author":{"id":"222222222222222232","username":"alice"}}`
+			for i := range copies {
+				replayCacheEntry(t, dir, fmt.Sprintf("Cache/Cache_Data/b-unknown-%d", i), unresolved)
+			}
+			opts := Options{Path: dir, FullCache: true}
+			stats, err := Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Equal(t, 1, stats.Messages)
+			require.Equal(t, 1, stats.SkippedMessages)
+			stats, err = Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Equal(t, copies, stats.FilesScanned)
+			require.Equal(t, 1, stats.FilesUnchanged)
+			require.Zero(t, stats.Messages)
+			requireMessageCount(t, ctx, st, "messages", 1)
+			requireMessageCount(t, ctx, st, "message_events", 1)
+
+			// Metadata discovered after the payloads resolves every source copy.
+			replayCacheEntry(t, dir, "z-metadata.json", `{"id":"`+replayUnknownChannel+`","guild_id":"`+replayGuild+`","type":0,"name":"later"}`)
+			stats, err = Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Equal(t, 1, stats.Messages)
+			require.Zero(t, stats.SkippedMessages)
+			requireMessageCount(t, ctx, st, "messages", 2)
+			requireMessageCount(t, ctx, st, "message_events", 2)
+			stats, err = Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Zero(t, stats.FilesScanned)
+			requireMessageCount(t, ctx, st, "message_events", 2)
+		})
+	}
 }

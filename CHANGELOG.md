@@ -4,7 +4,7 @@
 
 ### Fixes
 
-- Recover unresolved Desktop cache entries across upgrades and input modes without overwriting newer edits or duplicating events. Thanks @Nicolas0315.
+- Recover unresolved Desktop cache entries across upgrades and input modes without overwriting newer edits, duplicating events, or rescanning completed full-cache files. Thanks @Nicolas0315.
 - Verify supposedly complete channels with no stored messages, recover their full history, and preserve retryability across bounded cancellation cleanup or process interruption. Thanks @rnavarro.
 - Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
 - Stop guild and archived-thread pagination with a cursor error when Discord repeats a page instead of hanging sync. Thanks @SebTardif.

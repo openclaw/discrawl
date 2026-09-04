@@ -375,7 +375,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 	}
 	stats := Stats{Path: root, FullCache: true, StartedAt: now().UTC()}
 	snap := newSnapshot()
-	var scannedKeys []string
+	messageSources := map[string][]string{}
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		stats.FinishedAt = now().UTC()
@@ -438,6 +438,9 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			objects = append(objects, extractJSONValues(bytes.ToValidUTF8(payload, nil))...)
 		}
 		stats.JSONObjects += len(objects)
+		// Share channel context while retaining each message's source files.
+		fileSnap := snap
+		fileSnap.messages = make(map[string]store.MessageMutation)
 		for _, raw := range objects {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -446,17 +449,20 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			if err := json.Unmarshal(raw, &value); err != nil {
 				continue
 			}
-			collectValue(snap, state.channels, value, info.ModTime().UTC())
+			collectValue(fileSnap, state.channels, value, info.ModTime().UTC())
+		}
+		for id, message := range fileSnap.messages {
+			snap.messages[id] = message
+			messageSources[id] = append(messageSources[id], relKey)
 		}
 		state.current[relKey] = importedFingerprint(fingerprint)
-		scannedKeys = append(scannedKeys, relKey)
 		return nil
 	}); err != nil {
 		return stats, snap, err
 	}
 	totals := newScanTotals()
-	if unresolved := finalizeSnapshot(snap, state.channels, totals, &stats, true); len(unresolved) > 0 {
-		for _, key := range scannedKeys {
+	for id := range finalizeSnapshot(snap, state.channels, totals, &stats, true) {
+		for _, key := range messageSources[id] {
 			state.current[key] = skippedFingerprint(state.current[key])
 		}
 	}
