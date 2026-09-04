@@ -8,6 +8,7 @@
 - Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
 - Stop guild and archived-thread pagination with a cursor error when Discord repeats a page instead of hanging sync. Thanks @SebTardif.
 - Reject repeated or missing message-page cursors without losing the last usable backfill checkpoint. Thanks @SebTardif.
+- Keep Wiretap dry runs from creating archives or runtime directories; optional coverage reads an existing archive without migrations.
 
 ### Maintenance
 

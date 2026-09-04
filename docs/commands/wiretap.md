@@ -20,7 +20,7 @@ discrawl wiretap --watch-every 10s --stats --json
 ## Flags
 
 - `--path <dir>` - override the desktop data directory (default: platform-specific Discord cache path)
-- `--dry-run` - report what would be imported without writing anything
+- `--dry-run` - report what would be imported without creating an archive, importing data, or creating runtime directories
 - `--full-cache` - exhaustive Chromium HTTP cache import for historical guild-cache archaeology (slower)
 - `--watch-every <duration>` - keep importing on a periodic loop
 - `--stats` - attach a full archive coverage snapshot; watched samples after the first include deltas
@@ -37,6 +37,7 @@ discrawl wiretap --watch-every 10s --stats --json
 - scans local `.ldb`, `.log`, `.json`, and `.txt` artifacts for Discord message JSON, plus route-bearing Chromium HTTP cache entries by default
 - does not extract, store, or print Discord auth tokens
 - persists only compact aggregate import counters for [`coverage`](coverage.html); raw cache paths and payloads are not added to coverage state
+- with `--dry-run --stats`, reads coverage from an existing archive without migrating it; reports empty coverage if no archive exists, including in watch mode. Existing archives use normal SQLite read-only access, which may create WAL/SHM sidecar files.
 
 ## Default desktop paths
 

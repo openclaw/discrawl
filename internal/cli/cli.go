@@ -344,10 +344,8 @@ func (r *runtime) dispatch(rest []string) error {
 			operation = "tail-failure-replay"
 		}
 		return r.withServicesLockedOperation(true, operation, func() error { return r.runTail(rest[1:]) })
-	case "wiretap":
-		return r.withLocalStoreLocked(false, func() error { return r.runWiretap(rest[1:]) })
-	case "tap", "cache-import":
-		return r.withLocalStoreLocked(false, func() error { return r.runWiretap(rest[1:]) })
+	case "wiretap", "tap", "cache-import":
+		return r.withConfig(func() error { return r.runWiretap(rest[1:]) })
 	case "search":
 		if hasHelpFlag(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"search"})

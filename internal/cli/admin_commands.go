@@ -403,6 +403,9 @@ func (r *runtime) runWiretap(args []string) error {
 	if *maxFileBytes <= 0 {
 		return usageErr(errors.New("--max-file-bytes must be positive"))
 	}
+	if *watchEvery > 0 && *watchEvery < time.Second {
+		return usageErr(errors.New("--watch-every must be at least 1s"))
+	}
 	var previousCoverage *store.CoverageReport
 	runOnce := func(ctx context.Context) error {
 		stats, err := discorddesktop.Import(ctx, r.store, discorddesktop.Options{
@@ -416,9 +419,12 @@ func (r *runtime) runWiretap(args []string) error {
 			return err
 		}
 		if *showStats {
-			coverage, err := r.store.Coverage(ctx, "", r.nowUTC())
-			if err != nil {
-				return err
+			coverage := store.CoverageReport{GeneratedAt: r.nowUTC(), Guilds: []store.CoverageGuild{}}
+			if r.store != nil {
+				coverage, err = r.store.Coverage(ctx, "", r.nowUTC())
+				if err != nil {
+					return err
+				}
 			}
 			progress := wiretapProgress{Import: stats, Coverage: coverage}
 			if previousCoverage != nil {
@@ -430,29 +436,35 @@ func (r *runtime) runWiretap(args []string) error {
 		}
 		return r.print(stats)
 	}
-	if *watchEvery <= 0 {
-		return runOnce(r.ctx)
-	}
-	if *watchEvery < time.Second {
-		return usageErr(errors.New("--watch-every must be at least 1s"))
-	}
-	ctx, stop := signal.NotifyContext(r.ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := runOnce(ctx); err != nil {
-		return err
-	}
-	ticker := time.NewTicker(*watchEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := runOnce(ctx); err != nil {
-				return err
+	run := func() error {
+		if *watchEvery <= 0 {
+			return runOnce(r.ctx)
+		}
+		ctx, stop := signal.NotifyContext(r.ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runOnce(ctx); err != nil {
+			return err
+		}
+		ticker := time.NewTicker(*watchEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				if err := runOnce(ctx); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	if *dryRun {
+		if *showStats {
+			return r.withLocalStoreReadOnly(run)
+		}
+		return run()
+	}
+	return r.withLocalStoreLocked(false, run)
 }
 
 func (r *runtime) runStatus(args []string) error {
