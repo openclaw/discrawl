@@ -508,6 +508,13 @@ func TestSyncSkipsUnchangedThreadsWhenHistoryComplete(t *testing.T) {
 	}))
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("t1"), "200"))
 	require.NoError(t, s.SetSyncState(ctx, channelHistoryCompleteScope("t1"), "1"))
+	// A genuinely complete channel has the messages to show for it. Without a
+	// stored row the channel is re-crawled to recover the missing history.
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID: "200", GuildID: "g1", ChannelID: "t1", ChannelName: "bug-report",
+		AuthorID: "u1", AuthorName: "User", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content: "hello", NormalizedContent: "hello", RawJSON: `{}`,
+	}))
 
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
@@ -556,6 +563,13 @@ func TestSyncSkipsUnchangedTextChannelsWhenHistoryComplete(t *testing.T) {
 	}))
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("c1"), "200"))
 	require.NoError(t, s.SetSyncState(ctx, channelHistoryCompleteScope("c1"), "1"))
+	// A genuinely complete channel has the messages to show for it. Without a
+	// stored row the channel is re-crawled to recover the missing history.
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID: "200", GuildID: "g1", ChannelID: "c1", ChannelName: "general",
+		AuthorID: "u1", AuthorName: "User", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Content: "hello", NormalizedContent: "hello", RawJSON: `{}`,
+	}))
 
 	client := &fakeClient{
 		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},

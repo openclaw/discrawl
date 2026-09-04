@@ -54,10 +54,10 @@ func TestChannelSyncStateHelpers(t *testing.T) {
 	t.Parallel()
 
 	channel := &discordgo.Channel{ID: "c1", LastMessageID: "200"}
-	require.False(t, shouldSkipChannelSync(nil, channelSyncState{BackfillComplete: true}))
-	require.True(t, shouldSkipChannelSync(&discordgo.Channel{ID: "c1"}, channelSyncState{BackfillComplete: true, Latest: ""}))
-	require.False(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: ""}))
-	require.True(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: "300"}))
+	require.False(t, shouldSkipChannelSync(nil, channelSyncState{BackfillComplete: true}, time.Time{}))
+	require.True(t, shouldSkipChannelSync(&discordgo.Channel{ID: "c1"}, channelSyncState{BackfillComplete: true, Latest: ""}, time.Time{}))
+	require.False(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: ""}, time.Time{}))
+	require.True(t, shouldSkipChannelSync(channel, channelSyncState{BackfillComplete: true, Latest: "300", HasMessages: true}, time.Time{}))
 	require.False(t, shouldSkipLatestOnlyChannelSync(nil, channelSyncState{Latest: "300"}))
 	require.False(t, shouldSkipLatestOnlyChannelSync(channel, channelSyncState{}))
 	require.True(t, shouldSkipLatestOnlyChannelSync(channel, channelSyncState{Latest: "300"}))
@@ -111,7 +111,7 @@ func TestChannelSyncStateStoreHelpers(t *testing.T) {
 	require.NoError(t, s.SetSyncState(ctx, channelHistoryCompleteScope("c1"), "1"))
 	loaded, err := svc.loadChannelSyncState(ctx, "c1")
 	require.NoError(t, err)
-	require.Equal(t, channelSyncState{Latest: "200", StoredLatest: "200", BackfillCursor: "100", BackfillComplete: true}, loaded)
+	require.Equal(t, channelSyncState{Latest: "200", StoredLatest: "200", BackfillCursor: "100", BackfillComplete: true, HasMessages: true}, loaded)
 }
 
 func TestMessageChannelSyncBranches(t *testing.T) {
@@ -200,8 +200,7 @@ func TestMessageChannelConcurrentErrorAndProgressBranches(t *testing.T) {
 func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
@@ -220,6 +219,8 @@ func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
 	}
 	svc := New(client, s, slog.New(slog.DiscardHandler))
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	done := make(chan struct {
 		count int
 		err   error

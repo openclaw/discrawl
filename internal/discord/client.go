@@ -295,10 +295,17 @@ func (c *Client) Guilds(ctx context.Context) ([]*discordgo.UserGuild, error) {
 			return out, nil
 		}
 		out = append(out, page...)
-		before = page[len(page)-1].ID
 		if len(page) < 200 {
 			return out, nil
 		}
+		nextBefore := page[len(page)-1].ID
+		if nextBefore == "" {
+			return nil, errors.New("guild page missing id")
+		}
+		if nextBefore == before {
+			return nil, errors.New("guild page cursor did not advance")
+		}
+		before = nextBefore
 	}
 }
 
@@ -375,6 +382,9 @@ func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private 
 			return uniqueChannels(out), nil
 		}
 		archiveAt := oldest.ThreadMetadata.ArchiveTimestamp
+		if before != nil && archiveAt.Equal(*before) {
+			return nil, fmt.Errorf("channel %s archived thread page cursor did not advance", channelID)
+		}
 		before = &archiveAt
 	}
 }

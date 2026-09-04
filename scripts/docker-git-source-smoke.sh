@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)"
-image="${DISCRAWL_DOCKER_IMAGE:-golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36}"
+image="${DISCRAWL_DOCKER_IMAGE:-golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452}"
 tmp="$(mktemp -d /tmp/discrawl-docker-smoke.XXXXXX)"
 cleanup() {
   rm -rf "$tmp"
@@ -67,7 +67,7 @@ docker run --rm \
     cd /src
     go install ./cmd/discrawl
     discrawl=/work/bin/discrawl
-    "$discrawl" --version | grep -Eq "^[0-9]+\\.[0-9]+\\.[0-9]+([+-][[:alnum:]._-]+)?$"
+    test "$("$discrawl" --version)" = devel
     "$discrawl" --config /work/config.toml subscribe --repo /work/share --with-embeddings file:///backup > /work/subscribe.out
     grep -q "embeddings=\\[" /work/subscribe.out
     "$discrawl" --config /work/config.toml --plain sql "select provider, model, count(*) as total from message_embeddings group by provider, model" | tee /work/embeddings.out

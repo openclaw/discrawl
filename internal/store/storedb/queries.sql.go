@@ -54,6 +54,17 @@ func (q *Queries) CatalogIntegrity(ctx context.Context) (CatalogIntegrityRow, er
 	return i, err
 }
 
+const channelHasMessages = `-- name: ChannelHasMessages :one
+select exists(select 1 from messages where channel_id = ? limit 1) as has_messages
+`
+
+func (q *Queries) ChannelHasMessages(ctx context.Context, channelID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, channelHasMessages, channelID)
+	var has_messages bool
+	err := row.Scan(&has_messages)
+	return has_messages, err
+}
+
 const channelMessageBounds = `-- name: ChannelMessageBounds :one
 select cast(coalesce(min(id), '') as text) as oldest_id,
        cast(coalesce(max(id), '') as text) as newest_id
@@ -353,6 +364,24 @@ func (q *Queries) GetMessageNormalizedContent(ctx context.Context, id string) (s
 	var normalized_content string
 	err := row.Scan(&normalized_content)
 	return normalized_content, err
+}
+
+const getMessageRevision = `-- name: GetMessageRevision :one
+select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at
+from messages
+where id = ?
+`
+
+type GetMessageRevisionRow struct {
+	EditedAt  string
+	DeletedAt string
+}
+
+func (q *Queries) GetMessageRevision(ctx context.Context, id string) (GetMessageRevisionRow, error) {
+	row := q.db.QueryRowContext(ctx, getMessageRevision, id)
+	var i GetMessageRevisionRow
+	err := row.Scan(&i.EditedAt, &i.DeletedAt)
+	return i, err
 }
 
 const getSyncState = `-- name: GetSyncState :one
@@ -1479,6 +1508,23 @@ func (q *Queries) MemberMessageStats(ctx context.Context, arg MemberMessageStats
 	var i MemberMessageStatsRow
 	err := row.Scan(&i.MessageCount, &i.FirstMessageAt, &i.LastMessageAt)
 	return i, err
+}
+
+const messageEventExists = `-- name: MessageEventExists :one
+select exists(select 1 from message_events where message_id = ? and event_type = ? and payload_json = ?)
+`
+
+type MessageEventExistsParams struct {
+	MessageID   string
+	EventType   string
+	PayloadJson string
+}
+
+func (q *Queries) MessageEventExists(ctx context.Context, arg MessageEventExistsParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, messageEventExists, arg.MessageID, arg.EventType, arg.PayloadJson)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const requeueAllEmbeddingJobs = `-- name: RequeueAllEmbeddingJobs :execrows

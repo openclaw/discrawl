@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixes
+
+- Recover unresolved Desktop cache entries across upgrades and input modes without overwriting newer edits or duplicating events. Thanks @Nicolas0315.
+- Verify supposedly complete channels with no stored messages, recover their full history, and preserve retryability across bounded cancellation cleanup or process interruption. Thanks @rnavarro.
+- Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
+- Stop guild and archived-thread pagination with a cursor error when Discord repeats a page instead of hanging sync. Thanks @SebTardif.
+- Reject repeated or missing message-page cursors without losing the last usable backfill checkpoint. Thanks @SebTardif.
+
+### Maintenance
+
+- Refresh SQLite to v1.58.0, crypto and terminal-width dependencies, and Pages and secret-scanning Actions; prefer Go 1.27.1 for builds while retaining the Go 1.27.0 minimum.
+- Require Go 1.27.0, refresh SQLite and terminal dependencies, and update container, analyzer, security-scan, and docs-build tooling.
+
 ## v0.13.3 - 2026-08-17
 
 ### Fixes
