@@ -572,10 +572,7 @@ func (r *runtime) shouldAutoUpdateShare(mode shareUpdateMode) bool {
 
 func (r *runtime) autoUpdateShareIfLockAvailable(dbPath string, updateMode shareUpdateMode) error {
 	locked, err := r.tryWithSyncLock(func() error {
-		storeFactory := r.openStore
-		if storeFactory == nil {
-			storeFactory = store.Open
-		}
+		storeFactory := r.localStoreFactory()
 		var openErr error
 		r.store, openErr = storeFactory(r.ctx, dbPath)
 		if openErr != nil {
@@ -597,10 +594,7 @@ func (r *runtime) autoUpdateShareIfLockAvailable(dbPath string, updateMode share
 }
 
 func (r *runtime) openLocalStore(dbPath string, updateMode shareUpdateMode, fn func() error) error {
-	storeFactory := r.openStore
-	if storeFactory == nil {
-		storeFactory = store.Open
-	}
+	storeFactory := r.localStoreFactory()
 	var err error
 	r.store, err = storeFactory(r.ctx, dbPath)
 	if err != nil {
@@ -655,7 +649,7 @@ func (r *runtime) withExistingLocalStoreReadOnly(fn func() error) error {
 
 func (r *runtime) openLocalStoreReadOnly(dbPath string, fn func() error) error {
 	r.store = nil
-	s, err := store.OpenReadOnly(r.ctx, dbPath)
+	s, err := r.openConfiguredReadOnlyStore(dbPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fn()
@@ -672,7 +666,7 @@ func (r *runtime) openLocalStoreReadOnly(dbPath string, fn func() error) error {
 
 func (r *runtime) openExistingLocalStoreReadOnly(dbPath string, fn func() error) error {
 	r.store = nil
-	s, err := store.OpenReadOnly(r.ctx, dbPath)
+	s, err := r.openConfiguredReadOnlyStore(dbPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fn()
@@ -685,6 +679,19 @@ func (r *runtime) openExistingLocalStoreReadOnly(dbPath string, fn func() error)
 		r.store = nil
 	}()
 	return fn()
+}
+
+func (r *runtime) openConfiguredReadOnlyStore(path string) (*store.Store, error) {
+	if len(r.cfg.Search.Lexical.Languages) == 0 {
+		return store.OpenReadOnly(r.ctx, path)
+	}
+	return store.OpenReadOnlyWithOptions(r.ctx, path, store.OpenOptions{
+		LexicalLanguages:   r.cfg.Search.Lexical.Languages,
+		LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
+		LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
+		LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
+		LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
+	})
 }
 
 func (r *runtime) withServicesAuto(withDiscord, autoShareUpdate bool, fn func() error) error {
@@ -730,10 +737,7 @@ func (r *runtime) withServicesUpdateLockedOperation(withDiscord bool, updateMode
 }
 
 func (r *runtime) openServices(dbPath string, withDiscord bool, updateMode shareUpdateMode, fn func() error) error {
-	storeFactory := r.openStore
-	if storeFactory == nil {
-		storeFactory = store.Open
-	}
+	storeFactory := r.localStoreFactory()
 	var err error
 	r.store, err = storeFactory(r.ctx, dbPath)
 	if err != nil {
@@ -754,6 +758,21 @@ func (r *runtime) openServices(dbPath string, withDiscord bool, updateMode share
 		}
 	}
 	return fn()
+}
+
+func (r *runtime) localStoreFactory() func(context.Context, string) (*store.Store, error) {
+	if r.openStore != nil {
+		return r.openStore
+	}
+	return func(ctx context.Context, path string) (*store.Store, error) {
+		return store.OpenWithOptions(ctx, path, store.OpenOptions{
+			LexicalLanguages:   r.cfg.Search.Lexical.Languages,
+			LexicalKiwiCommand: r.cfg.Search.Lexical.KiwiCommand,
+			LexicalKiwiModel:   r.cfg.Search.Lexical.KiwiModel,
+			LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
+			LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
+		})
+	}
 }
 
 func (r *runtime) ensureDiscordServices() error {

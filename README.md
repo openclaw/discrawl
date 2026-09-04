@@ -124,6 +124,7 @@ The full documentation lives at **[discrawl.sh](https://discrawl.sh/)**:
 - [Command reference](docs/README.md)
 - [Sync sources](docs/guides/sync-sources.md)
 - [Search modes](docs/guides/search-modes.md)
+- [Multilingual lexical benchmark](docs/benchmarks/multilingual-lexical.md)
 - [Git snapshot workflows](docs/guides/git-snapshots.md)
 - [Configuration](docs/configuration.md)
 

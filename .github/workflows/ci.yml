@@ -167,6 +167,33 @@ jobs:
           version: "~> v2"
           args: release --snapshot --clean --skip=publish
 
+  kiwi-helper:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/discrawl-kiwi/go.mod
+          cache-dependency-path: tools/discrawl-kiwi/go.sum
+
+      - name: Install Kiwi 0.23.2
+        working-directory: tools/discrawl-kiwi
+        run: bash install-kiwi.sh
+
+      - name: Test Go binding helper
+        working-directory: tools/discrawl-kiwi
+        run: go test -count=1 ./...
+
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -192,3 +219,33 @@ jobs:
       - name: Scan working tree
         run: |
           "$(go env GOPATH)/bin/gitleaks" dir . --no-banner --redact
+
+  ja-helper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/discrawl-ja/go.mod
+          cache-dependency-path: tools/discrawl-ja/go.sum
+      - name: Test Japanese helper
+        working-directory: tools/discrawl-ja
+        run: go test -count=1 ./...
+
+  zh-helper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/discrawl-zh/go.mod
+          cache-dependency-path: tools/discrawl-zh/go.sum
+      - name: Test Chinese helper
+        working-directory: tools/discrawl-zh
+        run: go test -count=1 ./...

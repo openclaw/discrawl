@@ -11,9 +11,59 @@
 ## FTS details
 
 - backed by SQLite FTS5 with the default `unicode61` tokenizer
+- optional `[search.lexical]` languages add independent tokenizer-specific FTS tables and merge their ranked results with reciprocal rank fusion
+- supported presets are Korean with native Kiwi through `kiwigo`, Japanese with Kagome Search, Chinese with GSE search mode, and Arabic with in-process light stemming
 - user query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators
 - punctuation still follows FTS5 tokenization rules
 - by default, `search` skips rows with no searchable content (attachment text, attachment filenames, embeds, and replies still count as content); use `--include-empty` to opt back in
+
+### Optional multilingual lexical fields
+
+Install Kiwi 0.23.2's dynamic library and base model, then build the Go helper:
+
+```bash
+git clone https://github.com/openclaw/discrawl
+cd discrawl/tools/discrawl-kiwi
+go build -o ~/.local/share/discrawl/bin/discrawl-kiwi .
+```
+
+`github.com/codingpot/kiwigo` links to the system Kiwi C API. Its upstream
+installation expects Kiwi headers and dynamic libraries under `/usr/local`;
+the model is the `kiwi_model_v0.23.2_base.tgz` release asset.
+
+Build the optional Japanese and Chinese helpers:
+
+```bash
+cd tools/discrawl-ja && go build -o ~/.local/share/discrawl/bin/discrawl-ja .
+cd ../discrawl-zh && go build -o ~/.local/share/discrawl/bin/discrawl-zh .
+```
+
+Configure the fields:
+
+```toml
+[search.lexical]
+languages = ["ko", "ja", "zh", "ar"]
+kiwi_command = "~/.local/share/discrawl/bin/discrawl-kiwi"
+kiwi_model = "~/.local/share/discrawl/models/kiwi/base"
+ja_command = "~/.local/share/discrawl/bin/discrawl-ja"
+zh_command = "~/.local/share/discrawl/bin/discrawl-zh"
+```
+
+Discrawl does not download or install helper packages; build the optional
+helpers separately and configure their absolute paths.
+
+Every message is analyzed into each configured field. This deliberately avoids
+language detection, so mixed-language Discord messages remain searchable
+through every enabled analyzer. Disk usage and indexing work increase with the
+number of fields; query-time RRF deduplicates message ids without mixing the
+different BM25 term statistics into one field.
+
+None of the lexical analyzers use Python. Korean, Japanese, and Chinese run as
+persistent Go helpers; Arabic is in-process. Helpers load lazily on first use
+and are not linked into the default Discrawl binary.
+
+See [Multilingual lexical benchmark](../benchmarks/multilingual-lexical.html)
+for the reproducible targeted quality check and its storage tradeoff.
 
 ## Semantic and hybrid prerequisites
 

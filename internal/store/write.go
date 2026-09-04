@@ -227,6 +227,9 @@ func (s *Store) DeleteGuildData(ctx context.Context, guildID string) error {
 	if _, err := tx.ExecContext(ctx, `delete from message_fts where guild_id = ?`, guildID); err != nil {
 		return err
 	}
+	if err := s.deleteLexicalMessagesTx(ctx, tx, "guild_id", guildID); err != nil {
+		return err
+	}
 	if err := qtx.DeleteMessageEventsByGuild(ctx, guildID); err != nil {
 		return err
 	}
@@ -263,12 +266,20 @@ func (s *Store) UpsertMessage(ctx context.Context, message MessageRecord) error 
 }
 
 func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRecord, opts WriteOptions) error {
+	var tokenized map[string]string
+	if message.DeletedAt == "" {
+		var err error
+		tokenized, err = s.tokenizeLexical(ctx, message.NormalizedContent)
+		if err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	if err := upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts); err != nil {
+	if err := s.upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts, tokenized); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -278,17 +289,27 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	if len(messages) == 0 {
 		return nil
 	}
+	tokenized := make([]map[string]string, len(messages))
+	for i, message := range messages {
+		if message.Record.DeletedAt == "" {
+			var err error
+			tokenized[i], err = s.tokenizeLexical(ctx, message.Record.NormalizedContent)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
-	for _, message := range messages {
+	for i, message := range messages {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := upsertMessageTx(ctx, tx, qtx, message.Record, message.Options); err != nil {
+		if err := s.upsertMessageTx(ctx, tx, qtx, message.Record, message.Options, tokenized[i]); err != nil {
 			return err
 		}
 		if err := replaceAttachmentsTx(ctx, qtx, message.Record.ID, message.Attachments); err != nil {
@@ -314,7 +335,14 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	return tx.Commit()
 }
 
-func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, message MessageRecord, opts WriteOptions) error {
+func (s *Store) upsertMessageTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	qtx *storedb.Queries,
+	message MessageRecord,
+	opts WriteOptions,
+	tokenized map[string]string,
+) error {
 	now := time.Now().UTC().Format(timeLayout)
 	var previousNormalized sql.NullString
 	previousErr := sql.ErrNoRows
@@ -348,6 +376,9 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, mess
 	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
+			return err
+		}
+		if err := s.upsertLexicalMessageTx(ctx, tx, message, tokenized); err != nil {
 			return err
 		}
 		if message.DeletedAt != "" {
@@ -448,6 +479,9 @@ func (s *Store) markMessageDeleted(
 	}
 	if rowID, ok := messageFTSRowID(messageID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
+			return err
+		}
+		if err := s.deleteLexicalMessagesTx(ctx, tx, "rowid", rowID); err != nil {
 			return err
 		}
 	}
