@@ -84,6 +84,7 @@ discrawl sync --with-media
 - Routine refreshes keep a per-parent archived-thread cursor, so they discover threads archived between runs without rescanning the historical thread catalog.
 - When the archive is already complete, `sync --full` reuses backlog markers and the same incremental thread discovery instead of revisiting every stored archived thread.
 - Completed channels with no stored messages are verified with a full crawl when Discord still reports a last message. Routine sync skips channels verified empty; `--full` rechecks them. A `--since` window does not initiate this recovery.
+- Interrupted recovery resumes from its own saved page checkpoint on the next unwindowed sync, including after cancellation or process termination. Messages ingested in the meantime do not mark the older history complete.
 - Failed recovery leaves partial history resumable. After cancellation, restoring a still-empty channel's completion marker uses the existing five-second failure-cleanup budget.
 
 ## See also

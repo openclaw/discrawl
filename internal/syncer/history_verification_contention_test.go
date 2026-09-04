@@ -2,9 +2,11 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,4 +56,111 @@ func TestHistoryVerificationBoundsRestoreWhenConnectionPoolIsBusy(t *testing.T) 
 	marker, err := s.GetSyncState(ctx, channelVerifiedEmptyScope("c1"))
 	require.NoError(t, err)
 	require.Empty(t, marker, "failed cleanup must not claim the channel was verified empty")
+	pending, err := s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{}`, pending)
+
+	close(client.messageBlocks["c1"])
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 250, count, "the next default sync must retry recovery after the cleanup timeout")
+	pending, err = s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}
+
+func TestHistoryVerificationSurvivesWindowedIngestion(t *testing.T) {
+	t.Parallel()
+	ctx, s, client, svc, channel := verificationFixtureAt(t, storedMessages(250), "1249")
+	client.messageErrors = map[string]error{"c1": errors.New("discord unavailable")}
+	_, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.Error(t, err)
+	delete(client.messageErrors, "c1")
+
+	newMessage := storedMessage("1250")
+	client.messages["c1"] = append([]*discordgo.Message{newMessage}, client.messages["c1"]...)
+	channel.LastMessageID = "1250"
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, newMessage.Timestamp, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "the windowed run only ingests the new message")
+
+	count, err = svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 251, count, "ordinary ingestion must not discard pending older history")
+	oldest, newest, err := s.ChannelMessageBounds(ctx, "c1")
+	require.NoError(t, err)
+	require.Equal(t, "1000", oldest)
+	require.Equal(t, "1250", newest)
+}
+
+func TestHistoryVerificationRetainsCheckpointWhenOlderRowsArrive(t *testing.T) {
+	t.Parallel()
+	ctx, s, client, svc, channel := verificationFixtureAt(t, storedMessages(250), "1249")
+	client.beforeErrors = map[string]map[string]error{"c1": {"1150": errors.New("discord unavailable")}}
+	_, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.Error(t, err)
+	delete(client.beforeErrors, "c1")
+
+	// Ordinary ingestion can add an isolated old row without filling the gap.
+	_, err = svc.persistMessagePage(ctx, []*discordgo.Message{storedMessage("1000")}, channel.Name, channel.GuildID, false)
+	require.NoError(t, err)
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 150, count, "recovery must resume at its own checkpoint, not the unrelated oldest row")
+	var rows int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE channel_id = 'c1'").Scan(&rows))
+	require.Equal(t, 250, rows)
+}
+
+func TestHistoryVerificationCheckpointSurvivesWindowedFullSync(t *testing.T) {
+	t.Parallel()
+	ctx, s, client, svc, channel := verificationFixtureAt(t, storedMessages(250), "1249")
+	client.beforeErrors = map[string]map[string]error{"c1": {"1150": errors.New("discord unavailable")}}
+	_, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.Error(t, err)
+	delete(client.beforeErrors, "c1")
+	checkpoint, err := s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.NoError(t, s.SetSyncState(ctx, channelBackfillScope("c1"), "1100"))
+
+	_, err = svc.syncChannelMessages(ctx, "g1", channel, true, false, time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC), false, nil)
+	require.NoError(t, err)
+	afterWindow, err := s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.Equal(t, checkpoint, afterWindow, "windowed full sync does not own recovery's checkpoint")
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 150, count)
+	var rows int
+	require.NoError(t, s.DB().QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE channel_id = 'c1'").Scan(&rows))
+	require.Equal(t, 250, rows)
+}
+
+func TestHistoryVerificationResumesPendingWithoutCompletionOrCursor(t *testing.T) {
+	t.Parallel()
+	ctx, s, client, svc, channel := verificationFixtureAt(t, storedMessages(250), "1249")
+	require.NoError(t, s.SetSyncState(ctx, channelHistoryVerificationScope("c1"), `{}`))
+	require.NoError(t, s.DeleteSyncState(ctx, channelHistoryCompleteScope("c1")))
+	require.NoError(t, s.DeleteSyncState(ctx, channelLatestScope("c1")))
+	// An interrupted --full recheck may retain the previous empty verdict.
+	require.NoError(t, s.SetSyncState(ctx, channelVerifiedEmptyScope("c1"), "1"))
+
+	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Now().UTC(), true, nil)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	pending, err := s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{}`, pending, "a windowed run must leave recovery intent intact")
+
+	count, err = svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 250, count)
+	pending, err = s.GetSyncState(ctx, channelHistoryVerificationScope("c1"))
+	require.NoError(t, err)
+	require.Empty(t, pending)
+	calls := client.messageCalls["c1"]
+	count, err = svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	require.Equal(t, calls, client.messageCalls["c1"])
 }

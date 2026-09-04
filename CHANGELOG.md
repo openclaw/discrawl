@@ -4,7 +4,7 @@
 
 ### Fixes
 
-- Verify supposedly complete channels with no stored messages, recover their full history, and bound marker cleanup after cancellation. Thanks @rnavarro.
+- Verify supposedly complete channels with no stored messages, recover their full history, and preserve retryability across bounded cancellation cleanup or process interruption. Thanks @rnavarro.
 - Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
 - Stop guild and archived-thread pagination with a cursor error when Discord repeats a page instead of hanging sync. Thanks @SebTardif.
 - Reject repeated or missing message-page cursors without losing the last usable backfill checkpoint. Thanks @SebTardif.

@@ -126,7 +126,7 @@ func TestMessagePagesErrorWhenCursorDoesNotAdvance(t *testing.T) {
 			name: "unlimited backfill repeats last id",
 			page: fullMessagePage("100"),
 			run: func(svc *Syncer, channel *discordgo.Channel) error {
-				_, _, err := svc.syncBackfillPages(context.Background(), channel, "", "", channel.Name, false, time.Time{}, 0, nil)
+				_, _, err := svc.syncBackfillPages(context.Background(), channel, "", "", channel.Name, false, time.Time{}, 0, nil, nil)
 				return err
 			},
 			wantErr:   "message page cursor did not advance",
@@ -136,7 +136,7 @@ func TestMessagePagesErrorWhenCursorDoesNotAdvance(t *testing.T) {
 			name: "unlimited backfill empty last id",
 			page: fullMessagePage(""),
 			run: func(svc *Syncer, channel *discordgo.Channel) error {
-				_, _, err := svc.syncBackfillPages(context.Background(), channel, "", "", channel.Name, false, time.Time{}, 0, nil)
+				_, _, err := svc.syncBackfillPages(context.Background(), channel, "", "", channel.Name, false, time.Time{}, 0, nil, nil)
 				return err
 			},
 			wantErr:   "message page missing id",
@@ -176,7 +176,7 @@ func TestInvalidBackfillPagePreservesCheckpoint(t *testing.T) {
 				client := &repeatingMessagePageClient{page: fullMessagePage(lastID)}
 				svc := New(client, st, nil)
 				channel := &discordgo.Channel{ID: "c1", GuildID: "g1", Name: "general"}
-				_, _, err = svc.syncBackfillPages(ctx, channel, "100", "200", channel.Name, false, time.Time{}, pageLimit, nil)
+				_, _, err = svc.syncBackfillPages(ctx, channel, "100", "200", channel.Name, false, time.Time{}, pageLimit, nil, nil)
 				require.Error(t, err)
 				require.Equal(t, 1, client.requests)
 				cursor, err := st.GetSyncState(ctx, channelBackfillScope("c1"))

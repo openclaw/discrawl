@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -243,7 +244,7 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 		state.VerifiedEmpty = false
 	}
 	if needsHistoryVerification(channel, state, since) {
-		return s.verifyChannelHistory(ctx, channel, embeddings, progress)
+		return s.verifyChannelHistory(ctx, channel, state.Verification, embeddings, progress)
 	}
 	return s.syncChannelHistory(ctx, channel, state, full, embeddings, since, latestOnly, progress)
 }
@@ -255,11 +256,13 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 // that partial history in, because the next run sees stored rows and skips the
 // channel for good. Forcing the full path here matches what syncChannelHistory
 // already does for an incomplete thread.
-func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Channel, embeddings bool, progress *messageSyncProgress) (int, error) {
-	// The stored cursors describe a history that is not actually present, so
-	// crawl from scratch with an empty state. Dropping the in-memory copy is
-	// safe: AdvanceChannelLatestMessageID only ever moves the stored pointer
-	// forward, so it cannot be rewound from here.
+func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Channel, checkpoint *historyVerificationCheckpoint, embeddings bool, progress *messageSyncProgress) (int, error) {
+	// Only verification's own checkpoint proves recovered coverage. Ordinary
+	// ingestion can add isolated rows or advance the shared channel cursors.
+	if checkpoint == nil {
+		checkpoint = &historyVerificationCheckpoint{}
+	}
+	state := channelSyncState{Latest: checkpoint.Latest, BackfillCursor: checkpoint.Before}
 	//
 	// history_complete is cleared for the duration of the crawl. Leaving it in
 	// place strands the channel if the crawl fails partway: the rows it did
@@ -269,10 +272,15 @@ func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Ch
 	// verification only ever runs unwindowed, so success always restores it. A
 	// process killed mid-crawl leaves the marker off, which is the same
 	// resumable state as any other interrupted backfill.
+	// Persist retry intent first: cancellation or process interruption can
+	// prevent restoration after history_complete has been cleared.
+	if err := s.saveHistoryVerificationCheckpoint(ctx, channel.ID, *checkpoint); err != nil {
+		return 0, err
+	}
 	if err := s.store.DeleteSyncState(ctx, channelHistoryCompleteScope(channel.ID)); err != nil {
 		return 0, err
 	}
-	count, err := s.syncFullChannelHistory(ctx, channel, channelSyncState{}, embeddings, time.Time{}, progress)
+	count, err := s.syncFullChannelHistory(ctx, channel, state, embeddings, time.Time{}, checkpoint, progress)
 	if err != nil {
 		// Reuse the detached failure-state budget so cancellation cannot
 		// suppress restoration or leave it waiting indefinitely for the store.
@@ -326,9 +334,14 @@ func (s *Syncer) recordVerifiedEmptyChannel(ctx context.Context, channelID strin
 	if hasMessages {
 		// The crawl disproved the marker, so retire it in the same run rather
 		// than leaving a stale one for the next load to reconcile.
-		return s.store.DeleteSyncState(ctx, channelVerifiedEmptyScope(channelID))
+		err = s.store.DeleteSyncState(ctx, channelVerifiedEmptyScope(channelID))
+	} else {
+		err = s.store.SetSyncState(ctx, channelVerifiedEmptyScope(channelID), "1")
 	}
-	return s.store.SetSyncState(ctx, channelVerifiedEmptyScope(channelID), "1")
+	if err != nil {
+		return err
+	}
+	return s.store.DeleteSyncState(ctx, channelHistoryVerificationScope(channelID))
 }
 
 func (s *Syncer) syncChannelHistory(ctx context.Context, channel *discordgo.Channel, state channelSyncState, full bool, embeddings bool, since time.Time, latestOnly bool, progress *messageSyncProgress) (int, error) {
@@ -339,14 +352,14 @@ func (s *Syncer) syncChannelHistory(ctx context.Context, channel *discordgo.Chan
 		if shouldSkipChannelSync(channel, state, since) {
 			return 0, nil
 		}
-		return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, progress)
+		return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, nil, progress)
 	}
 	if shouldSkipChannelSync(channel, state, since) {
 		return 0, nil
 	}
 	if latestOnly {
 		if isThreadChannel(channel) && !state.BackfillComplete {
-			return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, progress)
+			return s.syncFullChannelHistory(ctx, channel, state, embeddings, since, nil, progress)
 		}
 		if state.Latest == "" {
 			return s.syncLatestChannelHistory(ctx, channel, embeddings, since, progress)
@@ -363,6 +376,7 @@ type channelSyncState struct {
 	StoredLatest     string
 	BackfillCursor   string
 	BackfillComplete bool
+	Verification     *historyVerificationCheckpoint
 	// HasMessages reports whether any message rows exist locally for the
 	// channel. history_complete alone is not evidence that the history was
 	// actually stored: a channel can carry the marker with zero local rows.
@@ -373,15 +387,25 @@ type channelSyncState struct {
 	VerifiedEmpty bool
 }
 
+type historyVerificationCheckpoint struct {
+	Latest string `json:"latest,omitempty"`
+	Before string `json:"before,omitempty"`
+}
+
+func (s *Syncer) saveHistoryVerificationCheckpoint(ctx context.Context, channelID string, checkpoint historyVerificationCheckpoint) error {
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSyncState(ctx, channelHistoryVerificationScope(channelID), string(raw))
+}
+
 // needsHistoryVerification reports whether a channel marked history_complete
 // must be re-fetched because nothing is stored locally while Discord still
 // reports the channel holds content. Without this, a channel whose messages are
 // missing is skipped forever, including under --full.
 func needsHistoryVerification(channel *discordgo.Channel, state channelSyncState, since time.Time) bool {
-	if channel == nil || !state.BackfillComplete {
-		return false
-	}
-	if state.HasMessages || state.VerifiedEmpty {
+	if channel == nil || (!state.BackfillComplete && state.Verification == nil) {
 		return false
 	}
 	// A windowed run cannot complete a recovery: it can only fetch back to the
@@ -391,6 +415,12 @@ func needsHistoryVerification(channel *discordgo.Channel, state channelSyncState
 	// unwindowed run, and declining here costs nothing beyond that delay while
 	// keeping a deliberately narrow sync from turning into a full crawl.
 	if !since.IsZero() {
+		return false
+	}
+	if state.Verification != nil {
+		return true
+	}
+	if state.HasMessages || state.VerifiedEmpty {
 		return false
 	}
 	// Discord reporting no last message is consistent with an empty channel,
@@ -434,15 +464,26 @@ func (s *Syncer) loadChannelSyncState(ctx context.Context, channelID string) (ch
 	if err != nil {
 		return channelSyncState{}, err
 	}
+	verificationPending, err := s.store.GetSyncState(ctx, channelHistoryVerificationScope(channelID))
+	if err != nil {
+		return channelSyncState{}, err
+	}
 	state := channelSyncState{
 		Latest:           latest,
 		StoredLatest:     latest,
 		BackfillCursor:   backfillCursor,
 		BackfillComplete: backfillComplete != "",
 	}
-	if !state.BackfillComplete {
-		// Only a completed channel can be wrongly trusted, so the probes below
-		// are unnecessary work for every other channel.
+	if verificationPending != "" {
+		var checkpoint historyVerificationCheckpoint
+		if err := json.Unmarshal([]byte(verificationPending), &checkpoint); err != nil {
+			return channelSyncState{}, fmt.Errorf("decode history verification checkpoint: %w", err)
+		}
+		state.Verification = &checkpoint
+	}
+	if !state.BackfillComplete && state.Verification == nil {
+		// Probe completed channels and interrupted verification, leaving new
+		// channels on their ordinary initial-sync path.
 		return state, nil
 	}
 	hasMessages, err := s.store.ChannelHasMessages(ctx, channelID)
@@ -452,7 +493,7 @@ func (s *Syncer) loadChannelSyncState(ctx context.Context, channelID string) (ch
 	state.HasMessages = hasMessages
 	// The marker is read even when rows are stored, so a stale one can be
 	// spotted and cleared. It is a point read on the sync_state primary key,
-	// paid only by channels already marked complete, and it is the single place
+	// paid only by complete or recovering channels, and it is the single place
 	// the marker is read, so no caller can act on one this load did not see.
 	verifiedEmpty, err := s.store.GetSyncState(ctx, channelVerifiedEmptyScope(channelID))
 	if err != nil {
@@ -484,7 +525,7 @@ func (s *Syncer) seedChannelSyncState(ctx context.Context, channelID string, sta
 	return nil
 }
 
-func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.Channel, state channelSyncState, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
+func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.Channel, state channelSyncState, embeddings bool, since time.Time, verification *historyVerificationCheckpoint, progress *messageSyncProgress) (int, error) {
 	messageCount := 0
 	newest := state.Latest
 	if state.Latest != "" {
@@ -503,7 +544,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 		if before == "" && state.Latest != "" {
 			before = state.Latest
 		}
-		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, 0, progress)
+		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, 0, verification, progress)
 		messageCount += count
 		newest = maxSnowflake(newest, latest)
 		if err != nil {
@@ -525,7 +566,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 }
 
 func (s *Syncer) syncLatestChannelHistory(ctx context.Context, channel *discordgo.Channel, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
-	count, newest, err := s.syncBackfillPages(ctx, channel, "", "", channel.Name, embeddings, since, 1, progress)
+	count, newest, err := s.syncBackfillPages(ctx, channel, "", "", channel.Name, embeddings, since, 1, nil, progress)
 	if err != nil || newest == "" {
 		return count, err
 	}
@@ -642,7 +683,7 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 	return messageCount, newest, nil
 }
 
-func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, pageLimit int, progress *messageSyncProgress) (int, string, error) {
+func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, pageLimit int, verification *historyVerificationCheckpoint, progress *messageSyncProgress) (int, string, error) {
 	messageCount := 0
 	newest := ""
 	pages := 0
@@ -697,6 +738,12 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 		}
 		if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), nextBefore); err != nil {
 			return messageCount, newest, err
+		}
+		if verification != nil {
+			checkpoint := historyVerificationCheckpoint{Latest: maxSnowflake(latestFloor, newest), Before: nextBefore}
+			if err := s.saveHistoryVerificationCheckpoint(ctx, channel.ID, checkpoint); err != nil {
+				return messageCount, newest, err
+			}
 		}
 		if len(page) < 100 {
 			if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
