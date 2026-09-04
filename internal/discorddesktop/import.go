@@ -118,7 +118,11 @@ type scanTotals struct {
 
 type unresolvedMessages map[string]string
 
-const wiretapFileIndexScope = "wiretap:file_index:v1"
+const (
+	wiretapFileIndexScope   = "wiretap:file_index:v3"
+	wiretapFileIndexScopeV2 = "wiretap:file_index:v2"
+	wiretapFileIndexScopeV1 = "wiretap:file_index:v1"
+)
 
 const (
 	fileStatusImported = "imported"
@@ -214,6 +218,12 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
 			state.previous = map[string]fileFingerprint{}
 		}
+	} else {
+		migrated, err := loadLegacyFileIndex(ctx, st)
+		if err != nil {
+			return state, err
+		}
+		state.previous = migrated
 	}
 	channels, err := st.Channels(ctx, "")
 	if err != nil {
@@ -228,6 +238,26 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		}
 	}
 	return state, nil
+}
+
+// Both legacy indexes can certify unresolved files as imported. Recheck them
+// once, retaining the index so upgrade is not mistaken for first-import pruning.
+func loadLegacyFileIndex(ctx context.Context, st *store.Store) (map[string]fileFingerprint, error) {
+	for _, scope := range []string{wiretapFileIndexScopeV2, wiretapFileIndexScopeV1} {
+		raw, err := st.GetSyncState(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		legacy := map[string]fileFingerprint{}
+		if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &legacy) != nil {
+			continue
+		}
+		for relKey, fingerprint := range legacy {
+			legacy[relKey] = skippedFingerprint(fingerprint)
+		}
+		return legacy, nil
+	}
+	return map[string]fileFingerprint{}, nil
 }
 
 func fileIndexScope(Options) string {
@@ -345,6 +375,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 	}
 	stats := Stats{Path: root, FullCache: true, StartedAt: now().UTC()}
 	snap := newSnapshot()
+	messageSources := map[string][]string{}
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		stats.FinishedAt = now().UTC()
@@ -384,11 +415,12 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			Size:      info.Size(),
 			ModUnixNS: info.ModTime().UnixNano(),
 		}
-		state.current[relKey] = importedFingerprint(fingerprint)
 		if previous, ok := state.previous[relKey]; ok && sameFileFingerprint(previous, fingerprint) && isImportedFingerprint(previous) {
+			state.current[relKey] = previous
 			stats.FilesUnchanged++
 			return nil
 		}
+		state.current[relKey] = skippedFingerprint(fingerprint)
 		data, err := rootFS.ReadFile(relPath)
 		if err != nil {
 			stats.FilesSkipped++
@@ -406,6 +438,9 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			objects = append(objects, extractJSONValues(bytes.ToValidUTF8(payload, nil))...)
 		}
 		stats.JSONObjects += len(objects)
+		// Share channel context while retaining each message's source files.
+		fileSnap := snap
+		fileSnap.messages = make(map[string]store.MessageMutation)
 		for _, raw := range objects {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -414,14 +449,23 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			if err := json.Unmarshal(raw, &value); err != nil {
 				continue
 			}
-			collectValue(snap, state.channels, value, info.ModTime().UTC())
+			collectValue(fileSnap, state.channels, value, info.ModTime().UTC())
 		}
+		for id, message := range fileSnap.messages {
+			snap.messages[id] = message
+			messageSources[id] = append(messageSources[id], relKey)
+		}
+		state.current[relKey] = importedFingerprint(fingerprint)
 		return nil
 	}); err != nil {
 		return stats, snap, err
 	}
 	totals := newScanTotals()
-	finalizeSnapshot(snap, state.channels, totals, &stats, true)
+	for id := range finalizeSnapshot(snap, state.channels, totals, &stats, true) {
+		for _, key := range messageSources[id] {
+			state.current[key] = skippedFingerprint(state.current[key])
+		}
+	}
 	stats.FinishedAt = now().UTC()
 	return stats, snap, nil
 }
@@ -498,7 +542,7 @@ func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts 
 			cacheFiles = append(cacheFiles, candidate)
 			return nil
 		}
-		if previous, ok := state.previous[relKey]; ok && sameFileFingerprint(previous, fingerprint) {
+		if previous, ok := state.previous[relKey]; ok && sameFileFingerprint(previous, fingerprint) && isImportedFingerprint(previous) {
 			state.current[relKey] = previous
 			stats.FilesUnchanged++
 			return nil
@@ -686,7 +730,7 @@ func checkpointScannedCandidates(ctx context.Context, st *store.Store, opts Opti
 		return err
 	}
 	for _, candidate := range candidates {
-		state.current[candidate.relKey] = importedFingerprint(candidate.fingerprint)
+		state.current[candidate.relKey] = skippedFingerprint(candidate.fingerprint)
 	}
 	if err := saveFileIndex(ctx, st, opts, state.current); err != nil {
 		return err
@@ -1078,6 +1122,8 @@ func parseMessage(raw map[string]any, fallbackTime time.Time, channels map[strin
 		Options: store.WriteOptions{
 			AppendEvent:      true,
 			EnqueueEmbedding: false,
+			PreserveNewer:    true,
+			DeduplicateEvent: true,
 		},
 		Attachments: attachments,
 		Mentions:    mentions,

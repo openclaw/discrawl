@@ -33,6 +33,9 @@ discrawl wiretap --watch-every 10s --stats --json
 - `@me` rows stay local-only: never exported to `publish` / Git snapshot import / embedding snapshots
 - preserves existing local `@me` rows when importing a Git snapshot
 - drops message payloads whose channel cannot be classified from cached channel metadata or Discord route URLs; dropped rows are counted as `skipped_messages`
+- retries unresolved payloads when channel metadata becomes available, including JSON inputs and `--full-cache`; older file checkpoints are rechecked once after upgrade
+- in `--full-cache`, only files containing unresolved messages remain retryable; unchanged completed files keep their checkpoints
+- preserves newer edited messages and deletion markers, and avoids duplicate events when the same cached payload is imported again
 - imports what Discord Desktop has cached locally, not complete live DM history
 - scans local `.ldb`, `.log`, `.json`, and `.txt` artifacts for Discord message JSON, plus route-bearing Chromium HTTP cache entries by default
 - does not extract, store, or print Discord auth tokens

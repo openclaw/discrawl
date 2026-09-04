@@ -113,6 +113,8 @@ type MessageMutation struct {
 type WriteOptions struct {
 	AppendEvent      bool
 	EnqueueEmbedding bool
+	PreserveNewer    bool
+	DeduplicateEvent bool
 }
 
 const deleteMessageFTSByRowIDSQL = `delete from message_fts where rowid = ?`
@@ -268,6 +270,12 @@ func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRec
 		return err
 	}
 	defer rollback(tx)
+	if opts.PreserveNewer {
+		keep, err := keepStoredMessage(ctx, s.q.WithTx(tx), message)
+		if err != nil || keep {
+			return err
+		}
+	}
 	if err := upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts); err != nil {
 		return err
 	}
@@ -288,6 +296,15 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if message.Options.PreserveNewer {
+			keep, err := keepStoredMessage(ctx, qtx, message.Record)
+			if err != nil {
+				return err
+			}
+			if keep {
+				continue
+			}
+		}
 		if err := upsertMessageTx(ctx, tx, qtx, message.Record, message.Options); err != nil {
 			return err
 		}
@@ -298,6 +315,17 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 			return err
 		}
 		if message.Options.AppendEvent && message.EventType != "" {
+			if message.Options.DeduplicateEvent {
+				exists, err := qtx.MessageEventExists(ctx, storedb.MessageEventExistsParams{
+					MessageID: message.Record.ID, EventType: message.EventType, PayloadJson: message.PayloadJSON,
+				})
+				if err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+			}
 			if err := appendEventTx(
 				ctx,
 				qtx,
@@ -312,6 +340,19 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		}
 	}
 	return tx.Commit()
+}
+
+func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord) (bool, error) {
+	stored, err := qtx.GetMessageRevision(ctx, message.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Fixed UTC precision makes normalized edit timestamps sortable. Keep
+	// tombstones and all related rows intact when an older cache is replayed.
+	return stored.DeletedAt != "" || normalizeStoredTime(message.EditedAt) < normalizeStoredTime(stored.EditedAt), nil
 }
 
 func upsertMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, message MessageRecord, opts WriteOptions) error {

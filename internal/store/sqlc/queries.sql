@@ -383,6 +383,14 @@ select normalized_content
 from messages
 where id = ?;
 
+-- name: GetMessageRevision :one
+select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at
+from messages
+where id = ?;
+
+-- name: MessageEventExists :one
+select exists(select 1 from message_events where message_id = ? and event_type = ? and payload_json = ?);
+
 -- name: CountEmbeddingJobsByMessage :one
 select count(*) as count
 from embedding_jobs

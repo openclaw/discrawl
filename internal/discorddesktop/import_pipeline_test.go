@@ -231,8 +231,22 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 1, stats.SkippedMessages)
+	require.Equal(t, 0, stats.FilesUnchanged)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
+{"id":"%s","guild_id":"999999999999999996","type":0,"name":"later-resolved"}
+`, channelID, channelID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.FilesScanned)
+	require.Equal(t, 1, stats.Messages)
+
+	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "later-resolved", results[0].ChannelName)
 }
 
 func TestImportDoesNotAppendEventsForSkippedMixedBatch(t *testing.T) {
@@ -269,8 +283,8 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 0, stats.FilesUnchanged)
 	requireMessageCount(t, ctx, st, "message_events", 0)
 }
 
@@ -398,4 +412,36 @@ func requireMessageCount(t *testing.T, ctx context.Context, st *store.Store, tab
 
 func bytesf(format string, args ...any) []byte {
 	return fmt.Appendf(nil, format, args...)
+}
+
+// Upgrades must re-evaluate ambiguous checkpoints without replaying history.
+func TestImportMigratesLegacyFileIndexWithoutReplayingEvents(t *testing.T) {
+	for _, legacy := range []string{wiretapFileIndexScopeV1, wiretapFileIndexScopeV2} {
+		t.Run(legacy, func(t *testing.T) {
+			ctx, st, dir := replayStore(t)
+			known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
+			replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(t, replayChannel, "already imported before upgrade", ""))
+			opts := Options{Path: dir, FullCache: true}
+			_, err := Import(ctx, st, opts)
+			require.NoError(t, err)
+			requireMessageCount(t, ctx, st, "message_events", 1)
+			index, err := st.GetSyncState(ctx, wiretapFileIndexScope)
+			require.NoError(t, err)
+			require.NoError(t, st.SetSyncState(ctx, legacy, index))
+			require.NoError(t, st.DeleteSyncState(ctx, wiretapFileIndexScope))
+
+			// A legacy index must not trigger first-import pruning again.
+			require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{ID: replayUnknownChannel, GuildID: "@unknown", Kind: "text", Name: "legacy", RawJSON: `{}`}))
+			require.NoError(t, st.UpsertMessage(ctx, store.MessageRecord{ID: "333333333333333349", GuildID: "@unknown", ChannelID: replayUnknownChannel, CreatedAt: "2026-04-23T00:00:00Z", Content: "legacy retained", NormalizedContent: "legacy retained", RawJSON: `{}`}))
+			stats, err := Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Equal(t, 1, stats.FilesScanned)
+			requireMessageCount(t, ctx, st, "message_events", 1)
+			requireMessageCount(t, ctx, st, "messages", 2)
+			stats, err = Import(ctx, st, opts)
+			require.NoError(t, err)
+			require.Zero(t, stats.FilesScanned)
+			requireMessageCount(t, ctx, st, "message_events", 1)
+		})
+	}
 }
