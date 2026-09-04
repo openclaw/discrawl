@@ -362,6 +362,130 @@ func TestGuildMembersErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 	require.Equal(t, 2, requests)
 }
 
+func TestGuildsErrorsWhenCursorDoesNotAdvance(t *testing.T) {
+	page := make([]map[string]any, 200)
+	for i := range page {
+		page[i] = map[string]any{
+			"id":   fmt.Sprintf("g%03d", i),
+			"name": "Guild",
+		}
+	}
+
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/users/@me/guilds", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests > 5 {
+			writeJSON([]map[string]any{})(w, r)
+			return
+		}
+		writeJSON(page)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	guilds, err := client.Guilds(context.Background())
+	require.ErrorContains(t, err, "guild page cursor did not advance")
+	require.Nil(t, guilds)
+	require.Equal(t, 2, requests)
+}
+
+func TestGuildsErrorsWhenFullPageHasEmptyID(t *testing.T) {
+	page := make([]map[string]any, 200)
+	for i := range 199 {
+		page[i] = map[string]any{
+			"id":   fmt.Sprintf("g%03d", i),
+			"name": "Guild",
+		}
+	}
+	page[199] = map[string]any{"id": "", "name": "Guild"}
+
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/users/@me/guilds", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests > 5 {
+			writeJSON([]map[string]any{})(w, r)
+			return
+		}
+		writeJSON(page)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	guilds, err := client.Guilds(context.Background())
+	require.ErrorContains(t, err, "guild page missing id")
+	require.Nil(t, guilds)
+	require.Equal(t, 1, requests)
+}
+
+func TestThreadsArchivedErrorsWhenCursorDoesNotAdvance(t *testing.T) {
+	archivedAt := "2024-01-15T12:00:00Z"
+	page := map[string]any{
+		"threads": []map[string]any{
+			{
+				"id":        "t1",
+				"guild_id":  "g1",
+				"parent_id": "c1",
+				"name":      "archived-public",
+				"type":      11,
+				"thread_metadata": map[string]any{
+					"archived":              true,
+					"auto_archive_duration": 60,
+					"archive_timestamp":     archivedAt,
+					"locked":                false,
+					"invitable":             true,
+				},
+			},
+		},
+		"members":  []any{},
+		"has_more": true,
+	}
+
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/channels/c1/threads/archived/public", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests > 5 {
+			writeJSON(map[string]any{
+				"threads":  []any{},
+				"members":  []any{},
+				"has_more": false,
+			})(w, r)
+			return
+		}
+		writeJSON(page)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	threads, err := client.ThreadsArchived(context.Background(), "c1", false, time.Time{})
+	require.ErrorContains(t, err, "archived thread page cursor did not advance")
+	require.Nil(t, threads)
+	require.Equal(t, 2, requests)
+}
+
 func TestLastMemberUserID(t *testing.T) {
 	t.Parallel()
 

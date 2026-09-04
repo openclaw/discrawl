@@ -40,8 +40,7 @@ func ExitCode(err error) int {
 	if errors.Is(err, context.Canceled) {
 		return 1
 	}
-	var codeErr *cliError
-	if errors.As(err, &codeErr) {
+	if codeErr, ok := errors.AsType[*cliError](err); ok {
 		return codeErr.code
 	}
 	return 1

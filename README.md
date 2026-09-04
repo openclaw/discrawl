@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/openclaw/discrawl/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/openclaw/discrawl/actions/workflows/ci.yml)
 [![GitHub release](https://img.shields.io/github/v/release/openclaw/discrawl?style=flat-square)](https://github.com/openclaw/discrawl/releases/latest)
-[![Go](https://img.shields.io/badge/Go-1.26.6%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.27.0%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/github/license/openclaw/discrawl?style=flat-square)](LICENSE)
 [![Homebrew](https://img.shields.io/badge/Homebrew-openclaw%2Ftap-FBB040?style=flat-square&logo=homebrew&logoColor=black)](https://github.com/openclaw/homebrew-tap/blob/main/Formula/discrawl.rb)
 [![Docs](https://img.shields.io/badge/docs-discrawl.sh-4C78A8?style=flat-square)](https://discrawl.sh/)
@@ -22,7 +22,7 @@ discrawl --version
 
 Windows binaries and signed archives for all supported platforms are available from [GitHub Releases](https://github.com/openclaw/discrawl/releases/latest).
 
-To build from source, install Go 1.26.6 or newer:
+To build from source, install Go 1.27.0 or newer. The module selects Go 1.27.1 as its preferred toolchain:
 
 ```bash
 git clone https://github.com/openclaw/discrawl.git

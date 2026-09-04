@@ -313,8 +313,7 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := t.Context()
 
 			var tailStore *store.Store
 			var onFetch func(context.Context)
@@ -376,6 +375,8 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 			defer func() { _ = eventClient.Close() }()
 			setDiscordTailHandlerTimeout(t, eventClient, 25*time.Millisecond)
 
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
 			handler := &capturingTailHandler{
 				tailHandler: &tailHandler{
 					store:                 tailStore,

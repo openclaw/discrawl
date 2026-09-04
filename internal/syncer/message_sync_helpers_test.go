@@ -200,8 +200,7 @@ func TestMessageChannelConcurrentErrorAndProgressBranches(t *testing.T) {
 func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
@@ -220,6 +219,8 @@ func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
 	}
 	svc := New(client, s, slog.New(slog.DiscardHandler))
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	done := make(chan struct {
 		count int
 		err   error

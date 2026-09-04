@@ -274,11 +274,11 @@ func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Ch
 	}
 	count, err := s.syncFullChannelHistory(ctx, channel, channelSyncState{}, embeddings, time.Time{}, progress)
 	if err != nil {
-		// The crawl now spans every page rather than one, so the per-channel
-		// deadline in messageChannelContext is a likely way for it to fail.
-		// The restore has to outlive that: on a cancelled context both of its
-		// queries fail, and the marker this function removed stays removed.
-		return count, errors.Join(err, s.restoreHistoryCompleteAfterFailedVerification(context.WithoutCancel(ctx), channel.ID))
+		// Reuse the detached failure-state budget so cancellation cannot
+		// suppress restoration or leave it waiting indefinitely for the store.
+		restoreCtx, cancel := failureLedgerContext(ctx)
+		defer cancel()
+		return count, errors.Join(err, s.restoreHistoryCompleteAfterFailedVerification(restoreCtx, channel.ID))
 	}
 	return count, s.recordVerifiedEmptyChannel(ctx, channel.ID)
 }
@@ -581,7 +581,6 @@ func (s *Syncer) bootstrapChannelHistory(ctx context.Context, channel *discordgo
 			}
 			break
 		}
-		before = page[len(page)-1].ID
 		if len(page) < 100 {
 			if newest != "" {
 				if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
@@ -590,6 +589,14 @@ func (s *Syncer) bootstrapChannelHistory(ctx context.Context, channel *discordgo
 			}
 			break
 		}
+		nextBefore := page[len(page)-1].ID
+		if nextBefore == "" {
+			return messageCount, fmt.Errorf("channel %s message page missing id", channel.ID)
+		}
+		if nextBefore == before {
+			return messageCount, fmt.Errorf("channel %s message page cursor did not advance", channel.ID)
+		}
+		before = nextBefore
 	}
 	if newest != "" {
 		if err := s.advanceChannelLatest(ctx, channel.ID, newest); err != nil {
@@ -615,7 +622,6 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 			return messageCount, newest, err
 		}
 		progress.touch(channel, len(page))
-		after = maxSnowflake(after, pageNewest)
 		newest = maxSnowflake(newest, pageNewest)
 		messageCount += len(page)
 		if err := s.advanceChannelLatest(ctx, channel.ID, newest); err != nil {
@@ -624,6 +630,14 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 		if len(page) < 100 {
 			break
 		}
+		nextAfter := maxSnowflake(after, pageNewest)
+		if nextAfter == "" {
+			return messageCount, newest, fmt.Errorf("channel %s message page missing id", channel.ID)
+		}
+		if nextAfter == after {
+			return messageCount, newest, fmt.Errorf("channel %s message page cursor did not advance", channel.ID)
+		}
+		after = nextAfter
 	}
 	return messageCount, newest, nil
 }
@@ -671,8 +685,17 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			}
 			break
 		}
-		before = page[len(page)-1].ID
-		if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), before); err != nil {
+		nextBefore := page[len(page)-1].ID
+		// Even a bounded pass must leave a usable checkpoint for its next run.
+		if len(page) == 100 {
+			if nextBefore == "" {
+				return messageCount, newest, fmt.Errorf("channel %s message page missing id", channel.ID)
+			}
+			if nextBefore == before {
+				return messageCount, newest, fmt.Errorf("channel %s message page cursor did not advance", channel.ID)
+			}
+		}
+		if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), nextBefore); err != nil {
 			return messageCount, newest, err
 		}
 		if len(page) < 100 {
@@ -684,6 +707,7 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 		if pageLimit > 0 && pages >= pageLimit {
 			break
 		}
+		before = nextBefore
 	}
 	return messageCount, newest, nil
 }

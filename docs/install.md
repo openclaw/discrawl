@@ -23,9 +23,11 @@ stderr notice when a newer Discrawl release is available. Scripted, JSON, CI,
 and non-TTY runs skip the passive notice. Set `DISCRAWL_NO_UPDATE_CHECK=1` or
 `CRAWLKIT_NO_UPDATE_CHECK=1` to disable it.
 
+Release-check HTTP requests time out after 30 seconds if the server does not respond.
+
 ## From source
 
-Requires Go `1.26+`.
+Requires Go `1.27.0+`; the module selects Go `1.27.1` as its preferred toolchain, which Go downloads automatically when needed. CI and the Docker build use this patch release too.
 
 ```bash
 git clone https://github.com/openclaw/discrawl.git
