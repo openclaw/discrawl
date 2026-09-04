@@ -12,10 +12,12 @@ import (
 	"github.com/openclaw/discrawl/internal/store"
 )
 
-const replayChannel = "111111111111111121"
-const replayUnknownChannel = "111111111111111122"
-const replayGuild = "999999999999999996"
-const replayMessage = "333333333333333346"
+const (
+	replayChannel        = "111111111111111121"
+	replayUnknownChannel = "111111111111111122"
+	replayGuild          = "999999999999999996"
+	replayMessage        = "333333333333333346"
+)
 
 func replayStore(t *testing.T) (context.Context, *store.Store, string) {
 	t.Helper()
@@ -35,13 +37,15 @@ func replayCacheEntry(t *testing.T, dir, name, contents string) string {
 	return path
 }
 
-func replayPayload(channelID, content, edited string) string {
+func replayPayload(t *testing.T, channelID, content, edited string) string {
+	t.Helper()
 	raw := map[string]any{
 		"id": replayMessage, "channel_id": channelID, "content": content,
 		"timestamp": "2026-04-23T18:20:43Z", "edited_timestamp": edited,
 		"author": map[string]string{"id": "222222222222222232", "username": "alice"},
 	}
-	data, _ := json.Marshal(raw)
+	data, err := json.Marshal(raw)
+	require.NoError(t, err)
 	return "https://discord.com/api/v9/channels/" + channelID + "/messages?limit=50\n" + string(data)
 }
 
@@ -50,7 +54,7 @@ func TestImportRecoversAmbiguousLegacyCheckpoints(t *testing.T) {
 		t.Run(legacy, func(t *testing.T) {
 			ctx, st, dir := replayStore(t)
 			rel := "Cache/Cache_Data/entry_0"
-			path := replayCacheEntry(t, dir, rel, replayPayload(replayChannel, "legacy recovery", ""))
+			path := replayCacheEntry(t, dir, rel, replayPayload(t, replayChannel, "legacy recovery", ""))
 			info, err := os.Stat(path)
 			require.NoError(t, err)
 			index, err := json.Marshal(map[string]fileFingerprint{rel: {
@@ -83,7 +87,7 @@ func TestImportRetriesUnresolvedAcrossInputModes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, st, dir := replayStore(t)
-			replayCacheEntry(t, dir, tc.path, replayPayload(replayChannel, "later classified", ""))
+			replayCacheEntry(t, dir, tc.path, replayPayload(t, replayChannel, "later classified", ""))
 			opts := Options{Path: dir, FullCache: tc.full}
 			stats, err := Import(ctx, st, opts)
 			require.NoError(t, err)
@@ -106,7 +110,7 @@ func TestImportMixedRetryPreservesNewerMessageAndChildren(t *testing.T) {
 	ctx, st, dir := replayStore(t)
 	known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
 	unresolved := `{"id":"333333333333333347","channel_id":"` + replayUnknownChannel + `","content":"unresolved","timestamp":"2026-04-23T18:20:44Z","author":{"id":"222222222222222232","username":"alice"}}`
-	path := replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(replayChannel, "old cache content", "")+"\n"+unresolved)
+	path := replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(t, replayChannel, "old cache content", "")+"\n"+unresolved)
 	_, err := Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
 
@@ -129,7 +133,7 @@ func TestImportMixedRetryPreservesNewerMessageAndChildren(t *testing.T) {
 	require.Len(t, hits, 1)
 
 	// A genuinely newer cache edit remains eligible.
-	require.NoError(t, os.WriteFile(path, []byte(known+replayPayload(replayChannel, "newest cached edit", "2026-04-25T00:00:00Z")+"\n"+unresolved), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte(known+replayPayload(t, replayChannel, "newest cached edit", "2026-04-25T00:00:00Z")+"\n"+unresolved), 0o600))
 	_, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
 	require.NoError(t, st.DB().QueryRowContext(ctx, "SELECT content FROM messages WHERE id = ?", replayMessage).Scan(&content))
@@ -147,7 +151,7 @@ func TestImportRetryPreservesDeletedMessage(t *testing.T) {
 	ctx, st, dir := replayStore(t)
 	known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
 	unresolved := `{"id":"333333333333333347","channel_id":"` + replayUnknownChannel + `","content":"unresolved","timestamp":"2026-04-23T18:20:44Z","author":{"id":"222222222222222232","username":"alice"}}`
-	replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(replayChannel, "deleted cached message", "")+"\n"+unresolved)
+	replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(t, replayChannel, "deleted cached message", "")+"\n"+unresolved)
 	_, err := Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
 	require.NoError(t, st.MarkMessageDeletedWithoutEvent(ctx, replayGuild, replayChannel, replayMessage))

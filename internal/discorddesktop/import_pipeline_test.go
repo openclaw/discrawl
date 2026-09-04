@@ -420,7 +420,7 @@ func TestImportMigratesLegacyFileIndexWithoutReplayingEvents(t *testing.T) {
 		t.Run(legacy, func(t *testing.T) {
 			ctx, st, dir := replayStore(t)
 			known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
-			replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(replayChannel, "already imported before upgrade", ""))
+			replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(t, replayChannel, "already imported before upgrade", ""))
 			opts := Options{Path: dir, FullCache: true}
 			_, err := Import(ctx, st, opts)
 			require.NoError(t, err)
