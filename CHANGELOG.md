@@ -10,6 +10,7 @@
 
 ### Maintenance
 
+- Refresh SQLite to v1.58.0, crypto and terminal-width dependencies, and Pages and secret-scanning Actions; prefer Go 1.27.1 for builds while retaining the Go 1.27.0 minimum.
 - Require Go 1.27.0, refresh SQLite and terminal dependencies, and update container, analyzer, security-scan, and docs-build tooling.
 
 ## v0.13.3 - 2026-08-17
