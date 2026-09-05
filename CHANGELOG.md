@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.13.4 - 2026-09-05
 
 **Highlights:** Recover missing channel history and cached messages, and keep routine sync discovering new channels and archived threads.
