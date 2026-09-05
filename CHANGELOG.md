@@ -2,19 +2,17 @@
 
 ## Unreleased
 
-### Fixes
+**Highlights:** Recover missing channel history and cached messages, and keep routine sync discovering new channels and archived threads.
 
-- Recover unresolved Desktop cache entries across upgrades and input modes without overwriting newer edits, duplicating events, or rescanning completed full-cache files. Thanks @Nicolas0315.
 - Verify supposedly complete channels with no stored messages, recover their full history, and preserve retryability across bounded cancellation cleanup or process interruption. Thanks @rnavarro.
-- Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
+- Recover unresolved Desktop cache entries across upgrades and input modes without overwriting newer edits, duplicating events, or rescanning completed full-cache files. Thanks @Nicolas0315.
+- Discover newly archived threads during incremental sync with per-endpoint cursors and resume incomplete thread histories without rescanning the full archive. Thanks @obviyus.
+- Bootstrap newly discovered channels with one newest message page during routine latest-only sync, preserving a backfill cursor for later full-history recovery. Thanks @obviyus.
+- Keep Wiretap dry runs from creating archives or runtime directories; optional coverage reads an existing archive without migrations.
 - Stop guild and archived-thread pagination with a cursor error when Discord repeats a page instead of hanging sync. Thanks @SebTardif.
 - Reject repeated or missing message-page cursors without losing the last usable backfill checkpoint. Thanks @SebTardif.
-- Keep Wiretap dry runs from creating archives or runtime directories; optional coverage reads an existing archive without migrations.
-
-### Maintenance
-
-- Refresh SQLite to v1.58.0, crypto and terminal-width dependencies, and Pages and secret-scanning Actions; prefer Go 1.27.1 for builds while retaining the Go 1.27.0 minimum.
-- Require Go 1.27.0, refresh SQLite and terminal dependencies, and update container, analyzer, security-scan, and docs-build tooling.
+- Bound release-check HTTP requests to 30 seconds with Crawlkit v0.14.8 so an unresponsive server cannot hang update checks indefinitely.
+- Require Go 1.27.0 and prefer Go 1.27.1 for builds; refresh SQLite to v1.58.0, crypto and terminal dependencies, and container, analyzer, security-scan, and docs-build tooling.
 
 ## v0.13.3 - 2026-08-17
 
