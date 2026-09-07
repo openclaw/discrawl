@@ -38,6 +38,7 @@ if [[ "$actual_sha256" != "$expected_sha256" ]]; then
   exit 1
 fi
 tar -xzf "$work/kiwi.tgz" -C "$work"
+sudo mkdir -p /usr/local/include /usr/local/lib
 sudo cp -R "$work/include/kiwi" /usr/local/include/
 sudo cp -P "$work"/lib/libkiwi* /usr/local/lib/
 if [[ "$(uname -s)" == Linux ]]; then
