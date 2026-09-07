@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Highlights:** Search Korean, Japanese, Chinese, and Arabic word forms with optional local language analyzers.
+
+- Add opt-in multilingual lexical indexes with independent relevance ranking, safe analyzer-change rebuilds, and `discrawl lexical rebuild`; keep the default binary free of helper dictionaries and preserve existing search behavior when languages are disabled. Thanks @vkehfdl1.
+- Reject unsafe snapshot shard paths with CrawlKit v0.14.9 while preserving the SQLite-required libc runtime.
+
 ## 0.13.4 - 2026-09-05
 
 **Highlights:** Recover missing channel history and cached messages, and keep routine sync discovering new channels and archived threads.
