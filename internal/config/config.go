@@ -67,8 +67,17 @@ type SyncConfig struct {
 }
 
 type SearchConfig struct {
-	DefaultMode string           `toml:"default_mode"`
-	Embeddings  EmbeddingsConfig `toml:"embeddings"`
+	DefaultMode string              `toml:"default_mode"`
+	Lexical     LexicalSearchConfig `toml:"lexical"`
+	Embeddings  EmbeddingsConfig    `toml:"embeddings"`
+}
+
+type LexicalSearchConfig struct {
+	Languages   []string `toml:"languages,omitempty"`
+	KiwiCommand string   `toml:"kiwi_command"`
+	KiwiModel   string   `toml:"kiwi_model"`
+	JaCommand   string   `toml:"ja_command"`
+	ZhCommand   string   `toml:"zh_command"`
 }
 
 type ShareConfig struct {
@@ -154,6 +163,11 @@ func Default() Config {
 		},
 		Search: SearchConfig{
 			DefaultMode: "fts",
+			Lexical: LexicalSearchConfig{
+				KiwiCommand: "discrawl-kiwi",
+				JaCommand:   "discrawl-ja",
+				ZhCommand:   "discrawl-zh",
+			},
 			Embeddings: EmbeddingsConfig{
 				Enabled:        false,
 				Provider:       "openai",
@@ -300,6 +314,37 @@ func (c *Config) Normalize() error {
 	if c.Search.DefaultMode == "" {
 		c.Search.DefaultMode = "fts"
 	}
+	c.Search.Lexical.KiwiCommand = strings.TrimSpace(c.Search.Lexical.KiwiCommand)
+	if c.Search.Lexical.KiwiCommand == "" {
+		c.Search.Lexical.KiwiCommand = "discrawl-kiwi"
+	}
+	c.Search.Lexical.KiwiModel = strings.TrimSpace(c.Search.Lexical.KiwiModel)
+	c.Search.Lexical.JaCommand = strings.TrimSpace(c.Search.Lexical.JaCommand)
+	if c.Search.Lexical.JaCommand == "" {
+		c.Search.Lexical.JaCommand = "discrawl-ja"
+	}
+	c.Search.Lexical.ZhCommand = strings.TrimSpace(c.Search.Lexical.ZhCommand)
+	if c.Search.Lexical.ZhCommand == "" {
+		c.Search.Lexical.ZhCommand = "discrawl-zh"
+	}
+	seenLexicalLanguages := make(map[string]struct{}, len(c.Search.Lexical.Languages))
+	normalizedLexicalLanguages := make([]string, 0, len(c.Search.Lexical.Languages))
+	for _, language := range c.Search.Lexical.Languages {
+		language = strings.ToLower(strings.TrimSpace(language))
+		switch language {
+		case "ko", "ja", "zh", "ar":
+		case "":
+			continue
+		default:
+			return fmt.Errorf("unsupported search.lexical language %q; use ko, ja, zh, or ar", language)
+		}
+		if _, ok := seenLexicalLanguages[language]; ok {
+			return fmt.Errorf("duplicate search.lexical language %q", language)
+		}
+		seenLexicalLanguages[language] = struct{}{}
+		normalizedLexicalLanguages = append(normalizedLexicalLanguages, language)
+	}
+	c.Search.Lexical.Languages = normalizedLexicalLanguages
 	c.Search.Embeddings.Provider = strings.ToLower(strings.TrimSpace(c.Search.Embeddings.Provider))
 	c.Search.Embeddings.Model = strings.TrimSpace(c.Search.Embeddings.Model)
 	c.Search.Embeddings.BaseURL = strings.TrimRight(strings.TrimSpace(c.Search.Embeddings.BaseURL), "/")

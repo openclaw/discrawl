@@ -18,9 +18,11 @@ discrawl --json search "websocket closed"
 
 ## Modes
 
-- `fts` (default) - SQLite FTS5 with `unicode61` tokenizer; newest matches first
+- `fts` (default) - SQLite FTS5 with `unicode61`; optional multilingual lexical fields use language-specific tokenizers and RRF
 - `semantic` - embeds the query, scores against locally stored vectors; errors out if embeddings are disabled or no compatible vectors exist
 - `hybrid` - runs both, deduplicates by message id, falls back to FTS when semantic is unavailable
+
+Run [`discrawl lexical rebuild`](lexical.html) after enabling languages or replacing helpers/models. See [search modes](../guides/search-modes.html) for installation and index lifecycle details.
 
 ## Flags
 
@@ -35,6 +37,12 @@ discrawl --json search "websocket closed"
 ## FTS behavior
 
 User query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators. Punctuation still follows FTS5 tokenization rules.
+
+When `[search.lexical].languages` is non-empty, Discrawl searches the default
+field plus every configured language field, ranks each field independently,
+and merges the lists with reciprocal rank fusion. See
+[Search modes](../guides/search-modes.html#optional-multilingual-lexical-fields)
+for setup and dependency details.
 
 Ambiguous channel names fail with candidate guild/channel ids instead of
 silently searching multiple channels. Use `discrawl channels resolve <name>
