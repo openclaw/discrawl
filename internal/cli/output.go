@@ -113,6 +113,8 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"lexical":         "Usage: discrawl lexical rebuild\n\nRebuild configured language indexes locally, without contacting Discord.\n",
+	"lexical rebuild": "Usage: discrawl lexical rebuild\n\nRun after enabling languages or replacing helpers, dictionaries, or Kiwi models.\n",
 	"metadata": `Usage: discrawl metadata [--json]
 
 Print the archive control manifest.
