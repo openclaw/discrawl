@@ -329,6 +329,7 @@ func publicationGit(ctx context.Context, repo string, paths []string, args ...st
 
 func publicationCommand(ctx context.Context, repo string, paths []string, args ...string) *exec.Cmd {
 	// Git 2.25 supports NUL path files for add/commit; names stay raw and literal.
+	// #nosec G204 -- fixed Git subcommands; repository/message are argv values and file paths use literal NUL stdin.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs", "-C", repo}, args...)...)
 	if len(paths) > 0 {
 		cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
