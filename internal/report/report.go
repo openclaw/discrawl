@@ -24,6 +24,8 @@ const (
 
 type Options struct {
 	Now time.Time
+	// Published excludes local-only DMs, not private guild content.
+	Published bool
 }
 
 type ActivityReport struct {
@@ -58,7 +60,7 @@ func Build(ctx context.Context, s *store.Store, opts Options) (ActivityReport, e
 		now = time.Now().UTC()
 	}
 	report := ActivityReport{GeneratedAt: now.UTC()}
-	if err := scanTotals(ctx, s.DB(), &report); err != nil {
+	if err := scanTotals(ctx, s.DB(), &report, opts.Published); err != nil {
 		return ActivityReport{}, err
 	}
 	anchor := report.LatestMessageAt
@@ -74,7 +76,7 @@ func Build(ctx context.Context, s *store.Store, opts Options) (ActivityReport, e
 		{"30 days", 30 * 24 * time.Hour},
 	}
 	for _, window := range windows {
-		stats, err := scanWindow(ctx, s.DB(), window.label, anchor.Add(-window.dur))
+		stats, err := scanWindow(ctx, s.DB(), window.label, anchor.Add(-window.dur), opts.Published)
 		if err != nil {
 			return ActivityReport{}, err
 		}
@@ -83,37 +85,40 @@ func Build(ctx context.Context, s *store.Store, opts Options) (ActivityReport, e
 	weekSince := anchor.Add(-7 * 24 * time.Hour)
 	monthSince := anchor.Add(-30 * 24 * time.Hour)
 	var err error
-	report.TopChannels, err = topChannels(ctx, s.DB(), weekSince, 8)
+	report.TopChannels, err = topChannels(ctx, s.DB(), weekSince, 8, opts.Published)
 	if err != nil {
 		return ActivityReport{}, err
 	}
-	report.TopAuthors, err = topAuthors(ctx, s.DB(), weekSince, 8)
+	report.TopAuthors, err = topAuthors(ctx, s.DB(), weekSince, 8, opts.Published)
 	if err != nil {
 		return ActivityReport{}, err
 	}
-	report.BusiestDays, err = busiestDays(ctx, s.DB(), monthSince, 7)
+	report.BusiestDays, err = busiestDays(ctx, s.DB(), monthSince, 7, opts.Published)
 	if err != nil {
 		return ActivityReport{}, err
 	}
 	return report, nil
 }
 
-func scanTotals(ctx context.Context, db *sql.DB, report *ActivityReport) error {
+func scanTotals(ctx context.Context, db *sql.DB, report *ActivityReport, published bool) error {
 	var latest sql.NullString
 	if err := db.QueryRowContext(ctx, `
 		select
-			(select count(*) from messages),
-			(select count(*) from channels),
-			(select count(*) from members),
-			(select created_at from messages order by julianday(created_at) desc, id desc limit 1)
-	`).Scan(&report.TotalMessages, &report.TotalChannels, &report.TotalMembers, &latest); err != nil {
+			(select count(*) from messages where (? = 0 or guild_id <> ?)),
+			(select count(*) from channels where (? = 0 or guild_id <> ?)),
+			(select count(*) from members where (? = 0 or guild_id <> ?)),
+			(select created_at from messages where (? = 0 or guild_id <> ?)
+			 order by julianday(created_at) desc, id desc limit 1)
+	`, published, store.DirectMessageGuildID, published, store.DirectMessageGuildID,
+		published, store.DirectMessageGuildID, published, store.DirectMessageGuildID,
+	).Scan(&report.TotalMessages, &report.TotalChannels, &report.TotalMembers, &latest); err != nil {
 		return fmt.Errorf("scan report totals: %w", err)
 	}
 	report.LatestMessageAt = parseTime(latest.String)
 	return nil
 }
 
-func scanWindow(ctx context.Context, db *sql.DB, label string, since time.Time) (WindowStats, error) {
+func scanWindow(ctx context.Context, db *sql.DB, label string, since time.Time, published bool) (WindowStats, error) {
 	stats := WindowStats{Label: label, Since: since.UTC()}
 	if err := db.QueryRowContext(ctx, `
 		select
@@ -123,25 +128,27 @@ func scanWindow(ctx context.Context, db *sql.DB, label string, since time.Time) 
 			coalesce(sum(case when has_attachments then 1 else 0 end), 0)
 		from messages
 		where julianday(created_at) >= julianday(?)
-	`, reportTimeArg(since)).Scan(&stats.Messages, &stats.ActiveAuthors, &stats.ActiveChannels, &stats.Attachments); err != nil {
+		  and (? = 0 or guild_id <> ?)
+	`, reportTimeArg(since), published, store.DirectMessageGuildID).Scan(&stats.Messages, &stats.ActiveAuthors, &stats.ActiveChannels, &stats.Attachments); err != nil {
 		return WindowStats{}, fmt.Errorf("scan %s stats: %w", label, err)
 	}
 	return stats, nil
 }
 
-func topChannels(ctx context.Context, db *sql.DB, since time.Time, limit int) ([]RankedCount, error) {
+func topChannels(ctx context.Context, db *sql.DB, since time.Time, limit int, published bool) ([]RankedCount, error) {
 	return ranked(ctx, db, `
 		select coalesce(nullif(c.name, ''), m.channel_id) as name, count(*) as total
 		from messages m
 		left join channels c on c.id = m.channel_id
 		where julianday(m.created_at) >= julianday(?)
+		  and (? = 0 or m.guild_id <> ?)
 		group by m.channel_id, coalesce(nullif(c.name, ''), m.channel_id)
 		order by total desc, name asc
 		limit ?
-	`, reportTimeArg(since), limit)
+	`, reportTimeArg(since), published, store.DirectMessageGuildID, limit)
 }
 
-func topAuthors(ctx context.Context, db *sql.DB, since time.Time, limit int) ([]RankedCount, error) {
+func topAuthors(ctx context.Context, db *sql.DB, since time.Time, limit int, published bool) ([]RankedCount, error) {
 	return ranked(ctx, db, `
 		select
 			coalesce(
@@ -158,21 +165,23 @@ func topAuthors(ctx context.Context, db *sql.DB, since time.Time, limit int) ([]
 		from messages m
 		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
 		where julianday(m.created_at) >= julianday(?)
+		  and (? = 0 or m.guild_id <> ?)
 		group by m.author_id, name
 		order by total desc, name asc
 		limit ?
-	`, reportTimeArg(since), limit)
+	`, reportTimeArg(since), published, store.DirectMessageGuildID, limit)
 }
 
-func busiestDays(ctx context.Context, db *sql.DB, since time.Time, limit int) ([]RankedCount, error) {
+func busiestDays(ctx context.Context, db *sql.DB, since time.Time, limit int, published bool) ([]RankedCount, error) {
 	return ranked(ctx, db, `
 		select date(created_at) as name, count(*) as total
 		from messages
 		where julianday(created_at) >= julianday(?)
+		  and (? = 0 or guild_id <> ?)
 		group by date(created_at)
 		order by total desc, name desc
 		limit ?
-	`, reportTimeArg(since), limit)
+	`, reportTimeArg(since), published, store.DirectMessageGuildID, limit)
 }
 
 func ranked(ctx context.Context, db *sql.DB, query string, args ...any) ([]RankedCount, error) {

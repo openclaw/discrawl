@@ -103,7 +103,7 @@ func (r *runtime) runPublish(args []string) error {
 		}
 	}
 	if *readmePath != "" {
-		activity, err := report.Build(r.ctx, r.store, report.Options{})
+		activity, err := report.Build(r.ctx, r.store, report.Options{Published: true})
 		if err != nil {
 			return err
 		}

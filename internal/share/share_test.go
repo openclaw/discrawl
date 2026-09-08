@@ -2468,6 +2468,11 @@ func appendSnapshotRow(t *testing.T, repo string, manifest Manifest, tableName s
 		writeGzipJSONLines(t, full, []string{string(body)})
 		manifest.Tables[i].Files = append(manifest.Tables[i].Files, rel)
 		manifest.Tables[i].Rows++
+		compressed := mustReadFile(t, full)
+		sum := sha256.Sum256(compressed)
+		manifest.Tables[i].FileManifests = append(manifest.Tables[i].FileManifests, snapshot.FileManifest{
+			Path: rel, Rows: 1, Size: int64(len(compressed)), SHA256: hex.EncodeToString(sum[:]),
+		})
 		return manifest
 	}
 	t.Fatalf("table %s not found", tableName)

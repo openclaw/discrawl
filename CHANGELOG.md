@@ -9,6 +9,10 @@
 - Preserve cached channel permissions during targeted sync and exclude unobserved permissions from public-only snapshots.
 - Exclude nested unselected guild metadata from filtered snapshots while retaining local raw observations.
 - Keep local Wiretap DMs out of embedding enqueue, rebuild and provider requests, including jobs queued by older versions.
+- Keep inferred Git fingerprints separate from snapshot integrity metadata when importing legacy snapshots, including historical restores, while preserving incremental merge checkpoints.
+- Exclude local-only direct messages from published README activity reports and add `report --published` for standalone shared reports, while preserving full local reports and filtered-publication safeguards.
+- Remove prior manifest-declared embedding files when export is disabled or its model changes, preserving undeclared embedding/media siblings, unrelated staged work, and local vectors.
+- Validate imported embedding rows against their manifest identity and vector dimensions; reject malformed or non-finite vectors transactionally and skip missing, deleted, and local-only message targets while preserving existing DM vectors.
 
 ## 0.14.0 - 2026-09-07
 

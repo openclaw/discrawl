@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -492,6 +493,12 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		return Manifest{}, err
 	}
 	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
+	return importSnapshot(ctx, s, opts, manifest)
+}
+
+// Git fingerprints belong to checkpoint metadata. snapshot.Import reads its
+// integrity metadata from the original manifest under opts.RepoPath.
+func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest Manifest) (Manifest, error) {
 	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: manifestRowCount(manifest)})
 	restorePragmas, err := applyImportPragmas(ctx, s.DB())
 	if err != nil {
@@ -627,6 +634,7 @@ func importMergePlan(
 	opts Options,
 	previous Manifest,
 	manifest Manifest,
+	current snapshot.Manifest,
 	plan snapshot.ImportPlan,
 ) (Manifest, bool, error) {
 	if !plan.Changed() {
@@ -664,7 +672,7 @@ func importMergePlan(
 		DB:       s.DB(),
 		RootDir:  opts.RepoPath,
 		Previous: snapshotManifest(previous),
-		Current:  snapshotManifest(manifest),
+		Current:  current,
 		Plan:     plan,
 		Progress: func(progress snapshot.ImportProgress) {
 			opts.reportProgress(ImportProgress{
@@ -890,6 +898,8 @@ func enrichManifestFromGit(ctx context.Context, repoPath, rev string, manifest M
 	if err != nil {
 		return manifest
 	}
+	// Enrichment must not change the authoritative on-disk manifest's metadata.
+	manifest.Tables = slices.Clone(manifest.Tables)
 	for i := range manifest.Tables {
 		table := &manifest.Tables[i]
 		if len(table.FileManifests) > 0 {
@@ -998,11 +1008,6 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 		return Manifest{}, err
 	}
 	manifest = enrichManifestFromGit(ctx, opts.RepoPath, commit, manifest)
-	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return Manifest{}, fmt.Errorf("marshal historical manifest: %w", err)
-	}
-	manifestBody = append(manifestBody, '\n')
 	tempDir, err := os.MkdirTemp("", "discrawl-share-ref-*")
 	if err != nil {
 		return Manifest{}, fmt.Errorf("create historical share directory: %w", err)
@@ -1039,7 +1044,7 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 	historicalOpts.RepoPath = tempDir
 	historicalOpts.Remote = ""
 	historicalOpts.Tag = ""
-	return Import(ctx, s, historicalOpts)
+	return importSnapshot(ctx, s, historicalOpts, manifest)
 }
 
 func tableSnapshotFiles(table TableManifest) []string {
@@ -2293,7 +2298,11 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 	stmt, err := tx.PrepareContext(ctx, `
 		insert into message_embeddings(
 			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
-		) values(?, ?, ?, ?, ?, ?, ?)
+		) select ?, ?, ?, ?, ?, ?, ?
+		where exists (
+			select 1 from messages
+			where id = ? and guild_id <> ? and deleted_at is null
+		)
 		on conflict(message_id, provider, model, input_version) do update set
 			dimensions = excluded.dimensions,
 			embedding_blob = excluded.embedding_blob,
@@ -2318,7 +2327,7 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := importEmbeddingFile(ctx, stmt, opts.RepoPath, rel); err != nil {
+			if err := importEmbeddingFile(ctx, stmt, opts.RepoPath, rel, manifest); err != nil {
 				return err
 			}
 		}
@@ -2326,7 +2335,7 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 	return nil
 }
 
-func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string) error {
+func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string, manifest EmbeddingManifest) error {
 	path, err := embeddingRepoPath(repoPath, rel)
 	if err != nil {
 		return err
@@ -2374,11 +2383,35 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 		if err != nil {
 			return fmt.Errorf("decode dimensions in %s: %w", rel, err)
 		}
+		if dimensions <= 0 {
+			return fmt.Errorf("decode dimensions in %s: must be positive", rel)
+		}
 		blob, err := base64.StdEncoding.DecodeString(row.EmbeddingBlob)
 		if err != nil {
 			return fmt.Errorf("decode embedding blob in %s: %w", rel, err)
 		}
-		if _, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt); err != nil {
+		if len(blob)%4 != 0 || len(blob)/4 != dimensions {
+			return fmt.Errorf("decode embedding blob in %s: float32 length does not match dimensions", rel)
+		}
+		values, err := store.DecodeEmbeddingVector(blob)
+		if err != nil {
+			return fmt.Errorf("decode embedding blob in %s: %w", rel, err)
+		}
+		for _, value := range values {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return fmt.Errorf("decode embedding blob in %s: non-finite value", rel)
+			}
+		}
+		if strings.TrimSpace(row.MessageID) == "" {
+			return fmt.Errorf("decode embedding row in %s: message_id must not be blank", rel)
+		}
+		if row.Provider != manifest.Provider || row.Model != manifest.Model || row.InputVersion != manifest.InputVersion {
+			return fmt.Errorf("decode embedding row in %s: identity does not match manifest", rel)
+		}
+		// Older bundles can reference missing, deleted, or local-only messages.
+		// Validate every decoded row, but only update canonical non-DM targets.
+		if _, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt,
+			row.MessageID, store.DirectMessageGuildID); err != nil {
 			return fmt.Errorf("insert message_embeddings: %w", err)
 		}
 	}

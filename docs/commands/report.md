@@ -6,12 +6,20 @@ Generates the Markdown activity block used by the shared backup repo README.
 
 ```bash
 discrawl report
-discrawl report --readme path/to/discord-backup/README.md
+discrawl report --published --readme path/to/discord-backup/README.md
 ```
 
 ## Flags
 
 - `--readme <path>` - update the activity block in the given README file in place
+- `--published` - exclude local-only direct messages from all statistics and rankings
+
+Local reports include direct messages by default, including with `--readme`.
+Use `--published` for a shared README. Private guild channels and threads remain
+included: this is not a public-only report. This mode excludes direct messages but
+does not implement public-only or channel filters; it refuses configured share
+filters. `publish --readme` selects this mode automatically and continues to
+reject active share filters.
 
 ## What gets rendered
 
