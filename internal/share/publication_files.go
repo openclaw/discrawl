@@ -1,6 +1,8 @@
 package share
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,12 +14,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/openclaw/crawlkit/mirror"
 	"github.com/openclaw/discrawl/internal/report"
 )
 
-var publicationShard = regexp.MustCompile(`^[0-9]{6,}\.jsonl\.gz$`)
-var publicationGeneration = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var (
+	publicationShard      = regexp.MustCompile(`^[0-9]{6,}\.jsonl\.gz$`)
+	publicationGeneration = regexp.MustCompile(`^[0-9a-f]{32}$`)
+)
 
 func publicationPaths(manifest Manifest) (map[string]bool, error) {
 	files := map[string]bool{ManifestName: true}
@@ -81,7 +84,7 @@ func safePublicationPath(name string) bool {
 		strings.ContainsAny(name, "\\\x00\r\n") || strings.Contains(name, ":") {
 		return false
 	}
-	for _, part := range strings.Split(name, "/") {
+	for part := range strings.SplitSeq(name, "/") {
 		if part == ".." || strings.EqualFold(part, ".git") {
 			return false
 		}
@@ -209,7 +212,7 @@ func commitPublication(ctx context.Context, opts Options, message string) (bool,
 		return false, err
 	}
 	indexed := map[string]bool{}
-	for _, name := range strings.Split(string(index), "\x00") {
+	for name := range strings.SplitSeq(string(index), "\x00") {
 		indexed[name] = true
 	}
 	var selected []string
@@ -219,7 +222,7 @@ func commitPublication(ctx context.Context, opts Options, message string) (bool,
 			return false, err
 		}
 		if err == nil || indexed[name] {
-			selected = append(selected, ":(literal)"+name)
+			selected = append(selected, name)
 		}
 	}
 	deleted, err := publicationGit(ctx, opts.RepoPath, nil, "diff", "--cached", "--diff-filter=D", "--name-only", "--no-renames", "-z")
@@ -227,23 +230,83 @@ func commitPublication(ctx context.Context, opts Options, message string) (bool,
 		return false, err
 	}
 	var restage []string
-	for _, name := range strings.Split(string(deleted), "\x00") {
+	for name := range strings.SplitSeq(string(deleted), "\x00") {
 		if paths[name] && !indexed[name] {
 			restage = append(restage, name)
-			if !slices.Contains(selected, ":(literal)"+name) {
-				selected = append(selected, ":(literal)"+name)
+			if !slices.Contains(selected, name) {
+				selected = append(selected, name)
 			}
 		}
 	}
-	// CommitPaths stages its pathspecs itself. Reintroduce only owned deletions
-	// into the index so Git add can find them; the helper then stages their removal.
+	if len(selected) == 0 {
+		return false, nil
+	}
+	// Reintroduce only owned deletions so Git add can find and stage their removal.
 	if len(restage) > 0 {
 		if _, err := publicationGit(ctx, opts.RepoPath, restage, "restore", "--staged", "--source=HEAD",
 			"--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
 			return false, err
 		}
 	}
-	return mirror.CommitPaths(ctx, mirrorOptions(opts), message, selected)
+	if err := runPublicationGit(ctx, opts.RepoPath, selected, "add", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+		return false, fmt.Errorf("stage publication: %w", err)
+	}
+	changed, err := publicationHasChanges(ctx, opts.RepoPath, paths)
+	if err != nil || !changed {
+		return false, err
+	}
+	if message == "" {
+		message = "archive: update snapshot"
+	}
+	if err := runPublicationGit(ctx, opts.RepoPath, selected,
+		"-c", "commit.gpgsign=false", "-c", "user.name=crawlkit", "-c", "user.email=crawlkit@example.invalid",
+		"commit", "--only", "-m", message, "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+		return false, fmt.Errorf("commit publication: %w", err)
+	}
+	return true, nil
+}
+
+func publicationHasChanges(ctx context.Context, repo string, paths map[string]bool) (bool, error) {
+	cmd := publicationCommand(ctx, repo, nil, "diff", "--cached", "--name-only", "--no-renames", "-z")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if end := bytes.IndexByte(data, 0); end >= 0 {
+			return end + 1, data[:end], nil
+		}
+		if atEOF && len(data) > 0 {
+			return 0, nil, errors.New("unterminated publication path")
+		}
+		return 0, nil, nil
+	})
+	changed := false
+	for scanner.Scan() {
+		changed = changed || paths[scanner.Text()]
+	}
+	// Drain valid records without retaining Git output; reject oversized records.
+	readErr := scanner.Err()
+	if readErr != nil {
+		_ = stdout.Close()
+	}
+	if err := errors.Join(readErr, cmd.Wait(), ctx.Err()); err != nil {
+		return false, fmt.Errorf("inspect staged publication: %w", err)
+	}
+	return changed, nil
+}
+
+func runPublicationGit(ctx context.Context, repo string, paths []string, args ...string) error {
+	// Mutation output may contain archive names or hook diagnostics; do not relay it.
+	err := publicationCommand(ctx, repo, paths, args...).Run()
+	if err != nil {
+		return errors.Join(err, ctx.Err())
+	}
+	return nil
 }
 
 func sortedPublicationPaths(paths map[string]bool) []string {
@@ -256,14 +319,19 @@ func sortedPublicationPaths(paths map[string]bool) []string {
 }
 
 func publicationGit(ctx context.Context, repo string, paths []string, args ...string) ([]byte, error) {
-	// NUL-delimited literal paths preserve filename metacharacters.
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs", "-C", repo}, args...)...)
-	if len(paths) > 0 {
-		cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
-	}
+	cmd := publicationCommand(ctx, repo, paths, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("publication git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
+}
+
+func publicationCommand(ctx context.Context, repo string, paths []string, args ...string) *exec.Cmd {
+	// Git 2.25 supports NUL path files for add/commit; names stay raw and literal.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs", "-C", repo}, args...)...)
+	if len(paths) > 0 {
+		cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	}
+	return cmd
 }

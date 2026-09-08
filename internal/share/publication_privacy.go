@@ -2,6 +2,7 @@ package share
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -25,7 +26,7 @@ func projectPublishedGuild(row map[string]any) error {
 		}
 		permissions, ok := parsePermissionBits(role.Permissions)
 		if !ok {
-			return fmt.Errorf("invalid published guild permissions")
+			return errors.New("invalid published guild permissions")
 		}
 		roles = append(roles, map[string]string{
 			"id": role.ID, "permissions": strconv.FormatInt(permissions, 10),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	crawlremote "github.com/openclaw/crawlkit/remote"
@@ -22,7 +23,7 @@ func TestCloudPublishReplacesDeletedMessages(t *testing.T) {
 			defer func() { _ = source.Close() }()
 			for i := range live + 1 {
 				require.NoError(t, source.UpsertMessage(ctx, store.MessageRecord{
-					ID: fmt.Sprint(i + 1), GuildID: "guild", ChannelID: "channel",
+					ID: strconv.Itoa(i + 1), GuildID: "guild", ChannelID: "channel",
 					Content: "retained body", NormalizedContent: "retained body",
 					CreatedAt: "2026-01-01T00:00:00Z", RawJSON: `{}`,
 				}))

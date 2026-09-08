@@ -164,7 +164,7 @@ func PreflightPublishScope(ctx context.Context, s *store.Store, opts FilterOptio
 		if opts.PublicOnly && (guild.CandidateChannels > 0 || guild.CandidateMessages > 0) && !guild.MetadataReady {
 			report.Ready = false
 			report.Warnings = append(report.Warnings,
-				fmt.Sprintf("guild %s lacks usable @everyone role metadata; public-only selection fails closed", guild.GuildID))
+				fmt.Sprintf("guild %s lacks usable guild, channel or category permission metadata for public-only selection", guild.GuildID))
 		}
 		report.Guilds = append(report.Guilds, *guild)
 	}
@@ -235,6 +235,9 @@ func countPublishScopeChannels(
 		report.Channels.Candidate++
 		guild := ensurePublishScopeGuild(guilds, guildID)
 		guild.CandidateChannels++
+		if selectedFilter.publicOnly && selectedFilter.publicMissing[channelID] {
+			guild.MetadataReady = false
+		}
 		if selectedFilter.allowChannelID(channelID) {
 			report.Channels.Allowed++
 			guild.AllowedChannels++
@@ -271,6 +274,11 @@ func countPublishScopeMessages(
 		report.Messages.Candidate++
 		guild := ensurePublishScopeGuild(guilds, guildID)
 		guild.CandidateMessages++
+		if selectedFilter.publicOnly {
+			if _, exists := selectedFilter.channels[channelID]; !exists {
+				guild.MetadataReady = false
+			}
+		}
 		if selectedFilter.allowedMessageIDs[messageID] || selectedFilter.allowChannelID(channelID) {
 			report.Messages.Allowed++
 			guild.AllowedMessages++
@@ -1876,6 +1884,7 @@ type snapshotFilter struct {
 	guilds            map[string]string
 	publicMemo        map[string]bool
 	publicSeen        map[string]bool
+	publicMissing     map[string]bool
 }
 
 type snapshotChannel struct {
@@ -1901,6 +1910,7 @@ func newSnapshotFilter(ctx context.Context, db *sql.DB, opts FilterOptions) (*sn
 		guilds:            map[string]string{},
 		publicMemo:        map[string]bool{},
 		publicSeen:        map[string]bool{},
+		publicMissing:     map[string]bool{},
 	}
 	f.active = opts.Active()
 	if !f.active {
@@ -2102,34 +2112,53 @@ func (f *snapshotFilter) publicChannel(channelID string) bool {
 		return cached
 	}
 	if f.publicSeen[channelID] {
+		f.publicMissing[channelID] = true
 		return false
 	}
 	f.publicSeen[channelID] = true
 	defer delete(f.publicSeen, channelID)
 	ch, ok := f.channels[channelID]
-	if !ok || ch.GuildID == "" || ch.IsPrivateThread || ch.Kind == "thread_private" {
+	if !ok {
+		f.publicMissing[channelID] = true
+		f.publicMemo[channelID] = false
+		return false
+	}
+	if ch.IsPrivateThread || ch.Kind == "thread_private" {
+		f.publicMemo[channelID] = false
+		return false
+	}
+	if ch.GuildID == "" {
+		f.publicMissing[channelID] = true
 		f.publicMemo[channelID] = false
 		return false
 	}
 	if strings.HasPrefix(ch.Kind, "thread_") {
 		parentID := channelParentID(ch)
 		allowed := parentID != "" && f.publicChannel(parentID)
+		f.publicMissing[channelID] = parentID == "" || f.publicMissing[parentID]
 		f.publicMemo[channelID] = allowed
 		return allowed
 	}
 	permissions, ok := everyoneGuildPermissions(f.guilds[ch.GuildID], ch.GuildID)
 	if !ok {
+		f.publicMissing[channelID] = true
 		f.publicMemo[channelID] = false
 		return false
 	}
-	if parent, ok := f.channels[ch.ParentID]; ok && parent.Kind == "category" {
+	parent, parentOK := f.channels[ch.ParentID]
+	if ch.ParentID != "" && !parentOK {
+		f.publicMissing[channelID] = true
+	}
+	if parentOK && parent.Kind == "category" {
 		permissions, ok = applyEveryoneOverwrite(permissions, parent.RawJSON, ch.GuildID)
 		if !ok {
+			f.publicMissing[channelID] = true
 			f.publicMemo[channelID] = false
 			return false
 		}
 	}
 	permissions, ok = applyEveryoneOverwrite(permissions, ch.RawJSON, ch.GuildID)
+	f.publicMissing[channelID] = f.publicMissing[channelID] || !ok
 	allowed := ok && permissions&permissionViewChannel != 0
 	f.publicMemo[channelID] = allowed
 	return allowed
