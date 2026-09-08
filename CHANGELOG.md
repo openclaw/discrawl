@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep local Wiretap DMs out of embedding enqueue, rebuild and provider requests, including jobs queued by older versions.
+
 ## 0.14.0 - 2026-09-07
 
 **Highlights:** Search Korean, Japanese, Chinese, and Arabic word forms with optional local language analyzers.

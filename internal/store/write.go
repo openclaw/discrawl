@@ -427,7 +427,8 @@ func (s *Store) upsertMessageTx(
 			return err
 		}
 	}
-	queueEmbedding := opts.EnqueueEmbedding && (errors.Is(previousErr, sql.ErrNoRows) || previousNormalized.String != message.NormalizedContent || !jobExists)
+	queueEmbedding := opts.EnqueueEmbedding && message.GuildID != "@me" &&
+		(errors.Is(previousErr, sql.ErrNoRows) || previousNormalized.String != message.NormalizedContent || !jobExists)
 	if queueEmbedding {
 		if err := qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: message.ID, UpdatedAt: now}); err != nil {
 			return err
