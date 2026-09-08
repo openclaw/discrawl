@@ -17,6 +17,7 @@ import (
 )
 
 var publicationShard = regexp.MustCompile(`^[0-9]{6,}\.jsonl\.gz$`)
+var publicationGeneration = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func publicationPaths(manifest Manifest) (map[string]bool, error) {
 	files := map[string]bool{ManifestName: true}
@@ -40,12 +41,18 @@ func publicationPaths(manifest Manifest) (map[string]bool, error) {
 			names = append(names, file.Path)
 		}
 		for _, name := range names {
-			// Accept the old single-file layout as well as current numbered shards.
+			// Accept legacy layouts and exact manifest-owned generation shards.
 			if name == "tables/"+table.Name+".jsonl" || name == "tables/"+table.Name+".jsonl.gz" {
 				files[name] = true
 				continue
 			}
-			if err := add(name, "tables/"+table.Name, true); err != nil {
+			prefix := "tables/" + table.Name
+			parts := strings.Split(name, "/")
+			if len(parts) == 5 && parts[0] == "tables" && parts[1] == ".generations" &&
+				publicationGeneration.MatchString(parts[2]) && parts[3] == table.Name {
+				prefix = strings.Join(parts[:4], "/")
+			}
+			if err := add(name, prefix, true); err != nil {
 				return nil, err
 			}
 		}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept exact manifest-owned table generation paths alongside legacy snapshot shards without broadening publication cleanup or Git staging.
 - Remove previously published embedding and media files when omitted, and commit only exact archive outputs and explicitly generated reports while preserving unrelated staged work.
 
 - Exclude deleted messages from cloud row publication and SQLite bundles, using the existing replacement protocol and matching live-row counts.

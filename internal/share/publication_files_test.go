@@ -9,9 +9,163 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/crawlkit/snapshot"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPublicationTablePathForms(t *testing.T) {
+	generation := "0123456789abcdef0123456789abcdef"
+	prefix := "tables/.generations/" + generation + "/messages/"
+	tests := []struct {
+		name string
+		ok   bool
+	}{
+		{"tables/messages.jsonl", true},
+		{"tables/messages.jsonl.gz", true},
+		{"tables/messages/000001.jsonl.gz", true},
+		{"tables/messages/1000000.jsonl.gz", true},
+		{prefix + "000001.jsonl.gz", true},
+		{prefix + "1000000.jsonl.gz", true},
+		{strings.Replace(prefix, generation, strings.ToUpper(generation), 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, generation, generation[:31], 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, generation, generation+"0", 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, generation, strings.Repeat("g", 32), 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, "/messages/", "/members/", 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, ".generations", "generations", 1) + "000001.jsonl.gz", false},
+		{prefix + "00001.jsonl.gz", false},
+		{prefix + "-00001.jsonl.gz", false},
+		{prefix + "000001.jsonl", false},
+		{prefix + "private.txt", false},
+		{prefix + "extra/000001.jsonl.gz", false},
+		{prefix + "../messages/000001.jsonl.gz", false},
+		{prefix + "./000001.jsonl.gz", false},
+		{prefix + "000001.jsonl.gz\n", false},
+		{strings.Replace(prefix, "/messages/", "//messages/", 1) + "000001.jsonl.gz", false},
+		{strings.Replace(prefix, "/messages/", "/.git/", 1) + "000001.jsonl.gz", false},
+		{"/" + prefix + "000001.jsonl.gz", false},
+		{strings.ReplaceAll(prefix, "/", "\\") + "000001.jsonl.gz", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// Every legacy and current manifest field has the same ownership rule.
+			for _, table := range []TableManifest{
+				{Name: "messages", File: test.name},
+				{Name: "messages", Files: []string{test.name}},
+				{Name: "messages", FileManifests: []snapshot.FileManifest{{Path: test.name}}},
+			} {
+				files, err := publicationPaths(Manifest{Tables: []TableManifest{table}})
+				if !test.ok {
+					require.ErrorContains(t, err, "unowned publication path")
+					continue
+				}
+				require.NoError(t, err)
+				require.Equal(t, map[string]bool{ManifestName: true, test.name: true}, files)
+			}
+		})
+	}
+	_, err := publicationPaths(Manifest{Embeddings: []EmbeddingManifest{{
+		Provider: "openai", Model: "fixture", InputVersion: "v1",
+		Files: []string{prefix + "000001.jsonl.gz"},
+	}}})
+	require.ErrorContains(t, err, "unowned publication path")
+}
+
+func TestPublicationGenerationFilesRoundTripAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	src := seedStore(t, filepath.Join(t.TempDir(), "archive.db"))
+	defer func() { _ = src.Close() }()
+	repo := filepath.Join(t.TempDir(), "share")
+	opts := Options{RepoPath: repo, Branch: "main"}
+	previous, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	configureGitUser(t, repo)
+	_, err = Commit(ctx, opts, "test: initial")
+	require.NoError(t, err)
+
+	generations := []string{strings.Repeat("a", 32), strings.Repeat("b", 32)}
+	unlisted := "tables/.generations/" + generations[0] + "/messages/999999.jsonl.gz"
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(repo, unlisted)), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, unlisted), []byte("staged note\n"), 0o600))
+	testGitRun(t, ctx, repo, "add", "--", unlisted)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, unlisted), []byte("unstaged note\n"), 0o600))
+	indexBefore := testGitOutput(t, ctx, repo, "diff", "--cached", "--binary", "--", unlisted)
+
+	for _, generation := range generations {
+		stage := filepath.Join(t.TempDir(), "stage")
+		current, err := Export(ctx, src, Options{RepoPath: stage, Branch: "main"})
+		require.NoError(t, err)
+		// Relocate real exported bytes to exercise consumers, not a future producer.
+		for i := range current.Tables {
+			table := &current.Tables[i]
+			if table.Name != "messages" {
+				continue
+			}
+			require.NotEmpty(t, table.Files)
+			for j, old := range table.Files {
+				name := "tables/.generations/" + generation + "/messages/" + filepath.Base(old)
+				require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(stage, name)), 0o700))
+				require.NoError(t, os.Rename(filepath.Join(stage, old), filepath.Join(stage, name)))
+				table.Files[j] = name
+				if table.File == old {
+					table.File = name
+				}
+				for k := range table.FileManifests {
+					if table.FileManifests[k].Path == old {
+						table.FileManifests[k].Path = name
+					}
+				}
+				if hash, ok := current.Files[old]; ok {
+					current.Files[name] = hash
+					delete(current.Files, old)
+				}
+			}
+		}
+		writeShareManifest(t, stage, current)
+		owned, err := previousPublicationPaths(ctx, repo, false)
+		require.NoError(t, err)
+		require.NoError(t, installPublication(repo, stage, owned, current))
+		for _, old := range tableEntry(t, previous, "messages").Files {
+			require.NoFileExists(t, filepath.Join(repo, old))
+			testGitRun(t, ctx, repo, "add", "-u", "--", old)
+		}
+		committed, err := Commit(ctx, opts, "test: generation")
+		require.NoError(t, err)
+		require.True(t, committed)
+		tree := strings.Split(strings.TrimSpace(testGitOutput(t, ctx, repo, "ls-tree", "-r", "--name-only", "HEAD")), "\n")
+		for _, name := range tableEntry(t, current, "messages").Files {
+			require.Contains(t, tree, name)
+		}
+		for _, old := range tableEntry(t, previous, "messages").Files {
+			require.NotContains(t, tree, old)
+		}
+		require.NotContains(t, tree, unlisted)
+		require.Equal(t, indexBefore, testGitOutput(t, ctx, repo, "diff", "--cached", "--binary", "--", unlisted))
+		body, err := os.ReadFile(filepath.Join(repo, unlisted))
+		require.NoError(t, err)
+		require.Equal(t, "unstaged note\n", string(body))
+
+		dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "import.db"))
+		require.NoError(t, err)
+		_, err = Import(ctx, dst, opts)
+		require.NoError(t, err)
+		var content string
+		require.NoError(t, dst.DB().QueryRowContext(ctx, `select content from messages where id = 'm1'`).Scan(&content))
+		require.Equal(t, "launch checklist ready", content)
+		require.NoError(t, dst.Close())
+		previous = current
+	}
+	// Actual export must accept a generated prior manifest with the released pin.
+	_, err = Export(ctx, src, opts)
+	require.NoError(t, err)
+	for _, old := range tableEntry(t, previous, "messages").Files {
+		require.NoFileExists(t, filepath.Join(repo, old))
+	}
+	_, err = Commit(ctx, opts, "test: export after generation")
+	require.NoError(t, err)
+	require.Equal(t, indexBefore, testGitOutput(t, ctx, repo, "diff", "--cached", "--binary", "--", unlisted))
+	require.FileExists(t, filepath.Join(repo, unlisted))
+}
 
 func TestPublicationOwnsExactFilesAndPreservesStagedWork(t *testing.T) {
 	ctx := context.Background()
