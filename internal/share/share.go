@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -2268,7 +2269,11 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 	stmt, err := tx.PrepareContext(ctx, `
 		insert into message_embeddings(
 			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
-		) values(?, ?, ?, ?, ?, ?, ?)
+		) select ?, ?, ?, ?, ?, ?, ?
+		where exists (
+			select 1 from messages
+			where id = ? and guild_id <> ? and deleted_at is null
+		)
 		on conflict(message_id, provider, model, input_version) do update set
 			dimensions = excluded.dimensions,
 			embedding_blob = excluded.embedding_blob,
@@ -2293,7 +2298,7 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := importEmbeddingFile(ctx, stmt, opts.RepoPath, rel); err != nil {
+			if err := importEmbeddingFile(ctx, stmt, opts.RepoPath, rel, manifest); err != nil {
 				return err
 			}
 		}
@@ -2301,7 +2306,7 @@ func importEmbeddings(ctx context.Context, tx *sql.Tx, opts Options, manifests [
 	return nil
 }
 
-func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string) error {
+func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel string, manifest EmbeddingManifest) error {
 	path, err := embeddingRepoPath(repoPath, rel)
 	if err != nil {
 		return err
@@ -2349,11 +2354,35 @@ func importEmbeddingFile(ctx context.Context, stmt *sql.Stmt, repoPath, rel stri
 		if err != nil {
 			return fmt.Errorf("decode dimensions in %s: %w", rel, err)
 		}
+		if dimensions <= 0 {
+			return fmt.Errorf("decode dimensions in %s: must be positive", rel)
+		}
 		blob, err := base64.StdEncoding.DecodeString(row.EmbeddingBlob)
 		if err != nil {
 			return fmt.Errorf("decode embedding blob in %s: %w", rel, err)
 		}
-		if _, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt); err != nil {
+		if len(blob)%4 != 0 || len(blob)/4 != dimensions {
+			return fmt.Errorf("decode embedding blob in %s: float32 length does not match dimensions", rel)
+		}
+		values, err := store.DecodeEmbeddingVector(blob)
+		if err != nil {
+			return fmt.Errorf("decode embedding blob in %s: %w", rel, err)
+		}
+		for _, value := range values {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return fmt.Errorf("decode embedding blob in %s: non-finite value", rel)
+			}
+		}
+		if strings.TrimSpace(row.MessageID) == "" {
+			return fmt.Errorf("decode embedding row in %s: message_id must not be blank", rel)
+		}
+		if row.Provider != manifest.Provider || row.Model != manifest.Model || row.InputVersion != manifest.InputVersion {
+			return fmt.Errorf("decode embedding row in %s: identity does not match manifest", rel)
+		}
+		// Older bundles can reference missing, deleted, or local-only messages.
+		// Validate every decoded row, but only update canonical non-DM targets.
+		if _, err := stmt.ExecContext(ctx, row.MessageID, row.Provider, row.Model, row.InputVersion, dimensions, blob, row.EmbeddedAt,
+			row.MessageID, store.DirectMessageGuildID); err != nil {
 			return fmt.Errorf("insert message_embeddings: %w", err)
 		}
 	}
