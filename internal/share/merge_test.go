@@ -142,10 +142,10 @@ func TestExactReplacementRemovesRowsOmittedByNewPublicSnapshot(t *testing.T) {
 		Name:    "Guild",
 		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
 	}))
-	channel := store.ChannelRecord{ID: "c-formerly-public", GuildID: "g1", Kind: "text", Name: "formerly-public", RawJSON: `{}`}
+	channel := store.ChannelRecord{ID: "c-formerly-public", GuildID: "g1", Kind: "text", Name: "formerly-public", RawJSON: `{"permission_overwrites":[]}`}
 	require.NoError(t, src.UpsertChannel(ctx, channel))
 	upsertSnapshotFilterMessage(t, ctx, src, "m-formerly-public", channel.ID, "u1", "formerly public content")
-	stableChannel := store.ChannelRecord{ID: "c-still-public", GuildID: "g1", Kind: "text", Name: "still-public", RawJSON: `{}`}
+	stableChannel := store.ChannelRecord{ID: "c-still-public", GuildID: "g1", Kind: "text", Name: "still-public", RawJSON: `{"permission_overwrites":[]}`}
 	require.NoError(t, src.UpsertChannel(ctx, stableChannel))
 	upsertSnapshotFilterMessage(t, ctx, src, "m-still-public", stableChannel.ID, "u2", "still public content")
 
