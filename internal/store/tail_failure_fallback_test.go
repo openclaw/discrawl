@@ -169,6 +169,10 @@ func TestPersistTailMessageFailureFallbackRejectsInvalidIdentityAndDirectory(t *
 		insecureDir, err := insecure.tailMessageFailureFallbackDir()
 		require.NoError(t, err)
 		require.NoError(t, os.Mkdir(insecureDir, 0o755))
+		require.NoError(t, os.Chmod(insecureDir, 0o755))
+		insecureInfo, err := os.Stat(insecureDir)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o755), insecureInfo.Mode().Perm())
 		require.ErrorContains(t, insecure.PersistTailMessageFailureFallback(valid), "permissions must be 0700")
 	}
 }
