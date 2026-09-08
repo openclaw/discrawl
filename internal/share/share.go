@@ -441,6 +441,10 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			return Manifest{}, err
 		}
 		manifest.Embeddings = []EmbeddingManifest{entry}
+	} else {
+		if err := os.RemoveAll(filepath.Join(opts.RepoPath, "embeddings")); err != nil {
+			return Manifest{}, fmt.Errorf("reset embeddings dir: %w", err)
+		}
 	}
 	if opts.IncludeMedia {
 		entry, err := exportMedia(ctx, s.DB(), opts, filter)

@@ -83,6 +83,9 @@ README files without Discrawl report markers are left alone.
   (latest update, latest message, totals, day/week/month activity)
 - with `--with-embeddings`: vectors for the configured `[search.embeddings]` provider/model/input version, plus identity manifest
 
+Without `--with-embeddings`, each export removes the generated `embeddings/`
+directory from the requested snapshot output. Local stored vectors are unchanged.
+
 ## What is not published
 
 - `@me` DM guilds, channels, messages, events, attachments, mentions, wiretap sync state

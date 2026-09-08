@@ -1528,6 +1528,7 @@ func TestArchiveExportDropsEmbeddingBundleUnlessOptedIn(t *testing.T) {
 	archiveManifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.Empty(t, archiveManifest.Embeddings)
+	require.NoDirExists(t, filepath.Join(repo, "embeddings"))
 }
 
 func TestImportEmbeddingsFiltersByConfiguredIdentity(t *testing.T) {

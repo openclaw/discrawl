@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Exclude local-only direct messages from published README activity reports and add `report --published` for standalone shared reports, while preserving full local reports and filtered-publication safeguards.
+- Remove generated embedding files from the requested snapshot output when embedding export is disabled, without changing local vectors or unrelated files.
 
 ## 0.14.0 - 2026-09-07
 
