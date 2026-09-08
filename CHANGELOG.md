@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Exclude local-only direct messages from published README activity reports and add `report --published` for standalone shared reports, while preserving full local reports and filtered-publication safeguards.
+
 ## 0.14.0 - 2026-09-07
 
 **Highlights:** Search Korean, Japanese, Chinese, and Arabic word forms with optional local language analyzers.

@@ -65,8 +65,9 @@ include_channel_ids = ["1458141495701012561"]
 exclude_channel_ids = []
 ```
 
-`--readme` is disabled when filters are active because the activity report is
-built from the full archive and would otherwise leak unfiltered totals. If the
+`--readme` excludes local-only direct messages, but includes private guild
+channels and threads. It is disabled when filters are active because the report
+does not apply those filters and would otherwise leak unfiltered totals. If the
 share repo already has a generated Discrawl `README.md` from an earlier
 unfiltered publish, filtered publish removes it before committing. Custom
 README files without Discrawl report markers are left alone.

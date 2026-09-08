@@ -201,9 +201,12 @@ Search archived Discord members.
 
 Show archive status and freshness.
 `,
-	"report": `Usage: discrawl report [--readme PATH]
+	"report": `Usage: discrawl report [--published] [--readme PATH]
 
 Generate the archive activity report.
+Local reports include direct messages by default. --published excludes direct
+messages, but still includes private guild content. --published rejects configured
+share filters.
 `,
 	"doctor": `Usage: discrawl doctor [--json]
 

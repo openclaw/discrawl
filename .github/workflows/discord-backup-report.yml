@@ -72,7 +72,7 @@ jobs:
           printf 'db_path = "%s"\n' "$DB" > "$CONFIG"
           go run ./cmd/discrawl --config "$CONFIG" subscribe --repo "$BACKUP_REPO" "$BACKUP_REMOTE"
           git -C "$BACKUP_REPO" pull --ff-only origin main
-          go run ./cmd/discrawl --config "$CONFIG" report --readme "$BACKUP_REPO/README.md"
+          go run ./cmd/discrawl --config "$CONFIG" report --published --readme "$BACKUP_REPO/README.md"
           if git -C "$BACKUP_REPO" diff --quiet README.md; then
             echo "README already up to date"
             exit 0
