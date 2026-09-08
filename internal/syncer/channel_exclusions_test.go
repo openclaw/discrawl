@@ -138,6 +138,7 @@ func TestTargetedStoredThreadUsesFullCategoryAncestry(t *testing.T) {
 		svc.effectiveChannelExclusions(SyncOptions{}),
 		map[string]struct{}{"g1": {}},
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	require.True(t, targeted)

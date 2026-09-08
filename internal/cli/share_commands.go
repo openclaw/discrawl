@@ -94,8 +94,12 @@ func (r *runtime) runPublish(args []string) error {
 		return err
 	}
 	if opts.Filter.Active() {
-		if err := removeGeneratedReadmeForFilteredPublish(opts.RepoPath); err != nil {
+		removed, err := removeGeneratedReadmeForFilteredPublish(opts.RepoPath)
+		if err != nil {
 			return err
+		}
+		if removed {
+			opts.ReadmePath = "README.md"
 		}
 	}
 	if *readmePath != "" {
@@ -109,6 +113,18 @@ func (r *runtime) runPublish(args []string) error {
 		}
 		if err := report.WriteReadme(*readmePath, section); err != nil {
 			return err
+		}
+		root, err := filepath.Abs(opts.RepoPath)
+		if err != nil {
+			return err
+		}
+		readme, err := filepath.Abs(*readmePath)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, readme)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			opts.ReadmePath = filepath.ToSlash(rel)
 		}
 	}
 	committed := false
@@ -148,20 +164,21 @@ func (r *runtime) runPublish(args []string) error {
 	})
 }
 
-func removeGeneratedReadmeForFilteredPublish(repoPath string) error {
+func removeGeneratedReadmeForFilteredPublish(repoPath string) (bool, error) {
 	readmePath := filepath.Join(repoPath, "README.md")
 	body, err := os.ReadFile(readmePath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	text := string(body)
 	if !strings.Contains(text, report.StartMarker) || !strings.Contains(text, report.EndMarker) {
-		return nil
+		return false, nil
 	}
-	return os.Remove(readmePath)
+	err = os.Remove(readmePath)
+	return err == nil, err
 }
 
 func (r *runtime) runSubscribe(args []string) error {

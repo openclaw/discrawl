@@ -167,6 +167,11 @@ func TestExportMigratesLegacyRawMediaFilesToGzip(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(legacyRaw), 0o755))
 	require.NoError(t, os.WriteFile(legacyRaw, []byte("legacy raw media"), 0o600))
+	previous, err := json.Marshal(Manifest{Version: 1, Media: &MediaManifest{
+		Files: []snapshot.FileManifest{{Path: "media/" + mediaPath}},
+	}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ManifestName), previous, 0o600))
 
 	manifest, err := Export(ctx, src, Options{RepoPath: repo, CacheDir: srcCache, Branch: "main", IncludeMedia: true})
 	require.NoError(t, err)
@@ -618,9 +623,19 @@ func TestPublicPermissionHelpers(t *testing.T) {
 	_, ok = everyoneGuildPermissions(`{"roles":[]}`, "g1")
 	require.False(t, ok)
 
-	require.Equal(t, int64(0), applyEveryoneOverwrite(permissionViewChannel, `{"permission_overwrites":[{"id":"g1","type":"role","deny":"1024"}]}`, "g1"))
-	require.Equal(t, permissionViewChannel, applyEveryoneOverwrite(0, `{"permission_overwrites":[{"id":"g1","type":0,"allow":1024}]}`, "g1"))
-	require.Equal(t, permissionViewChannel, applyEveryoneOverwrite(permissionViewChannel, `not-json`, "g1"))
+	permissions, ok = applyEveryoneOverwrite(permissionViewChannel, `{"permission_overwrites":[{"id":"g1","type":"role","deny":"1024"}]}`, "g1")
+	require.True(t, ok)
+	require.Zero(t, permissions)
+	permissions, ok = applyEveryoneOverwrite(0, `{"permission_overwrites":[{"id":"g1","type":0,"allow":1024}]}`, "g1")
+	require.True(t, ok)
+	require.Equal(t, permissionViewChannel, permissions)
+	for _, raw := range []string{`not-json`, `{}`, `{"permission_overwrites":null}`, `{"permission_overwrites":[{"id":"g1","type":0,"deny":"bad"}]}`} {
+		_, ok = applyEveryoneOverwrite(permissionViewChannel, raw, "g1")
+		require.False(t, ok)
+	}
+	permissions, ok = applyEveryoneOverwrite(permissionViewChannel, `{"permission_overwrites":[]}`, "g1")
+	require.True(t, ok)
+	require.Equal(t, permissionViewChannel, permissions)
 
 	parsed, ok := parsePermissionBits(json.Number("1024"))
 	require.True(t, ok)
@@ -660,7 +675,7 @@ func TestPreflightPublishScopeDistinguishesMissingMetadataFromEmptyScope(t *test
 		Name:    "Cache only",
 		RawJSON: `{"source":"discord_desktop"}`,
 	}))
-	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-public", GuildID: "g-ready", Kind: "text", Name: "public", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-public", GuildID: "g-ready", Kind: "text", Name: "public", RawJSON: `{"permission_overwrites":[]}`})
 	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-private", GuildID: "g-ready", Kind: "text", Name: "private", RawJSON: `{"permission_overwrites":[{"id":"g-ready","type":0,"deny":"1024"}]}`})
 	upsertSnapshotFilterChannel(t, ctx, s, store.ChannelRecord{ID: "c-cache", GuildID: "g-cache", Kind: "text", Name: "cache", RawJSON: `{"source":"discord_desktop"}`})
 	upsertSnapshotFilterMessage(t, ctx, s, "m-public", "c-public", "u1", "public")
@@ -749,7 +764,7 @@ func TestPublicSnapshotFilterHonorsCategoryAndThreadPermissions(t *testing.T) {
 		GuildID: "g1",
 		Kind:    "text",
 		Name:    "public",
-		RawJSON: `{}`,
+		RawJSON: `{"permission_overwrites":[]}`,
 	}))
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
 		ID:             "thread",
@@ -1334,11 +1349,11 @@ func TestSnapshotFilterKeepsOnlyIncludedPublicChannels(t *testing.T) {
 		Name:    "Guild",
 		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
 	}))
-	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "public", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "public", RawJSON: `{"permission_overwrites":[]}`})
 	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c2", GuildID: "g1", Kind: "text", Name: "private", RawJSON: `{"permission_overwrites":[{"id":"g1","type":0,"allow":"0","deny":"1024"}]}`})
 	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "cat1", GuildID: "g1", Kind: "category", Name: "private-category", RawJSON: `{"permission_overwrites":[{"id":"g1","type":0,"allow":"0","deny":"1024"}]}`})
 	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "c3", GuildID: "g1", ParentID: "cat1", Kind: "text", Name: "inherits-private", RawJSON: `{}`})
-	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "f1", GuildID: "g1", Kind: "forum", Name: "public-forum", RawJSON: `{}`})
+	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "f1", GuildID: "g1", Kind: "forum", Name: "public-forum", RawJSON: `{"permission_overwrites":[]}`})
 	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "t1", GuildID: "g1", ParentID: "f1", ThreadParentID: "f1", Kind: "thread_public", Name: "public-thread", RawJSON: `{}`})
 	upsertSnapshotFilterChannel(t, ctx, src, store.ChannelRecord{ID: "tp1", GuildID: "g1", ParentID: "f1", ThreadParentID: "f1", Kind: "thread_private", Name: "private-thread", IsPrivateThread: true, RawJSON: `{}`})
 
@@ -1528,6 +1543,7 @@ func TestArchiveExportDropsEmbeddingBundleUnlessOptedIn(t *testing.T) {
 	archiveManifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.Empty(t, archiveManifest.Embeddings)
+	require.NoFileExists(t, embeddingFile)
 }
 
 func TestImportEmbeddingsFiltersByConfiguredIdentity(t *testing.T) {
@@ -2018,7 +2034,7 @@ func TestPushRebasesRemoteReadmeUpdates(t *testing.T) {
 	require.NoError(t, exec.CommandContext(t.Context(), "git", "-C", dir, "init", "--bare", remote).Run())
 
 	publisher := filepath.Join(dir, "publisher")
-	opts := Options{RepoPath: publisher, Remote: remote, Branch: "main"}
+	opts := Options{RepoPath: publisher, Remote: remote, Branch: "main", ReadmePath: "README.md"}
 	_, err := Export(ctx, src, opts)
 	require.NoError(t, err)
 	configureGitUser(t, publisher)

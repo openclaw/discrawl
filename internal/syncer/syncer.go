@@ -214,6 +214,7 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		}
 	}
 	exclusions := s.effectiveChannelExclusions(opts)
+	cachedChannels := make(map[*discordgo.Channel]struct{})
 	channelList, targeted, err := s.channelList(
 		ctx,
 		guildID,
@@ -222,11 +223,12 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		exclusions,
 		opts.selectedGuildIDs,
 		opts.directChannelResults,
+		cachedChannels,
 	)
 	if err != nil {
 		return stats, err
 	}
-	if err := s.storeChannelList(ctx, channelList, &stats); err != nil {
+	if err := s.storeChannelList(ctx, channelList, cachedChannels, &stats); err != nil {
 		return stats, err
 	}
 
@@ -267,11 +269,14 @@ func shouldResumeIncompleteFullSync(opts SyncOptions) bool {
 	return opts.Full && len(opts.ChannelIDs) == 0
 }
 
-func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Channel, stats *SyncStats) error {
+func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Channel, cachedChannels map[*discordgo.Channel]struct{}, stats *SyncStats) error {
 	for _, channel := range channels {
 		record := toChannelRecord(channel, marshalJSONString(channel, "{}"))
-		if err := s.store.UpsertChannel(ctx, record); err != nil {
-			return err
+		// Cached reconstructions omit raw permission evidence and are not new observations.
+		if _, cached := cachedChannels[channel]; !cached {
+			if err := s.store.UpsertChannel(ctx, record); err != nil {
+				return err
+			}
 		}
 		stats.addChannel(record)
 	}

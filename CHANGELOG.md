@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+- Remove previously published embedding and media files when omitted, and commit only exact archive outputs and explicitly generated reports while preserving unrelated staged work.
+
 - Exclude deleted messages from cloud row publication and SQLite bundles, using the existing replacement protocol and matching live-row counts.
+- Preserve cached channel permissions during targeted sync and exclude unobserved permissions from public-only snapshots.
+- Exclude nested unselected guild metadata from filtered snapshots while retaining local raw observations.
 - Keep local Wiretap DMs out of embedding enqueue, rebuild and provider requests, including jobs queued by older versions.
 
 ## 0.14.0 - 2026-09-07
