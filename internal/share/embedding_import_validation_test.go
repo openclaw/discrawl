@@ -196,7 +196,7 @@ func validationDatabaseContents(t *testing.T, s *store.Store) map[string][][]str
 		}
 		_, rows, err := s.ReadOnlyQuery(t.Context(), "select * from "+quoteIdent(entry[1]))
 		require.NoError(t, err)
-		slices.SortFunc(rows, func(a, b []string) int { return slices.Compare(a, b) })
+		slices.SortFunc(rows, slices.Compare)
 		out[entry[1]] = rows
 	}
 	return out
