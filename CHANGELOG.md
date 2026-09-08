@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep inferred Git fingerprints separate from snapshot integrity metadata when importing legacy snapshots, including historical restores, while preserving incremental merge checkpoints.
 - Exclude local-only direct messages from published README activity reports and add `report --published` for standalone shared reports, while preserving full local reports and filtered-publication safeguards.
 - Remove generated embedding files from the requested snapshot output when embedding export is disabled, without changing local vectors or unrelated files.
 - Validate imported embedding rows against their manifest identity and vector dimensions; reject malformed or non-finite vectors transactionally and skip missing, deleted, and local-only message targets while preserving existing DM vectors.

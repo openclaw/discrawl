@@ -52,6 +52,7 @@ func MergeIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifest
 	if err != nil {
 		return Manifest{}, false, err
 	}
+	current := snapshotManifest(manifest)
 	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
 	previous, ok := PreviousMergedManifest(ctx, s, opts)
 	allowEventMerge := false
@@ -70,7 +71,7 @@ func MergeIfChanged(ctx context.Context, s *store.Store, opts Options) (Manifest
 		}
 		return Manifest{}, false, err
 	}
-	return importMergePlan(ctx, s, opts, previous, manifest, plan)
+	return importMergePlan(ctx, s, opts, previous, manifest, current, plan)
 }
 
 func shareMergePlan(plan snapshot.ImportPlan, previous snapshot.Manifest, allowEventMerge bool) (snapshot.ImportPlan, error) {

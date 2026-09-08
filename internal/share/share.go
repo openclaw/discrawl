@@ -477,6 +477,12 @@ func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		return Manifest{}, err
 	}
 	manifest = enrichManifestFromGit(ctx, opts.RepoPath, "HEAD", manifest)
+	return importSnapshot(ctx, s, opts, manifest)
+}
+
+// Git fingerprints belong to checkpoint metadata. snapshot.Import reads its
+// integrity metadata from the original manifest under opts.RepoPath.
+func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest Manifest) (Manifest, error) {
 	opts.reportProgress(ImportProgress{Phase: "start", TotalRows: manifestRowCount(manifest)})
 	restorePragmas, err := applyImportPragmas(ctx, s.DB())
 	if err != nil {
@@ -612,6 +618,7 @@ func importMergePlan(
 	opts Options,
 	previous Manifest,
 	manifest Manifest,
+	current snapshot.Manifest,
 	plan snapshot.ImportPlan,
 ) (Manifest, bool, error) {
 	if !plan.Changed() {
@@ -649,7 +656,7 @@ func importMergePlan(
 		DB:       s.DB(),
 		RootDir:  opts.RepoPath,
 		Previous: snapshotManifest(previous),
-		Current:  snapshotManifest(manifest),
+		Current:  current,
 		Plan:     plan,
 		Progress: func(progress snapshot.ImportProgress) {
 			opts.reportProgress(ImportProgress{
@@ -875,6 +882,8 @@ func enrichManifestFromGit(ctx context.Context, repoPath, rev string, manifest M
 	if err != nil {
 		return manifest
 	}
+	// Enrichment must not change the authoritative on-disk manifest's metadata.
+	manifest.Tables = slices.Clone(manifest.Tables)
 	for i := range manifest.Tables {
 		table := &manifest.Tables[i]
 		if len(table.FileManifests) > 0 {
@@ -983,11 +992,6 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 		return Manifest{}, err
 	}
 	manifest = enrichManifestFromGit(ctx, opts.RepoPath, commit, manifest)
-	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return Manifest{}, fmt.Errorf("marshal historical manifest: %w", err)
-	}
-	manifestBody = append(manifestBody, '\n')
 	tempDir, err := os.MkdirTemp("", "discrawl-share-ref-*")
 	if err != nil {
 		return Manifest{}, fmt.Errorf("create historical share directory: %w", err)
@@ -1024,7 +1028,7 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 	historicalOpts.RepoPath = tempDir
 	historicalOpts.Remote = ""
 	historicalOpts.Tag = ""
-	return Import(ctx, s, historicalOpts)
+	return importSnapshot(ctx, s, historicalOpts, manifest)
 }
 
 func tableSnapshotFiles(table TableManifest) []string {
