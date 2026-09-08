@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Exclude deleted messages from cloud row publication and SQLite bundles, using the existing replacement protocol and matching live-row counts.
 - Keep local Wiretap DMs out of embedding enqueue, rebuild and provider requests, including jobs queued by older versions.
 
 ## 0.14.0 - 2026-09-07
