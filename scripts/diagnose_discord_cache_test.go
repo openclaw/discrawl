@@ -223,6 +223,74 @@ func TestFileBudgetsAndCancellation(t *testing.T) {
 	}
 }
 
+func TestMeasuredCapacityBounds(t *testing.T) {
+	limit := approvedBounds()
+	if limit != (bounds{240 * time.Second, 1_000_000, 256 << 20, 1 << 20, 10 << 30, 20 << 30}) {
+		t.Fatal("approved capacity or unchanged scan limits drifted")
+	}
+	for _, field := range []string{"files", "combined"} {
+		raised := limit
+		if field == "files" {
+			raised.files++
+		} else {
+			raised.combined++
+		}
+		if out := execute(context.Background(), []string{"unused-source", "unused-scratch"}, raised); out.AbortReason != "arguments" {
+			t.Fatal("caller exceeded approved capacity")
+		}
+	}
+	source := fixture(t, []byte("small boundary fixture"))
+	info, err := os.Stat(filepath.Join(source, inputNames[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit.files, limit.combined = info.Size(), info.Size()*2
+	if out := runFixture(t, source, limit); !out.Complete || !out.OriginalUnchanged {
+		t.Fatal("exact restored/combined boundary rejected")
+	}
+}
+
+func TestMeasuredCapacitySparseMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		size int64
+		ok   bool
+	}{
+		{"measured", 9089302528, true},
+		{"exact-limit", 10 << 30, true},
+		{"over-limit", (10 << 30) + 1, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			file, err := os.OpenFile(filepath.Join(directory, inputNames[0]), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			truncateErr := file.Truncate(test.size)
+			closeErr := file.Close()
+			if truncateErr != nil || closeErr != nil {
+				t.Fatal("sparse metadata fixture creation failed")
+			}
+			root, err := os.OpenRoot(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			// Only inspect metadata: never pass these sparse files to hashing or copying.
+			files, total, reason := inspectFiles(root, maxRestoredBytes)
+			if (reason == "") != test.ok || (!test.ok && reason != "file_budget") {
+				t.Fatal("restored-capacity boundary incorrect")
+			}
+			if test.ok && (total != test.size || len(files) != 1) {
+				t.Fatal("logical size lost during metadata inspection")
+			}
+			if _, _, oldReason := inspectFiles(root, 8<<30); oldReason != "file_budget" {
+				t.Fatal("previous restored limit unexpectedly accepted measured size")
+			}
+		})
+	}
+}
+
 func TestSchemaEncodingAndErrorPrivacy(t *testing.T) {
 	for _, test := range []struct {
 		name, schema, reason string
@@ -491,7 +559,7 @@ func TestWorkflowSafetyContract(t *testing.T) {
 		}
 		if step.ID == "build" {
 			buildIndex = index
-			if !strings.Contains(step.Run, "20n*1024n**3n") || !strings.Contains(step.Run, "go test -count=1 scripts/diagnose_discord_cache.go") ||
+			if !strings.Contains(step.Run, "24n*1024n**3n") || !strings.Contains(step.Run, "go test -count=1 scripts/diagnose_discord_cache.go") ||
 				!strings.Contains(step.Run, `env -i PATH=/usr/bin:/bin "$NODE_BINARY" --version >/dev/null`) ||
 				step.Env["NODE_BINARY"] != "${{ steps.cache-runtime.outputs.node_binary }}" {
 				t.Fatal("pre-restore build/test/disk guard missing")
@@ -520,6 +588,9 @@ func TestWorkflowSafetyContract(t *testing.T) {
 	if len(scripts) != 2 || scripts[0] != scripts[1] || len(wrappers) != 2 || wrappers[0] != wrappers[1] ||
 		len(restoreIndices) != 2 || stockIndex < 0 || runtimeIndex <= stockIndex || buildIndex <= runtimeIndex || buildIndex >= restoreIndices[0] {
 		t.Fatal("metadata pre/post or build-before-restore contract changed")
+	}
+	if !strings.Contains(scripts[0], "expected.size_in_bytes > 8 * 1024 ** 3") {
+		t.Fatal("compressed-cache metadata ceiling changed")
 	}
 	for _, forbidden := range []string{"dist/restore/index.js", "npm install", "stdio:\"inherit\"", ".pipe(process.stdout)", ".pipe(process.stderr)"} {
 		if bytes.Contains(raw, []byte(forbidden)) {

@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	maxRestoredBytes = int64(8 << 30)
-	maxCombinedBytes = int64(16 << 30)
+	maxRestoredBytes = int64(10 << 30)
+	maxCombinedBytes = int64(20 << 30)
 )
 
 var inputNames = [...]string{"discrawl.db", "discrawl.db-shm", "discrawl.db-wal"}

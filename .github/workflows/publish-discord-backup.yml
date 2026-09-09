@@ -139,7 +139,7 @@ jobs:
           command -v zstd >/dev/null
           [[ "$NODE_BINARY" = /* && -x "$NODE_BINARY" ]]
           env -i PATH=/usr/bin:/bin "$NODE_BINARY" --version >/dev/null
-          "$NODE_BINARY" -e 'const fs=require("node:fs"); for (const p of [".", process.env.RUNNER_TEMP]) { const s=fs.statfsSync(p,{bigint:true}); if(s.bavail*s.bsize < 20n*1024n**3n) process.exit(1); }'
+          "$NODE_BINARY" -e 'const fs=require("node:fs"); for (const p of [".", process.env.RUNNER_TEMP]) { const s=fs.statfsSync(p,{bigint:true}); if(s.bavail*s.bsize < 24n*1024n**3n) process.exit(1); }'
 
       - name: Validate exact cache identity before lookup
         id: cache-before
