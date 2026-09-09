@@ -521,7 +521,7 @@ jobs:
               if (fs.statSync(root + "/result.json").size > 4096) throw new Error();
               const result = JSON.parse(fs.readFileSync(root + "/result.json", "utf8"));
               const keys = ["complete", "error", "ciphertext_sha256", "ciphertext_size", "repository", "revision", "run_id", "run_attempt"];
-              const file = fs.lstatSync(root + "/work/backup.tar.age");
+              const file = fs.lstatSync(root + "/work/backup.tar.gz.age");
               if (JSON.stringify(Object.keys(result).sort()) !== JSON.stringify(keys.sort()) ||
                   result.complete !== true || result.error !== "none" ||
                   !/^[0-9a-f]{64}$/.test(result.ciphertext_sha256) ||
@@ -540,7 +540,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: discord-cache-backup-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.build.outputs.private_temp }}/work/backup.tar.age
+          path: ${{ steps.build.outputs.private_temp }}/work/backup.tar.gz.age
           compression-level: 0
           if-no-files-found: error
           overwrite: false

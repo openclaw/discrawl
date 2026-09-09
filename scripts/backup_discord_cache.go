@@ -9,7 +9,9 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -172,7 +174,7 @@ func execute(ctx context.Context, args []string, op operation) (out result) {
 		reason := err.Error()
 		switch reason {
 		case "input_files", "file_budget", "copy", "capacity", "sqlite", "integrity", "binding",
-			"original_changed", "encryption", "tar_close", "age_close", "file_sync", "file_close",
+			"original_changed", "encryption", "tar_close", "gzip_close", "age_close", "file_sync", "file_close",
 			"ciphertext", "archive", "authentication", "time_limit":
 			return result{Error: reason}
 		default:
@@ -461,7 +463,7 @@ func produce(ctx context.Context, source, work string, expected expectation, rec
 	}
 	b := binding{1, expected, records}
 	paths := [4]string{filepath.Join(source, "discrawl.db"), filepath.Join(source, "discrawl.db-wal"), filepath.Join(source, "discrawl.db-shm"), consistent}
-	digest, size, err := encrypt(packCtx, filepath.Join(work, "backup.tar.age"), recipient, b, paths, op)
+	digest, size, err := encrypt(packCtx, filepath.Join(work, "backup.tar.gz.age"), recipient, b, paths, op)
 	if err != nil {
 		return "", 0, err
 	}
@@ -475,7 +477,7 @@ func produce(ctx context.Context, source, work string, expected expectation, rec
 		}
 	}
 	if err != nil || packCtx.Err() != nil {
-		os.Remove(filepath.Join(work, "backup.tar.age"))
+		os.Remove(filepath.Join(work, "backup.tar.gz.age"))
 		return "", 0, fail("original_changed")
 	}
 	return digest, size, nil
@@ -483,8 +485,10 @@ func produce(ctx context.Context, source, work string, expected expectation, rec
 
 func cipherBound(s, c int64) int64 {
 	plain := s + c + bindingCap + 5*1024 + 1024
-	// X25519 header allowance plus STREAM authentication tags, without compression.
-	return plain + 64<<10 + (plain/(64<<10)+1)*16
+	// Allow gzip expansion, not a compression ratio. The ciphertext writer also
+	// enforces this measured budget, including X25519 and STREAM overhead.
+	compressed := plain + plain/100 + 64<<10
+	return compressed + 64<<10 + (compressed/(64<<10)+1)*16
 }
 
 func sqlite(ctx context.Context, work, stage string, args []string, watched string, maximum int64, op operation) ([]byte, error) {
@@ -583,12 +587,19 @@ func encrypt(ctx context.Context, path string, recipient age.Recipient, b bindin
 		}
 	}()
 	hash := sha256.New()
-	dst := &cappedWriter{w: io.MultiWriter(f, hash), max: cipherCap}
+	var sourceSize int64
+	for _, record := range b.Files[:3] {
+		if record.Present {
+			sourceSize += record.Size
+		}
+	}
+	dst := &cappedWriter{w: io.MultiWriter(f, hash), max: min(cipherCap, cipherBound(sourceSize, b.Files[3].Size))}
 	encrypted, err := age.Encrypt(dst, recipient)
 	if err != nil {
 		return "", 0, fail("encryption")
 	}
-	tw := tar.NewWriter(encrypted)
+	compressed := gzip.NewWriter(encrypted)
+	tw := tar.NewWriter(compressed)
 	for i, record := range b.Files {
 		if !record.Present {
 			continue
@@ -616,7 +627,7 @@ func encrypt(ctx context.Context, path string, recipient age.Recipient, b bindin
 	for _, step := range []struct {
 		name string
 		do   func() error
-	}{{"tar_close", tw.Close}, {"age_close", encrypted.Close}, {"file_sync", f.Sync}, {"file_close", f.Close}} {
+	}{{"tar_close", tw.Close}, {"gzip_close", compressed.Close}, {"age_close", encrypted.Close}, {"file_sync", f.Sync}, {"file_close", f.Close}} {
 		e := step.do()
 		if op.check(step.name) != nil || e != nil {
 			return "", 0, fail(step.name)
@@ -646,8 +657,17 @@ func readEnvelope(ctx context.Context, cipher string, identity age.Identity, exp
 	if err != nil {
 		return b, fail("authentication")
 	}
+	// ByteReader plus Multistream(false) leaves the exact gzip-member boundary
+	// visible, including an empty second member or compressed trailing junk.
+	compressed := bufio.NewReader(contextReader{ctx, plain})
+	expanded, err := gzip.NewReader(compressed)
+	if err != nil {
+		return b, fail("archive")
+	}
+	defer expanded.Close()
+	expanded.Multistream(false)
 	rawHash, canonicalHash := sha256.New(), sha256.New()
-	raw := io.TeeReader(io.LimitReader(contextReader{ctx, plain}, sourceCap+copyCap+bindingCap+8193), rawHash)
+	raw := io.TeeReader(io.LimitReader(contextReader{ctx, expanded}, sourceCap+copyCap+bindingCap+8193), rawHash)
 	tr, canonical := tar.NewReader(raw), tar.NewWriter(canonicalHash)
 	var observed [4]fileRecord
 	for i, name := range names {
@@ -727,14 +747,21 @@ func readEnvelope(ctx context.Context, cipher string, identity age.Identity, exp
 			}
 		}
 	}
-	// tar EOF is not age EOF: consume authentication and reject any extra bytes.
+	// Tar EOF is not gzip EOF: consume the CRC/size trailer and reject extra tar
+	// bytes. Gzip Close alone does not validate the trailer.
 	n, err := io.Copy(io.Discard, raw)
 	if err != nil || n != 0 || canonical.Close() != nil || !bytes.Equal(rawHash.Sum(nil), canonicalHash.Sum(nil)) {
 		return b, fail("authentication")
 	}
 	// The bounded reader must not manufacture a successful EOF.
 	var extra [1]byte
-	nextra, err := plain.Read(extra[:])
+	nextra, err := expanded.Read(extra[:])
+	if nextra != 0 || err != io.EOF || expanded.Close() != nil {
+		return b, fail("archive")
+	}
+	// One gzip member is not authenticated age EOF. Reject any remaining
+	// compressed bytes and require the complete outer ciphertext digest.
+	nextra, err = compressed.Read(extra[:])
 	if nextra != 0 || err != io.EOF || hex.EncodeToString(cipherHash.Sum(nil)) != digest {
 		return b, fail("authentication")
 	}

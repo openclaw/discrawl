@@ -4,14 +4,18 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -106,7 +110,7 @@ func TestBackupWALAndArbitraryBytesRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOriginals(t, source, original)
-	cipher := filepath.Join(work, "backup.tar.age")
+	cipher := filepath.Join(work, "backup.tar.gz.age")
 	b, err := readEnvelope(context.Background(), cipher, id, syntheticExpectation(), digest, size, "", ampleSpace())
 	if err != nil {
 		t.Fatal(err)
@@ -173,14 +177,14 @@ func TestOptionalOriginalsAndExistingDestinations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := readEnvelope(context.Background(), filepath.Join(second, "backup.tar.age"), id, syntheticExpectation(), digest, size, "", ampleSpace())
+	b, err := readEnvelope(context.Background(), filepath.Join(second, "backup.tar.gz.age"), id, syntheticExpectation(), digest, size, "", ampleSpace())
 	if err != nil || b.Files[1].Present || b.Files[2].Present {
 		t.Fatalf("absent sidecars misrepresented: %v", err)
 	}
 	if _, _, err := produce(context.Background(), secondSource, second, syntheticExpectation(), id.Recipient(), ampleSpace()); err == nil {
 		t.Fatal("reused producer destination")
 	}
-	if err := verify(context.Background(), filepath.Join(second, "backup.tar.age"), second, syntheticExpectation(), id, digest, size, ampleSpace()); err == nil {
+	if err := verify(context.Background(), filepath.Join(second, "backup.tar.gz.age"), second, syntheticExpectation(), id, digest, size, ampleSpace()); err == nil {
 		t.Fatal("reused retained destination")
 	}
 }
@@ -231,12 +235,31 @@ func canonicalTar(t *testing.T, b binding, data [4][]byte) []byte {
 
 func seal(t *testing.T, plaintext []byte, id *age.X25519Identity) []byte {
 	t.Helper()
+	return sealCompressed(t, gzipBytes(t, plaintext, nil), id)
+}
+
+func gzipBytes(t *testing.T, plaintext, extra []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w := gzip.NewWriter(&out)
+	w.Extra = extra
+	if _, err := w.Write(plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func sealCompressed(t *testing.T, compressed []byte, id *age.X25519Identity) []byte {
+	t.Helper()
 	var out bytes.Buffer
 	w, err := age.Encrypt(&out, id.Recipient())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Write(plaintext); err != nil {
+	if _, err := w.Write(compressed); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -247,7 +270,7 @@ func seal(t *testing.T, plaintext []byte, id *age.X25519Identity) []byte {
 
 func readSynthetic(t *testing.T, ciphertext []byte, id *age.X25519Identity, expected expectation) error {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.tar.age")
+	path := filepath.Join(t.TempDir(), "backup.tar.gz.age")
 	mustWrite(t, path, ciphertext)
 	h := sha256.Sum256(ciphertext)
 	_, err := readEnvelope(context.Background(), path, id, expected, hex.EncodeToString(h[:]), int64(len(ciphertext)), "", ampleSpace())
@@ -257,22 +280,15 @@ func readSynthetic(t *testing.T, ciphertext []byte, id *age.X25519Identity, expe
 func TestAuthenticatedEOFAndTampering(t *testing.T) {
 	id := ephemeralIdentity(t)
 	b, data := tinyBinding()
-	// Put tar EOF exactly at a STREAM chunk boundary, so tar-only validation
-	// demonstrably misses a missing final chunk or trailing ciphertext.
-	data[0] = bytes.Repeat([]byte("x"), 60<<10)
-	b.Files[0].Size = int64(len(data[0]))
-	sum := sha256.Sum256(data[0])
-	b.Files[0].SHA256 = hex.EncodeToString(sum[:])
+	// Align the gzip-member EOF with a STREAM boundary. A complete tar and
+	// gzip trailer must not hide a missing final authenticated age chunk.
 	plain := canonicalTar(t, b, data)
-	data[0] = bytes.Repeat([]byte("x"), len(data[0])+(64<<10)-len(plain))
-	b.Files[0].Size = int64(len(data[0]))
-	sum = sha256.Sum256(data[0])
-	b.Files[0].SHA256 = hex.EncodeToString(sum[:])
-	plain = canonicalTar(t, b, data)
-	if len(plain) != 64<<10 {
-		t.Fatal("fixture does not align tar EOF with STREAM boundary")
+	compressed := gzipBytes(t, plain, nil)
+	compressed = gzipBytes(t, plain, make([]byte, (64<<10)-len(compressed)-2))
+	if len(compressed) != 64<<10 {
+		t.Fatal("fixture does not align gzip EOF with STREAM boundary")
 	}
-	sealed := seal(t, plain, id)
+	sealed := sealCompressed(t, compressed, id)
 	if err := readSynthetic(t, sealed, id, syntheticExpectation()); err != nil {
 		t.Fatal(err)
 	}
@@ -283,22 +299,21 @@ func TestAuthenticatedEOFAndTampering(t *testing.T) {
 		"trailing_zero_block":  seal(t, append(append([]byte{}, plain...), make([]byte, 512)...), id),
 		"trailing_ciphertext":  append(append([]byte{}, sealed...), 0),
 	}
-	withFinalChunk := seal(t, append(append([]byte{}, plain...), 0), id)
+	withFinalChunk := sealCompressed(t, append(append([]byte{}, compressed...), 0), id)
 	missingFinal := withFinalChunk[:len(withFinalChunk)-17]
-	cases["missing_final_after_tar_eof"] = missingFinal
+	cases["missing_final_after_gzip_eof"] = missingFinal
 	unsafePlain, err := age.Decrypt(bytes.NewReader(missingFinal), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	unsafeTar := tar.NewReader(unsafePlain)
-	for {
-		_, err := unsafeTar.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal("fixture does not discriminate tar-only validation:", err)
-		}
+	unsafeGzip, err := gzip.NewReader(bufio.NewReader(unsafePlain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsafeGzip.Close()
+	unsafeGzip.Multistream(false)
+	if got, err := io.ReadAll(unsafeGzip); err != nil || !bytes.Equal(got, plain) {
+		t.Fatal("fixture does not discriminate gzip-only validation:", err)
 	}
 	tampered := append([]byte{}, sealed...)
 	tampered[len(tampered)-20] ^= 1
@@ -317,6 +332,117 @@ func TestAuthenticatedEOFAndTampering(t *testing.T) {
 	expected.Attempt++
 	if err := readSynthetic(t, sealed, id, expected); err == nil {
 		t.Fatal("accepted wrong run binding")
+	}
+}
+
+func TestGzipIntegrityAndSingleMember(t *testing.T) {
+	id := ephemeralIdentity(t)
+	b, data := tinyBinding()
+	plain := canonicalTar(t, b, data)
+	compressed := gzipBytes(t, plain, nil)
+	if err := readSynthetic(t, sealCompressed(t, compressed, id), id, syntheticExpectation()); err != nil {
+		t.Fatal(err)
+	}
+	badCRC := append([]byte{}, compressed...)
+	badCRC[len(badCRC)-8] ^= 1
+	badSize := append([]byte{}, compressed...)
+	badSize[len(badSize)-4] ^= 1
+	emptyMember := append(append([]byte{}, compressed...), gzipBytes(t, nil, nil)...)
+	// Default multistream behavior would silently accept an empty second member.
+	unsafe, err := gzip.NewReader(bytes.NewReader(emptyMember))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := io.ReadAll(unsafe); err != nil || !bytes.Equal(got, plain) {
+		t.Fatal("fixture does not discriminate default multistream behavior:", err)
+	}
+	unsafe.Close()
+	for name, input := range map[string][]byte{
+		"crc":                 badCRC,
+		"size_trailer":        badSize,
+		"truncated_header":    compressed[:9],
+		"truncated_deflate":   compressed[:len(compressed)/2],
+		"truncated_trailer":   compressed[:len(compressed)-1],
+		"empty_second_member": emptyMember,
+		"second_member":       append(append([]byte{}, compressed...), gzipBytes(t, plain, nil)...),
+		"trailing_junk":       append(append([]byte{}, compressed...), []byte("fixture-only-trailer")...),
+		"trailing_zero":       append(append([]byte{}, compressed...), 0),
+		"raw_tar":             plain,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sealed := sealCompressed(t, input, id)
+			// Every malformed gzip input has a valid age envelope and digest.
+			// Rejection must come from the inner format, not stale ciphertext proof.
+			if err := readSynthetic(t, sealed, id, syntheticExpectation()); err == nil {
+				t.Fatal("accepted invalid gzip transport")
+			}
+			root := t.TempDir()
+			cipher := filepath.Join(root, "backup.tar.gz.age")
+			destination := filepath.Join(root, "retained")
+			mustWrite(t, cipher, sealed)
+			sum := sha256.Sum256(sealed)
+			if err := verify(context.Background(), cipher, destination, syntheticExpectation(), id, hex.EncodeToString(sum[:]), int64(len(sealed)), ampleSpace()); err == nil {
+				t.Fatal("invalid gzip passed local verification")
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatal("extracted before gzip and age validation")
+			}
+		})
+	}
+}
+
+func TestGzipExpansionPreservesTarCaps(t *testing.T) {
+	id := ephemeralIdentity(t)
+	for _, name := range []string{"original", "consistent", "binding"} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			tw := tar.NewWriter(&out)
+			file, size := names[0], sourceCap+1
+			switch name {
+			case "consistent":
+				file, size = names[3], copyCap+1
+			case "binding":
+				file, size = "binding.json", bindingCap+1
+			}
+			if err := tw.WriteHeader(header(file, size)); err != nil {
+				t.Fatal(err)
+			}
+			// A tiny valid gzip stream must not admit an oversized expanded entry.
+			compressed := gzipBytes(t, out.Bytes(), nil)
+			if len(compressed) >= 512 {
+				t.Fatal("fixture is not compressed")
+			}
+			if err := readSynthetic(t, sealCompressed(t, compressed, id), id, syntheticExpectation()); err == nil {
+				t.Fatal("compressed size bypassed expanded entry cap")
+			}
+		})
+	}
+	b, data := tinyBinding()
+	plain := append(canonicalTar(t, b, data), make([]byte, 2<<20)...)
+	compressed := gzipBytes(t, plain, nil)
+	if len(compressed) >= len(plain)/100 {
+		t.Fatal("fixture does not exercise substantial expansion")
+	}
+	if err := readSynthetic(t, sealCompressed(t, compressed, id), id, syntheticExpectation()); err == nil {
+		t.Fatal("compressed trailing expansion passed canonical tar validation")
+	}
+}
+
+func TestGzipBudgetDoesNotAssumeCompression(t *testing.T) {
+	id := ephemeralIdentity(t)
+	random := rand.New(rand.NewPCG(1, 2))
+	for _, size := range []int{0, 1, 16383, 16384, 65535, 65536, 1 << 20} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			payload := make([]byte, size)
+			for i := range payload {
+				payload[i] = byte(random.Uint32())
+			}
+			compressed := gzipBytes(t, payload, nil)
+			cipher := sealCompressed(t, compressed, id)
+			if int64(len(cipher)) > cipherBound(int64(size), 0) {
+				t.Fatal("incompressible input exceeded the expansion budget")
+			}
+		})
 	}
 }
 
@@ -410,21 +536,27 @@ func TestCloseFailuresRejectCiphertext(t *testing.T) {
 			mustWrite(t, paths[i], payload)
 		}
 	}
-	for _, stage := range []string{"tar_close", "age_close", "file_sync", "file_close"} {
+	stages := []string{"tar_close", "gzip_close", "age_close", "file_sync", "file_close"}
+	for index, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
 			called := false
+			var observed []string
 			op := ampleSpace()
 			op.fault = func(at string) error {
+				observed = append(observed, at)
 				if at == stage {
 					called = true
 					return errors.New("fixture-only-private-diagnostic")
 				}
 				return nil
 			}
-			path := filepath.Join(t.TempDir(), "backup.tar.age")
+			path := filepath.Join(t.TempDir(), "backup.tar.gz.age")
 			_, _, err := encrypt(context.Background(), path, id.Recipient(), b, paths, op)
 			if !called || err == nil || err.Error() != stage {
 				t.Fatalf("close failure not propagated: %v", err)
+			}
+			if strings.Join(observed, ",") != strings.Join(stages[:index+1], ",") {
+				t.Fatal("incorrect finalization order")
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
 				t.Fatal("failed ciphertext eligible for upload")
@@ -458,7 +590,7 @@ func TestMeasuredCapacityAndFailuresPreserveOriginals(t *testing.T) {
 			if err == nil || strings.Contains(err.Error(), "fixture-only") {
 				t.Fatalf("private error or false success: %v", err)
 			}
-			if _, err := os.Stat(filepath.Join(work, "backup.tar.age")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(work, "backup.tar.gz.age")); !os.IsNotExist(err) {
 				t.Fatal("failure left upload-eligible artifact")
 			}
 			assertOriginals(t, source, original)
@@ -472,7 +604,7 @@ func TestMeasuredCapacityAndFailuresPreserveOriginals(t *testing.T) {
 		t.Fatal("used cap-case admission instead of measured sizes:", err)
 	}
 	dest := filepath.Join(t.TempDir(), "retain")
-	if err := verify(context.Background(), filepath.Join(work, "backup.tar.age"), dest, syntheticExpectation(), id, digest, size, operation{space: func(string) (int64, error) { return reserve, nil }}); err == nil {
+	if err := verify(context.Background(), filepath.Join(work, "backup.tar.gz.age"), dest, syntheticExpectation(), id, digest, size, operation{space: func(string) (int64, error) { return reserve, nil }}); err == nil {
 		t.Fatal("accepted insufficient local capacity")
 	}
 	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
@@ -582,7 +714,7 @@ func TestVerifyIntegrityFailureRetainsUnmodifiedEvidence(t *testing.T) {
 	b, data := tinyBinding()
 	id := ephemeralIdentity(t)
 	root := t.TempDir()
-	cipher := filepath.Join(root, "backup.tar.age")
+	cipher := filepath.Join(root, "backup.tar.gz.age")
 	sealed := seal(t, canonicalTar(t, b, data), id)
 	mustWrite(t, cipher, sealed)
 	sum := sha256.Sum256(sealed)
@@ -619,7 +751,7 @@ func TestOriginalDriftRejectsClosedOutput(t *testing.T) {
 	if _, _, err := produce(context.Background(), source, work, syntheticExpectation(), id.Recipient(), op); err == nil || err.Error() != "original_changed" {
 		t.Fatalf("original drift not detected: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(work, "backup.tar.age")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(work, "backup.tar.gz.age")); !os.IsNotExist(err) {
 		t.Fatal("drift left an upload-eligible ciphertext")
 	}
 }
@@ -644,7 +776,7 @@ func TestWorkflowBackupOnlyWiring(t *testing.T) {
 		"go mod download github.com/openclaw/crawlkit@v0.15.0",
 		"maintenance/discord-cache-backup-20260909", "WORKFLOW_SHA", "backup-only",
 		"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-		"path: ${{ steps.build.outputs.private_temp }}/work/backup.tar.age",
+		"path: ${{ steps.build.outputs.private_temp }}/work/backup.tar.gz.age",
 		"compression-level: 0", "retention-days: 1", "overwrite: false",
 		"steps.backup.outputs.closed == 'true'", "RESTORE_DEADLINE_MS",
 	} {
