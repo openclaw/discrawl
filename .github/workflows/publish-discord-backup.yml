@@ -98,6 +98,15 @@ jobs:
           fi
           go run ./cmd/discrawl --config "$CONFIG" sync "${sync_args[@]}"
           git -C "$BACKUP_REPO" pull --ff-only origin main
+          SOURCE_REVISION="$(git rev-parse HEAD)"
+          if [ "$SOURCE_REVISION" != "$GITHUB_SHA" ]; then
+            echo "::error::Checked-out source revision does not match GITHUB_SHA."
+            exit 1
+          fi
+          DISCRAWL_PRODUCER_REPOSITORY="$GITHUB_REPOSITORY" \
+          DISCRAWL_PRODUCER_REVISION="$SOURCE_REVISION" \
+          DISCRAWL_PRODUCER_RUN_ID="$GITHUB_RUN_ID" \
+          DISCRAWL_PRODUCER_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
           go run ./cmd/discrawl --config "$CONFIG" publish \
             --repo "$BACKUP_REPO" \
             --remote "$BACKUP_REMOTE" \
