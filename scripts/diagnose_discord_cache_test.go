@@ -392,6 +392,7 @@ type workflowStep struct {
 	ID      string         `yaml:"id"`
 	Uses    string         `yaml:"uses"`
 	Run     string         `yaml:"run"`
+	If      string         `yaml:"if"`
 	With    map[string]any `yaml:"with"`
 	Env     map[string]any `yaml:"env"`
 	Timeout int            `yaml:"timeout-minutes"`
@@ -738,6 +739,193 @@ func TestWorkflowCapturedNodeBinary(t *testing.T) {
 	}
 }
 
+func TestWorkflowSizeOnlyContract(t *testing.T) {
+	document, _ := readWorkflow(t)
+	dispatch := document.On["workflow_dispatch"].(map[string]any)
+	inputs := dispatch["inputs"].(map[string]any)
+	operation := inputs["operation"].(map[string]any)
+	if !reflect.DeepEqual(operation["options"], []any{"aggregate-only", "size-only"}) {
+		t.Fatal("operation choices widened")
+	}
+	steps := document.Jobs["diagnostic"].Steps
+	var size workflowStep
+	for index, step := range steps {
+		if step.ID == "size-only" {
+			size = step
+			if index != len(steps)-2 || step.If != "${{ inputs.operation == 'size-only' }}" || step.Timeout != 1 ||
+				step.Env["NODE_BINARY"] != "${{ steps.cache-runtime.outputs.node_binary }}" ||
+				step.Env["PRIVATE_TEMP"] != "${{ steps.build.outputs.private_temp }}" {
+				t.Fatal("size-only scheduling or environment changed")
+			}
+		}
+	}
+	if steps[len(steps)-1].If != "${{ inputs.operation == 'aggregate-only' }}" {
+		t.Fatal("size-only can invoke classifier")
+	}
+	for _, required := range []string{"29s env -i", "--kill-after=1s", "2>/dev/null", "Buffer.byteLength(output) <= 2048",
+		`SOURCE_DIR="$GITHUB_WORKSPACE/.discrawl-ci"`, `fs.statfsSync(scratch, {bigint:true})`,
+		`fs.opendirSync(source, {bufferSize:4})`, "i <= names.length", "size_timeout", "size_runtime"} {
+		if !strings.Contains(size.Run, required) {
+			t.Fatal("size-only bounded metadata contract missing")
+		}
+	}
+	for _, forbidden := range []string{"readFile", "createReadStream", "copyFile", "createHash", "sqlite", "/diagnose", "core.", "GITHUB_TOKEN"} {
+		if strings.Contains(size.Run, forbidden) {
+			t.Fatal("size-only reads contents or widens its boundary")
+		}
+	}
+}
+
+func TestWorkflowSizeOnlyMetadata(t *testing.T) {
+	document, _ := readWorkflow(t)
+	var run string
+	for _, step := range document.Jobs["diagnostic"].Steps {
+		if step.ID == "size-only" {
+			run = step.Run
+		}
+	}
+	_, script, ok := strings.Cut(run, "<<'JS' 2>/dev/null\n")
+	if !ok {
+		t.Fatal("size-only script missing")
+	}
+	script, _, ok = strings.Cut(script, "\nJS\n")
+	if !ok {
+		t.Fatal("size-only script delimiter missing")
+	}
+	for _, scenario := range []string{
+		"oversized", "db-only", "db-wal", "db-shm", "empty-optional", "missing-db", "empty-db",
+		"unexpected", "duplicate", "too-many", "symlink", "hardlink", "special", "negative", "unsafe-size",
+		"sum-overflow", "source-symlink", "scratch-symlink", "not-directory", "stat-error",
+		"directory-error", "close-error", "free-error", "negative-free", "zero-block", "free-overflow",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			program := `const scenario=globalThis.process.argv[1], marker="PRIVATE_PAYLOAD_MARKER";
+const source="/synthetic/cache", scratch="/synthetic/work";
+const names=["discrawl.db","discrawl.db-shm","discrawl.db-wal"], maximum=BigInt(Number.MAX_SAFE_INTEGER);
+let entries=[...names], reads=0, closed=false, sized=false;
+if(scenario==="db-only") entries=[names[0]];
+if(scenario==="db-wal") entries=[names[0],names[2]];
+if(scenario==="db-shm") entries=[names[0],names[1]];
+if(scenario==="missing-db") entries=[names[1]];
+if(scenario==="unexpected") entries=[names[0],marker];
+if(scenario==="duplicate") entries=[names[0],names[0]];
+if(scenario==="too-many") entries=[...names,marker];
+const metadata={
+  lstatSync:(file,options)=>{
+    if(options.bigint!==true) throw new Error(marker);
+    if(file===source||file===scratch) return {
+      isDirectory:()=>scenario!=="not-directory",
+      isSymbolicLink:()=>scenario===(file===source?"source-symlink":"scratch-symlink")
+    };
+    if(!names.some(name=>file===source+"/"+name)) throw new Error(marker);
+    if(scenario==="stat-error") throw new Error(marker);
+    const primary=file===source+"/"+names[0];
+    let size=primary?9n*1024n**3n:4096n;
+    if(scenario==="empty-db"&&primary || scenario==="empty-optional"&&!primary) size=0n;
+    if(scenario==="negative") size=-1n;
+    if(scenario==="unsafe-size") size=maximum+1n;
+    if(scenario==="sum-overflow") size=maximum;
+    return {size,nlink:scenario==="hardlink"?2n:1n,
+      isFile:()=>!["symlink","special"].includes(scenario),isSymbolicLink:()=>scenario==="symlink"};
+  },
+  opendirSync:(file,options)=>{
+    if(file!==source||options.bufferSize!==4) throw new Error(marker);
+    if(scenario==="directory-error") throw new Error(marker);
+    return {
+      readSync:()=>{if(++reads>4) throw new Error(marker); const name=entries.shift(); return name===undefined?null:{name};},
+      closeSync:()=>{closed=true;if(scenario==="close-error") throw new Error(marker);}
+    };
+  },
+  statfsSync:(file,options)=>{
+    if(file!==scratch||options.bigint!==true||!closed) throw new Error(marker);
+    sized=true;
+    if(scenario==="free-error") throw new Error(marker);
+    return {bavail:scenario==="negative-free"?-1n:scenario==="free-overflow"?maximum:1024n,
+      bsize:scenario==="zero-block"?0n:4096n};
+  }
+};
+const fs=new Proxy(metadata,{get:(target,key)=>{
+  if(!(key in target)) throw new Error(marker);
+  return target[key];
+}});
+const require=name=>{if(name!=="node:fs") throw new Error(marker);return fs;};
+const process={env:{SOURCE_DIR:source,PRIVATE_TEMP:scratch},stdout:{write:text=>globalThis.process.stdout.write(text)},exitCode:0};
+` + script + `
+globalThis.process.exitCode=process.exitCode;
+if(reads>4 || (process.exitCode===0 && (!closed||!sized))) globalThis.process.exitCode=3;
+`
+			output, err := runNode(t, program, scenario)
+			valid := scenario == "oversized" || scenario == "db-only" || scenario == "db-wal" ||
+				scenario == "db-shm" || scenario == "empty-optional"
+			if valid != (err == nil) || len(output) > 2048 || bytes.Contains(output, []byte("PRIVATE_PAYLOAD_MARKER")) ||
+				bytes.Contains(output, []byte("/synthetic")) || bytes.Contains(output, []byte("discrawl.db")) {
+				t.Fatal("size-only metadata/privacy result invalid")
+			}
+			var result map[string]any
+			if json.Unmarshal(output, &result) != nil || len(result) != 7 ||
+				result["schema_version"] != float64(1) || result["scope"] != "restored_cache.file_set" ||
+				result["complete"] != valid {
+				t.Fatal("unexpected size-only output schema")
+			}
+			if valid {
+				count := float64(3)
+				if scenario == "db-only" {
+					count = 1
+				} else if scenario == "db-wal" || scenario == "db-shm" {
+					count = 2
+				}
+				total := float64(9 << 30)
+				if scenario != "empty-optional" {
+					total += (count - 1) * 4096
+				}
+				if result["error"] != "none" || result["file_count"] != count ||
+					result["total_logical_bytes"] != total || result["free_bytes"] != float64(1024*4096) {
+					t.Fatal("size-only totals or working-filesystem free space incorrect")
+				}
+			} else if result["error"] != "size_metadata" || result["file_count"] != float64(0) ||
+				result["total_logical_bytes"] != float64(0) || result["free_bytes"] != float64(0) {
+				t.Fatal("size-only failure exposed partial/unsafe metadata")
+			}
+		})
+	}
+}
+
+func TestWorkflowSizeOnlyShellFailures(t *testing.T) {
+	document, _ := readWorkflow(t)
+	var run string
+	for _, step := range document.Jobs["diagnostic"].Steps {
+		if step.ID == "size-only" {
+			run = step.Run
+		}
+	}
+	for _, status := range []int{124, 137, 2} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			directory := t.TempDir()
+			node := filepath.Join(directory, "node")
+			fixture := "#!/bin/sh\nprintf '%s\\n' PRIVATE_PAYLOAD_MARKER >&2\nexit " + strconv.Itoa(status) + "\n"
+			if err := os.WriteFile(node, []byte(fixture), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-euo", "pipefail", "-c", run)
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "GITHUB_WORKSPACE=" + directory,
+				"PRIVATE_TEMP=" + directory, "NODE_BINARY=" + node}
+			output, err := cmd.CombinedOutput()
+			expected := "size_timeout"
+			if status == 2 {
+				expected = "size_runtime"
+			}
+			var result map[string]any
+			if err == nil || len(output) > 2048 || bytes.Contains(output, []byte("PRIVATE_PAYLOAD_MARKER")) ||
+				json.Unmarshal(output, &result) != nil || len(result) != 7 || result["complete"] != false ||
+				result["error"] != expected || result["scope"] != "restored_cache.file_set" ||
+				result["total_logical_bytes"] != float64(0) || result["free_bytes"] != float64(0) ||
+				result["file_count"] != float64(0) || result["schema_version"] != float64(1) {
+				t.Fatal("size-only shell failure escaped fixed output")
+			}
+		})
+	}
+}
+
 func TestWorkflowCacheMetadataMocks(t *testing.T) {
 	document, _ := readWorkflow(t)
 	var script string
@@ -841,7 +1029,7 @@ func TestWorkflowExecutionContextGuard(t *testing.T) {
 		"WORKFLOW_REF":      "openclaw/discrawl/.github/workflows/publish-discord-backup.yml@refs/heads/maintenance/discord-cache-diagnostic-20260909",
 	}
 	cases := map[string]string{
-		"valid": "", "GITHUB_REPOSITORY": "other/repository", "GITHUB_EVENT_NAME": "schedule",
+		"valid": "", "size-only": "", "GITHUB_REPOSITORY": "other/repository", "GITHUB_EVENT_NAME": "schedule",
 		"GITHUB_REF": "refs/heads/main", "OPERATION": "publish", "EXPECTED_SHA": "$(echo PRIVATE_PAYLOAD_MARKER)",
 		"GITHUB_SHA": strings.Repeat("b", 40), "WORKFLOW_SHA": strings.Repeat("c", 40),
 		"WORKFLOW_REF": "other", "RUNNER_OS": "Windows", "RUNNER_DEBUG": "1", "ACTIONS_STEP_DEBUG": "true", "ACTIONS_RUNNER_DEBUG": "true",
@@ -852,7 +1040,9 @@ func TestWorkflowExecutionContextGuard(t *testing.T) {
 			for k, v := range base {
 				env[k] = v
 			}
-			if key != "valid" {
+			if key == "size-only" {
+				env["OPERATION"] = "size-only"
+			} else if key != "valid" {
 				env[key] = value
 			}
 			cmd := exec.Command("bash", "-euo", "pipefail", "-c", guard)
@@ -860,10 +1050,11 @@ func TestWorkflowExecutionContextGuard(t *testing.T) {
 				cmd.Env = append(cmd.Env, k+"="+v)
 			}
 			output, err := cmd.CombinedOutput()
-			if (err == nil) != (key == "valid") || bytes.Contains(output, []byte("PRIVATE_PAYLOAD_MARKER")) {
+			valid := key == "valid" || key == "size-only"
+			if (err == nil) != valid || bytes.Contains(output, []byte("PRIVATE_PAYLOAD_MARKER")) {
 				t.Fatal("execution guard accepted wrong context or interpolated input")
 			}
-			if key != "valid" && string(output) != "::error::execution_context\n" {
+			if !valid && string(output) != "::error::execution_context\n" {
 				t.Fatal("execution guard printed unexpected details")
 			}
 		})

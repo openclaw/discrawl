@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - aggregate-only
+          - size-only
       cache_identity:
         description: Independently approved immutable cache metadata JSON
         required: true
@@ -46,7 +47,7 @@ jobs:
                 "$RUNNER_OS" != Linux ||
                 "$GITHUB_EVENT_NAME" != workflow_dispatch ||
                 "$GITHUB_REF" != refs/heads/maintenance/discord-cache-diagnostic-20260909 ||
-                "$OPERATION" != aggregate-only ||
+                ( "$OPERATION" != aggregate-only && "$OPERATION" != size-only ) ||
                 ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ||
                 "$GITHUB_SHA" != "$EXPECTED_SHA" ||
                 "$WORKFLOW_SHA" != "$EXPECTED_SHA" ||
@@ -411,7 +412,80 @@ jobs:
               core.setFailed("cache_identity");
             }
 
+      - name: Report bounded filesystem sizes without reading cache contents
+        id: size-only
+        if: ${{ inputs.operation == 'size-only' }}
+        timeout-minutes: 1
+        env:
+          PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
+          NODE_BINARY: ${{ steps.cache-runtime.outputs.node_binary }}
+        shell: bash
+        run: |
+          if timeout --signal=TERM --kill-after=1s 29s env -i \
+            PATH=/usr/bin:/bin SOURCE_DIR="$GITHUB_WORKSPACE/.discrawl-ci" \
+            PRIVATE_TEMP="$PRIVATE_TEMP" "$NODE_BINARY" <<'JS' 2>/dev/null
+          function sizeCache(fs, source, scratch) {
+            const names = ["discrawl.db", "discrawl.db-shm", "discrawl.db-wal"];
+            const maximum = BigInt(Number.MAX_SAFE_INTEGER);
+            const safe = value => typeof value === "bigint" && value >= 0n && value <= maximum;
+            for (const directory of [source, scratch]) {
+              const info = fs.lstatSync(directory, {bigint:true});
+              if (!info.isDirectory() || info.isSymbolicLink()) throw new Error();
+            }
+            const directory = fs.opendirSync(source, {bufferSize:4});
+            const found = new Set();
+            try {
+              for (let i = 0; i <= names.length; i++) {
+                const entry = directory.readSync();
+                if (entry === null) break;
+                if (i === names.length || !names.includes(entry.name) || found.has(entry.name)) throw new Error();
+                found.add(entry.name);
+              }
+            } finally {
+              directory.closeSync();
+            }
+            if (!found.has(names[0])) throw new Error();
+            let total = 0n;
+            for (const name of names) {
+              if (!found.has(name)) continue;
+              const info = fs.lstatSync(source + "/" + name, {bigint:true});
+              if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || !safe(info.size) ||
+                  (name === names[0] && info.size === 0n) || !safe(total + info.size)) throw new Error();
+              total += info.size;
+            }
+            const space = fs.statfsSync(scratch, {bigint:true});
+            if (!safe(space.bavail) || !safe(space.bsize) || space.bsize === 0n ||
+                !safe(space.bavail * space.bsize)) throw new Error();
+            return {total_logical_bytes:Number(total), file_count:found.size, free_bytes:Number(space.bavail * space.bsize)};
+          }
+          const result = {schema_version:1, scope:"restored_cache.file_set", complete:false, error:"size_metadata",
+            total_logical_bytes:0, file_count:0, free_bytes:0};
+          try {
+            Object.assign(result, sizeCache(require("node:fs"), process.env.SOURCE_DIR, process.env.PRIVATE_TEMP),
+              {complete:true, error:"none"});
+          } catch {}
+          const output = JSON.stringify(result) + "\n";
+          if (Buffer.byteLength(output) <= 2048) {
+            process.stdout.write(output);
+            process.exitCode = result.complete ? 0 : 1;
+          } else {
+            process.exitCode = 2;
+          }
+          JS
+          then
+            size_status=0
+          else
+            size_status=$?
+          fi
+          if [[ "$size_status" == 124 || "$size_status" == 137 ]]; then
+            printf '%s\n' '{"schema_version":1,"scope":"restored_cache.file_set","complete":false,"error":"size_timeout","total_logical_bytes":0,"file_count":0,"free_bytes":0}'
+          elif [[ "$size_status" != 0 && "$size_status" != 1 ]]; then
+            printf '%s\n' '{"schema_version":1,"scope":"restored_cache.file_set","complete":false,"error":"size_runtime","total_logical_bytes":0,"file_count":0,"free_bytes":0}'
+          fi
+          exit "$size_status"
+
       - name: Classify a private working copy and validate aggregate output
+        if: ${{ inputs.operation == 'aggregate-only' }}
         timeout-minutes: 5
         env:
           PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
