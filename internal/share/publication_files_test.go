@@ -124,7 +124,9 @@ func TestPublicationGenerationFilesRoundTripAndCleanup(t *testing.T) {
 		writeShareManifest(t, stage, current)
 		owned, err := previousPublicationPaths(ctx, repo, false)
 		require.NoError(t, err)
-		require.NoError(t, installPublication(repo, stage, owned, current))
+		installed, err := installPublication(ctx, repo, stage, owned, current, nil)
+		require.NoError(t, err)
+		require.True(t, installed)
 		for _, old := range tableEntry(t, previous, "messages").Files {
 			require.NoFileExists(t, filepath.Join(repo, old))
 			testGitRun(t, ctx, repo, "add", "-u", "--", old)

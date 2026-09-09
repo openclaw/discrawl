@@ -44,6 +44,58 @@ generated Discrawl `README.md` reports from the share repo before committing, so
 stale full-archive totals are not carried forward. Custom README files without
 Discrawl report markers are left alone.
 
+Published table shards retain their stable `tables/<table>/<ordinal>.jsonl.gz`
+paths, including when the shared exporter uses private generation directories.
+Existing released subscribers can consume unchanged, edited and appended
+publications with ordinary merge updates. This does not convert checkpoints
+created by unshipped generation-path publishers; genuinely removed shards still
+require an explicit replacement decision.
+
+Installation prepares replacements and backups of the actual working-tree
+files before replacing any owned shard. A handled failure or cancellation before
+manifest installation restores those preimages. If rollback itself fails, the
+error reports possible partial state and the retained backup directories; restore
+their `previous` files to the named targets and remove newly introduced targets
+before publishing again. Do not delete those backups until recovery is complete.
+After the new manifest is installed, obsolete-file cleanup failures return that
+installed manifest with an error and stop before Git commit or push.
+
+This requires temporary disk space for both staged replacements and backups.
+It is not a crash, power-loss, concurrent-reader/writer or restart-recovery
+guarantee. Unrelated tracked, staged and untracked files remain outside
+publication ownership.
+
+### Producer receipts
+
+Automated publishers can opt in with all four environment variables:
+
+```text
+DISCRAWL_PRODUCER_REPOSITORY=openclaw/discrawl
+DISCRAWL_PRODUCER_REVISION=<full lowercase Git commit SHA>
+DISCRAWL_PRODUCER_RUN_ID=<positive GitHub run ID>
+DISCRAWL_PRODUCER_RUN_ATTEMPT=<positive GitHub run attempt>
+```
+
+All absent retains legacy behavior; partial or invalid inputs fail before
+publication. The source repository is fixed to the public Discrawl repository.
+The publisher must independently check that the revision is its actual checkout.
+
+`manifest.json` declares `files.producer = "producer.json"`. The schema-1 receipt
+binds the exact manifest bytes, including the final newline, to the supplied
+source/run assertions. It contains no destination URL, local path, token or
+archive contents. A valid binding is not authenticated provenance, a binary
+digest, payload verification or evidence that a push succeeded. Missing,
+unsupported or mismatched receipts provide no usable producer attribution.
+
+An unrelated `producer.json` is never silently adopted. Omitting producer inputs
+on a later publication retires only a previously declared receipt. Commit and
+push validate declared receipts; a retry that changes the committed manifest
+or receipt is refused rather than restamped. README-only report updates leave
+the receipt unchanged.
+
+Crawlkit v0.15.0 also rejects authenticated cross-origin HTTP redirects. Configure
+the final HTTPS endpoint instead of depending on an authenticated redirect.
+
 ## Subscriber
 
 ```bash

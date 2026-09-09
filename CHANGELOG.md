@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.15.0 while retaining the existing Go minimum and preferred toolchain.
+- Preserve stable published shard paths for released subscribers, roll back handled pre-manifest installation failures, and report post-manifest cleanup failures without committing or pushing a partial result.
+- Add optional manifest-bound `producer.json` receipts for explicitly identified publishers, preserving unrelated files and checking the binding before publication push retries. Receipts are unsigned publisher assertions, not authenticated provenance.
 - Keep publication Git arguments bounded with literal NUL-delimited paths and one path-only commit, preserving unrelated staged work.
 - Report incomplete selected channel or category permissions in publication preflight, including inherited thread permissions, without changing public-only export selection.
 - Accept exact manifest-owned table generation paths alongside legacy snapshot shards without broadening publication cleanup or Git staging.
