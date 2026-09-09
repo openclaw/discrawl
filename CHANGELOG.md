@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.1 - 2026-09-09
 
 - Limit disposable Discord backup clones to current main and required descendants, without fetching tagged history.
 - Provide checked-out source and workflow run identity to Discord archive publications.
