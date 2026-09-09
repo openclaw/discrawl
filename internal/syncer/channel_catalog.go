@@ -32,6 +32,7 @@ func (s *Syncer) channelList(
 	exclusions channelExclusions,
 	selectedGuildIDs map[string]struct{},
 	directChannelResults map[string]directChannelResult,
+	cachedChannels map[*discordgo.Channel]struct{},
 ) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
 		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
@@ -51,6 +52,11 @@ func (s *Syncer) channelList(
 		}
 		storedCatalog = storedChannelCatalog(rows)
 		storedByID = selectStoredChannels(rows, requestedSet)
+		for _, channel := range storedByID {
+			if cachedChannels != nil {
+				cachedChannels[channel] = struct{}{}
+			}
+		}
 		if canUseStoredTargets(storedByID, requestedSet) {
 			selected := selectRequestedChannels(nil, storedByID, requestedSet)
 			return filterExcludedDiscordChannelsWithCatalog(selected, storedCatalog, exclusions), true, nil

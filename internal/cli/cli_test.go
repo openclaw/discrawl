@@ -2038,6 +2038,8 @@ func TestPublishCheckIsReadOnlyAndUsesPublishFilters(t *testing.T) {
 		Name:    "Guild",
 		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
 	}))
+	_, err := publisher.DB().ExecContext(ctx, `update channels set raw_json = '{"permission_overwrites":[]}' where guild_id = 'g1'`)
+	require.NoError(t, err)
 	require.NoError(t, publisher.Close())
 
 	var out bytes.Buffer
@@ -2055,7 +2057,7 @@ func TestPublishCheckIsReadOnlyAndUsesPublishFilters(t *testing.T) {
 	require.Equal(t, share.PublishScopeCount{Candidate: 1, Allowed: 1}, report.Messages)
 	require.NoDirExists(t, cfg.Share.RepoPath)
 
-	err := Run(ctx, []string{"--config", cfgPath, "publish", "--check", "--push"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err = Run(ctx, []string{"--config", cfgPath, "publish", "--check", "--push"}, &bytes.Buffer{}, &bytes.Buffer{})
 	require.Equal(t, 2, ExitCode(err))
 	require.ErrorContains(t, err, "publish --check cannot be combined with --push")
 
@@ -2122,6 +2124,11 @@ func TestFilteredPublishRemovesGeneratedReadme(t *testing.T) {
 	out, err := exec.CommandContext(ctx, "git", "-C", cfg.Share.RepoPath, "ls-tree", "--name-only", "HEAD", "README.md").Output()
 	require.NoError(t, err)
 	require.Equal(t, "README.md\n", string(out))
+
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "publish", "--public-only", "--no-commit",
+	}, &bytes.Buffer{}, &bytes.Buffer{}))
+	require.NoFileExists(t, filepath.Join(cfg.Share.RepoPath, "README.md"))
 
 	require.NoError(t, Run(ctx, []string{
 		"--config", cfgPath,

@@ -47,7 +47,8 @@ select count(*) as count
 from embedding_jobs j
 join messages m on m.id = j.message_id
 where j.state = 'pending'
-  and m.deleted_at is null;
+  and m.deleted_at is null
+  and m.guild_id != '@me';
 
 -- name: HasMessageEmbeddings :one
 select exists(
@@ -497,7 +498,7 @@ insert or ignore into embedding_jobs(
 )
 select id, 'pending', 0, ?, ?, ?, '', null, ?
 from messages
-where deleted_at is null;
+where deleted_at is null and guild_id != '@me';
 
 -- name: RequeueAllEmbeddingJobs :execrows
 update embedding_jobs
@@ -509,7 +510,7 @@ set state = 'pending',
 	last_error = '',
 	locked_at = null,
 	updated_at = ?
-where message_id in (select id from messages where deleted_at is null);
+where message_id in (select id from messages where deleted_at is null and guild_id != '@me');
 
 -- name: ListPendingEmbeddingJobs :many
 select
@@ -523,6 +524,7 @@ from embedding_jobs j
 join messages m on m.id = j.message_id
 where j.state = 'pending'
   and m.deleted_at is null
+  and m.guild_id != '@me'
   and (j.locked_at is null or j.locked_at = '' or j.locked_at < ?)
 order by j.updated_at, j.message_id
 limit ?;

@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+- Keep publication Git arguments bounded with literal NUL-delimited paths and one path-only commit, preserving unrelated staged work.
+- Report incomplete selected channel or category permissions in publication preflight, including inherited thread permissions, without changing public-only export selection.
+- Accept exact manifest-owned table generation paths alongside legacy snapshot shards without broadening publication cleanup or Git staging.
+- Remove previously published embedding and media files when omitted, and commit only exact archive outputs and explicitly generated reports while preserving unrelated staged work.
+
+- Exclude deleted messages from cloud row publication and SQLite bundles, using the existing replacement protocol and matching live-row counts.
+- Preserve cached channel permissions during targeted sync and exclude unobserved permissions from public-only snapshots.
+- Exclude nested unselected guild metadata from filtered snapshots while retaining local raw observations.
+- Keep local Wiretap DMs out of embedding enqueue, rebuild and provider requests, including jobs queued by older versions.
 - Keep inferred Git fingerprints separate from snapshot integrity metadata when importing legacy snapshots, including historical restores, while preserving incremental merge checkpoints.
 - Exclude local-only direct messages from published README activity reports and add `report --published` for standalone shared reports, while preserving full local reports and filtered-publication safeguards.
-- Remove generated embedding files from the requested snapshot output when embedding export is disabled, without changing local vectors or unrelated files.
+- Remove prior manifest-declared embedding files when export is disabled or its model changes, preserving undeclared embedding/media siblings, unrelated staged work, and local vectors.
 - Validate imported embedding rows against their manifest identity and vector dimensions; reject malformed or non-finite vectors transactionally and skip missing, deleted, and local-only message targets while preserving existing DM vectors.
 
 ## 0.14.0 - 2026-09-07

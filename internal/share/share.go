@@ -77,7 +77,9 @@ type Options struct {
 	EmbeddingProvider     string
 	EmbeddingModel        string
 	EmbeddingInputVersion string
-	Progress              func(ImportProgress)
+	// ReadmePath is a repo-relative report explicitly generated or removed by this publication.
+	ReadmePath string
+	Progress   func(ImportProgress)
 }
 
 type FilterOptions struct {
@@ -162,7 +164,7 @@ func PreflightPublishScope(ctx context.Context, s *store.Store, opts FilterOptio
 		if opts.PublicOnly && (guild.CandidateChannels > 0 || guild.CandidateMessages > 0) && !guild.MetadataReady {
 			report.Ready = false
 			report.Warnings = append(report.Warnings,
-				fmt.Sprintf("guild %s lacks usable @everyone role metadata; public-only selection fails closed", guild.GuildID))
+				fmt.Sprintf("guild %s lacks usable guild, channel or category permission metadata for public-only selection", guild.GuildID))
 		}
 		report.Guilds = append(report.Guilds, *guild)
 	}
@@ -233,6 +235,9 @@ func countPublishScopeChannels(
 		report.Channels.Candidate++
 		guild := ensurePublishScopeGuild(guilds, guildID)
 		guild.CandidateChannels++
+		if selectedFilter.publicOnly && selectedFilter.publicMissing[channelID] {
+			guild.MetadataReady = false
+		}
 		if selectedFilter.allowChannelID(channelID) {
 			report.Channels.Allowed++
 			guild.AllowedChannels++
@@ -269,6 +274,11 @@ func countPublishScopeMessages(
 		report.Messages.Candidate++
 		guild := ensurePublishScopeGuild(guilds, guildID)
 		guild.CandidateMessages++
+		if selectedFilter.publicOnly {
+			if _, exists := selectedFilter.channels[channelID]; !exists {
+				guild.MetadataReady = false
+			}
+		}
 		if selectedFilter.allowedMessageIDs[messageID] || selectedFilter.allowChannelID(channelID) {
 			report.Messages.Allowed++
 			guild.AllowedMessages++
@@ -358,7 +368,7 @@ func Pull(ctx context.Context, opts Options) error {
 }
 
 func Commit(ctx context.Context, opts Options, message string) (bool, error) {
-	return mirror.Commit(ctx, mirrorOptions(opts), message)
+	return commitPublication(ctx, opts, message)
 }
 
 func Push(ctx context.Context, opts Options) error {
@@ -414,6 +424,17 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	if err := mirror.SyncForWrite(ctx, mirrorOptions(opts)); err != nil {
 		return Manifest{}, err
 	}
+	previous, err := previousPublicationPaths(ctx, opts.RepoPath, false)
+	if err != nil {
+		return Manifest{}, err
+	}
+	stage, err := os.MkdirTemp("", "discrawl-export-*")
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer func() { _ = os.RemoveAll(stage) }()
+	destination := opts.RepoPath
+	opts.RepoPath = stage
 	filter, err := newSnapshotFilter(ctx, s.DB(), opts.Filter)
 	if err != nil {
 		return Manifest{}, err
@@ -424,7 +445,15 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		Tables:        SnapshotTables,
 		MaxShardBytes: maxShardBytes,
 		Filter: func(table string, row map[string]any) (bool, error) {
-			return filter.allow(table, row), nil
+			if !filter.allow(table, row) {
+				return false, nil
+			}
+			if filter.active && table == "guilds" {
+				if err := projectPublishedGuild(row); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
 		},
 	})
 	if err != nil {
@@ -442,10 +471,6 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			return Manifest{}, err
 		}
 		manifest.Embeddings = []EmbeddingManifest{entry}
-	} else {
-		if err := os.RemoveAll(filepath.Join(opts.RepoPath, "embeddings")); err != nil {
-			return Manifest{}, fmt.Errorf("reset embeddings dir: %w", err)
-		}
 	}
 	if opts.IncludeMedia {
 		entry, err := exportMedia(ctx, s.DB(), opts, filter)
@@ -455,10 +480,6 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		if entry != nil {
 			manifest.Media = entry
 		}
-	} else {
-		if err := os.RemoveAll(filepath.Join(opts.RepoPath, "media")); err != nil {
-			return Manifest{}, fmt.Errorf("reset media dir: %w", err)
-		}
 	}
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -467,6 +488,9 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	body = append(body, '\n')
 	if err := os.WriteFile(filepath.Join(opts.RepoPath, ManifestName), body, 0o600); err != nil {
 		return Manifest{}, fmt.Errorf("write manifest: %w", err)
+	}
+	if err := installPublication(destination, stage, previous, manifest); err != nil {
+		return Manifest{}, err
 	}
 	return manifest, nil
 }
@@ -1270,8 +1294,7 @@ func exportMedia(ctx context.Context, db *sql.DB, opts Options, filter *snapshot
 }
 
 func resetCompressedMediaExport(repoPath string) error {
-	// A publish rewrites media from the local cache. Clearing the tree here is
-	// the forward migration from legacy raw media files to gzip-only snapshots.
+	// repoPath is the private export staging tree, not the user's share checkout.
 	if err := os.RemoveAll(filepath.Join(repoPath, "media")); err != nil {
 		return fmt.Errorf("reset media dir: %w", err)
 	}
@@ -1861,6 +1884,7 @@ type snapshotFilter struct {
 	guilds            map[string]string
 	publicMemo        map[string]bool
 	publicSeen        map[string]bool
+	publicMissing     map[string]bool
 }
 
 type snapshotChannel struct {
@@ -1886,6 +1910,7 @@ func newSnapshotFilter(ctx context.Context, db *sql.DB, opts FilterOptions) (*sn
 		guilds:            map[string]string{},
 		publicMemo:        map[string]bool{},
 		publicSeen:        map[string]bool{},
+		publicMissing:     map[string]bool{},
 	}
 	f.active = opts.Active()
 	if !f.active {
@@ -2087,31 +2112,54 @@ func (f *snapshotFilter) publicChannel(channelID string) bool {
 		return cached
 	}
 	if f.publicSeen[channelID] {
+		f.publicMissing[channelID] = true
 		return false
 	}
 	f.publicSeen[channelID] = true
 	defer delete(f.publicSeen, channelID)
 	ch, ok := f.channels[channelID]
-	if !ok || ch.GuildID == "" || ch.IsPrivateThread || ch.Kind == "thread_private" {
+	if !ok {
+		f.publicMissing[channelID] = true
+		f.publicMemo[channelID] = false
+		return false
+	}
+	if ch.IsPrivateThread || ch.Kind == "thread_private" {
+		f.publicMemo[channelID] = false
+		return false
+	}
+	if ch.GuildID == "" {
+		f.publicMissing[channelID] = true
 		f.publicMemo[channelID] = false
 		return false
 	}
 	if strings.HasPrefix(ch.Kind, "thread_") {
 		parentID := channelParentID(ch)
 		allowed := parentID != "" && f.publicChannel(parentID)
+		f.publicMissing[channelID] = parentID == "" || f.publicMissing[parentID]
 		f.publicMemo[channelID] = allowed
 		return allowed
 	}
 	permissions, ok := everyoneGuildPermissions(f.guilds[ch.GuildID], ch.GuildID)
 	if !ok {
+		f.publicMissing[channelID] = true
 		f.publicMemo[channelID] = false
 		return false
 	}
-	if parent, ok := f.channels[ch.ParentID]; ok && parent.Kind == "category" {
-		permissions = applyEveryoneOverwrite(permissions, parent.RawJSON, ch.GuildID)
+	parent, parentOK := f.channels[ch.ParentID]
+	if ch.ParentID != "" && !parentOK {
+		f.publicMissing[channelID] = true
 	}
-	permissions = applyEveryoneOverwrite(permissions, ch.RawJSON, ch.GuildID)
-	allowed := permissions&permissionViewChannel != 0
+	if parentOK && parent.Kind == "category" {
+		permissions, ok = applyEveryoneOverwrite(permissions, parent.RawJSON, ch.GuildID)
+		if !ok {
+			f.publicMissing[channelID] = true
+			f.publicMemo[channelID] = false
+			return false
+		}
+	}
+	permissions, ok = applyEveryoneOverwrite(permissions, ch.RawJSON, ch.GuildID)
+	f.publicMissing[channelID] = f.publicMissing[channelID] || !ok
+	allowed := ok && permissions&permissionViewChannel != 0
 	f.publicMemo[channelID] = allowed
 	return allowed
 }
@@ -2141,7 +2189,7 @@ func everyoneGuildPermissions(rawGuild string, guildID string) (int64, bool) {
 	return 0, false
 }
 
-func applyEveryoneOverwrite(permissions int64, rawChannel string, guildID string) int64 {
+func applyEveryoneOverwrite(permissions int64, rawChannel string, guildID string) (int64, bool) {
 	var payload struct {
 		PermissionOverwrites []struct {
 			ID    string `json:"id"`
@@ -2151,18 +2199,24 @@ func applyEveryoneOverwrite(permissions int64, rawChannel string, guildID string
 		} `json:"permission_overwrites"`
 	}
 	if err := decodeJSONUseNumber(rawChannel, &payload); err != nil {
-		return permissions
+		return 0, false
+	}
+	if payload.PermissionOverwrites == nil {
+		return 0, false
 	}
 	for _, overwrite := range payload.PermissionOverwrites {
 		if overwrite.ID != guildID || !isRoleOverwrite(overwrite.Type) {
 			continue
 		}
-		allow, _ := parsePermissionBits(overwrite.Allow)
-		deny, _ := parsePermissionBits(overwrite.Deny)
+		allow, allowOK := parsePermissionBits(overwrite.Allow)
+		deny, denyOK := parsePermissionBits(overwrite.Deny)
+		if !allowOK || !denyOK {
+			return 0, false
+		}
 		permissions &^= deny
 		permissions |= allow
 	}
-	return permissions
+	return permissions, true
 }
 
 func decodeJSONUseNumber(raw string, value any) error {

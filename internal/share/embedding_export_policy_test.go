@@ -3,6 +3,7 @@ package share
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/discrawl/internal/store"
@@ -39,6 +40,24 @@ func TestExportEmbeddingPolicyTransitions(t *testing.T) {
 		EmbeddingProvider: "openai", EmbeddingModel: "model-a",
 		EmbeddingInputVersion: store.EmbeddingInputVersion,
 	}
+	previous, err := Export(ctx, src, opts)
+	require.NoError(t, err)
+	configureGitUser(t, repo)
+	_, err = Commit(ctx, opts, "test: initial embedding policy")
+	require.NoError(t, err)
+	siblings := []string{
+		"notes.txt",
+		"embeddings/openai/model-a/" + store.EmbeddingInputVersion + "/undeclared.txt",
+		"media/undeclared.txt",
+	}
+	for _, name := range siblings {
+		path := filepath.Join(repo, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte("staged unrelated output"), 0o600))
+		testGitRun(t, ctx, repo, "add", "--", name)
+		require.NoError(t, os.WriteFile(path, []byte("keep unrelated output"), 0o600))
+	}
+	indexBefore := testGitOutput(t, ctx, repo, "diff", "--cached", "--binary")
 	check := func(wantModel string, wantRows int) Manifest {
 		t.Helper()
 		manifest, err := Export(ctx, src, opts)
@@ -49,9 +68,40 @@ func TestExportEmbeddingPolicyTransitions(t *testing.T) {
 		_, after, err := src.ReadOnlyQuery(ctx, "select * from message_embeddings order by message_id, model")
 		require.NoError(t, err)
 		require.Equal(t, before, after, "export must not change any source vector, including DMs")
+		currentFiles := map[string]bool{}
+		for _, entry := range manifest.Embeddings {
+			for _, name := range entry.Files {
+				currentFiles[name] = true
+			}
+		}
+		var removed []string
+		for _, entry := range previous.Embeddings {
+			for _, name := range entry.Files {
+				if !currentFiles[name] {
+					require.NoFileExists(t, filepath.Join(repo, name))
+					// An already-staged managed deletion must still be published.
+					testGitRun(t, ctx, repo, "add", "-u", "--", name)
+					removed = append(removed, name)
+				}
+			}
+		}
+		_, err = Commit(ctx, opts, "test: embedding policy transition")
+		require.NoError(t, err)
+		tree := strings.Split(strings.TrimSpace(testGitOutput(t, ctx, repo, "ls-tree", "-r", "--name-only", "HEAD")), "\n")
+		for _, name := range removed {
+			require.NotContains(t, tree, name)
+		}
+		for name := range currentFiles {
+			require.Contains(t, tree, name)
+		}
+		for _, name := range siblings {
+			require.NotContains(t, tree, name)
+			require.Equal(t, []byte("keep unrelated output"), mustReadFile(t, filepath.Join(repo, name)))
+		}
+		require.Equal(t, indexBefore, testGitOutput(t, ctx, repo, "diff", "--cached", "--binary"))
+		previous = manifest
 		if !opts.IncludeEmbeddings {
 			require.Empty(t, manifest.Embeddings)
-			require.NoDirExists(t, filepath.Join(repo, "embeddings"))
 			return manifest
 		}
 		require.Len(t, manifest.Embeddings, 1)
@@ -68,7 +118,6 @@ func TestExportEmbeddingPolicyTransitions(t *testing.T) {
 	check("model-a", 2)
 	opts.EmbeddingModel = "model-b"
 	check("model-b", 2)
-	require.NoDirExists(t, filepath.Join(repo, "embeddings", "openai", "model-a"))
 	opts.Filter.IncludeChannelIDs = []string{"c1"}
 	narrowed := check("model-b", 1)
 	text := snapshotFilesText(t, repo, narrowed.Embeddings[0].Files)

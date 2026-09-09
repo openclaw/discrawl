@@ -134,16 +134,16 @@ func (r *runtime) runCloudPublish(args []string) error {
 }
 
 func cloudPublishCounts(ctx context.Context, db *sql.DB) (guilds int64, channels int64, members int64, messages int64, err error) {
-	if guilds, err = countCloudRows(ctx, db, "select count(*) from guilds where id != '@me'"); err != nil {
+	if guilds, err = countCloudRows(ctx, db, "select count(*) from guilds where id != '@me' and deleted_at is null"); err != nil {
 		return 0, 0, 0, 0, err
 	}
 	if channels, err = countCloudRows(ctx, db, "select count(*) from channels where guild_id != '@me'"); err != nil {
 		return 0, 0, 0, 0, err
 	}
-	if members, err = countCloudRows(ctx, db, "select count(*) from members where guild_id != '@me'"); err != nil {
+	if members, err = countCloudRows(ctx, db, "select count(*) from members where guild_id != '@me' and deleted_at is null"); err != nil {
 		return 0, 0, 0, 0, err
 	}
-	if messages, err = countCloudRows(ctx, db, "select count(*) from messages where guild_id != '@me'"); err != nil {
+	if messages, err = countCloudRows(ctx, db, "select count(*) from messages where guild_id != '@me' and deleted_at is null"); err != nil {
 		return 0, 0, 0, 0, err
 	}
 	return guilds, channels, members, messages, nil
@@ -487,5 +487,5 @@ select m.id as message_id, m.channel_id, m.guild_id, coalesce(m.author_id, '') a
        m.content, m.created_at, coalesce(m.edited_at, '') as edited_at
 from messages m
 left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id
-where m.guild_id != '@me'
+where m.guild_id != '@me' and m.deleted_at is null
 order by m.created_at desc, m.id`
