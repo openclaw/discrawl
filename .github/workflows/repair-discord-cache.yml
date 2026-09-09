@@ -1,0 +1,652 @@
+name: Backup-first Discord cache repair
+
+on:
+  pull_request:
+    paths: &repair_paths
+      - .github/workflows/repair-discord-cache.yml
+      - scripts/repair_discord_cache.go
+      - scripts/repair_discord_cache_test.go
+      - go.mod
+      - go.sum
+      - internal/store/**
+      - internal/share/**
+      - .github/workflows/publish-discord-backup.yml
+      - .github/workflows/discord-backup-report.yml
+  push:
+    branches: [main]
+    paths: *repair_paths
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Independently reviewed merged main commit
+        required: true
+        type: string
+      cache_identity:
+        description: Approved six-field immutable cache metadata JSON
+        required: true
+        type: string
+      backup_run_id:
+        description: Completed verified backup workflow run
+        required: true
+        type: string
+      backup_run_attempt:
+        description: Verified backup run attempt
+        required: true
+        type: string
+      backup_source_sha:
+        description: Verified backup source commit
+        required: true
+        type: string
+      backup_artifact_id:
+        description: Verified ciphertext artifact ID
+        required: true
+        type: string
+      backup_artifact_digest:
+        description: Verified artifact-container sha256 digest
+        required: true
+        type: string
+      backup_ciphertext_sha256:
+        description: Separately verified ciphertext file sha256
+        required: true
+        type: string
+      root_durable_ack:
+        description: Root confirms retained authenticated decrypt and private original/SQLite readback for this cache
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+  GOFLAGS: -mod=readonly
+
+jobs:
+  validate:
+    name: Repair helper synthetic validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Capture trusted test Node
+        id: node
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            if (process.versions.node.split(".")[0] !== "24") core.setFailed("node_runtime");
+            else core.setOutput("binary", process.execPath);
+      - name: Explicit helper tests, race, vet and build
+        env:
+          NODE_BINARY: ${{ steps.node.outputs.binary }}
+        shell: bash
+        run: |
+          test -z "$(gofmt -l scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go)"
+          go test -count=1 scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go
+          go test -count=1 -race scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go
+          go vet scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go
+          go build -trimpath -o "$RUNNER_TEMP/repair-discord-cache" scripts/repair_discord_cache.go
+          git diff --exit-code -- go.mod go.sum
+
+  repair:
+    name: Manually acknowledged repair and cache install
+    needs: validate
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'vincentkoc' &&
+      github.triggering_actor == 'vincentkoc' &&
+      github.run_attempt == '1' &&
+      inputs.root_durable_ack == true &&
+      needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: discord-backup-repo
+      cancel-in-progress: false
+      queue: max
+    env:
+      DISPATCH_INPUTS: ${{ toJSON(inputs) }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+      WORKFLOW_REF: ${{ github.workflow_ref }}
+      TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+    steps:
+      - name: Validate acknowledgement and exact execution context
+        id: context
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            function validateContext(env) {
+              const input = JSON.parse(env.DISPATCH_INPUTS);
+              const fields = ["expected_sha", "cache_identity", "backup_run_id", "backup_run_attempt",
+                "backup_source_sha", "backup_artifact_id", "backup_artifact_digest",
+                "backup_ciphertext_sha256", "root_durable_ack"];
+              const sameKeys = (value, names) => value && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
+              const positive = value => typeof value === "string" && /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
+              if (!sameKeys(input, fields) || input.root_durable_ack !== true ||
+                  env.GITHUB_REPOSITORY !== "openclaw/discrawl" || env.RUNNER_OS !== "Linux" ||
+                  env.GITHUB_EVENT_NAME !== "workflow_dispatch" || env.GITHUB_REF !== "refs/heads/main" ||
+                  env.GITHUB_RUN_ATTEMPT !== "1" || env.GITHUB_ACTOR !== "vincentkoc" ||
+                  env.TRIGGERING_ACTOR !== "vincentkoc" || !/^[0-9a-f]{40}$/.test(input.expected_sha) ||
+                  env.EXPECTED_SHA !== input.expected_sha || env.GITHUB_SHA !== input.expected_sha ||
+                  env.WORKFLOW_SHA !== input.expected_sha ||
+                  env.WORKFLOW_REF !== "openclaw/discrawl/.github/workflows/repair-discord-cache.yml@refs/heads/main" ||
+                  env.RUNNER_DEBUG === "1" || env.ACTIONS_STEP_DEBUG === "true" || env.ACTIONS_RUNNER_DEBUG === "true" ||
+                  !positive(input.backup_run_id) || !positive(input.backup_run_attempt) || !positive(input.backup_artifact_id) ||
+                  !/^[0-9a-f]{40}$/.test(input.backup_source_sha) ||
+                  !/^sha256:[0-9a-f]{64}$/.test(input.backup_artifact_digest) ||
+                  !/^[0-9a-f]{64}$/.test(input.backup_ciphertext_sha256)) throw new Error();
+              const cache = JSON.parse(input.cache_identity);
+              const cacheFields = ["id", "key", "ref", "version", "created_at", "size_in_bytes"];
+              const version = require("node:crypto").createHash("sha256").update([
+                ".discrawl-ci/discrawl.db", ".discrawl-ci/discrawl.db-shm",
+                ".discrawl-ci/discrawl.db-wal", "zstd-without-long", "1.0"
+              ].join("|")).digest("hex");
+              if (!sameKeys(cache, cacheFields) || !Number.isSafeInteger(cache.id) || cache.id <= 0 ||
+                  !/^discrawl-discord-db-Linux-main-[0-9]+-[0-9]+$/.test(cache.key) ||
+                  cache.ref !== "refs/heads/main" || cache.version !== version ||
+                  !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,9}Z$/.test(cache.created_at) ||
+                  !Number.isSafeInteger(cache.size_in_bytes) || cache.size_in_bytes <= 0 ||
+                  cache.size_in_bytes > 8 * 1024 ** 3) throw new Error();
+              return {input, cache};
+            }
+            try {
+              validateContext(process.env);
+            } catch {
+              core.setFailed("execution_context");
+            }
+
+      - name: Checkout exact reviewed main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+      - name: Verify checked-out main
+        shell: bash
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]]; then
+            echo "::error::checkout_identity"
+            exit 1
+          fi
+      - name: Checkout unmodified stock cache implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: actions/cache
+          ref: 55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+          path: .repair-cache-action
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+      - name: Verify restore and save entrypoints before private access
+        id: runtime
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
+            const {execFileSync} = require("node:child_process");
+            try {
+              const root = path.join(process.env.GITHUB_WORKSPACE, ".repair-cache-action");
+              if (process.platform !== "linux" || process.versions.node.split(".")[0] !== "24" ||
+                  !path.isAbsolute(process.execPath) || !fs.statSync(process.execPath).isFile()) throw new Error();
+              const git = args => execFileSync("git", ["-C", root, ...args], {encoding:"utf8", stdio:["ignore","pipe","pipe"], maxBuffer:8192}).trim();
+              if (git(["rev-parse", "HEAD"]) !== "55cc8345863c7cc4c66a329aec7e433d2d1c52a9" ||
+                  git(["status", "--porcelain", "--untracked-files=all"]) !== "") throw new Error();
+              const verify = (relative, oid, maximum, exact = false) => {
+                const file = path.join(root, relative), info = fs.lstatSync(file);
+                if (!info.isFile() || info.size > maximum || (exact && info.size !== maximum)) throw new Error();
+                const data = fs.readFileSync(file);
+                if (crypto.createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex") !== oid ||
+                    git(["rev-parse", "HEAD:" + relative]) !== oid) throw new Error();
+                return data;
+              };
+              verify("dist/restore-only/index.js", "2427fc716c959214d22297fbf24a33c040b968bb", 3377934, true);
+              verify("dist/save-only/index.js", "b3a8aa37f9f7a608d7d5a63a8990b1fd4c043759", 3378478, true);
+              verify("restore/action.yml", "93352f50541fca3b088080dba6b102051220dda2", 8192);
+              verify("save/action.yml", "1b95184507516b6b36a065e21d77e35b3acc4986", 776, true);
+              const pkg = JSON.parse(verify("package.json", "b409614a4fd77b5eb49ee1d36bbf5936dab2792f", 16384));
+              if (pkg.name !== "cache" || pkg.version !== "6.1.0" || pkg.type !== "module" || pkg.engines.node !== ">=24") throw new Error();
+              execFileSync(process.execPath, ["--version"], {env:{PATH:"/usr/bin:/bin"}, stdio:"ignore"});
+              core.setOutput("node_binary", process.execPath);
+            } catch {
+              core.setFailed("cache_runtime");
+            }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and test trusted helper before private restore
+        id: build
+        env:
+          NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
+        shell: bash
+        run: |
+          umask 077
+          go test -count=1 scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go
+          go build -trimpath -o "$RUNNER_TEMP/repair-discord-cache" scripts/repair_discord_cache.go
+          git diff --exit-code -- go.mod go.sum
+          test ! -e .discrawl-ci
+          test ! -L .discrawl-ci
+          command -v zstd >/dev/null
+          [[ "$NODE_BINARY" = /* && -x "$NODE_BINARY" ]]
+          env -i PATH=/usr/bin:/bin "$NODE_BINARY" --version >/dev/null
+          env -i PATH=/usr/bin:/bin DISPATCH_INPUTS="$DISPATCH_INPUTS" "$NODE_BINARY" <<'CAPACITY'
+          try {
+            const cache=JSON.parse(JSON.parse(process.env.DISPATCH_INPUTS).cache_identity);
+            if(!Number.isSafeInteger(cache.size_in_bytes)||cache.size_in_bytes<=0||
+                cache.size_in_bytes>8*1024**3)throw new Error();
+            const space=require("node:fs").statfsSync(".",{bigint:true});
+            const required=BigInt(cache.size_in_bytes)+10n*1024n**3n+8n*1024n**3n;
+            if(space.bsize<=0n||space.bavail<0n||space.bavail*space.bsize<required)throw new Error();
+          }catch{process.stdout.write("::error::restore_capacity\n");process.exitCode=1;}
+          CAPACITY
+          private_temp="$(mktemp -d "$GITHUB_WORKSPACE/.repair-private.XXXXXXXX")"
+          printf 'private_temp=%s\n' "$private_temp" >> "$GITHUB_OUTPUT"
+
+      - name: Validate backup acknowledgement, current main and cache winner
+        id: before
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PHASE: before
+        with:
+          script: &metadata_guards |
+            function timestamp(value) {
+              const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
+              if (!match) throw new Error();
+              const seconds = Date.parse(match[1] + "Z");
+              if (!Number.isFinite(seconds) || new Date(seconds).toISOString().slice(0,19) !== match[1]) throw new Error();
+              return BigInt(seconds) * 1000000n + BigInt((match[2] || "").padEnd(9,"0"));
+            }
+            async function requireIdleWriter(github, owner, repo, workflow_id, run) {
+              const waiters=["queued","waiting","pending","requested"];
+              if(waiters.includes(run.status)||run.status==="completed")return;
+              if(run.status!=="in_progress"||!Number.isSafeInteger(run.run_attempt)||run.run_attempt<1||
+                  !/^[0-9a-f]{40}$/.test(run.head_sha))throw new Error();
+              const repair=workflow_id==="repair-discord-cache.yml";
+              const writer=repair?"Manually acknowledged repair and cache install":
+                workflow_id==="publish-discord-backup.yml"?"publish":"report";
+              const validation="Repair helper synthetic validation";
+              const response=await github.rest.actions.listJobsForWorkflowRunAttempt({
+                owner,repo,run_id:run.id,attempt_number:run.run_attempt,per_page:100,page:1
+              });
+              const jobs=response.data.jobs,names=new Set(),ids=new Set();
+              if(!Array.isArray(jobs)||!jobs.length||jobs.length>(repair?2:1)||
+                  response.data.total_count!==jobs.length||(response.headers.link||"").includes('rel="next"'))throw new Error();
+              for(const job of jobs){
+                if(!Number.isSafeInteger(job.id)||job.id<=0||ids.has(job.id)||names.has(job.name)||
+                    job.run_id!==run.id||job.head_sha!==run.head_sha||
+                    (job.run_attempt!==undefined&&job.run_attempt!==run.run_attempt)||
+                    (job.name!==writer&&(!repair||job.name!==validation))||
+                    ![...waiters,"in_progress","completed"].includes(job.status)||
+                    (job.name===writer&&job.status==="in_progress"))throw new Error();
+                ids.add(job.id);names.add(job.name);
+              }
+              // A repair still validating may not have materialized its writer job.
+              if(!names.has(writer)&&(!repair||jobs[0].name!==validation||jobs[0].status==="completed"))throw new Error();
+            }
+            async function metadataGuards(github, env) {
+              const input = JSON.parse(env.DISPATCH_INPUTS), expected = JSON.parse(input.cache_identity);
+              const owner = "openclaw", repo = "discrawl", phase = env.PHASE;
+              const currentRun = Number(env.GITHUB_RUN_ID), newKey = `discrawl-discord-db-Linux-main-${currentRun}-1`;
+              if (!["before","copy","save","after"].includes(phase) || !Number.isSafeInteger(currentRun) ||
+                  env.GITHUB_RUN_ATTEMPT !== "1" || input.root_durable_ack !== true) throw new Error();
+              const main = await github.rest.git.getRef({owner,repo,ref:"heads/main"});
+              if (main.data.object.sha !== input.expected_sha || env.GITHUB_SHA !== input.expected_sha) throw new Error();
+              if (phase === "before") {
+                const run = (await github.rest.actions.getWorkflowRun({owner,repo,run_id:Number(input.backup_run_id)})).data;
+                if (run.repository?.full_name !== "openclaw/discrawl" || run.id !== Number(input.backup_run_id) ||
+                    run.head_sha !== input.backup_source_sha || run.run_attempt !== Number(input.backup_run_attempt) ||
+                    run.status !== "completed" || run.conclusion !== "success" ||
+                    run.path !== ".github/workflows/publish-discord-backup.yml") throw new Error();
+                const artifact = (await github.rest.actions.getArtifact({owner,repo,artifact_id:Number(input.backup_artifact_id)})).data;
+                if (artifact.id !== Number(input.backup_artifact_id) || artifact.workflow_run?.id !== run.id ||
+                    artifact.workflow_run?.head_sha !== run.head_sha || artifact.expired !== false ||
+                    !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0 ||
+                    artifact.digest !== input.backup_artifact_digest) throw new Error();
+              }
+              const inspected=new Set();
+              for (const workflow_id of ["publish-discord-backup.yml","discord-backup-report.yml","repair-discord-cache.yml"]) {
+                for (const status of ["in_progress","queued","waiting","pending","requested"]) {
+                  const response = await github.rest.actions.listWorkflowRuns({owner,repo,workflow_id,status,per_page:100,
+                    ...(workflow_id==="repair-discord-cache.yml"?{event:"workflow_dispatch"}:{})});
+                  if (response.data.total_count !== response.data.workflow_runs.length ||
+                      (response.headers.link || "").includes('rel="next"')) throw new Error();
+                  for(const run of response.data.workflow_runs){
+                    if(!Number.isSafeInteger(run.id)||run.id<=0)throw new Error();
+                    if(run.id===currentRun)continue;
+                    const identity=`${run.id}:${run.run_attempt}`;
+                    if(run.status==="in_progress"){
+                      if(inspected.has(identity))continue;
+                      if(inspected.size>=100)throw new Error();
+                      inspected.add(identity);
+                    }
+                    await requireIdleWriter(github,owner,repo,workflow_id,run);
+                  }
+                }
+              }
+              const caches = [];
+              let total;
+              for (let page = 1; page <= 10; page++) {
+                const response = await github.rest.actions.getActionsCacheList({
+                  owner,repo,key:"discrawl-discord-db-Linux-main-",ref:"refs/heads/main",
+                  sort:"created_at",direction:"desc",per_page:100,page
+                });
+                if (!Number.isSafeInteger(response.data.total_count) || response.data.total_count > 1000 ||
+                    (total !== undefined && total !== response.data.total_count)) throw new Error();
+                total = response.data.total_count;
+                caches.push(...response.data.actions_caches);
+                if (!(response.headers.link || "").includes('rel="next"')) break;
+                if (page === 10) throw new Error();
+              }
+              if (caches.length !== total || new Set(caches.map(cache => cache.id)).size !== caches.length) throw new Error();
+              const fields = ["id","key","ref","version","created_at","size_in_bytes"];
+              const eligible = caches.filter(cache => cache.ref === "refs/heads/main" && cache.version === expected.version &&
+                typeof cache.key==="string"&&cache.key.startsWith("discrawl-discord-db-Linux-main-"));
+              eligible.sort((a,b) => timestamp(a.created_at) > timestamp(b.created_at) ? -1 : 1);
+              if (!eligible.length || (eligible.length > 1 && timestamp(eligible[0].created_at) === timestamp(eligible[1].created_at))) throw new Error();
+              const source = caches.filter(cache => cache.key === expected.key);
+              if (source.length !== 1 || fields.some(field => source[0][field] !== expected[field])) throw new Error();
+              const saved = caches.filter(cache => cache.key === newKey);
+              if (phase !== "after") {
+                if (saved.length || eligible[0].id !== expected.id) throw new Error();
+                return {key:expected.key,new_key:newKey};
+              }
+              const run = (await github.rest.actions.getWorkflowRun({owner,repo,run_id:currentRun})).data;
+              if (saved.length !== 1 || saved[0].id === expected.id || eligible[0].id !== saved[0].id ||
+                  saved[0].ref !== expected.ref || saved[0].version !== expected.version ||
+                  !Number.isSafeInteger(saved[0].id) || saved[0].id <= 0 ||
+                  !Number.isSafeInteger(saved[0].size_in_bytes) || saved[0].size_in_bytes <= 0 ||
+                  saved[0].size_in_bytes > 8 * 1024 ** 3 ||
+                  timestamp(saved[0].created_at) < timestamp(run.run_started_at) ||
+                  timestamp(saved[0].created_at) > BigInt(Date.now())*1000000n ||
+                  run.head_sha !== input.expected_sha || run.run_attempt !== 1) throw new Error();
+              return {cache:Object.fromEntries(fields.map(field => [field,saved[0][field]])),
+                source_sha:input.expected_sha,run_id:currentRun,run_attempt:1};
+            }
+            try {
+              const result = await metadataGuards(github, process.env);
+              if (process.env.PHASE === "after") core.info(JSON.stringify(result));
+              else {
+                core.setOutput("key", result.key);
+                core.setOutput("new_key", result.new_key);
+              }
+            } catch {
+              if (process.env.PHASE === "after") core.info(JSON.stringify({
+                schema_version:1,status:"installation_unverified",
+                key:`discrawl-discord-db-Linux-main-${process.env.GITHUB_RUN_ID}-1`
+              }));
+              core.setFailed("metadata_gate");
+            }
+
+      - name: Exact lookup with contained stock restore
+        id: lookup
+        timeout-minutes: 2
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
+          NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
+          EXPECTED_KEY: ${{ steps.before.outputs.key }}
+          CACHE_MODE: lookup
+        with:
+          script: &contained_cache |
+            async function containedCache(options) {
+              const fs = require("node:fs"), path = require("node:path");
+              const {spawn, execFileSync} = require("node:child_process");
+              const {node,entry,workspace,privateRoot,key,lookupOnly,saveOnly=false,timeoutMs,streamCap=1048576,commandCap=4096} = options;
+              if (!/^discrawl-discord-db-Linux-main-[0-9]+-[0-9]+$/.test(key) ||
+                  !["true","false"].includes(lookupOnly) || typeof saveOnly !== "boolean" ||
+                  (saveOnly && lookupOnly !== "false") || timeoutMs <= 0 || timeoutMs > 570000 ||
+                  streamCap <= 0 || streamCap > 1048576 || commandCap <= 0 || commandCap > 4096) throw new Error("restore_context");
+              const directory = fs.mkdtempSync(path.join(privateRoot,"contained-"));
+              fs.chmodSync(directory,0700);
+              const descriptors=[],commands=[];
+              let child,reason="",streamBytes=0,commandBytes=0,poll,deadline,cleanup,armCleanup;
+              const open = name => {
+                const fd=fs.openSync(path.join(directory,name),"wx",0o600);
+                descriptors.push(fd);
+                return fd;
+              };
+              const stop = failure => {
+                if (!reason) reason=failure;
+                if (child?.pid) {
+                  try { process.kill(-child.pid,"SIGKILL"); }
+                  catch (error) { if (error.code!=="ESRCH") reason="restore_cleanup"; }
+                }
+                armCleanup?.();
+              };
+              const cancelled=()=>stop("restore_cancelled");
+              try {
+                const stdout=open("stdout"),stderr=open("stderr"),env={};
+                for (const name of ["PATH","HOME","TMPDIR","LANG","TZ","CI","RUNNER_OS","RUNNER_ARCH","RUNNER_TEMP","RUNNER_TRACKING_ID",
+                    "GITHUB_ACTIONS","GITHUB_WORKSPACE","GITHUB_REPOSITORY","GITHUB_REF","GITHUB_SHA","GITHUB_RUN_ID","GITHUB_RUN_ATTEMPT",
+                    "GITHUB_SERVER_URL","GITHUB_API_URL","ACTIONS_CACHE_URL","ACTIONS_RESULTS_URL","ACTIONS_RUNTIME_URL",
+                    "ACTIONS_RUNTIME_TOKEN","ACTIONS_CACHE_SERVICE_V2"]) {
+                  if (process.env[name]!==undefined) env[name]=process.env[name];
+                }
+                Object.assign(env,{INPUT_PATH:".discrawl-ci/discrawl.db\n.discrawl-ci/discrawl.db-shm\n.discrawl-ci/discrawl.db-wal",
+                  INPUT_KEY:key,INPUT_ENABLECROSSOSARCHIVE:"false",SEGMENT_DOWNLOAD_TIMEOUT_MINS:"2",
+                  RUNNER_DEBUG:"0",ACTIONS_STEP_DEBUG:"false",ACTIONS_RUNNER_DEBUG:"false"});
+                if (!saveOnly) Object.assign(env,{"INPUT_RESTORE-KEYS":"","INPUT_FAIL-ON-CACHE-MISS":"true","INPUT_LOOKUP-ONLY":lookupOnly});
+                for (const name of ["GITHUB_OUTPUT","GITHUB_ENV","GITHUB_PATH","GITHUB_STATE","GITHUB_STEP_SUMMARY"]) {
+                  const file=path.join(directory,name);
+                  execFileSync("/usr/bin/mkfifo",["-m","600",file],{stdio:"ignore"});
+                  const fd=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NONBLOCK);
+                  descriptors.push(fd);
+                  commands.push({name,fd,capture:open(name+".capture"),chunks:[]});
+                  env[name]=file;
+                }
+                const capture=(fd,chunk,command=false)=>{
+                  const used=command?commandBytes:streamBytes,cap=command?commandCap:streamCap;
+                  const accepted=chunk.subarray(0,Math.max(0,cap-used));
+                  if (accepted.length) fs.writeFileSync(fd,accepted);
+                  if (command) commandBytes+=accepted.length; else streamBytes+=accepted.length;
+                  if (accepted.length!==chunk.length) stop("restore_capture_cap");
+                  return accepted;
+                };
+                const drain=()=>{
+                  const buffer=Buffer.alloc(4096);
+                  for (const command of commands) {
+                    for (;;) {
+                      let count;
+                      try { count=fs.readSync(command.fd,buffer,0,buffer.length,null); }
+                      catch(error) { if(error.code==="EAGAIN") break; throw error; }
+                      if(!count) break;
+                      command.chunks.push(Buffer.from(capture(command.capture,buffer.subarray(0,count),true)));
+                      if(command.name!=="GITHUB_OUTPUT") stop("restore_commands");
+                      if(reason) break;
+                    }
+                  }
+                };
+                process.once("SIGTERM",cancelled); process.once("SIGINT",cancelled);
+                const result=await new Promise(resolve=>{
+                  let settled=false;
+                  const finish=result=>{if(!settled){settled=true;resolve(result);}};
+                  armCleanup=()=>{
+                    if(cleanup) return;
+                    cleanup=setTimeout(()=>{
+                      reason="restore_cleanup";child.stdout.destroy();child.stderr.destroy();child.unref();
+                      finish({code:null,signal:"SIGKILL"});
+                    },2000);
+                  };
+                  child=spawn(node,[entry],{cwd:workspace,env,detached:true,stdio:["ignore","pipe","pipe"]});
+                  const onData=fd=>chunk=>{try{capture(fd,chunk);}catch{stop("restore_capture");}};
+                  child.stdout.on("data",onData(stdout));child.stderr.on("data",onData(stderr));
+                  child.stdout.on("error",()=>stop("restore_capture"));child.stderr.on("error",()=>stop("restore_capture"));
+                  child.once("error",()=>stop("restore_spawn"));
+                  child.once("exit",()=>{
+                    if(child.pid){
+                      try{process.kill(-child.pid,"SIGKILL");}catch(error){if(error.code!=="ESRCH")reason="restore_cleanup";}
+                    }
+                    armCleanup();
+                  });
+                  child.once("close",(code,signal)=>finish({code,signal}));
+                  poll=setInterval(()=>{try{drain();}catch{stop("restore_commands");}},10);
+                  deadline=setTimeout(()=>stop("restore_timeout"),timeoutMs);
+                });
+                drain();
+                if(reason)throw new Error(reason);
+                if(result.code!==0||result.signal!==null)throw new Error("restore_exit");
+                const raw=Buffer.concat(commands[0].chunks);
+                if(saveOnly){
+                  if(raw.length!==0)throw new Error("restore_outputs");
+                  return {};
+                }
+                if(!raw.length||raw.length>commandCap||raw.includes(0)||raw.includes(13))throw new Error("restore_outputs");
+                const lines=raw.toString("utf8").split("\n"),values=new Map();
+                if(lines.pop()!=="")throw new Error("restore_outputs");
+                for(let i=0;i<lines.length;i++){
+                  const line=lines[i];let name,value;
+                  const multiline=/^([a-z-]+)<<ghadelimiter_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(line);
+                  if(multiline){
+                    name=multiline[1];value=lines[++i];
+                    if(lines[++i]!=="ghadelimiter_"+multiline[2])throw new Error("restore_outputs");
+                  }else{
+                    const single=/^([a-z-]+)=(.*)$/.exec(line);
+                    if(!single)throw new Error("restore_outputs");
+                    [,name,value]=single;
+                  }
+                  if(!["cache-hit","cache-primary-key","cache-matched-key"].includes(name)||
+                      values.has(name)||value!==(name==="cache-hit"?"true":key))throw new Error("restore_outputs");
+                  values.set(name,value);
+                }
+                if(values.size!==3)throw new Error("restore_outputs");
+                return Object.fromEntries(values);
+              }finally{
+                clearInterval(poll);clearTimeout(deadline);clearTimeout(cleanup);
+                process.removeListener("SIGTERM",cancelled);process.removeListener("SIGINT",cancelled);
+                for(const fd of descriptors){try{fs.closeSync(fd);}catch{}}
+              }
+            }
+            try {
+              const mode=process.env.CACHE_MODE;
+              if(process.platform!=="linux"||process.versions.node.split(".")[0]!=="24"||
+                  process.execPath!==process.env.NODE_BINARY||!["lookup","restore","save"].includes(mode))throw new Error("restore_context");
+              if(mode==="save"){
+                const fs=require("node:fs"),path=require("node:path");
+                const root=path.join(process.env.GITHUB_WORKSPACE,".discrawl-ci"),info=fs.lstatSync(root);
+                if(!info.isDirectory()||info.isSymbolicLink()||
+                    process.env.EXPECTED_KEY!==`discrawl-discord-db-Linux-main-${process.env.GITHUB_RUN_ID}-1`)throw new Error("restore_context");
+                const directory=fs.opendirSync(root,{bufferSize:2});
+                try{
+                  if(directory.readSync()?.name!=="discrawl.db"||directory.readSync()!==null)throw new Error("restore_context");
+                }finally{directory.closeSync();}
+                const db=fs.lstatSync(path.join(root,"discrawl.db"));
+                if(!db.isFile()||db.isSymbolicLink()||db.nlink!==1||!Number.isSafeInteger(db.size)||
+                    db.size<=0||db.size>10*1024**3||(db.mode&0o777)!==0o600)throw new Error("restore_context");
+              }
+              const outputs=await containedCache({
+                node:process.execPath,entry:require("node:path").join(process.env.GITHUB_WORKSPACE,
+                  ".repair-cache-action/dist/"+(mode==="save"?"save-only":"restore-only")+"/index.js"),
+                workspace:process.env.GITHUB_WORKSPACE,privateRoot:process.env.PRIVATE_TEMP,key:process.env.EXPECTED_KEY,
+                lookupOnly:mode==="lookup"?"true":"false",saveOnly:mode==="save",timeoutMs:mode==="lookup"?110000:570000
+              });
+              for(const[name,value]of Object.entries(outputs))core.setOutput(name,value);
+            }catch(error){
+              const allowed=["restore_context","restore_cleanup","restore_cancelled","restore_capture_cap","restore_commands",
+                "restore_capture","restore_spawn","restore_timeout","restore_exit","restore_outputs"];
+              core.setFailed(allowed.includes(error?.message)?error.message:"restore_internal");
+            }
+
+      - name: Restore exact backed-up cache without fallback
+        id: restore
+        timeout-minutes: 10
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
+          NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
+          EXPECTED_KEY: ${{ steps.before.outputs.key }}
+          CACHE_MODE: restore
+        with:
+          script: *contained_cache
+      - name: Revalidate main and winner before private copy
+        id: copy-gate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PHASE: copy
+        with:
+          script: *metadata_guards
+      - name: Repair only the approved copied cells and strictly export
+        id: helper
+        timeout-minutes: 48
+        env:
+          PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
+          NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
+        shell: bash
+        run: |
+          umask 077
+          mkdir -m 700 "$PRIVATE_TEMP/home"
+          if timeout --signal=TERM --kill-after=5s 47m env -i \
+            HOME="$PRIVATE_TEMP/home" TMPDIR="$PRIVATE_TEMP" PATH=/usr/bin:/bin \
+            XDG_CONFIG_HOME="$PRIVATE_TEMP/home" XDG_CACHE_HOME="$PRIVATE_TEMP/home" \
+            "$RUNNER_TEMP/repair-discord-cache" "$GITHUB_WORKSPACE/.discrawl-ci" "$PRIVATE_TEMP" \
+            > "$PRIVATE_TEMP/result.json" 2>/dev/null; then
+            helper_status=0
+          else
+            helper_status=$?
+          fi
+          env -i PATH=/usr/bin:/bin PRIVATE_TEMP="$PRIVATE_TEMP" HELPER_STATUS="$helper_status" "$NODE_BINARY" <<'JS'
+          const fs=require("node:fs");
+          try {
+            const file=process.env.PRIVATE_TEMP+"/result.json";
+            if(fs.statSync(file).size>4096)throw new Error();
+            const result=JSON.parse(fs.readFileSync(file,"utf8"));
+            const fields=["schema_version","scope","complete","stage","error","changed_cells","removed_bytes","tails","original_unchanged","export_rows"];
+            const tables=["guilds","channels","members","messages","message_events","message_attachments","mention_events","sync_state"];
+            const sameKeys=(value,names)=>value&&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...names].sort());
+            const stages=["arguments","originals","copy","repair","reopen","standalone","export","stage","cache_ready"];
+            const errors=["arguments","input_files","capacity","copy","sqlite","schema","aggregate","cas","transaction",
+              "verification","time_limit","backup","strict_export","standalone_files","original_changed","staging","internal"];
+            if(sameKeys(result,fields)&&result.schema_version===1&&
+                result.scope==="restored_cache.message_attachments.text_content"&&result.complete===false&&
+                stages.includes(result.stage)&&errors.includes(result.error)&&typeof result.original_unchanged==="boolean"){
+              process.stdout.write(JSON.stringify({schema_version:1,complete:false,stage:result.stage,error:result.error,
+                original_unchanged:result.original_unchanged})+"\n");
+              process.exit(1);
+            }
+            if(!sameKeys(result,fields)||result.schema_version!==1||
+                result.scope!=="restored_cache.message_attachments.text_content"||result.complete!==true||
+                process.env.HELPER_STATUS!=="0"||
+                result.stage!=="cache_ready"||result.error!=="none"||result.changed_cells!==46||result.removed_bytes!==67||
+                JSON.stringify(result.tails)!=="[25,21,0]"||result.original_unchanged!==true||
+                !sameKeys(result.export_rows,tables)||Object.values(result.export_rows).some(n=>!Number.isSafeInteger(n)||n<0)||
+                result.export_rows.message_attachments!==15264)throw new Error();
+            process.stdout.write(JSON.stringify(result)+"\n");
+          }catch{process.stdout.write("::error::repair_output\n");process.exitCode=1;}
+          JS
+          printf 'cache_ready=true\n' >> "$GITHUB_OUTPUT"
+      - name: Revalidate main, backed-up winner and absent new key before save
+        id: save-gate
+        if: ${{ steps.helper.outputs.cache_ready == 'true' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PHASE: save
+        with:
+          script: *metadata_guards
+      - name: Save standalone repaired DB using contained stock save
+        id: save
+        if: ${{ steps.helper.outputs.cache_ready == 'true' && steps.save-gate.outcome == 'success' }}
+        timeout-minutes: 10
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
+          NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
+          EXPECTED_KEY: ${{ steps.save-gate.outputs.new_key }}
+          CACHE_MODE: save
+        with:
+          script: *contained_cache
+      - name: Require immutable main-cache installation receipt
+        if: ${{ steps.save.outcome == 'success' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PHASE: after
+        with:
+          script: *metadata_guards
