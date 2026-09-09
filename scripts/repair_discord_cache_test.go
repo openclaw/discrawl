@@ -26,16 +26,46 @@ import (
 
 func repairFixture(t *testing.T, wal bool) (string, *sql.DB) {
 	t.Helper()
+	return repairFixtureLayout(t, wal, false)
+}
+
+func repairFixtureLayout(t *testing.T, wal, migrated bool) (string, *sql.DB) {
+	t.Helper()
 	source := filepath.Join(t.TempDir(), ".discrawl-ci")
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.Open(context.Background(), filepath.Join(source, inputNames[0]))
+	dbPath := filepath.Join(source, inputNames[0])
+	if migrated {
+		legacy, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Seed the app's pre-media schema, then let store.Open run its migrations.
+		_, createErr := legacy.Exec(`create table message_attachments (
+			attachment_id text primary key, message_id text not null, guild_id text not null,
+			channel_id text not null, author_id text, filename text not null, content_type text,
+			size integer not null default 0, url text, proxy_url text, text_content text not null default '',
+			updated_at text not null)`)
+		closeErr := legacy.Close()
+		if createErr != nil || closeErr != nil {
+			t.Fatal("synthetic legacy schema creation failed")
+		}
+	}
+	s, err := store.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatal("synthetic store creation failed")
 	}
 	db := s.DB()
 	t.Cleanup(func() { s.Close() })
+	if migrated {
+		var ddl string
+		if db.QueryRow(`SELECT sql FROM sqlite_schema WHERE name='message_attachments'`).Scan(&ddl) != nil ||
+			normalizedDDL(ddl) != normalizedDDL(migratedAttachmentDDL) ||
+			normalizedDDL(ddl) == normalizedDDL(attachmentDDL) {
+			t.Fatal("app migration did not produce the exact legacy layout")
+		}
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +175,14 @@ func logicalTable(t *testing.T, db *sql.DB, table string) []byte {
 }
 
 func TestExactRepairStandaloneExport(t *testing.T) {
-	source, db := repairFixture(t, false)
+	t.Run("fresh", func(t *testing.T) { testExactRepairStandaloneExport(t, false) })
+	t.Run("migrated", func(t *testing.T) { testExactRepairStandaloneExport(t, true) })
+}
+
+func testExactRepairStandaloneExport(t *testing.T, migrated bool) {
+	t.Helper()
+	source, db := repairFixtureLayout(t, false, migrated)
+	expectedAttachments := attachmentFixtureState(t, db, true)
 	before := map[string][]byte{}
 	for _, table := range share.SnapshotTables {
 		if table != "message_attachments" {
@@ -172,6 +209,9 @@ func TestExactRepairStandaloneExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ready.Close()
+	if !bytes.Equal(expectedAttachments, attachmentFixtureState(t, ready, false)) {
+		t.Fatal("attachment fields or storage classes changed beyond the exact suffixes")
+	}
 	var count, removed int64
 	if err = ready.QueryRow(`SELECT count(*),sum(8192-length(CAST(text_content AS BLOB)))
 		FROM message_attachments WHERE CAST(attachment_id AS INTEGER)<46`).Scan(&count, &removed); err != nil ||
@@ -191,6 +231,99 @@ func TestExactRepairStandaloneExport(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(scratch, "originals", inputNames[0])); err != nil {
 		t.Fatal("original file set was not retained")
+	}
+}
+
+func attachmentFixtureState(t *testing.T, db *sql.DB, repaired bool) []byte {
+	t.Helper()
+	var selectColumns []string
+	for _, column := range attachmentColumns {
+		selectColumns = append(selectColumns, "typeof("+column+")", "CAST("+column+" AS BLOB)")
+	}
+	rows, err := db.Query("SELECT " + strings.Join(selectColumns, ",") +
+		" FROM message_attachments ORDER BY CAST(attachment_id AS INTEGER)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var state [][]any
+	for row := 0; rows.Next(); row++ {
+		values := make([]any, len(selectColumns))
+		destinations := make([]any, len(values))
+		for index := range destinations {
+			destinations[index] = &values[index]
+		}
+		if rows.Scan(destinations...) != nil {
+			t.Fatal("synthetic attachment state read failed")
+		}
+		if repaired && row < 46 {
+			text := values[21].([]byte)
+			drop := 1
+			if row >= 25 {
+				drop = 2
+			}
+			values[21] = text[:len(text)-drop]
+		}
+		state = append(state, values)
+	}
+	if rows.Err() != nil {
+		t.Fatal("synthetic attachment state incomplete")
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func TestAttachmentSchemaLayouts(t *testing.T) {
+	for name, ddl := range map[string]string{"fresh": attachmentDDL, "migrated": migratedAttachmentDDL} {
+		t.Run(name, func(t *testing.T) {
+			for _, scenario := range []string{
+				"accepted", "constraint", "default", "extra-column", "trigger",
+				"partial-index", "expression-index", "text-index",
+			} {
+				t.Run(scenario, func(t *testing.T) {
+					db, err := sql.Open("sqlite", ":memory:")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer db.Close()
+					definition := ddl
+					switch scenario {
+					case "constraint":
+						definition = strings.Replace(definition, "filename text not null", "filename text", 1)
+					case "default":
+						definition = strings.Replace(definition, "fetch_status text not null default ''",
+							"fetch_status text not null default 'changed'", 1)
+					}
+					if _, err = db.Exec(definition); err != nil {
+						t.Fatal(err)
+					}
+					statement := map[string]string{
+						"extra-column":     "ALTER TABLE message_attachments ADD COLUMN unexpected TEXT",
+						"trigger":          "CREATE TRIGGER unexpected AFTER UPDATE ON message_attachments BEGIN SELECT 1; END",
+						"partial-index":    "CREATE INDEX unexpected ON message_attachments(message_id) WHERE size > 0",
+						"expression-index": "CREATE INDEX unexpected ON message_attachments(length(message_id))",
+						"text-index":       "CREATE INDEX unexpected ON message_attachments(text_content)",
+					}[scenario]
+					if statement != "" {
+						if _, err = db.Exec(statement); err != nil {
+							t.Fatal(err)
+						}
+					}
+					conn, err := db.Conn(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer conn.Close()
+					err = validateSchema(context.Background(), conn)
+					if (err == nil) != (scenario == "accepted") {
+						t.Fatal("exact schema admission changed")
+					}
+				})
+			}
+		})
 	}
 }
 

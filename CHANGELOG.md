@@ -2,6 +2,7 @@
 
 ## 0.14.1 - 2026-09-09
 
+- Accept the application's legacy migrated attachment column order in the backup-first repair helper while retaining exact schema and repair safeguards.
 - Add a manually gated, backup-first maintenance workflow for narrowly scoped attachment text repair, with strict snapshot validation before installing a new Actions database cache.
 - Keep extracted attachment text within its byte limit without splitting valid UTF-8 characters, and identify invalid admitted attachment columns in contents-free export errors without changing stored data or weakening snapshot validation.
 - Limit disposable Discord backup clones to current main and required descendants, without fetching tagged history.

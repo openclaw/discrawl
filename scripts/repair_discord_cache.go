@@ -48,6 +48,15 @@ const attachmentDDL = `CREATE TABLE message_attachments (
 	fetched_at text, fetch_status text not null default '', fetch_error text not null default '',
 	updated_at text not null)`
 
+// The app's six ALTER ADD migrations append media fields after updated_at.
+const migratedAttachmentDDL = `CREATE TABLE message_attachments (
+	attachment_id text primary key, message_id text not null, guild_id text not null,
+	channel_id text not null, author_id text, filename text not null, content_type text,
+	size integer not null default 0, url text, proxy_url text, text_content text not null default '',
+	updated_at text not null, media_path text, content_sha256 text,
+	content_size integer not null default 0, fetched_at text,
+	fetch_status text not null default '', fetch_error text not null default '')`
+
 var attachmentColumns = []string{
 	"attachment_id", "message_id", "guild_id", "channel_id", "author_id", "filename",
 	"content_type", "size", "url", "proxy_url", "text_content", "media_path",
@@ -524,7 +533,8 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		kind != "table" || conn.QueryRowContext(ctx, "SELECT count(*) FROM main.sqlite_schema WHERE type='trigger' AND tbl_name='message_attachments'").Scan(&triggers) != nil || triggers != 0 {
 		return errors.New("schema")
 	}
-	if normalizedDDL(ddl) != normalizedDDL(attachmentDDL) {
+	normalized := normalizedDDL(ddl)
+	if normalized != normalizedDDL(attachmentDDL) && normalized != normalizedDDL(migratedAttachmentDDL) {
 		return errors.New("schema")
 	}
 	rows, err := conn.QueryContext(ctx, "PRAGMA main.index_list(message_attachments)")
