@@ -68,7 +68,9 @@ jobs:
           BACKUP_REMOTE="https://github.com/${DISCRAWL_BACKUP_REPOSITORY}.git"
           mkdir -p "$(dirname "$CONFIG")"
           mkdir -p "$(dirname "$DB")"
-          git clone "$BACKUP_REMOTE" "$BACKUP_REPO"
+          git clone --depth=1 --single-branch --branch main --no-tags \
+            -- "$BACKUP_REMOTE" "$BACKUP_REPO"
+          git -C "$BACKUP_REPO" config --add remote.origin.fetch '^refs/tags/*'
           printf 'db_path = "%s"\n' "$DB" > "$CONFIG"
           go run ./cmd/discrawl --config "$CONFIG" subscribe --repo "$BACKUP_REPO" "$BACKUP_REMOTE"
           git -C "$BACKUP_REPO" pull --ff-only origin main

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Limit disposable Discord backup clones to current main and required descendants, without fetching tagged history.
 - Keep publication Git arguments bounded with literal NUL-delimited paths and one path-only commit, preserving unrelated staged work.
 - Report incomplete selected channel or category permissions in publication preflight, including inherited thread permissions, without changing public-only export selection.
 - Accept exact manifest-owned table generation paths alongside legacy snapshot shards without broadening publication cleanup or Git staging.
