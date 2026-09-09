@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -258,6 +259,12 @@ func clampText(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if limit <= 0 || len(text) <= limit {
 		return text
+	}
+	// Keep the byte ceiling without repairing already-invalid source text.
+	if utf8.ValidString(text) {
+		for limit > 0 && !utf8.RuneStart(text[limit]) {
+			limit--
+		}
 	}
 	return strings.TrimSpace(text[:limit])
 }

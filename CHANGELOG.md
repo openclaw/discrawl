@@ -2,6 +2,7 @@
 
 ## 0.14.1 - 2026-09-09
 
+- Keep extracted attachment text within its byte limit without splitting valid UTF-8 characters, and identify invalid admitted attachment columns in contents-free export errors without changing stored data or weakening snapshot validation.
 - Limit disposable Discord backup clones to current main and required descendants, without fetching tagged history.
 - Provide checked-out source and workflow run identity to Discord archive publications.
 - Update CrawlKit to v0.15.0 while retaining the existing Go minimum and preferred toolchain.
