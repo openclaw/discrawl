@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/openclaw/crawlkit/mirror"
 	"github.com/openclaw/crawlkit/snapshot"
@@ -465,6 +466,11 @@ func exportPublication(ctx context.Context, s *store.Store, opts Options, before
 			if !filter.allow(table, row) {
 				return false, nil
 			}
+			if table == "message_attachments" {
+				if err := validateAttachmentSnapshotText(row); err != nil {
+					return false, err
+				}
+			}
 			if filter.active && table == "guilds" {
 				if err := projectPublishedGuild(row); err != nil {
 					return false, err
@@ -532,6 +538,22 @@ func exportPublication(ctx context.Context, s *store.Store, opts Options, before
 		return Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func validateAttachmentSnapshotText(row map[string]any) error {
+	// Only fixed public schema names may enter this contents-free diagnostic.
+	// The callback cannot distinguish original TEXT from scanned BLOB values.
+	for _, column := range [...]string{
+		"attachment_id", "message_id", "guild_id", "channel_id", "author_id",
+		"filename", "content_type", "size", "url", "proxy_url", "text_content",
+		"media_path", "content_sha256", "content_size", "fetched_at",
+		"fetch_status", "fetch_error", "updated_at",
+	} {
+		if text, ok := row[column].(string); ok && !utf8.ValidString(text) {
+			return fmt.Errorf("message_attachments.%s contains invalid UTF-8", column)
+		}
+	}
+	return nil
 }
 
 func Import(ctx context.Context, s *store.Store, opts Options) (Manifest, error) {
