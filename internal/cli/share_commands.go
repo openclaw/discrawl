@@ -39,6 +39,10 @@ func (r *runtime) runPublish(args []string) error {
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("publish takes no positional arguments"))
 	}
+	producer, err := share.PublicationProducerFromEnv(os.LookupEnv)
+	if err != nil {
+		return usageErr(err)
+	}
 	filter := share.FilterOptions{
 		PublicOnly:        *publicOnly,
 		IncludeChannelIDs: csvList(*includeChannels),
@@ -76,6 +80,7 @@ func (r *runtime) runPublish(args []string) error {
 		return err
 	}
 	opts.Tag = strings.TrimSpace(*tag)
+	opts.Producer = producer
 	if err := share.ValidateTag(r.ctx, opts); err != nil {
 		return err
 	}

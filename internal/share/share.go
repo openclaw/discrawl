@@ -77,6 +77,7 @@ type Options struct {
 	EmbeddingProvider     string
 	EmbeddingModel        string
 	EmbeddingInputVersion string
+	Producer              *PublicationProducer
 	// ReadmePath is a repo-relative report explicitly generated or removed by this publication.
 	ReadmePath string
 	Progress   func(ImportProgress)
@@ -372,7 +373,13 @@ func Commit(ctx context.Context, opts Options, message string) (bool, error) {
 }
 
 func Push(ctx context.Context, opts Options) error {
-	var err error
+	manifest, receipt, err := workingPublicationBinding(opts.RepoPath, opts.Producer)
+	if err != nil {
+		return err
+	}
+	if receipt != nil {
+		return pushBoundPublication(ctx, opts, manifest, receipt)
+	}
 	if strings.TrimSpace(opts.Tag) == "" {
 		err = mirror.Push(ctx, mirrorOptions(opts))
 	} else {
@@ -413,6 +420,13 @@ func CreateImmutableTag(ctx context.Context, opts Options) (string, error) {
 }
 
 func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error) {
+	return exportPublication(ctx, s, opts, nil)
+}
+
+func exportPublication(ctx context.Context, s *store.Store, opts Options, before publicationStep) (Manifest, error) {
+	if err := opts.Producer.validate(); err != nil {
+		return Manifest{}, err
+	}
 	if err := validateMediaRoots(opts); err != nil {
 		return Manifest{}, err
 	}
@@ -426,6 +440,9 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	}
 	previous, err := previousPublicationPaths(ctx, opts.RepoPath, false)
 	if err != nil {
+		return Manifest{}, err
+	}
+	if err := validateProducerDestination(opts.RepoPath, previous, opts.Producer); err != nil {
 		return Manifest{}, err
 	}
 	stage, err := os.MkdirTemp("", "discrawl-export-*")
@@ -465,6 +482,9 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 		Tables:      base.Tables,
 		Files:       base.Files,
 	}
+	if err := normalizePublicationTables(stage, &manifest); err != nil {
+		return Manifest{}, err
+	}
 	if opts.IncludeEmbeddings {
 		entry, err := exportEmbeddings(ctx, s.DB(), opts)
 		if err != nil {
@@ -481,6 +501,12 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 			manifest.Media = entry
 		}
 	}
+	if opts.Producer != nil {
+		if manifest.Files == nil {
+			manifest.Files = map[string]string{}
+		}
+		manifest.Files["producer"] = producerName
+	}
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return Manifest{}, err
@@ -489,7 +515,20 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	if err := os.WriteFile(filepath.Join(opts.RepoPath, ManifestName), body, 0o600); err != nil {
 		return Manifest{}, fmt.Errorf("write manifest: %w", err)
 	}
-	if err := installPublication(destination, stage, previous, manifest); err != nil {
+	if opts.Producer != nil {
+		receipt, err := encodePublicationReceipt(body, *opts.Producer)
+		if err != nil {
+			return Manifest{}, err
+		}
+		if err := os.WriteFile(filepath.Join(stage, producerName), receipt, 0o600); err != nil {
+			return Manifest{}, err
+		}
+	}
+	installed, err := installPublication(ctx, destination, stage, previous, manifest, before)
+	if installed {
+		return manifest, err
+	}
+	if err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
