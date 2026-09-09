@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Limit disposable Discord backup clones to current main and required descendants, without fetching tagged history.
+- Provide checked-out source and workflow run identity to Discord archive publications.
 - Update CrawlKit to v0.15.0 while retaining the existing Go minimum and preferred toolchain.
 - Preserve stable published shard paths for released subscribers, roll back handled pre-manifest installation failures, and report post-manifest cleanup failures without committing or pushing a partial result.
 - Add optional manifest-bound `producer.json` receipts for explicitly identified publishers, preserving unrelated files and checking the binding before publication push retries. Receipts are unsigned publisher assertions, not authenticated provenance.
