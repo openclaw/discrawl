@@ -27,7 +27,7 @@ import (
 func repairFixture(t *testing.T, wal bool) (string, *sql.DB) {
 	t.Helper()
 	source := filepath.Join(t.TempDir(), ".discrawl-ci")
-	if err := os.Mkdir(source, 0700); err != nil {
+	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := store.Open(context.Background(), filepath.Join(source, inputNames[0]))
@@ -195,8 +195,10 @@ func TestExactRepairStandaloneExport(t *testing.T) {
 }
 
 func TestRepairRollbackAndAdmission(t *testing.T) {
-	for _, scenario := range []string{"interior", "overlong", "surrogate", "continuation", "wrong-length",
-		"missing-candidate", "blob", "schema", "trigger", "text-index", "cas", "mid-transaction"} {
+	for _, scenario := range []string{
+		"interior", "overlong", "surrogate", "continuation", "wrong-length",
+		"missing-candidate", "blob", "schema", "trigger", "text-index", "cas", "mid-transaction",
+	} {
 		t.Run(scenario, func(t *testing.T) {
 			source, db := repairFixture(t, false)
 			switch scenario {
@@ -307,8 +309,12 @@ func TestStrictCandidateClassifier(t *testing.T) {
 		tail []byte
 		want int
 	}{
-		{[]byte{0xc2}, 1}, {[]byte{0xe2, 0x82}, 2}, {[]byte{0xf0, 0x9f, 0x92}, 3},
-		{[]byte{0xff}, 0}, {[]byte{0xc0, 0xaf}, 0}, {[]byte{0xed, 0xa0, 0x80}, 0},
+		{[]byte{0xc2}, 1},
+		{[]byte{0xe2, 0x82}, 2},
+		{[]byte{0xf0, 0x9f, 0x92}, 3},
+		{[]byte{0xff}, 0},
+		{[]byte{0xc0, 0xaf}, 0},
+		{[]byte{0xed, 0xa0, 0x80}, 0},
 		{[]byte("\ufffd"), 0},
 	} {
 		value := append(bytes.Repeat([]byte("a"), 8192-len(test.tail)), test.tail...)
@@ -404,9 +410,11 @@ func TestWorkflowContract(t *testing.T) {
 		!reflect.DeepEqual(document.Permissions, map[string]string{"contents": "read"}) {
 		t.Fatal("workflow trigger/permission boundary widened")
 	}
-	paths := []any{".github/workflows/repair-discord-cache.yml", "scripts/repair_discord_cache.go",
+	paths := []any{
+		".github/workflows/repair-discord-cache.yml", "scripts/repair_discord_cache.go",
 		"scripts/repair_discord_cache_test.go", "go.mod", "go.sum", "internal/store/**", "internal/share/**",
-		".github/workflows/publish-discord-backup.yml", ".github/workflows/discord-backup-report.yml"}
+		".github/workflows/publish-discord-backup.yml", ".github/workflows/discord-backup-report.yml",
+	}
 	for _, event := range []string{"pull_request", "push"} {
 		trigger := document.On[event].(map[string]any)
 		if !reflect.DeepEqual(trigger["paths"], paths) ||
@@ -419,9 +427,11 @@ func TestWorkflowContract(t *testing.T) {
 		!reflect.DeepEqual(repair.Concurrency, map[string]any{"group": "discord-backup-repo", "cancel-in-progress": false, "queue": "max"}) {
 		t.Fatal("writer admission or shared queue changed")
 	}
-	for _, guard := range []string{"github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'",
+	for _, guard := range []string{
+		"github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'",
 		"github.actor == 'vincentkoc'", "github.triggering_actor == 'vincentkoc'",
-		"github.run_attempt == '1'", "inputs.root_durable_ack == true", "needs.validate.result == 'success'"} {
+		"github.run_attempt == '1'", "inputs.root_durable_ack == true", "needs.validate.result == 'success'",
+	} {
 		if !strings.Contains(repair.If, guard) {
 			t.Fatal("data job guard missing")
 		}
@@ -437,16 +447,20 @@ func TestWorkflowContract(t *testing.T) {
 			t.Fatal("validation may access app caches")
 		}
 	}
-	for _, command := range []string{"go test -count=1 scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go",
+	for _, command := range []string{
+		"go test -count=1 scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go",
 		"go test -count=1 -race scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go",
 		"go vet scripts/repair_discord_cache.go scripts/repair_discord_cache_test.go", "go build -trimpath",
-		"git diff --exit-code -- go.mod go.sum"} {
+		"git diff --exit-code -- go.mod go.sum",
+	} {
 		if !strings.Contains(proof, command) {
 			t.Fatal("explicit-file helper CI proof missing")
 		}
 	}
-	for _, forbidden := range []string{"secrets.", "upload-artifact", "schedule:", "workflow_run:", "pull_request_target:",
-		"always()", "cache/save@", "cache/restore@", "git push", "go run ./cmd/", "sudo ", "/rerun", "/cancel"} {
+	for _, forbidden := range []string{
+		"secrets.", "upload-artifact", "schedule:", "workflow_run:", "pull_request_target:",
+		"always()", "cache/save@", "cache/restore@", "git push", "go run ./cmd/", "sudo ", "/rerun", "/cancel",
+	} {
 		if bytes.Contains(raw, []byte(forbidden)) {
 			t.Fatal("forbidden maintenance route")
 		}
@@ -489,20 +503,26 @@ func TestWorkflowContract(t *testing.T) {
 
 func fixtureInputs() map[string]any {
 	version := sha256.Sum256([]byte(".discrawl-ci/discrawl.db|.discrawl-ci/discrawl.db-shm|.discrawl-ci/discrawl.db-wal|zstd-without-long|1.0"))
-	cache, _ := json.Marshal(map[string]any{"id": 42, "key": "discrawl-discord-db-Linux-main-100-1",
+	cache, _ := json.Marshal(map[string]any{
+		"id": 42, "key": "discrawl-discord-db-Linux-main-100-1",
 		"ref": "refs/heads/main", "version": hex.EncodeToString(version[:]),
-		"created_at": "2026-01-01T00:00:00.000000000Z", "size_in_bytes": 1024})
-	return map[string]any{"expected_sha": strings.Repeat("a", 40), "cache_identity": string(cache),
+		"created_at": "2026-01-01T00:00:00.000000000Z", "size_in_bytes": 1024,
+	})
+	return map[string]any{
+		"expected_sha": strings.Repeat("a", 40), "cache_identity": string(cache),
 		"backup_run_id": "200", "backup_run_attempt": "1", "backup_source_sha": strings.Repeat("b", 40),
 		"backup_artifact_id": "300", "backup_artifact_digest": "sha256:" + strings.Repeat("c", 64),
-		"backup_ciphertext_sha256": strings.Repeat("d", 64), "root_durable_ack": true}
+		"backup_ciphertext_sha256": strings.Repeat("d", 64), "root_durable_ack": true,
+	}
 }
 
 func TestContextGuards(t *testing.T) {
 	document, _ := readWorkflow(t)
 	script := stepScript(t, document, "context")
-	for _, scenario := range []string{"valid", "ack", "actor", "triggering-actor", "attempt", "event", "ref", "sha",
-		"workflow-sha", "workflow-ref", "debug", "unknown", "missing", "malformed-cache", "private-hash", "source-key-nonnumeric"} {
+	for _, scenario := range []string{
+		"valid", "ack", "actor", "triggering-actor", "attempt", "event", "ref", "sha",
+		"workflow-sha", "workflow-ref", "debug", "unknown", "missing", "malformed-cache", "private-hash", "source-key-nonnumeric",
+	} {
 		t.Run(scenario, func(t *testing.T) {
 			input := fixtureInputs()
 			env := map[string]string{
@@ -569,13 +589,15 @@ globalThis.process.stdout.write(JSON.stringify(failed));`
 func TestMetadataWinnerAndSaveReadback(t *testing.T) {
 	document, _ := readWorkflow(t)
 	script := stepScript(t, document, "before")
-	for _, scenario := range []string{"before", "copy", "save", "after", "main-drift", "newer-winner", "last-access",
+	for _, scenario := range []string{
+		"before", "copy", "save", "after", "main-drift", "newer-winner", "last-access",
 		"incomplete", "duplicate", "tie", "cache-drift", "backup-failed", "artifact-mismatch", "artifact-expired",
 		"active-writer", "new-key-exists", "save-warning-no-cache", "bad-new-version", "old-new-time",
 		"pending-normal", "queued-normal", "waiting-normal", "requested-normal", "queued-writer", "after-queued-publisher",
 		"validation-running", "validation-only", "writer-missing", "jobs-incomplete", "jobs-next-page", "jobs-duplicate",
 		"jobs-wrong-attempt", "jobs-wrong-run", "jobs-wrong-source", "jobs-unknown", "jobs-unknown-status",
-		"run-attempt-invalid", "jobs-error", "newer-nonnumeric-winner", "older-nonnumeric-key"} {
+		"run-attempt-invalid", "jobs-error", "newer-nonnumeric-winner", "older-nonnumeric-key",
+	} {
 		t.Run(scenario, func(t *testing.T) {
 			payload, _ := json.Marshal(fixtureInputs())
 			program := `const input=JSON.parse(globalThis.process.argv[1]),scenario=globalThis.process.argv[2];
@@ -760,7 +782,7 @@ if(mode==="nonzero")process.exit(2);
 if(mode==="capture-cap")process.stdout.write("PRIVATE_PAYLOAD_MARKER".repeat(1000));
 if(mode==="timeout")setInterval(()=>{},1000);
 `
-			if os.WriteFile(entry, []byte(child), 0600) != nil {
+			if os.WriteFile(entry, []byte(child), 0o600) != nil {
 				t.Fatal("synthetic child creation failed")
 			}
 			payload, _ := json.Marshal(map[string]any{"directory": directory, "entry": entry, "scenario": scenario})
@@ -858,9 +880,11 @@ func TestHelperOutputGate(t *testing.T) {
 	}
 	for _, scenario := range []string{"valid", "failure", "exit", "counts", "unknown", "malformed", "oversized", "private-error"} {
 		t.Run(scenario, func(t *testing.T) {
-			result := repairResult{SchemaVersion: 1, Scope: "restored_cache.message_attachments.text_content",
+			result := repairResult{
+				SchemaVersion: 1, Scope: "restored_cache.message_attachments.text_content",
 				Complete: true, Stage: "cache_ready", Error: "none", OriginalUnchanged: true,
-				ChangedCells: 46, RemovedBytes: 67, Tails: [3]int64{25, 21, 0}, ExportRows: map[string]int64{}}
+				ChangedCells: 46, RemovedBytes: 67, Tails: [3]int64{25, 21, 0}, ExportRows: map[string]int64{},
+			}
 			for _, table := range share.SnapshotTables {
 				result.ExportRows[table] = 1
 			}
@@ -884,7 +908,7 @@ func TestHelperOutputGate(t *testing.T) {
 				raw = bytes.Repeat([]byte("PRIVATE_PAYLOAD_MARKER"), 300)
 			}
 			directory := t.TempDir()
-			if os.WriteFile(filepath.Join(directory, "result.json"), raw, 0600) != nil {
+			if os.WriteFile(filepath.Join(directory, "result.json"), raw, 0o600) != nil {
 				t.Fatal("synthetic result creation failed")
 			}
 			program := `process.env.PRIVATE_TEMP=process.argv[1];process.env.HELPER_STATUS=process.argv[2];` + validator
@@ -936,7 +960,7 @@ func TestCheckpointAdmissionBeforeWALConsolidation(t *testing.T) {
 			before := map[string][]byte{}
 			for _, suffix := range []string{"", "-wal", "-shm"} {
 				body, err := os.ReadFile(original + suffix)
-				if err != nil || os.WriteFile(file+suffix, body, 0600) != nil {
+				if err != nil || os.WriteFile(file+suffix, body, 0o600) != nil {
 					t.Fatal("synthetic WAL copy failed")
 				}
 				before[suffix] = body

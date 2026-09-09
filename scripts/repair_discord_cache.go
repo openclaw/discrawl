@@ -68,7 +68,7 @@ type repairResult struct {
 }
 
 func main() {
-	syscall.Umask(0077)
+	syscall.Umask(0o077)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	ctx, deadline := context.WithTimeout(ctx, 45*time.Minute)
@@ -85,8 +85,10 @@ type originalFile struct {
 }
 
 func runRepair(ctx context.Context, args []string) (out repairResult) {
-	out = repairResult{SchemaVersion: 1, Scope: "restored_cache.message_attachments.text_content",
-		Stage: "arguments", Error: "arguments", ExportRows: map[string]int64{}}
+	out = repairResult{
+		SchemaVersion: 1, Scope: "restored_cache.message_attachments.text_content",
+		Stage: "arguments", Error: "arguments", ExportRows: map[string]int64{},
+	}
 	defer func() {
 		if recover() != nil {
 			out.Complete, out.Error = false, "internal"
@@ -145,7 +147,7 @@ func runRepair(ctx context.Context, args []string) (out repairResult) {
 		return out
 	}
 	defer os.RemoveAll(work)
-	if err = os.Chmod(work, 0700); err != nil {
+	if err = os.Chmod(work, 0o700); err != nil {
 		out.Error = "copy"
 		return out
 	}
@@ -199,7 +201,7 @@ func runRepair(ctx context.Context, args []string) (out repairResult) {
 		return out
 	}
 	defer os.RemoveAll(stage)
-	if err = os.Chmod(stage, 0700); err != nil {
+	if err = os.Chmod(stage, 0o700); err != nil {
 		return out
 	}
 	out.Stage, out.Error = "standalone", "backup"
@@ -225,7 +227,7 @@ func runRepair(ctx context.Context, args []string) (out repairResult) {
 		return out
 	}
 	defer os.RemoveAll(exportDir)
-	if err = os.Chmod(exportDir, 0700); err != nil {
+	if err = os.Chmod(exportDir, 0o700); err != nil {
 		return out
 	}
 	out.ExportRows, err = strictExport(ctx, ready, exportDir, scratch, logical, sourceCounts)
@@ -245,7 +247,7 @@ func runRepair(ctx context.Context, args []string) (out repairResult) {
 		out.Error = "standalone_files"
 		return out
 	}
-	if err = os.Chmod(standalone, 0600); err != nil || !originalsMatch(ctx, source, originals) {
+	if err = os.Chmod(standalone, 0o600); err != nil || !originalsMatch(ctx, source, originals) {
 		out.Error = "original_changed"
 		return out
 	}
@@ -395,7 +397,7 @@ func copyOriginal(ctx context.Context, source, destination, name string, stamp o
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(filepath.Join(destination, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	output, err := os.OpenFile(filepath.Join(destination, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -843,8 +845,10 @@ func strictExport(ctx context.Context, db *sql.DB, directory, scratch string, lo
 	if err != nil || !reflect.DeepEqual(counts, sourceCounts) {
 		return nil, errors.New("strict_export")
 	}
-	manifest, err := snapshot.Export(ctx, snapshot.ExportOptions{ReadTx: tx, RootDir: directory,
-		Tables: share.SnapshotTables, MaxShardBytes: 40 << 20})
+	manifest, err := snapshot.Export(ctx, snapshot.ExportOptions{
+		ReadTx: tx, RootDir: directory,
+		Tables: share.SnapshotTables, MaxShardBytes: 40 << 20,
+	})
 	if err != nil || exceeded.Load() || capacity(scratch, 0) != nil ||
 		exportBytes(directory) > 2*logical+(40<<20) || len(manifest.Tables) != 8 {
 		return nil, errors.New("strict_export")
