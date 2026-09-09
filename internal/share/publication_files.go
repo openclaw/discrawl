@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -24,6 +25,12 @@ var (
 
 func publicationPaths(manifest Manifest) (map[string]bool, error) {
 	files := map[string]bool{ManifestName: true}
+	if name, ok := manifest.Files["producer"]; ok {
+		if name != producerName {
+			return nil, errors.New("invalid publication producer path")
+		}
+		files[producerName] = true
+	}
 	add := func(name, prefix string, shard bool) error {
 		if !safePublicationPath(name) || !strings.HasPrefix(name, prefix+"/") ||
 			(shard && (path.Dir(name) != prefix || !publicationShard.MatchString(path.Base(name)))) {
@@ -160,10 +167,23 @@ func previousPublicationPaths(ctx context.Context, repo string, includeRemovedRe
 	return files, nil
 }
 
-func installPublication(repo, stage string, previous map[string]bool, manifest Manifest) error {
+// The hook is private and per invocation, so failure tests cannot affect another
+// export. It runs before an operation, never after a successful rename.
+type publicationStep func(phase, name string) error
+
+type preparedPublicationFile struct {
+	name        string
+	target      string
+	dir         string
+	replacement string
+	backup      string
+	changed     bool
+}
+
+func installPublication(ctx context.Context, repo, stage string, previous map[string]bool, manifest Manifest, before publicationStep) (manifestInstalled bool, err error) {
 	current, err := publicationPaths(manifest)
 	if err != nil {
-		return err
+		return false, err
 	}
 	all := map[string]bool{}
 	for name := range previous {
@@ -173,30 +193,187 @@ func installPublication(repo, stage string, previous map[string]bool, manifest M
 		all[name] = true
 	}
 	for name := range all {
+		if !safePublicationPath(name) {
+			return false, fmt.Errorf("unowned publication path %q", name)
+		}
 		if _, err := regularFileInRoot(repo, filepath.Join(repo, filepath.FromSlash(name)), name, "publication"); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
-			return err
+			return false, err
 		}
-	}
-	for _, name := range sortedPublicationPaths(current) {
-		if name == ManifestName {
-			continue
-		}
-		if err := copyFile(filepath.Join(repo, filepath.FromSlash(name)), filepath.Join(stage, filepath.FromSlash(name))); err != nil {
-			return fmt.Errorf("install publication %s: %w", name, err)
-		}
-	}
-	for name := range previous {
-		if !current[name] {
-			if err := os.Remove(filepath.Join(repo, filepath.FromSlash(name))); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove previous publication %s: %w", name, err)
+		if current[name] {
+			if _, err := regularFileInRoot(stage, filepath.Join(stage, filepath.FromSlash(name)), name, "publication"); err != nil {
+				return false, err
 			}
 		}
 	}
-	return copyFile(filepath.Join(repo, ManifestName), filepath.Join(stage, ManifestName))
+	step := func(phase, name string) error {
+		if before != nil {
+			if err := before(phase, name); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	}
+	files := make([]*preparedPublicationFile, 0, len(all))
+	cleanup := func() error {
+		var errs []error
+		for _, file := range files {
+			errs = append(errs, os.RemoveAll(file.dir))
+		}
+		return errors.Join(errs...)
+	}
+	retained := func() string {
+		var dirs []string
+		for _, file := range files {
+			dirs = append(dirs, file.dir)
+		}
+		return strings.Join(dirs, ", ")
+	}
+	rollback := func(cause error) (bool, error) {
+		var errs []error
+		for _, file := range slices.Backward(files) {
+			if !file.changed {
+				continue
+			}
+			var restoreErr error
+			if before != nil {
+				restoreErr = before("rollback", file.name)
+			}
+			if restoreErr == nil {
+				if file.backup != "" {
+					restoreErr = os.Rename(file.backup, file.target)
+				} else {
+					restoreErr = os.Remove(file.target)
+					if errors.Is(restoreErr, os.ErrNotExist) {
+						restoreErr = nil
+					}
+				}
+			}
+			if restoreErr != nil {
+				errs = append(errs, fmt.Errorf("restore publication %s: %w", file.name, restoreErr))
+			}
+		}
+		if len(errs) > 0 {
+			return false, errors.Join(cause, errors.Join(errs...), fmt.Errorf(
+				"publication may be partially installed; backups retained in %s; restore each previous file to its named target (or remove newly created targets) before publishing again", retained()))
+		}
+		return false, errors.Join(cause, cleanup())
+	}
+	// Prepare the manifest first: a read-only archive root must fail before any
+	// shard is replaced. Sibling private directories also work with mount points.
+	names := []string{ManifestName}
+	for _, name := range sortedPublicationPaths(all) {
+		if name != ManifestName {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		if err := step("prepare", name); err != nil {
+			return false, errors.Join(err, cleanup())
+		}
+		target := filepath.Join(repo, filepath.FromSlash(name))
+		info, statErr := os.Lstat(target)
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return false, errors.Join(statErr, cleanup())
+		}
+		if !current[name] && errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return false, errors.Join(err, cleanup())
+		}
+		dir, err := os.MkdirTemp(filepath.Dir(target), ".discrawl-install-"+filepath.Base(target)+"-")
+		if err != nil {
+			return false, errors.Join(err, cleanup())
+		}
+		file := &preparedPublicationFile{name: name, target: target, dir: dir}
+		files = append(files, file)
+		if statErr == nil {
+			file.backup = filepath.Join(dir, "previous")
+			if err := preparePublicationFile(ctx, file.backup, target, info.Mode()); err != nil {
+				return false, errors.Join(err, cleanup())
+			}
+		}
+		if current[name] {
+			file.replacement = filepath.Join(dir, "replacement")
+			if err := preparePublicationFile(ctx, file.replacement, filepath.Join(stage, filepath.FromSlash(name)), 0o600); err != nil {
+				return false, errors.Join(err, cleanup())
+			}
+		}
+	}
+	for _, file := range files {
+		if file.name == ManifestName || file.replacement == "" {
+			continue
+		}
+		if err := step("install", file.name); err != nil {
+			return rollback(err)
+		}
+		if err := os.Rename(file.replacement, file.target); err != nil {
+			return rollback(fmt.Errorf("install publication %s: %w", file.name, err))
+		}
+		file.changed = true
+	}
+	if err := step("manifest", ManifestName); err != nil {
+		return rollback(err)
+	}
+	// os.Rename has no post-replacement work which could return a later error.
+	if err := os.Rename(files[0].replacement, files[0].target); err != nil {
+		return rollback(fmt.Errorf("install publication manifest: %w", err))
+	}
+	for _, file := range files {
+		if current[file.name] {
+			continue
+		}
+		if err := step("cleanup", file.name); err != nil {
+			return true, fmt.Errorf("publication manifest installed; cleanup failed; backups retained in %s: %w", retained(), err)
+		}
+		if err := os.Remove(file.target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return true, fmt.Errorf("publication manifest installed; remove %s failed; backups retained in %s: %w", file.name, retained(), err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		return true, fmt.Errorf("publication manifest installed; remove private preparation files: %w", err)
+	}
+	return true, nil
+}
+
+func preparePublicationFile(ctx context.Context, target, source string, mode os.FileMode) error {
+	src, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	// A fixed buffer bounds memory and provides cancellation points during large
+	// shard copies. Rollback itself deliberately ignores the canceled context.
+	buf := make([]byte, 64*1024)
+	for err == nil {
+		if err = ctx.Err(); err != nil {
+			break
+		}
+		var n int
+		n, err = src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				err = writeErr
+				break
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			err = nil
+			break
+		}
+	}
+	return errors.Join(err, dst.Chmod(mode), dst.Close())
 }
 
 func commitPublication(ctx context.Context, opts Options, message string) (bool, error) {
+	if _, _, err := workingPublicationBinding(opts.RepoPath, opts.Producer); err != nil {
+		return false, err
+	}
 	paths, err := previousPublicationPaths(ctx, opts.RepoPath, opts.Filter.Active())
 	if err != nil {
 		return false, err
