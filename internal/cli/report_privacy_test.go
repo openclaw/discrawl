@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/discrawl/internal/config"
@@ -141,13 +143,30 @@ func TestFilteredPublishRemovesFieldNotesPreservesDocs(t *testing.T) {
 			require.NoFileExists(t, filepath.Join(repo, report.FieldNotesMarkdownPath))
 			require.NoFileExists(t, filepath.Join(repo, report.FieldNotesJSONPath))
 			require.NoError(t, r.runPublish(append(args, "--push")))
+			remoteTree, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote,
+				"ls-tree", "-r", "--name-only", "main").Output()
+			require.NoError(t, err)
+			publishedPaths := strings.Fields(string(remoteTree))
+			require.NotContains(t, publishedPaths, report.FieldNotesMarkdownPath)
+			require.NotContains(t, publishedPaths, report.FieldNotesJSONPath)
 			for _, name := range []string{"AGENTS.md", "CONTRIBUTING.md", "reports/manual.md"} {
 				require.FileExists(t, filepath.Join(repo, name))
+				require.Contains(t, publishedPaths, name)
 			}
+			publishedInstructions, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote,
+				"show", "main:AGENTS.md").Output()
+			require.NoError(t, err)
+			require.Equal(t, "maintainer instructions\n", string(publishedInstructions))
+			staged, err := exec.CommandContext(t.Context(), "git", "-C", repo,
+				"diff", "--cached", "--name-only").Output()
+			require.NoError(t, err)
+			require.Contains(t, strings.Fields(string(staged)), "AGENTS.md")
 			if readmeMode == "custom" {
 				require.FileExists(t, readme)
+				require.Contains(t, publishedPaths, "README.md")
 			} else {
 				require.NoFileExists(t, readme)
+				require.NotContains(t, publishedPaths, "README.md")
 			}
 		})
 	}
