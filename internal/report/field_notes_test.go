@@ -1,6 +1,7 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestFieldNotesAggregatePair(t *testing.T) {
 	mdAgain, jsonAgain, err := RenderFieldNotes(activity)
 	require.NoError(t, err)
 	require.Equal(t, markdown, mdAgain)
-	require.JSONEq(t, string(metadata), string(jsonAgain))
+	require.True(t, bytes.Equal(metadata, jsonAgain), "field notes JSON bytes must be deterministic")
 }
 
 func TestFieldNotesTimestampStates(t *testing.T) {
