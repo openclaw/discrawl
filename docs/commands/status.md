@@ -16,6 +16,8 @@ discrawl status
 - channel and thread counts
 - message totals
 - latest archived message time
+- last captured Gateway event time (`last_tail_event_at` in local `--json` output,
+  omitted until a tail event has been recorded), separately from the last completed sync
 - whether the Git share is configured, whether its last check is stale, and whether an exact replacement is pending (`--json`)
 - remote endpoint/archive metadata when `remote.mode = "cloud"`
 - embeddings status if `[search.embeddings]` is enabled

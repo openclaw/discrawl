@@ -65,7 +65,12 @@ func (r *runtime) runMetadata(args []string) error {
 	return r.print(manifest)
 }
 
-func controlStatus(configPath string, cfg config.Config, status store.Status, shareNeedsUpdate bool) control.Status {
+type archiveControlStatus struct {
+	control.Status
+	LastTailEventAt string `json:"last_tail_event_at,omitempty"`
+}
+
+func controlStatus(configPath string, cfg config.Config, status store.Status, shareNeedsUpdate bool) archiveControlStatus {
 	counts := []control.Count{
 		control.NewCount("guilds", "Guilds", int64(status.GuildCount)),
 		control.NewCount("channels", "Channels", int64(status.ChannelCount)),
@@ -93,7 +98,11 @@ func controlStatus(configPath string, cfg config.Config, status store.Status, sh
 		Branch:      cfg.Share.Branch,
 		NeedsUpdate: shareNeedsUpdate,
 	}
-	return out
+	result := archiveControlStatus{Status: out}
+	if !status.LastTailEventAt.IsZero() {
+		result.LastTailEventAt = status.LastTailEventAt.UTC().Format(time.RFC3339)
+	}
+	return result
 }
 
 func fileSize(path string) int64 {
