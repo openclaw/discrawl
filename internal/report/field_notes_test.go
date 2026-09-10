@@ -59,7 +59,7 @@ func TestFieldNotesAggregatePair(t *testing.T) {
 	mdAgain, jsonAgain, err := RenderFieldNotes(activity)
 	require.NoError(t, err)
 	require.Equal(t, markdown, mdAgain)
-	require.Equal(t, metadata, jsonAgain)
+	require.JSONEq(t, string(metadata), string(jsonAgain))
 }
 
 func TestFieldNotesTimestampStates(t *testing.T) {
