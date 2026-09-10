@@ -156,7 +156,9 @@ func previousPublicationPaths(ctx context.Context, repo string, includeRemovedRe
 				if err != nil {
 					return nil, err
 				}
-				if strings.Contains(string(body), report.StartMarker) && strings.Contains(string(body), report.EndMarker) {
+				hasReport := strings.Contains(string(body), report.StartMarker) && strings.Contains(string(body), report.EndMarker)
+				hasNotes := strings.Contains(string(body), report.FieldNotesStartMarker) && strings.Contains(string(body), report.FieldNotesEndMarker)
+				if hasReport || hasNotes {
 					files["README.md"] = true
 				}
 			}
@@ -383,6 +385,18 @@ func commitPublication(ctx context.Context, opts Options, message string) (bool,
 			return false, fmt.Errorf("invalid generated README path %q", opts.ReadmePath)
 		}
 		paths[opts.ReadmePath] = true
+	}
+	if opts.Filter.Active() {
+		for _, name := range []string{report.FieldNotesMarkdownPath, report.FieldNotesJSONPath} {
+			_, err := regularFileInRoot(opts.RepoPath, filepath.Join(opts.RepoPath, filepath.FromSlash(name)), name, "publication")
+			if err == nil {
+				return false, errors.New("filtered publication must remove broader-scope field notes before commit")
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				return false, err
+			}
+			paths[name] = true
+		}
 	}
 	index, err := publicationGit(ctx, opts.RepoPath, nil, "ls-files", "-z")
 	if err != nil {

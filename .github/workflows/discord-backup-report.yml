@@ -74,13 +74,14 @@ jobs:
           printf 'db_path = "%s"\n' "$DB" > "$CONFIG"
           go run ./cmd/discrawl --config "$CONFIG" subscribe --repo "$BACKUP_REPO" "$BACKUP_REMOTE"
           git -C "$BACKUP_REPO" pull --ff-only origin main
-          go run ./cmd/discrawl --config "$CONFIG" report --published --readme "$BACKUP_REPO/README.md"
-          if git -C "$BACKUP_REPO" diff --quiet README.md; then
-            echo "README already up to date"
+          go run ./cmd/discrawl --config "$CONFIG" report --published --field-notes --readme "$BACKUP_REPO/README.md"
+          report_paths=(README.md reports/latest-field-notes.md reports/latest-field-notes.json)
+          git -C "$BACKUP_REPO" add -- "${report_paths[@]}"
+          if git -C "$BACKUP_REPO" diff --cached --quiet -- "${report_paths[@]}"; then
+            echo "Report and field notes already up to date"
             exit 0
           fi
-          git -C "$BACKUP_REPO" add README.md
-          git -C "$BACKUP_REPO" commit -m "docs: update discord activity report"
+          git -C "$BACKUP_REPO" commit --only -m "docs: update discord activity report and field notes" -- "${report_paths[@]}"
           git -C "$BACKUP_REPO" push
 
       - name: Save Discord DB cache

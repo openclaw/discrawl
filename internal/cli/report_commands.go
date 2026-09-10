@@ -14,11 +14,15 @@ func (r *runtime) runReport(args []string) error {
 	fs.SetOutput(io.Discard)
 	readmePath := fs.String("readme", "", "")
 	published := fs.Bool("published", false, "")
+	fieldNotes := fs.Bool("field-notes", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("report takes no positional arguments"))
+	}
+	if *fieldNotes && (!*published || *readmePath == "") {
+		return usageErr(errors.New("report --field-notes requires --published and --readme"))
 	}
 	filter := share.FilterOptions{
 		PublicOnly:        r.cfg.Share.Filter.PublicOnly,
@@ -37,7 +41,12 @@ func (r *runtime) runReport(args []string) error {
 		return err
 	}
 	if *readmePath != "" {
-		if err := report.WriteReadme(*readmePath, section); err != nil {
+		if *fieldNotes {
+			err = report.WriteReadmeWithFieldNotes(*readmePath, section, activity)
+		} else {
+			err = report.WriteReadme(*readmePath, section)
+		}
+		if err != nil {
 			return err
 		}
 		return r.print(map[string]any{

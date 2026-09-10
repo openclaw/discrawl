@@ -201,9 +201,11 @@ Search archived Discord members.
 
 Show archive status and freshness.
 `,
-	"report": `Usage: discrawl report [--published] [--readme PATH]
+	"report": `Usage: discrawl report [--published] [--readme PATH] [--field-notes]
 
 Generate the archive activity report.
+--field-notes requires --published and --readme; writes aggregate Markdown/JSON
+notes under reports/ beside the README, with a separate README notes block.
 Local reports include direct messages by default. --published excludes direct
 messages, but still includes private guild content. --published rejects configured
 share filters.

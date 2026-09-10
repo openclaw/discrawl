@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/openclaw/crawlkit/snapshot"
+	"github.com/openclaw/discrawl/internal/report"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -230,6 +231,41 @@ func TestPublicationOwnsExactFilesAndPreservesStagedWork(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, committed)
 	require.NotContains(t, testGitOutput(t, ctx, repo, "ls-tree", "-r", "--name-only", "HEAD"), opts.ReadmePath)
+}
+
+func TestFilteredPublicationOwnsOnlyFieldNotesDeletions(t *testing.T) {
+	ctx := t.Context()
+	s := seedStore(t, filepath.Join(t.TempDir(), "fixture.db"))
+	t.Cleanup(func() { _ = s.Close() })
+	repo := t.TempDir()
+	opts := Options{RepoPath: repo, Branch: "main"}
+	_, err := Export(ctx, s, opts)
+	require.NoError(t, err)
+	configureGitUser(t, repo)
+	_, err = Commit(ctx, opts, "test: initial")
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(filepath.Join(repo, "reports"), 0o700))
+	for _, name := range []string{report.FieldNotesMarkdownPath, report.FieldNotesJSONPath, "AGENTS.md", "reports/manual.md"} {
+		require.NoError(t, os.WriteFile(filepath.Join(repo, name), []byte("fixture\n"), 0o600))
+	}
+	testGitRun(t, ctx, repo, "-c", "commit.gpgsign=false", "add", ".")
+	testGitRun(t, ctx, repo, "-c", "commit.gpgsign=false", "commit", "-m", "test: notes and docs")
+	opts.Filter.IncludeChannelIDs = []string{"c1"}
+	_, err = Commit(ctx, opts, "test: must refuse broad notes")
+	require.ErrorContains(t, err, "must remove broader-scope field notes")
+	require.NoError(t, report.RemoveFieldNotes(repo))
+	testGitRun(t, ctx, repo, "add", "-u", "--", report.FieldNotesMarkdownPath)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("staged maintainer edit\n"), 0o600))
+	testGitRun(t, ctx, repo, "add", "AGENTS.md")
+	changed, err := Commit(ctx, opts, "test: remove only generated notes")
+	require.NoError(t, err)
+	require.True(t, changed)
+	files := strings.Fields(testGitOutput(t, ctx, repo, "ls-tree", "-r", "--name-only", "HEAD"))
+	require.NotContains(t, files, report.FieldNotesMarkdownPath)
+	require.NotContains(t, files, report.FieldNotesJSONPath)
+	require.Contains(t, files, "reports/manual.md")
+	require.Equal(t, "fixture\n", testGitOutput(t, ctx, repo, "show", "HEAD:AGENTS.md"))
+	require.Contains(t, testGitOutput(t, ctx, repo, "diff", "--cached", "--name-only"), "AGENTS.md")
 }
 
 func TestPublicationRejectsUnownedPreviousPaths(t *testing.T) {
