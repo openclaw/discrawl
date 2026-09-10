@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, explicit timestamp and coverage limits, and filtered-publication cleanup.
+- Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup.
 
 ## 0.14.1 - 2026-09-09
 

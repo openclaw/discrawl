@@ -158,7 +158,8 @@ func previousPublicationPaths(ctx context.Context, repo string, includeRemovedRe
 				}
 				hasReport := strings.Contains(string(body), report.StartMarker) && strings.Contains(string(body), report.EndMarker)
 				hasNotes := strings.Contains(string(body), report.FieldNotesStartMarker) && strings.Contains(string(body), report.FieldNotesEndMarker)
-				if hasReport || hasNotes {
+				hasLegacyNotes := strings.Contains(string(body), report.LegacyFieldNotesStartMarker) && strings.Contains(string(body), report.LegacyFieldNotesEndMarker)
+				if hasReport || hasNotes || hasLegacyNotes {
 					files["README.md"] = true
 				}
 			}

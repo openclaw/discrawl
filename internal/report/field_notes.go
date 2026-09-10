@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	FieldNotesStartMarker  = "<!-- discrawl-field-notes:start -->"
-	FieldNotesEndMarker    = "<!-- discrawl-field-notes:end -->"
-	FieldNotesMarkdownPath = "reports/latest-field-notes.md"
-	FieldNotesJSONPath     = "reports/latest-field-notes.json"
+	FieldNotesStartMarker       = "<!-- discrawl-aggregate-field-notes:start -->"
+	FieldNotesEndMarker         = "<!-- discrawl-aggregate-field-notes:end -->"
+	LegacyFieldNotesStartMarker = "<!-- discrawl-field-notes:start -->"
+	LegacyFieldNotesEndMarker   = "<!-- discrawl-field-notes:end -->"
+	FieldNotesMarkdownPath      = "reports/latest-field-notes.md"
+	FieldNotesJSONPath          = "reports/latest-field-notes.json"
 )
 
 type FieldNotes struct {

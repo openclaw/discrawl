@@ -167,6 +167,44 @@ func TestFieldNotesReadmeAndArtifacts(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dir, FieldNotesJSONPath))
 }
 
+func TestFieldNotesPreserveLegacyNarrative(t *testing.T) {
+	legacy := "<!-- discrawl-field-notes:start -->\r\n### Historical narrative fixture\r\n\r\nSynthetic narrative sentinel.  \r\n<!-- discrawl-field-notes:end -->"
+	for _, mode := range []string{"legacy-only", "legacy-with-activity"} {
+		t.Run(mode, func(t *testing.T) {
+			readme := filepath.Join(t.TempDir(), "README.md")
+			base := "# Maintainer instructions\n\n" + legacy + "\n\nManual footer.\n"
+			if mode == "legacy-with-activity" {
+				base = string(UpdateReadme([]byte(base), "old statistics"))
+			}
+			require.NoError(t, os.WriteFile(readme, []byte(base), 0o600))
+			activity := fieldNotesFixture()
+			var previous []byte
+			for range 2 {
+				require.NoError(t, WriteReadmeWithFieldNotes(readme, "new statistics", activity))
+				body, err := os.ReadFile(readme)
+				require.NoError(t, err)
+				require.Contains(t, string(body), legacy)
+				require.Contains(t, string(body), "# Maintainer instructions")
+				require.Contains(t, string(body), "Manual footer.")
+				require.Equal(t, 1, strings.Count(string(body), LegacyFieldNotesStartMarker))
+				require.Equal(t, 1, strings.Count(string(body), FieldNotesStartMarker))
+				if previous != nil {
+					require.True(t, bytes.Equal(previous, body), "repeated rendering must not alter README bytes")
+				}
+				previous = body
+			}
+			activity.TotalMessages++
+			require.NoError(t, WriteReadmeWithFieldNotes(readme, "new statistics", activity))
+			body, err := os.ReadFile(readme)
+			require.NoError(t, err)
+			require.Contains(t, string(body), legacy)
+			require.Contains(t, string(body), "Observed archive: 101 messages")
+			require.NotContains(t, string(body), "Observed archive: 100 messages")
+			require.Equal(t, 1, strings.Count(string(body), FieldNotesStartMarker))
+		})
+	}
+}
+
 func TestFieldNotesRejectMalformedMarkersAndUnsafePaths(t *testing.T) {
 	for _, text := range []string{
 		FieldNotesStartMarker, FieldNotesEndMarker,

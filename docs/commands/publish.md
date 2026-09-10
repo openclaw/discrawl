@@ -72,8 +72,9 @@ share repo already has a generated Discrawl `README.md` from an earlier
 unfiltered publish, filtered publish removes it before committing. Custom
 README files without Discrawl report markers are left alone.
 Producer-owned `reports/latest-field-notes.md` and `.json` are also removed
-by filtered publishing, even without a README. A README containing generated
-field-notes markers is removed too. Other reports and maintainer docs remain
+by filtered publishing, even without a README. A README containing either
+aggregate or legacy narrative field-notes markers is removed too; legacy notes
+are not exempt from the privacy guard. Other reports and maintainer docs remain
 untouched; ordinary unfiltered publication preserves the notes.
 
 ## What is published

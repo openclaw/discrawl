@@ -101,7 +101,7 @@ func TestPublishedReportCLIAndPublishExcludeDirectMessages(t *testing.T) {
 }
 
 func TestFilteredPublishRemovesFieldNotesPreservesDocs(t *testing.T) {
-	for _, readmeMode := range []string{"activity-and-notes", "notes-only", "missing", "custom"} {
+	for _, readmeMode := range []string{"activity-and-notes", "notes-only", "legacy-only", "legacy-and-aggregate", "missing", "custom"} {
 		t.Run(readmeMode, func(t *testing.T) {
 			dir := t.TempDir()
 			remote := filepath.Join(dir, "remote.git")
@@ -121,6 +121,12 @@ func TestFilteredPublishRemovesFieldNotesPreservesDocs(t *testing.T) {
 			switch readmeMode {
 			case "notes-only":
 				require.NoError(t, os.WriteFile(readme, []byte(report.FieldNotesStartMarker+"\nnotes\n"+report.FieldNotesEndMarker), 0o600))
+			case "legacy-only", "legacy-and-aggregate":
+				body := report.LegacyFieldNotesStartMarker + "\nsynthetic historical narrative\n" + report.LegacyFieldNotesEndMarker
+				if readmeMode == "legacy-and-aggregate" {
+					body += "\n" + report.FieldNotesStartMarker + "\naggregate notes\n" + report.FieldNotesEndMarker
+				}
+				require.NoError(t, os.WriteFile(readme, []byte(body), 0o600))
 			case "missing":
 				require.NoError(t, os.Remove(readme))
 			case "custom":

@@ -184,7 +184,8 @@ func removeGeneratedReadmeForFilteredPublish(repoPath string) (bool, error) {
 	text := string(body)
 	hasReport := strings.Contains(text, report.StartMarker) && strings.Contains(text, report.EndMarker)
 	hasNotes := strings.Contains(text, report.FieldNotesStartMarker) && strings.Contains(text, report.FieldNotesEndMarker)
-	if !hasReport && !hasNotes {
+	hasLegacyNotes := strings.Contains(text, report.LegacyFieldNotesStartMarker) && strings.Contains(text, report.LegacyFieldNotesEndMarker)
+	if !hasReport && !hasNotes && !hasLegacyNotes {
 		return false, nil
 	}
 	err = os.Remove(readmePath)

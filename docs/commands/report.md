@@ -39,8 +39,13 @@ Every scheduled snapshot publish updates this block.
 
 The daily report workflow also generates `reports/latest-field-notes.md` and
 `reports/latest-field-notes.json` beside the README. A separate
-`discrawl-field-notes:start/end` marker block displays the Markdown notes.
-Both artifacts and the activity block use one report build.
+`discrawl-aggregate-field-notes:start/end` marker block displays the Markdown
+notes. Both artifacts and the activity block use one report build.
+
+These deterministic aggregates are distinct from historical AI-generated
+narratives inside `discrawl-field-notes:start/end` markers. Ordinary report
+writes preserve that legacy block byte for byte; they neither regenerate it nor
+call a model. The aggregate block is updated independently.
 
 Notes contain aggregate totals and the existing 24-hour, 7-day, and 30-day
 windows, not names, IDs, message content, topic inference, or model output.
@@ -57,7 +62,8 @@ neither recent nor empty results establish complete history.
 
 The two artifact paths are producer-owned. Keep maintainer documentation and
 manual notes elsewhere. Filtered publishing removes these broader-scope
-artifacts and generated README output rather than leaking unfiltered counts.
+artifacts and generated README output, including legacy narrative blocks,
+rather than leaking broader-scope content.
 Ordinary snapshot publishes preserve the notes; only a successful daily report
 generation refreshes them. A failed generation must not be committed.
 
