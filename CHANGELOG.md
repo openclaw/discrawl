@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup.
+
 ## 0.14.1 - 2026-09-09
 
 - Accept the application's legacy migrated attachment column order in the backup-first repair helper while retaining exact schema and repair safeguards.

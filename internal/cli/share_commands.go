@@ -170,6 +170,9 @@ func (r *runtime) runPublish(args []string) error {
 }
 
 func removeGeneratedReadmeForFilteredPublish(repoPath string) (bool, error) {
+	if err := report.RemoveFieldNotes(repoPath); err != nil {
+		return false, err
+	}
 	readmePath := filepath.Join(repoPath, "README.md")
 	body, err := os.ReadFile(readmePath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -179,7 +182,10 @@ func removeGeneratedReadmeForFilteredPublish(repoPath string) (bool, error) {
 		return false, err
 	}
 	text := string(body)
-	if !strings.Contains(text, report.StartMarker) || !strings.Contains(text, report.EndMarker) {
+	hasReport := strings.Contains(text, report.StartMarker) && strings.Contains(text, report.EndMarker)
+	hasNotes := strings.Contains(text, report.FieldNotesStartMarker) && strings.Contains(text, report.FieldNotesEndMarker)
+	hasLegacyNotes := strings.Contains(text, report.LegacyFieldNotesStartMarker) && strings.Contains(text, report.LegacyFieldNotesEndMarker)
+	if !hasReport && !hasNotes && !hasLegacyNotes {
 		return false, nil
 	}
 	err = os.Remove(readmePath)

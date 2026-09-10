@@ -168,4 +168,5 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
   `share.filter.exclude_channel_ids` accept Discord channel ids; exclusions win,
   and including a forum parent also includes its allowed public threads
 - filtered publishes cannot write generated README reports, and remove older
-  generated Discrawl share READMEs before committing
+  generated Discrawl share READMEs and the producer-owned
+  `reports/latest-field-notes.md` / `.json` artifacts before committing
