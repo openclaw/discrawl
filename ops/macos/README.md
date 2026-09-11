@@ -11,8 +11,8 @@ supplies opt-in startup repair. Both passed CI and final ClawSweeper review.
 
 ## Installed configuration
 
-- Executable: `/Volumes/Data/Projects/openclaw-tools/bin/discrawl`, a signed
-  regular file at a stable path across rebuilds.
+- Executable: `/Volumes/Data/Projects/openclaw-tools/releases/discrawl/stable/discrawl`,
+  a signed regular file at a stable path across rebuilds. CLI links point here.
 - Config: `/Volumes/Data/AppData/discrawl/config.toml`.
 - `com.hrudolph.discrawl-tail` runs `tail --guilds 1456350064065904867 --repair-every 6h --repair-on-start --embed-live` under launchd.
 - `com.hrudolph.discrawl-status` records native JSON status hourly.
@@ -103,7 +103,8 @@ ops/macos/build-signed.sh --verify "$HOME/.local/share/discrawl-build/discrawl.s
 
 Fetch and select the reviewed source revision before building. The source stays
 on Data; the build worktree is temporary and is removed on completion. The final
-signed executable stays at the same physical `openclaw-tools/bin/discrawl` path.
+signed executable stays at the same physical `releases/discrawl/stable/discrawl` path.
+The tail and status LaunchAgents use that exact path directly.
 Use this signed build step for deployment; ordinary upstream `go build` retains
 Go's build-specific ad-hoc signing behavior.
 
@@ -118,3 +119,8 @@ stable across updates so macOS can retain its approval. The first launch under a
 new identity may need normal macOS consent; certificate rotation or OS privacy
 resets may require consent again. Do not edit TCC or grant a wrapper broader
 access to avoid a prompt. The signing helper is never part of the running service.
+
+Verified on September 11, 2026: two builds with different binary hashes retained
+the same certificate-bound identity. Both ran through launchd and processed live
+capture and embeddings. The second build retained Data access without another
+permission prompt. Temporary builds and the superseded executable were removed.
