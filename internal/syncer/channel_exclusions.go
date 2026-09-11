@@ -124,35 +124,39 @@ func (e channelExclusions) excludesDiscordChannel(channel *discordgo.Channel, ch
 	if channel == nil {
 		return false
 	}
-	if e.excludesID(channel.ID) || e.excludesKind(channelKind(channel)) {
-		return true
+	for current, seen := channel, map[string]struct{}{}; current != nil; {
+		if e.excludesID(current.ID) || e.excludesKind(channelKind(current)) || e.excludesID(current.ParentID) {
+			return true
+		}
+		if _, ok := seen[current.ID]; ok {
+			break
+		}
+		seen[current.ID] = struct{}{}
+		current = channelByID[current.ParentID]
 	}
 	if channel.ParentID == "" {
 		return !e.allowsUnparentedDiscordChannel(channel)
-	}
-	if e.excludesID(channel.ParentID) {
-		return true
-	}
-	parent := channelByID[channel.ParentID]
-	if parent != nil && e.excludesKind(channelKind(parent)) {
-		return true
 	}
 	return !e.allowsDiscordCategory(channel, channelByID)
 }
 
 func (e channelExclusions) excludesStoredChannel(channel store.ChannelRow, channelByID map[string]store.ChannelRow) bool {
-	if e.excludesID(channel.ID) || e.excludesKind(channel.Kind) {
-		return true
+	for current, seen := channel, map[string]struct{}{}; ; {
+		if e.excludesID(current.ID) || e.excludesKind(current.Kind) || e.excludesID(current.ParentID) {
+			return true
+		}
+		if _, ok := seen[current.ID]; ok {
+			break
+		}
+		seen[current.ID] = struct{}{}
+		parent, ok := channelByID[current.ParentID]
+		if !ok {
+			break
+		}
+		current = parent
 	}
 	if channel.ParentID == "" {
 		return !e.allowsUnparentedStoredChannel(channel)
-	}
-	if e.excludesID(channel.ParentID) {
-		return true
-	}
-	parent, ok := channelByID[channel.ParentID]
-	if ok && e.excludesKind(parent.Kind) {
-		return true
 	}
 	return !e.allowsStoredCategory(channel, channelByID)
 }

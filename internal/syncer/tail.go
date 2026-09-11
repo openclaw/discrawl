@@ -18,16 +18,14 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		return err
 	}
 	handler := &tailHandler{
-		guilds:                 makeGuildSet(guildIDs),
-		store:                  s.store,
-		client:                 s.client,
-		attachmentTextEnabled:  s.attachmentTextEnabled,
-		enqueueEmbeddings:      s.tailEmbeddings,
-		onReady:                s.tailReady,
-		logger:                 s.logger,
-		exclusions:             s.channelExclusions,
-		kindExcludedChannelIDs: map[string]struct{}{},
-		knownChannelIDs:        map[string]struct{}{},
+		guilds:                makeGuildSet(guildIDs),
+		store:                 s.store,
+		client:                s.client,
+		attachmentTextEnabled: s.attachmentTextEnabled,
+		enqueueEmbeddings:     s.tailEmbeddings,
+		onReady:               s.tailReady,
+		logger:                s.logger,
+		exclusions:            s.channelExclusions,
 	}
 	if err := handler.seedChannelExclusions(ctx); err != nil {
 		return fmt.Errorf("seed tail channel exclusions: %w", err)
@@ -205,18 +203,17 @@ func (s *Syncer) logTailRepairResult(result tailRepairResult) {
 }
 
 type tailHandler struct {
-	guilds                 map[string]struct{}
-	store                  *store.Store
-	client                 Client
-	attachmentTextEnabled  bool
-	enqueueEmbeddings      bool
-	failureLedgerTimeout   time.Duration
-	onReady                func(context.Context) error
-	logger                 *slog.Logger
-	exclusions             channelExclusions
-	exclusionMu            sync.RWMutex
-	kindExcludedChannelIDs map[string]struct{}
-	knownChannelIDs        map[string]struct{}
+	guilds                map[string]struct{}
+	store                 *store.Store
+	client                Client
+	attachmentTextEnabled bool
+	enqueueEmbeddings     bool
+	failureLedgerTimeout  time.Duration
+	onReady               func(context.Context) error
+	logger                *slog.Logger
+	exclusions            channelExclusions
+	exclusionMu           sync.RWMutex
+	channelScopeCatalog   map[string]store.ChannelRow
 }
 
 func (t *tailHandler) OnTailReady(ctx context.Context) error {
@@ -556,20 +553,7 @@ func (t *tailHandler) seedChannelExclusions(ctx context.Context) error {
 	}
 	t.exclusionMu.Lock()
 	defer t.exclusionMu.Unlock()
-	if t.kindExcludedChannelIDs == nil {
-		t.kindExcludedChannelIDs = map[string]struct{}{}
-	}
-	if t.knownChannelIDs == nil {
-		t.knownChannelIDs = map[string]struct{}{}
-	}
-	for _, channel := range channels {
-		t.knownChannelIDs[channel.ID] = struct{}{}
-		if t.exclusions.excludesStoredChannel(channel, channelByID) {
-			t.kindExcludedChannelIDs[channel.ID] = struct{}{}
-			continue
-		}
-		delete(t.kindExcludedChannelIDs, channel.ID)
-	}
+	t.channelScopeCatalog = channelByID
 	return nil
 }
 
@@ -579,45 +563,26 @@ func (t *tailHandler) excludeChannel(channelID string) bool {
 	}
 	t.exclusionMu.RLock()
 	defer t.exclusionMu.RUnlock()
-	if _, ok := t.kindExcludedChannelIDs[channelID]; ok {
-		return true
+	if channel, known := t.channelScopeCatalog[channelID]; known {
+		return t.exclusions.excludesStoredChannel(channel, t.channelScopeCatalog)
 	}
-	if !t.exclusions.categoryScopeSet {
-		return false
-	}
-	_, known := t.knownChannelIDs[channelID]
-	return !known
+	return t.exclusions.categoryScopeSet
 }
 
 func (t *tailHandler) trackChannelExclusion(channel *discordgo.Channel) {
 	if channel == nil {
 		return
 	}
-	excluded := t.exclusions.excludesID(channel.ID) || t.exclusions.excludesKind(channelKind(channel))
-	if !excluded && channel.ParentID == "" {
-		excluded = !t.exclusions.allowsUnparentedDiscordChannel(channel)
-	}
-	if !excluded && channel.ParentID != "" {
-		excluded = t.exclusions.excludesID(channel.ParentID)
-		_, allowedCategory := t.exclusions.allowedCategoryIDs[channel.ParentID]
-		if !excluded && (!t.exclusions.categoryScopeSet || !allowedCategory) {
-			excluded = t.excludeChannel(channel.ParentID)
-		}
-	}
 	t.exclusionMu.Lock()
 	defer t.exclusionMu.Unlock()
-	if t.kindExcludedChannelIDs == nil {
-		t.kindExcludedChannelIDs = map[string]struct{}{}
+	if t.channelScopeCatalog == nil {
+		t.channelScopeCatalog = map[string]store.ChannelRow{}
 	}
-	if t.knownChannelIDs == nil {
-		t.knownChannelIDs = map[string]struct{}{}
+	// Resolve ancestry when an event is checked, so parent moves and metadata
+	// arriving after a child also update that child's effective scope.
+	t.channelScopeCatalog[channel.ID] = store.ChannelRow{
+		ID: channel.ID, ParentID: channel.ParentID, Kind: channelKind(channel),
 	}
-	t.knownChannelIDs[channel.ID] = struct{}{}
-	if excluded {
-		t.kindExcludedChannelIDs[channel.ID] = struct{}{}
-		return
-	}
-	delete(t.kindExcludedChannelIDs, channel.ID)
 }
 
 func nextTailRepairDelay(now time.Time, repairEvery, repairOffset time.Duration) time.Duration {

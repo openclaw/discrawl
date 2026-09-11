@@ -205,11 +205,9 @@ func TestTailAppliesCategoryAndChannelExclusions(t *testing.T) {
 	}
 
 	handler := &tailHandler{
-		guilds:                 makeGuildSet([]string{"g1"}),
-		store:                  s,
-		exclusions:             newChannelScope([]string{"blocked-id"}, []string{"announcement"}, []string{"category-a"}),
-		kindExcludedChannelIDs: map[string]struct{}{},
-		knownChannelIDs:        map[string]struct{}{},
+		guilds:     makeGuildSet([]string{"g1"}),
+		store:      s,
+		exclusions: newChannelScope([]string{"blocked-id"}, []string{"announcement"}, []string{"category-a"}),
 	}
 	require.NoError(t, handler.seedChannelExclusions(ctx))
 

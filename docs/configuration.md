@@ -145,6 +145,7 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `guild_ids` is reserved for explicit multi-guild fan-out; usually you do not set this directly
 - `sync.include_category_ids` limits Discord sync and tail collection to the listed categories and all channel/thread descendants; root-level and unrelated channels are skipped
 - `sync.exclude_channel_ids` and `sync.exclude_channel_kinds` apply to historical sync, live tail events, and repair syncs; exclusions always win over category inclusion
+- `sync.exclude_channel_ids` also accepts category IDs: excluding a category or channel excludes all its channel and thread descendants. For opt-out collection, leave `sync.include_category_ids` empty and put unwanted category/channel IDs in `sync.exclude_channel_ids`; new categories are included automatically, subject to Discord access and other exclusions.
 - `sync.exclude_channel_kinds` accepts Discrawl kinds such as `text`, `announcement`, `forum`, `thread_public`, `thread_private`, and `thread_announcement`
 - a non-zero `sync.repair_offset` aligns periodic repairs to local wall-clock boundaries; for example, `repair_every = "6h"` with `repair_offset = "2h"` targets 02:00, 08:00, 14:00, and 20:00 local time
 - `[search.lexical].languages` enables opt-in multilingual FTS fields. Supported presets are Korean (`ko`, Kiwi through `github.com/codingpot/kiwigo`), Japanese (`ja`, Kagome Search through `discrawl-ja`), Chinese (`zh`, GSE CutSearch through `discrawl-zh`), and Arabic (`ar`, in-process light stemming).
