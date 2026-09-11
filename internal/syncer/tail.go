@@ -23,6 +23,7 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		client:                s.client,
 		attachmentTextEnabled: s.attachmentTextEnabled,
 		enqueueEmbeddings:     s.tailEmbeddings,
+		preserveHistoryCursor: s.tailRepairOnStart,
 		onReady:               s.tailReady,
 		logger:                s.logger,
 		exclusions:            s.channelExclusions,
@@ -30,7 +31,22 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	if err := handler.seedChannelExclusions(ctx); err != nil {
 		return fmt.Errorf("seed tail channel exclusions: %w", err)
 	}
-	if repairEvery <= 0 {
+	var startupReady <-chan struct{}
+	if s.tailRepairOnStart {
+		ready := make(chan struct{})
+		startupReady = ready
+		var once sync.Once
+		handler.onReady = func(ctx context.Context) error {
+			if s.tailReady != nil {
+				if err := s.tailReady(ctx); err != nil {
+					return err
+				}
+			}
+			once.Do(func() { close(ready) })
+			return nil
+		}
+	}
+	if repairEvery <= 0 && !s.tailRepairOnStart {
 		return s.client.Tail(ctx, handler)
 	}
 	tailCtx, cancelTail := context.WithCancel(ctx)
@@ -45,8 +61,13 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	go func() {
 		tailDone <- s.client.Tail(tailCtx, handler)
 	}()
-	repairTimer := time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
-	defer repairTimer.Stop()
+	var repairTimer *time.Timer
+	var repairTick <-chan time.Time
+	if repairEvery > 0 {
+		repairTimer = time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
+		defer repairTimer.Stop()
+		repairTick = repairTimer.C
+	}
 	var activeRepair *tailRepairRun
 	var repairDone <-chan tailRepairResult
 	for {
@@ -78,8 +99,18 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			s.logTailRepairResult(result)
 			activeRepair = nil
 			repairDone = nil
-		case <-repairTimer.C:
-			if activeRepair != nil {
+		case <-startupReady:
+			startupReady = nil
+			// Capture is connected before REST catch-up, so events arriving
+			// during the repair are still observed by this same writer owner.
+			if ctx.Err() == nil {
+				activeRepair = s.startTailRepair(ctx, guildIDs)
+				if activeRepair != nil {
+					repairDone = activeRepair.done
+				}
+			}
+		case <-repairTick:
+			if activeRepair != nil || startupReady != nil {
 				repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
 				continue
 			}
@@ -208,6 +239,7 @@ type tailHandler struct {
 	client                Client
 	attachmentTextEnabled bool
 	enqueueEmbeddings     bool
+	preserveHistoryCursor bool
 	failureLedgerTimeout  time.Duration
 	onReady               func(context.Context) error
 	logger                *slog.Logger
@@ -293,9 +325,15 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
 		return err
 	}
-	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCursorAdvance)
-	if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
-		return err
+	// In startup-repair mode only REST advances history coverage. An isolated
+	// Gateway event cannot prove the intervening history was fetched. Keeping
+	// this rule for the lifetime of the tail also makes interrupted repairs
+	// recoverable by the next owner without a second cursor or checkpoint.
+	if !t.preserveHistoryCursor {
+		discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCursorAdvance)
+		if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
+			return err
+		}
 	}
 	if err := t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create"); err != nil {
 		return err

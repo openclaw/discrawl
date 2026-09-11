@@ -11,6 +11,7 @@ discrawl tail --with-embeddings
 discrawl tail --embed-live
 discrawl tail --guild 123456789012345678
 discrawl tail --repair-every 30m
+discrawl tail --repair-on-start --repair-every 6h
 discrawl tail --replay-failures-only
 ```
 
@@ -28,6 +29,7 @@ discrawl tail --replay-failures-only
 
 - `--guild <id>` / `--guilds <id,id>` - tail a specific guild scope (default: `default_guild_id`, or all discovered guilds if unset)
 - `--repair-every <duration>` - frequency of the repair sweep
+- `--repair-on-start` - run one catch-up repair after the Gateway connects, without waiting for the periodic timer (default: off; also works with `--repair-every 0`)
 - `--embed-live` - continuously process queued embeddings while capture continues (opt-in; implies queueing; requires configured embeddings)
 - `--with-embeddings` - queue live, replayed, and repair messages for embedding (default: off)
 - `--replay-failures-only` - replay unresolved exact-message tail failures and exit
@@ -36,6 +38,8 @@ discrawl tail --replay-failures-only
 ## Notes
 
 - requires a working Discord bot token
+- startup repair uses the same writer owner and serialized repair lifecycle as periodic repair; capture remains connected while missed history is fetched, and shutdown cancels and joins the repair
+- with `--repair-on-start`, REST repair owns history cursors for that tail session; live events still update messages and live freshness immediately, but cannot advance history progress past missing messages. Periodic and subsequent startup repairs may therefore re-fetch already captured messages. This also preserves catch-up progress if repair is interrupted.
 - not available in Git-only mode (`discord.token_source = "none"`)
 - `discrawl --verbose tail` traces Gateway receipt, worker handling, scope
   filtering, and successful archive writes with event and Discord IDs but no
