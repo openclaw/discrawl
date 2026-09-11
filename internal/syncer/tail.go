@@ -23,6 +23,7 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 		client:                s.client,
 		attachmentTextEnabled: s.attachmentTextEnabled,
 		enqueueEmbeddings:     s.tailEmbeddings,
+		preserveHistoryCursor: s.tailRepairOnStart,
 		onReady:               s.tailReady,
 		logger:                s.logger,
 		exclusions:            s.channelExclusions,
@@ -238,6 +239,7 @@ type tailHandler struct {
 	client                Client
 	attachmentTextEnabled bool
 	enqueueEmbeddings     bool
+	preserveHistoryCursor bool
 	failureLedgerTimeout  time.Duration
 	onReady               func(context.Context) error
 	logger                *slog.Logger
@@ -323,9 +325,15 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
 		return err
 	}
-	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCursorAdvance)
-	if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
-		return err
+	// In startup-repair mode only REST advances history coverage. An isolated
+	// Gateway event cannot prove the intervening history was fetched. Keeping
+	// this rule for the lifetime of the tail also makes interrupted repairs
+	// recoverable by the next owner without a second cursor or checkpoint.
+	if !t.preserveHistoryCursor {
+		discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCursorAdvance)
+		if err := t.store.AdvanceChannelLatestMessageID(ctx, msg.ChannelID, msg.ID); err != nil {
+			return err
+		}
 	}
 	if err := t.resolveMessageFailure(ctx, msg.GuildID, msg.ChannelID, msg.ID, "create"); err != nil {
 		return err
