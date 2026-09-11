@@ -1,5 +1,10 @@
 # Native Discrawl service on this Mac
 
+Stable-signing transition is awaiting the first macOS Data-drive consent. The
+original native collector is temporarily running from the active terminal session;
+the tail/status LaunchAgents are paused. Signed builds and deployment state are in
+`~/.local/share/discrawl-signing-work`, with tooling on `ops/discrawl-stable-signing`.
+
 launchd runs Discrawl directly. Discrawl loads both credentials, owns the archive
 writer, captures Gateway events, repairs history, and processes embeddings.
 There is no Python coordinator or credential-loading shell wrapper.
@@ -75,9 +80,7 @@ values empty, advancing capture and embeddings, startup repair completion, and
 a graceful native restart with exit code 0. The previous process exited in about
 two seconds. The application has no local patches.
 
-Evidence and rollback files are under
-`/Volumes/Data/Projects/openclaw-tools/backups/discrawl-native-service-20260911`.
-See `native-live-verification.json`, `restart-verification.json`, and
-`rollback.json`. The retired coordinator is preserved there solely for rollback.
-Rollback restores the saved service/config and a schema-compatible executable;
-it never restores an older database over newly captured messages.
+The obsolete native-service cutover files and retired coordinator copies have
+been removed after verification. Do not retain obsolete cutover directories or
+previous executables after a successful update. Never replace the live archive
+with an older copy as part of an executable update.
