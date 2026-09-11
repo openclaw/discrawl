@@ -35,6 +35,10 @@ After changing `[search.embeddings]` provider, model, or any input setting, when
 
 `sync --with-embeddings` enqueues; `embed` drains. The two phases are intentionally separate so a slow provider does not block the hot sync path.
 
+For continuous capture with background embedding, use `discrawl tail --embed-live`.
+Do not run a separate drain against the tail owner; live mode coordinates both
+inside one process.
+
 ## See also
 
 - [Embeddings guide](../guides/embeddings.html)

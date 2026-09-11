@@ -894,6 +894,10 @@ func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Stat
 		return Status{}, err
 	}
 	status.AccessibleGuildIDs = guildIDs
+	status.BackgroundWork, err = s.ReadEmbeddingWorkerStatus(ctx)
+	if err != nil {
+		return Status{}, err
+	}
 	return status, nil
 }
 

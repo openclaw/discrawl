@@ -113,6 +113,7 @@ type MessageMutation struct {
 type WriteOptions struct {
 	AppendEvent      bool
 	EnqueueEmbedding bool
+	EmbeddingCatchUp bool
 	PreserveNewer    bool
 	DeduplicateEvent bool
 }
@@ -282,7 +283,11 @@ func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRec
 	if err := s.upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyEmbeddingWork()
+	return nil
 }
 
 func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) error {
@@ -342,7 +347,11 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyEmbeddingWork()
+	return nil
 }
 
 func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord) (bool, error) {
@@ -431,6 +440,16 @@ func (s *Store) upsertMessageTx(
 		(errors.Is(previousErr, sql.ErrNoRows) || previousNormalized.String != message.NormalizedContent || !jobExists)
 	if queueEmbedding {
 		if err := qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: message.ID, UpdatedAt: now}); err != nil {
+			return err
+		}
+		priority := 1
+		if opts.EmbeddingCatchUp {
+			priority = 0
+		}
+		if _, err := tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',available_at='',priority=?,enqueued_at=? where message_id=?`, priority, now, message.ID); err != nil {
+			return err
+		}
+		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
 			return err
 		}
 	}
