@@ -2,11 +2,17 @@
 
 ## Unreleased
 
-- Allow explicit OS keyring credentials for embeddings, with safe initialization retries during capture and unchanged environment-based defaults.
-- Use CrawlKit v0.16.1 to bound live-embedding shutdown when cancellation interrupts retry or completion persistence and cleanup storage is unavailable.
-- Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup.
+**Highlights:** Keep embeddings current during continuous capture, recover restart gaps on demand, and inspect live archive freshness.
 
-- Add opt-in `tail --repair-on-start` to recover restart gaps immediately after Gateway connection, using the existing serialized repair and writer ownership.
+- Add opt-in `tail --embed-live` to keep embeddings current during Discord capture, with coordinated queue ownership, provider batch and timeout settings, and background-worker health in status output. Thanks @hannesrudolph.
+- Add opt-in `tail --repair-on-start` to recover restart gaps immediately after Gateway connection, using the existing serialized repair and writer ownership. Thanks @hannesrudolph.
+- Exclude nested channels and threads beneath excluded categories during catalog discovery and live capture. Thanks @hannesrudolph.
+- Include the last captured Gateway event time as optional `last_tail_event_at` in local `status --json`, separately from the last completed sync. Thanks @hannesrudolph.
+- Speed per-channel changed-message queries with an additive update-cursor index; document synchronous first-writable-open costs and backup-first evaluation before broader rollout. Thanks @hannesrudolph and @vincentkoc.
+- Allow explicit OS keyring credentials for embeddings, with safe initialization retries during capture and unchanged environment-based defaults. Thanks @hannesrudolph.
+- Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup. Thanks @vincentkoc.
+- Use CrawlKit v0.16.1 to bound live-embedding shutdown when cancellation interrupts retry or completion persistence and cleanup storage is unavailable. Thanks @hannesrudolph.
+- Refresh terminal-width, Go system, text and cryptography dependencies, Go analysis tools, and CodeQL while retaining the existing Go minimum and SQLite runtime pairing.
 
 ## 0.14.1 - 2026-09-09
 
