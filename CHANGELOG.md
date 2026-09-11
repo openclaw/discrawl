@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include the last captured Gateway event time as optional `last_tail_event_at` in local `status --json`, separately from the last completed sync.
+- Speed per-channel changed-message queries with an additive update-cursor index; document synchronous first-writable-open cost and backup-first, measured canary prerequisites before broader rollout.
 - Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup.
 
 ## 0.14.1 - 2026-09-09

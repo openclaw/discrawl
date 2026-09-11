@@ -45,6 +45,39 @@ The schema is multi-guild ready even when the common UX stays single-guild simpl
 
 SQLite schema migrations are versioned with `PRAGMA user_version`. Startup fails fast when a local DB schema is newer than the supported binary - that means you have a binary older than the database.
 
+Index maintenance also runs on writable opens of an already-versioned database.
+An unchanged `user_version` therefore does not mean that a writer open will do
+no schema work. Read-only opens do not run this maintenance.
+
+### Channel update-cursor index
+
+After v0.14.1, Discrawl adds `idx_messages_channel_updated_id` on
+`messages(channel_id, updated_at, id)` for per-channel changed-message queries.
+It preserves the existing creation-time indexes and does not change
+`user_version`. The first writable open that finds the index missing builds it
+synchronously before returning; later opens retain the existing index.
+
+That first build can delay the initiating command and other writers. Build
+duration, peak memory, temporary disk requirements, persistent index size and
+ongoing message-write overhead remain **unmeasured for the target archive**.
+Small synthetic read timings and successful CI are not production capacity
+estimates or acceptance of those costs. The historical operational decision in
+[PR214](https://github.com/openclaw/discrawl/pull/214) is not resolved by this
+documentation.
+
+### Before broader index rollout
+
+Require an explicitly approved, backup-first canary and a decision on its
+measurements before expanding adoption. These are operator prerequisites, not
+an automatic software gate or authorization to run a canary:
+
+1. Have the owner approve the candidate revision, isolated target, maintenance coordination and rollback plan. Define elapsed-time, peak-memory, disk headroom and write-impact limits, with stop criteria, before starting.
+2. Coordinate archive writers and take a verified SQLite-consistent backup under that plan. Retain the matching pre-upgrade binary and configuration. Do not copy only the main database file while uncheckpointed WAL data may exist; use an approved consistent-backup method and verify restoration.
+3. Use a separately approved disposable copy, with explicit isolated config, database, cache, log and share paths. Prevent provider, Git-share and backend requests. Do not run collection or publication, and leave the source archive and other deployments untouched.
+4. On that copy only, measure the first writable open, peak memory, temporary and persistent disk growth, remaining headroom, and a bounded local write workload before and after the index. Keep archive contents private; record aggregate measurements and the exact candidate revision.
+5. Stop expansion if a limit is exceeded or evidence is incomplete. The owner must explicitly approve the measured tradeoff for the intended rollout; successful publication elsewhere does not establish acceptable local costs.
+6. For rollback, restore the matching pre-upgrade binary, configuration and database from the verified backup, accounting for any writes since backup. A binary downgrade alone is not a verified rollback plan.
+
 ## Failure history
 
 `failure_ledger` records bounded error text and available Discord row
