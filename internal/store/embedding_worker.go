@@ -110,7 +110,11 @@ func (s *Store) NewEmbeddingWorker(ctx context.Context, provider embed.Provider,
 		return nil, err
 	}
 	q := &embeddingWorkQueue{store: s, reader: reader, opts: opts, embedProvider: provider}
-	r, err := worker.New[string, embeddingWorkResult](q, q.process, worker.Options{Kind: "embeddings", BatchSize: 64, Concurrency: 2})
+	requestTimeout := opts.RequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = embed.DefaultRequestTimeout
+	}
+	r, err := worker.New[string, embeddingWorkResult](q, q.process, worker.Options{Kind: "embeddings", BatchSize: min(opts.BatchSize, 64), Concurrency: 2, TaskTimeout: requestTimeout + 30*time.Second})
 	if err != nil {
 		_ = reader.Close()
 		return nil, err

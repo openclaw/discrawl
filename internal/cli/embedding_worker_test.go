@@ -48,6 +48,8 @@ func TestTailLiveEmbeddingsKeepsCaptureAndWriterOwnership(t *testing.T) {
 	cfg.Search.Embeddings.Enabled = true
 	cfg.Search.Embeddings.Provider = "openai"
 	cfg.Search.Embeddings.Model = "fixture"
+	cfg.Search.Embeddings.BatchSize = 2
+	cfg.Search.Embeddings.RequestTimeout = "5m"
 	p := filepath.Join(dir, "config.toml")
 	require.NoError(t, config.Write(p, cfg))
 	fake := &fakeSyncService{callTailReady: true}
@@ -55,6 +57,9 @@ func TestTailLiveEmbeddingsKeepsCaptureAndWriterOwnership(t *testing.T) {
 	var requests atomic.Int32
 	rt.newEmbed = func(config.EmbeddingsConfig) (embed.Provider, error) {
 		return liveCLIProvider(func(ctx context.Context, texts []string) (embed.EmbeddingBatch, error) {
+			if len(texts) > 2 {
+				return embed.EmbeddingBatch{}, errors.New("configured batch limit exceeded")
+			}
 			requests.Add(1)
 			select {
 			case <-time.After(200 * time.Millisecond):

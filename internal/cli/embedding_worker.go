@@ -43,7 +43,7 @@ func (r *runtime) runTailWithEmbeddingWorker(ctx context.Context, guilds []strin
 		}
 	}
 	provider := &deferredEmbeddingProvider{create: func() (embed.Provider, error) { return create(r.cfg.Search.Embeddings) }}
-	w, err := r.store.NewEmbeddingWorker(ctx, provider, store.EmbeddingDrainOptions{Provider: r.cfg.Search.Embeddings.Provider, Model: r.cfg.Search.Embeddings.Model, InputVersion: store.EmbeddingInputVersion, MaxInputChars: r.cfg.Search.Embeddings.MaxInputChars})
+	w, err := r.store.NewEmbeddingWorker(ctx, provider, store.EmbeddingDrainOptions{Provider: r.cfg.Search.Embeddings.Provider, Model: r.cfg.Search.Embeddings.Model, InputVersion: store.EmbeddingInputVersion, MaxInputChars: r.cfg.Search.Embeddings.MaxInputChars, BatchSize: r.cfg.Search.Embeddings.BatchSize, RequestTimeout: mustDuration(r.cfg.Search.Embeddings.RequestTimeout)})
 	if err != nil {
 		return err
 	}

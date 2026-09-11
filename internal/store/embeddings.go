@@ -21,13 +21,14 @@ const (
 )
 
 type EmbeddingDrainOptions struct {
-	Provider      string
-	Model         string
-	InputVersion  string
-	Limit         int
-	BatchSize     int
-	MaxInputChars int
-	Now           func() time.Time
+	RequestTimeout time.Duration
+	Provider       string
+	Model          string
+	InputVersion   string
+	Limit          int
+	BatchSize      int
+	MaxInputChars  int
+	Now            func() time.Time
 }
 
 type EmbeddingDrainStats struct {

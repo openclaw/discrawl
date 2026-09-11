@@ -377,3 +377,44 @@ func TestEmbeddingWorkerProviderChangeResetsAttempts(t *testing.T) {
 	require.NoError(t, s.db.QueryRowContext(t.Context(), `select attempts from embedding_jobs where message_id='101'`).Scan(&attempts))
 	require.Zero(t, attempts)
 }
+
+func TestEmbeddingWorkerHonorsBatchAndProviderTimeout(t *testing.T) {
+	s := liveStore(t)
+	for i := range 8 {
+		liveMessage(t, s, strconv.Itoa(100+i), "input")
+	}
+	type request struct {
+		size   int
+		budget time.Duration
+	}
+	requests := make(chan request, 8)
+	provider := liveTestProvider(func(ctx context.Context, input []string) (embed.EmbeddingBatch, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return embed.EmbeddingBatch{}, errors.New("missing deadline")
+		}
+		requests <- request{len(input), time.Until(deadline)}
+		return liveVectors(ctx, input)
+	})
+	opts := liveOpts()
+	opts.BatchSize = 2
+	opts.RequestTimeout = 5 * time.Minute
+	w, err := s.NewEmbeddingWorker(t.Context(), provider, opts)
+	require.NoError(t, err)
+	cancel := startLive(t, w)
+	require.Eventually(t, func() bool {
+		var n int
+		_ = s.db.QueryRowContext(t.Context(), `select count(*) from message_embeddings`).Scan(&n)
+		return n == 8
+	}, 5*time.Second, 20*time.Millisecond)
+	cancel()
+	require.Eventually(t, func() bool { return w.Status().State == "stopped" }, time.Second, time.Millisecond)
+	close(requests)
+	count := 0
+	for r := range requests {
+		count++
+		require.LessOrEqual(t, r.size, 2)
+		require.Greater(t, r.budget, 5*time.Minute)
+	}
+	require.GreaterOrEqual(t, count, 4)
+}

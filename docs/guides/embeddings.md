@@ -77,8 +77,9 @@ also queues new messages, edits, replay and repair work. Embeddings must already
 be enabled in the configuration. Ordinary `tail --with-embeddings` still only
 queues work; `embed` remains the bounded one-shot drain.
 
-Two workers process batches of at most 64 inputs, with a 250 ms batching window
-and one-second fallback polling. Fresh Gateway content takes priority over sync
+Two workers honor the configured batch size up to a maximum of 64 inputs, with a 250 ms batching window
+and one-second fallback polling. The worker deadline includes the configured
+provider request timeout plus 30 seconds for preparation and result handling. Fresh Gateway content takes priority over sync
 catch-up, with capacity reserved for catch-up. Healthy-provider freshness targets
 are measured from the source transaction to the committed vector; ten seconds
 is a target under normal load, not a promise during provider outages or overload.
