@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.hrudolph.discrawl-logrotate</string>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/opt/logrotate/sbin/logrotate</string>
+		<string>-s</string>
+		<string>/Users/hrudolph/Library/Caches/discrawl/logrotate.status</string>
+		<string>/Users/hrudolph/.config/discrawl/logrotate.conf</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/hrudolph/Library/Logs/discrawl/logrotate.err.log</string>
+	<key>StartInterval</key>
+	<integer>900</integer>
+</dict>
+</plist>

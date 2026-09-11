@@ -23,15 +23,23 @@
 	<string>Standard</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/hrudolph/.local/bin/discrawl-service</string>
-		<string>run</string>
+		<string>/Volumes/Data/Projects/openclaw-tools/bin/discrawl</string>
+		<string>--config</string>
+		<string>/Volumes/Data/AppData/discrawl/config.toml</string>
+		<string>tail</string>
+		<string>--guilds</string>
+		<string>1456350064065904867</string>
+		<string>--repair-every</string>
+		<string>6h</string>
+		<string>--repair-on-start</string>
+		<string>--embed-live</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/Users/hrudolph/Library/Logs/discrawl/service.err.log</string>
+	<string>/Users/hrudolph/Library/Logs/discrawl/tail-native.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/hrudolph/Library/Logs/discrawl/service.log</string>
+	<string>/Users/hrudolph/Library/Logs/discrawl/tail-native.log</string>
 	<key>ThrottleInterval</key>
 	<integer>30</integer>
 </dict>

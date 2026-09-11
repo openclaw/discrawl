@@ -19,15 +19,18 @@
 	<string>Standard</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/hrudolph/.local/bin/discrawl-service</string>
-		<string>health</string>
+		<string>/Volumes/Data/Projects/openclaw-tools/bin/discrawl</string>
+		<string>--config</string>
+		<string>/Volumes/Data/AppData/discrawl/config.toml</string>
+		<string>--json</string>
+		<string>status</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/Users/hrudolph/Library/Logs/discrawl/status.err.log</string>
+	<string>/Users/hrudolph/Library/Logs/discrawl/status-native.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/hrudolph/Library/Logs/discrawl/status.log</string>
+	<string>/Users/hrudolph/Library/Logs/discrawl/status-native.log</string>
 	<key>StartInterval</key>
 	<integer>3600</integer>
 </dict>
