@@ -98,16 +98,19 @@ type ShareFilterConfig struct {
 }
 
 type EmbeddingsConfig struct {
-	Enabled        bool   `toml:"enabled"`
-	Provider       string `toml:"provider"`
-	Model          string `toml:"model"`
-	BaseURL        string `toml:"base_url"`
-	APIKeyEnv      string `toml:"api_key_env"`
-	Dimensions     int    `toml:"dimensions"`
-	BatchSize      int    `toml:"batch_size"`
-	MaxInputChars  int    `toml:"max_input_chars"`
-	RequestTimeout string `toml:"request_timeout"`
-	VectorBackend  string `toml:"vector_backend"`
+	Enabled              bool   `toml:"enabled"`
+	Provider             string `toml:"provider"`
+	Model                string `toml:"model"`
+	BaseURL              string `toml:"base_url"`
+	APIKeyEnv            string `toml:"api_key_env"`
+	APIKeySource         string `toml:"api_key_source,omitempty"`
+	APIKeyKeyringService string `toml:"api_key_keyring_service,omitempty"`
+	APIKeyKeyringAccount string `toml:"api_key_keyring_account,omitempty"`
+	Dimensions           int    `toml:"dimensions"`
+	BatchSize            int    `toml:"batch_size"`
+	MaxInputChars        int    `toml:"max_input_chars"`
+	RequestTimeout       string `toml:"request_timeout"`
+	VectorBackend        string `toml:"vector_backend"`
 }
 
 type TokenResolution struct {
@@ -349,6 +352,9 @@ func (c *Config) Normalize() error {
 	c.Search.Embeddings.Model = strings.TrimSpace(c.Search.Embeddings.Model)
 	c.Search.Embeddings.BaseURL = strings.TrimRight(strings.TrimSpace(c.Search.Embeddings.BaseURL), "/")
 	c.Search.Embeddings.APIKeyEnv = strings.TrimSpace(c.Search.Embeddings.APIKeyEnv)
+	c.Search.Embeddings.APIKeySource = strings.ToLower(strings.TrimSpace(c.Search.Embeddings.APIKeySource))
+	c.Search.Embeddings.APIKeyKeyringService = strings.TrimSpace(c.Search.Embeddings.APIKeyKeyringService)
+	c.Search.Embeddings.APIKeyKeyringAccount = strings.TrimSpace(c.Search.Embeddings.APIKeyKeyringAccount)
 	c.Search.Embeddings.RequestTimeout = strings.TrimSpace(c.Search.Embeddings.RequestTimeout)
 	c.Search.Embeddings.VectorBackend = strings.ToLower(strings.TrimSpace(c.Search.Embeddings.VectorBackend))
 	if c.Search.Embeddings.Provider == "" {

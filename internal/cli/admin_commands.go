@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/openclaw/crawlkit/embed"
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/discorddesktop"
@@ -330,6 +329,7 @@ func (r *runtime) runTail(args []string) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
+	repairOnStart := fs.Bool("repair-on-start", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	embedLive := fs.Bool("embed-live", false, "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
@@ -357,6 +357,14 @@ func (r *runtime) runTail(args []string) error {
 	}
 	if *embedLive && *replayFailuresOnly {
 		return usageErr(errors.New("--embed-live cannot be combined with --replay-failures-only"))
+	}
+	if *repairOnStart && *replayFailuresOnly {
+		return usageErr(errors.New("--repair-on-start cannot be combined with --replay-failures-only"))
+	}
+	if configurable, ok := r.syncer.(tailStartupRepairConfigurer); ok {
+		configurable.SetTailRepairOnStart(*repairOnStart)
+	} else if *repairOnStart {
+		return errors.New("startup tail repair is unavailable")
 	}
 	if *embedLive && !r.cfg.Search.Embeddings.Enabled {
 		return usageErr(errors.New("--embed-live requires embeddings enabled in config"))
@@ -539,9 +547,7 @@ func (r *runtime) runEmbed(args []string) error {
 	}
 	providerFactory := r.newEmbed
 	if providerFactory == nil {
-		providerFactory = func(cfg config.EmbeddingsConfig) (embed.Provider, error) {
-			return embed.NewProvider(crawlkitEmbeddingConfig(cfg))
-		}
+		providerFactory = newEmbeddingProvider
 	}
 	provider, err := providerFactory(r.cfg.Search.Embeddings)
 	if err != nil {
@@ -601,7 +607,7 @@ func (r *runtime) runDoctor(args []string) error {
 		report["share_stale_after"] = cfg.Share.StaleAfter
 	}
 	if cfg.Search.Embeddings.Enabled {
-		check := embed.CheckProvider(r.ctx, crawlkitEmbeddingConfig(cfg.Search.Embeddings))
+		check := checkEmbeddingProvider(r.ctx, cfg.Search.Embeddings)
 		report["embeddings"] = check.Status
 		report["embeddings_provider"] = check.Provider
 		report["embeddings_model"] = check.Model

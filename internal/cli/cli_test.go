@@ -3692,6 +3692,7 @@ type fakeSyncService struct {
 	includeCategoryIDs    []string
 	repairOffset          time.Duration
 	tailEmbeddings        bool
+	tailRepairOnStart     bool
 	callTailReady         bool
 	tailReadyCalls        int
 	tailReady             func(context.Context) error
@@ -3740,6 +3741,10 @@ func (f *fakeSyncService) SetTailReadyCallback(fn func(context.Context) error) {
 
 func (f *fakeSyncService) SetTailEmbeddings(enabled bool) {
 	f.tailEmbeddings = enabled
+}
+
+func (f *fakeSyncService) SetTailRepairOnStart(enabled bool) {
+	f.tailRepairOnStart = enabled
 }
 
 func (f *fakeSyncService) SetAttachmentTextEnabled(enabled bool) {

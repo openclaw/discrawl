@@ -89,6 +89,10 @@ enabled = false
 provider = "openai"
 model = "text-embedding-3-small"
 api_key_env = "OPENAI_API_KEY"
+# Optional OS keyring selection (no environment fallback):
+# api_key_source = "keyring"
+# api_key_keyring_service = "discrawl/embeddings"
+# api_key_keyring_account = "api-key"
 dimensions = 512 # optional OpenAI projection; omit for provider default
 batch_size = 64
 max_input_chars = 12000

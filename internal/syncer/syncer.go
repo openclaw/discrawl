@@ -50,6 +50,7 @@ type Syncer struct {
 	tailRepairOffsetMu    sync.RWMutex
 	tailRepairOffset      time.Duration
 	tailEmbeddings        bool
+	tailRepairOnStart     bool
 	channelExclusions     channelExclusions
 }
 
@@ -73,6 +74,10 @@ type SyncOptions struct {
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
 	s.tailReady = fn
+}
+
+func (s *Syncer) SetTailRepairOnStart(enabled bool) {
+	s.tailRepairOnStart = enabled
 }
 
 func (s *Syncer) SetChannelExclusions(channelIDs, channelKinds []string) {
