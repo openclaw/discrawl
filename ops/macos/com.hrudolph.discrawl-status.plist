@@ -19,7 +19,7 @@
 	<string>Standard</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Volumes/Data/Projects/openclaw-tools/bin/discrawl</string>
+		<string>/Volumes/Data/Projects/openclaw-tools/releases/discrawl/stable/discrawl</string>
 		<string>--config</string>
 		<string>/Volumes/Data/AppData/discrawl/config.toml</string>
 		<string>--json</string>
