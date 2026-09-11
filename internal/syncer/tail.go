@@ -30,7 +30,22 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	if err := handler.seedChannelExclusions(ctx); err != nil {
 		return fmt.Errorf("seed tail channel exclusions: %w", err)
 	}
-	if repairEvery <= 0 {
+	var startupReady <-chan struct{}
+	if s.tailRepairOnStart {
+		ready := make(chan struct{})
+		startupReady = ready
+		var once sync.Once
+		handler.onReady = func(ctx context.Context) error {
+			if s.tailReady != nil {
+				if err := s.tailReady(ctx); err != nil {
+					return err
+				}
+			}
+			once.Do(func() { close(ready) })
+			return nil
+		}
+	}
+	if repairEvery <= 0 && !s.tailRepairOnStart {
 		return s.client.Tail(ctx, handler)
 	}
 	tailCtx, cancelTail := context.WithCancel(ctx)
@@ -45,8 +60,13 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	go func() {
 		tailDone <- s.client.Tail(tailCtx, handler)
 	}()
-	repairTimer := time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
-	defer repairTimer.Stop()
+	var repairTimer *time.Timer
+	var repairTick <-chan time.Time
+	if repairEvery > 0 {
+		repairTimer = time.NewTimer(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
+		defer repairTimer.Stop()
+		repairTick = repairTimer.C
+	}
 	var activeRepair *tailRepairRun
 	var repairDone <-chan tailRepairResult
 	for {
@@ -78,8 +98,18 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 			s.logTailRepairResult(result)
 			activeRepair = nil
 			repairDone = nil
-		case <-repairTimer.C:
-			if activeRepair != nil {
+		case <-startupReady:
+			startupReady = nil
+			// Capture is connected before REST catch-up, so events arriving
+			// during the repair are still observed by this same writer owner.
+			if ctx.Err() == nil {
+				activeRepair = s.startTailRepair(ctx, guildIDs)
+				if activeRepair != nil {
+					repairDone = activeRepair.done
+				}
+			}
+		case <-repairTick:
+			if activeRepair != nil || startupReady != nil {
 				repairTimer.Reset(nextTailRepairDelay(time.Now(), repairEvery, s.repairOffset()))
 				continue
 			}

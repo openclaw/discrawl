@@ -330,6 +330,7 @@ func (r *runtime) runTail(args []string) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
+	repairOnStart := fs.Bool("repair-on-start", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	embedLive := fs.Bool("embed-live", false, "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
@@ -357,6 +358,14 @@ func (r *runtime) runTail(args []string) error {
 	}
 	if *embedLive && *replayFailuresOnly {
 		return usageErr(errors.New("--embed-live cannot be combined with --replay-failures-only"))
+	}
+	if *repairOnStart && *replayFailuresOnly {
+		return usageErr(errors.New("--repair-on-start cannot be combined with --replay-failures-only"))
+	}
+	if configurable, ok := r.syncer.(tailStartupRepairConfigurer); ok {
+		configurable.SetTailRepairOnStart(*repairOnStart)
+	} else if *repairOnStart {
+		return errors.New("startup tail repair is unavailable")
 	}
 	if *embedLive && !r.cfg.Search.Embeddings.Enabled {
 		return usageErr(errors.New("--embed-live requires embeddings enabled in config"))
