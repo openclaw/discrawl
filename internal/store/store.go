@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strconv"
+	"sync"
 	"time"
 
 	crawlstore "github.com/openclaw/crawlkit/store"
@@ -17,12 +18,14 @@ const (
 	timeLayout         = "2006-01-02T15:04:05.000000000Z07:00"
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 5
+	storeSchemaVersion = 6
 )
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
 
 type Store struct {
+	embeddingWakeMu   sync.RWMutex
+	embeddingWake     func()
 	db                *sql.DB
 	q                 *storedb.Queries
 	path              string
@@ -46,18 +49,19 @@ const (
 )
 
 type Status struct {
-	DBPath             string    `json:"db_path"`
-	GuildCount         int       `json:"guild_count"`
-	ChannelCount       int       `json:"channel_count"`
-	ThreadCount        int       `json:"thread_count"`
-	MessageCount       int       `json:"message_count"`
-	MemberCount        int       `json:"member_count"`
-	EmbeddingBacklog   int       `json:"embedding_backlog"`
-	LastSyncAt         time.Time `json:"last_sync_at,omitzero"`
-	LastTailEventAt    time.Time `json:"last_tail_event_at,omitzero"`
-	DefaultGuildID     string    `json:"default_guild_id,omitempty"`
-	DefaultGuildName   string    `json:"default_guild_name,omitempty"`
-	AccessibleGuildIDs []string  `json:"accessible_guild_ids,omitempty"`
+	BackgroundWork     *EmbeddingWorkerStatus `json:"background_work,omitempty"`
+	DBPath             string                 `json:"db_path"`
+	GuildCount         int                    `json:"guild_count"`
+	ChannelCount       int                    `json:"channel_count"`
+	ThreadCount        int                    `json:"thread_count"`
+	MessageCount       int                    `json:"message_count"`
+	MemberCount        int                    `json:"member_count"`
+	EmbeddingBacklog   int                    `json:"embedding_backlog"`
+	LastSyncAt         time.Time              `json:"last_sync_at,omitzero"`
+	LastTailEventAt    time.Time              `json:"last_tail_event_at,omitzero"`
+	DefaultGuildID     string                 `json:"default_guild_id,omitempty"`
+	DefaultGuildName   string                 `json:"default_guild_name,omitempty"`
+	AccessibleGuildIDs []string               `json:"accessible_guild_ids,omitempty"`
 }
 
 type SearchOptions struct {
@@ -245,6 +249,17 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 		if err := s.setSchemaVersion(ctx, 5); err != nil {
+			return err
+		}
+	}
+	if currentVersion < 6 {
+		if err := s.applyQueryIndexMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.applyEmbeddingWorkerMigration(ctx); err != nil {
+			return err
+		}
+		if err := s.setSchemaVersion(ctx, 6); err != nil {
 			return err
 		}
 	}

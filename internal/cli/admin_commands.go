@@ -331,6 +331,7 @@ func (r *runtime) runTail(args []string) error {
 	fs.SetOutput(io.Discard)
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	embedLive := fs.Bool("embed-live", false, "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
 	replayLimit := fs.Int("replay-limit", syncer.TailMessageReplayLimit, "")
 	guildsFlag := fs.String("guilds", "", "")
@@ -354,8 +355,14 @@ func (r *runtime) runTail(args []string) error {
 			syncer.TailMessageReplayLimit,
 		))
 	}
+	if *embedLive && *replayFailuresOnly {
+		return usageErr(errors.New("--embed-live cannot be combined with --replay-failures-only"))
+	}
+	if *embedLive && !r.cfg.Search.Embeddings.Enabled {
+		return usageErr(errors.New("--embed-live requires embeddings enabled in config"))
+	}
 	if configurable, ok := r.syncer.(tailEmbeddingsConfigurer); ok {
-		configurable.SetTailEmbeddings(*withEmbeddings)
+		configurable.SetTailEmbeddings(*withEmbeddings || *embedLive)
 	}
 	guildIDs := r.resolveSyncGuilds(*guildFlag, *guildsFlag)
 	if *replayFailuresOnly {
@@ -377,6 +384,9 @@ func (r *runtime) runTail(args []string) error {
 			return r.activateTailSyncLock()
 		})
 		defer configurable.SetTailReadyCallback(nil)
+	}
+	if *embedLive {
+		return r.runTailWithEmbeddingWorker(ctx, guildIDs, *repairEvery)
 	}
 	return r.syncer.RunTail(ctx, guildIDs, *repairEvery)
 }

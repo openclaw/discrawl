@@ -8,6 +8,7 @@ Runs the live Discord Gateway tail and a periodic repair loop.
 discrawl tail
 discrawl --verbose tail
 discrawl tail --with-embeddings
+discrawl tail --embed-live
 discrawl tail --guild 123456789012345678
 discrawl tail --repair-every 30m
 discrawl tail --replay-failures-only
@@ -27,6 +28,7 @@ discrawl tail --replay-failures-only
 
 - `--guild <id>` / `--guilds <id,id>` - tail a specific guild scope (default: `default_guild_id`, or all discovered guilds if unset)
 - `--repair-every <duration>` - frequency of the repair sweep
+- `--embed-live` - continuously process queued embeddings while capture continues (opt-in; implies queueing; requires configured embeddings)
 - `--with-embeddings` - queue live, replayed, and repair messages for embedding (default: off)
 - `--replay-failures-only` - replay unresolved exact-message tail failures and exit
 - `--replay-limit <n>` - maximum failures to inspect in replay-only mode (default and maximum: `25`)

@@ -69,3 +69,41 @@ The snapshot stores vectors under `embeddings/<provider>/<model>/<input_version>
 - [Search modes](search-modes.html)
 - [`embed`](../commands/embed.html)
 - [Configuration](../configuration.html)
+
+## Continuous embedding during capture
+
+`discrawl tail --embed-live` opts into crawlkit's background worker runtime and
+also queues new messages, edits, replay and repair work. Embeddings must already
+be enabled in the configuration. Ordinary `tail --with-embeddings` still only
+queues work; `embed` remains the bounded one-shot drain.
+
+Two workers process batches of at most 64 inputs, with a 250 ms batching window
+and one-second fallback polling. Fresh Gateway content takes priority over sync
+catch-up, with capacity reserved for catch-up. Healthy-provider freshness targets
+are measured from the source transaction to the committed vector; ten seconds
+is a target under normal load, not a promise during provider outages or overload.
+
+The tail process retains its normal exclusive writer ownership. Background
+workers share it in-process, make provider calls outside database transactions,
+and prepare content on a separate read connection. Do not schedule another
+`embed` command against a running tail. No stop/embed/restart cycle is needed in
+live mode.
+
+Queue revisions and expiring random claim tokens fence results, retries and
+release. Edits invalidate queued claims and stale vectors; deletes cannot be
+resurrected by a late provider response. Completion also checks the current source
+text and eligibility. Interrupted work is recovered by the next exclusive tail
+owner. Model/provider changes continue to use the existing rebuild contract.
+
+Provider outages, missing credentials and throttling leave capture running.
+Transient provider failures pause processing and retry; rate-limit Retry-After
+values are respected. Invalid input/results remain visible as failed jobs.
+`status --json` adds `background_work`, including lifecycle, pending/in-flight
+counts, oldest pending input, last success and safe error codes. Worker status
+is local-only and is never included in published snapshots.
+
+This feature upgrades the local schema from 5 to 6 without regenerating existing
+vectors. Back up before upgrading. To roll back the feature, keep the
+schema-compatible binary, omit `--embed-live`, and return to serialized one-shot
+embedding. Older binaries cannot open schema 6; do not overwrite newly captured
+data with a pre-upgrade database merely to disable the worker.

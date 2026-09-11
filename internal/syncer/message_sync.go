@@ -790,6 +790,7 @@ func buildMessageMutations(ctx context.Context, messages []*discordgo.Message, c
 		if err != nil {
 			return nil, "", err
 		}
+		mutation.Options.EmbeddingCatchUp = true
 		mutations = append(mutations, mutation)
 		newest = maxSnowflake(newest, message.ID)
 	}
