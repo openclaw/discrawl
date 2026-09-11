@@ -41,6 +41,30 @@ discrawl embed --rebuild --limit 1000
 
 For OpenAI `text-embedding-3-small`, `dimensions` can project vectors to a smaller size. Leave it unset for the provider default, or use a positive value such as `512` to reduce local vector storage. Run `embed --rebuild` after changing it.
 
+## Credentials
+
+By default, credentials come from `api_key_env`; no OS keyring is queried.
+Credential-free local providers keep working with an empty `api_key_env`.
+To use an existing OS keyring item instead, configure:
+
+```toml
+[search.embeddings]
+api_key_source = "keyring"
+api_key_keyring_service = "discrawl/embeddings"
+api_key_keyring_account = "api-key"
+```
+
+Keep your other embedding settings. The service and account identify an existing
+item; the API key itself is never written to the configuration or exported to the
+environment. Keyring selection is explicit and does not fall back to an
+environment variable. `api_key_source = "env"` restores the default behavior.
+
+`tail --embed-live` keeps capturing while a credential is missing, empty, or
+locked. Native background work reports `embedding_provider_configuration` and
+retries initialization after one minute. A pending keyring prompt does not block
+worker cancellation, and only one lookup is outstanding. Once initialized, the
+provider retains its credential until the process restarts.
+
 ## Local provider example
 
 ```toml

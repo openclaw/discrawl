@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Allow explicit OS keyring credentials for embeddings, with safe initialization retries during capture and unchanged environment-based defaults.
 - Use CrawlKit v0.16.1 to bound live-embedding shutdown when cancellation interrupts retry or completion persistence and cleanup storage is unavailable.
 - Generate deterministic, aggregate-only Discord field notes alongside daily published activity reports, with paired Markdown/JSON artifacts, separate markers preserving legacy narrative notes, explicit timestamp and coverage limits, and filtered-publication cleanup.
 
