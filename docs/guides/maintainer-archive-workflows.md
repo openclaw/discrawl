@@ -193,6 +193,15 @@ source and stable ids to retry the matching operation. Treat a non-`ok` SQLite
 integrity result as a real archive-health problem; a large WAL or stale lock
 metadata alone is diagnostic context, not proof of corruption.
 
+A channel that answered Missing Access carries an unavailable marker, and
+routine syncs pass over it while that marker is inside its seven-day window.
+`discrawl doctor` reports them as `unavailable_markers_active`, the channels
+passed over now, and `unavailable_markers_expired`, the channels due for another
+attempt. After restoring a permission, `discrawl sync --guild <id> --full`
+attempts every channel in the guild immediately and `discrawl sync --channels
+<id>` retries one channel; left alone, the first routine sync past the window
+picks the channel up, so within seven days.
+
 ## See also
 
 - [Sync sources](sync-sources.html)
