@@ -614,6 +614,80 @@ func (q *Queries) InsertMissingEmbeddingJobs(ctx context.Context, arg InsertMiss
 	return err
 }
 
+const listAllIncompleteMessageChannelIDs = `-- name: ListAllIncompleteMessageChannelIDs :many
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
+  )
+order by c.id
+`
+
+// Every channel whose message history is not complete, unavailable markers
+// included. A full sync plans from this listing so a channel whose access was
+// restored is visited without waiting out its marker's retry window.
+func (q *Queries) ListAllIncompleteMessageChannelIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAllIncompleteMessageChannelIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllIncompleteMessageChannelIDsByGuild = `-- name: ListAllIncompleteMessageChannelIDsByGuild :many
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and c.guild_id = ?
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
+  )
+order by c.id
+`
+
+func (q *Queries) ListAllIncompleteMessageChannelIDsByGuild(ctx context.Context, guildID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAllIncompleteMessageChannelIDsByGuild, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChannels = `-- name: ListChannels :many
 select id, guild_id, coalesce(parent_id, '') as parent_id, kind, name,
        coalesce(topic, '') as topic, position, is_nsfw, is_archived,

@@ -270,6 +270,32 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
   )
 order by c.id;
 
+-- name: ListAllIncompleteMessageChannelIDs :many
+-- Every channel whose message history is not complete, unavailable markers
+-- included. A full sync plans from this listing so a channel whose access was
+-- restored is visited without waiting out its marker's retry window.
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
+  )
+order by c.id;
+
+-- name: ListAllIncompleteMessageChannelIDsByGuild :many
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and c.guild_id = ?
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
+  )
+order by c.id;
+
 -- name: UpsertGuild :exec
 insert into guilds(id, name, icon, raw_json, updated_at, deleted_at, deletion_source, deletion_reason)
 values(?, ?, ?, ?, ?, null, null, null)

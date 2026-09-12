@@ -123,3 +123,40 @@ func TestSyncStateBySuffix(t *testing.T) {
 	require.WithinDuration(t, time.Now().UTC().Add(-90*24*time.Hour), entries[0].UpdatedAt, time.Minute)
 	require.False(t, entries[1].UpdatedAt.IsZero())
 }
+
+// TestAllIncompleteMessageChannelIDsKeepsMarkedChannels covers the listing a
+// full sync plans from. Unlike IncompleteMessageChannelIDs it keeps channels
+// carrying a marker of any age, so a full run has every channel to visit; a
+// completed history still drops out.
+func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	for _, id := range []string{"c-clean", "c-done", "c-fresh", "c-stale"} {
+		require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: id, GuildID: "g1", Kind: "text", Name: id, RawJSON: `{}`}))
+	}
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-other", GuildID: "g2", Kind: "text", Name: "other", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-voice", GuildID: "g1", Kind: "voice", Name: "voice", RawJSON: `{}`}))
+
+	require.NoError(t, s.SetSyncState(ctx, "channel:c-done:history_complete", "1"))
+	ageSyncStateMarker(ctx, t, s, "channel:c-stale:unavailable", "missing_access", 30*24*time.Hour)
+	ageSyncStateMarker(ctx, t, s, "channel:c-fresh:unavailable", "missing_access", time.Hour)
+
+	byGuild, err := s.AllIncompleteMessageChannelIDs(ctx, "g1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-stale"}, byGuild)
+
+	all, err := s.AllIncompleteMessageChannelIDs(ctx, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-other", "c-stale"}, all)
+
+	// The narrower listing still holds the fresh marker back, which is what the
+	// routine path relies on.
+	narrow, err := s.IncompleteMessageChannelIDs(ctx, "g1")
+	require.NoError(t, err)
+	require.NotContains(t, narrow, "c-fresh")
+}

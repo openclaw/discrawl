@@ -175,3 +175,51 @@ func TestFullSyncAttemptsChannelWithFreshUnavailableMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, client.messageCalls["blocked"])
 }
+
+// TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker drives the same
+// door the CLI uses. Two channels are incomplete, one marker is expired and one
+// is fresh, and both channels are now readable again. The expired marker alone
+// makes the full-sync batch plan non-empty, and a non-empty plan makes syncGuild
+// return before the general catalog, so a plan that omits the fresh-marked
+// channel never visits it. Asserting through Sync is what catches that;
+// TestFullSyncAttemptsChannelWithFreshUnavailableMarker calls the worker with a
+// channel list already in hand and so cannot see a planning gap.
+func TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := store.Open(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	// 'order by c.id' lists the fresh-marked channel first, so a pass cannot be
+	// an artifact of the expired one happening to sort ahead of it.
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "restored", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c2", GuildID: "g1", Kind: "text", Name: "still-blocked", RawJSON: `{}`}))
+	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("c1"), "missing_access"))
+	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("c2"), "missing_access"))
+	backdateMarker(ctx, t, dbPath, channelMessageUnavailableScope("c2"), 8*24*time.Hour)
+
+	client := &fakeClient{
+		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
+		channelByID: map[string]*discordgo.Channel{
+			"c1": {ID: "c1", GuildID: "g1", Name: "restored", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
+			"c2": {ID: "c2", GuildID: "g1", Name: "still-blocked", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
+		},
+		messages: map[string][]*discordgo.Message{},
+	}
+	svc := New(client, s, nil)
+
+	_, err = svc.Sync(ctx, SyncOptions{Full: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, client.messageCalls["c2"], "an expired marker must be planned into a full sync")
+	require.Equal(t, 1, client.messageCalls["c1"], "a full sync must reach a channel carrying a fresh marker")
+
+	// Both reads succeeded, so both markers are gone and routine syncs resume.
+	for _, id := range []string{"c1", "c2"} {
+		reason, err := s.GetSyncState(ctx, channelMessageUnavailableScope(id))
+		require.NoError(t, err)
+		require.Empty(t, reason, "a successful read must clear the marker on %s", id)
+	}
+}

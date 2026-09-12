@@ -839,6 +839,17 @@ func (s *Store) IncompleteMessageChannelIDs(ctx context.Context, guildID string)
 	return s.q.ListIncompleteMessageChannelIDs(ctx)
 }
 
+// AllIncompleteMessageChannelIDs lists channels whose message history is not
+// complete, including channels carrying a message-unavailable marker inside the
+// retry window. IncompleteMessageChannelIDs leaves those out; this listing keeps
+// them so a full sync can plan over every channel it is expected to reach.
+func (s *Store) AllIncompleteMessageChannelIDs(ctx context.Context, guildID string) ([]string, error) {
+	if guildID != "" {
+		return s.q.ListAllIncompleteMessageChannelIDsByGuild(ctx, guildID)
+	}
+	return s.q.ListAllIncompleteMessageChannelIDs(ctx)
+}
+
 // SyncStateEntry is one sync_state row, exposed for diagnostics.
 type SyncStateEntry struct {
 	Scope     string
