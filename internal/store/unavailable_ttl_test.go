@@ -45,7 +45,7 @@ func TestUnavailableMarkerExpiresFromIncompleteListing(t *testing.T) {
 	require.Len(t, staleStamp, 30, "stale marker must use the production timestamp shape: %s", staleStamp)
 	require.Len(t, freshStamp, 30, "fresh marker must use the production timestamp shape: %s", freshStamp)
 	require.Contains(t, staleStamp, "T")
-	require.True(t, staleStamp[len(staleStamp)-1] == 'Z')
+	require.Equal(t, byte('Z'), staleStamp[len(staleStamp)-1])
 
 	ids, err := s.IncompleteMessageChannelIDs(ctx, "")
 	require.NoError(t, err)
