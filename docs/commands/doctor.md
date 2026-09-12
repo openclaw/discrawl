@@ -16,6 +16,7 @@ discrawl doctor
 - how many guilds the bot can access
 - local SQLite database exists and the schema version matches the binary
 - FTS5 index is wired up
+- how many channels carry an unavailable marker, split into markers inside the seven-day retry window and markers already due for another attempt
 
 ## What it does not do
 
@@ -27,6 +28,8 @@ discrawl doctor
 - "token from env (DISCORD_BOT_TOKEN)" or "token from keyring (discrawl/discord_bot_token)"
 - "0 guilds visible" - bot is not invited to any guild yet, or intents/permissions are missing
 - "schema newer than binary" - update `discrawl` to a build that supports the local DB schema
+- `unavailable_markers_active` - channels a routine sync passes over until their marker ages out of the seven-day window; `sync --guild <id> --full` or `sync --channels <id>` attempts them now
+- `unavailable_markers_expired` - channels whose marker has aged out, so the next routine sync attempts them again
 
 ## See also
 

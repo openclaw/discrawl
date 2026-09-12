@@ -17,6 +17,22 @@ where scope = ?;
 -- name: ChannelHasMessages :one
 select exists(select 1 from messages where channel_id = ? limit 1) as has_messages;
 
+-- name: ListFreshUnavailableChannelIDs :many
+-- Channels carrying a message-unavailable marker written inside the retry
+-- window. Markers older than the window are omitted so the channel is retried
+-- once; a retry that fails again refreshes updated_at for another window.
+select replace(replace(scope, 'channel:', ''), ':unavailable', '') as channel_id
+from sync_state
+where scope like 'channel:%:unavailable'
+  and updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+order by channel_id;
+
+-- name: ListSyncStateBySuffix :many
+select scope, updated_at
+from sync_state
+where scope like '%' || sqlc.arg(suffix)
+order by updated_at;
+
 -- name: ChannelMessageBounds :one
 select cast(coalesce(min(id), '') as text) as oldest_id,
        cast(coalesce(max(id), '') as text) as newest_id
@@ -232,6 +248,7 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	select 1
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':unavailable'
+	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
   )
 order by c.id;
 
@@ -249,6 +266,33 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	select 1
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':unavailable'
+	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+  )
+order by c.id;
+
+-- name: ListAllIncompleteMessageChannelIDs :many
+-- Every channel whose message history is not complete, unavailable markers
+-- included. A full sync plans from this listing so a channel whose access was
+-- restored is visited without waiting out its marker's retry window.
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
+  )
+order by c.id;
+
+-- name: ListAllIncompleteMessageChannelIDsByGuild :many
+select c.id
+from channels c
+where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+  and c.guild_id = ?
+  and not exists (
+	select 1
+	from sync_state s
+	where s.scope = 'channel:' || c.id || ':history_complete'
   )
 order by c.id;
 

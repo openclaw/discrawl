@@ -839,6 +839,49 @@ func (s *Store) IncompleteMessageChannelIDs(ctx context.Context, guildID string)
 	return s.q.ListIncompleteMessageChannelIDs(ctx)
 }
 
+// AllIncompleteMessageChannelIDs lists channels whose message history is not
+// complete, including channels carrying a message-unavailable marker inside the
+// retry window. IncompleteMessageChannelIDs leaves those out; this listing keeps
+// them so a full sync can plan over every channel it is expected to reach.
+func (s *Store) AllIncompleteMessageChannelIDs(ctx context.Context, guildID string) ([]string, error) {
+	if guildID != "" {
+		return s.q.ListAllIncompleteMessageChannelIDsByGuild(ctx, guildID)
+	}
+	return s.q.ListAllIncompleteMessageChannelIDs(ctx)
+}
+
+// SyncStateEntry is one sync_state row, exposed for diagnostics.
+type SyncStateEntry struct {
+	Scope     string
+	UpdatedAt time.Time
+}
+
+// FreshUnavailableChannelIDs lists channels whose message-unavailable marker is
+// still inside the retry window. Callers use it to skip channels that are known
+// to be inaccessible without re-attempting them on every sync. Markers past the
+// window are deliberately absent so the channel is retried once more.
+func (s *Store) FreshUnavailableChannelIDs(ctx context.Context) ([]string, error) {
+	return s.q.ListFreshUnavailableChannelIDs(ctx)
+}
+
+// SyncStateBySuffix lists sync_state rows whose scope ends with suffix, oldest
+// first. Rows whose timestamp matches none of the layouts parseTime accepts are
+// returned with a zero UpdatedAt rather than failing the whole listing.
+func (s *Store) SyncStateBySuffix(ctx context.Context, suffix string) ([]SyncStateEntry, error) {
+	if suffix == "" {
+		return nil, nil
+	}
+	rows, err := s.q.ListSyncStateBySuffix(ctx, sql.NullString{String: suffix, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]SyncStateEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, SyncStateEntry{Scope: row.Scope, UpdatedAt: parseTime(row.UpdatedAt)})
+	}
+	return entries, nil
+}
+
 func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Status, error) {
 	status := Status{DBPath: dbPath, DefaultGuildID: defaultGuildID}
 	guildCount, err := s.q.CountGuilds(ctx)

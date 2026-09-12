@@ -309,7 +309,13 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 	if s.store == nil {
 		return SyncStats{}, false, nil
 	}
-	incomplete, err := s.store.IncompleteMessageChannelIDs(ctx, guildID)
+	// The listing includes channels carrying a fresh unavailable marker. This
+	// planner runs only under shouldResumeIncompleteFullSync, so every call is
+	// already a full sync asking for every channel, and a non-empty plan makes
+	// syncGuild return before the general catalog: leaving marked channels out
+	// here strands a channel whose access was restored until its marker expires.
+	// The routine-sync skip lives in filterFreshUnavailableChannels instead.
+	incomplete, err := s.store.AllIncompleteMessageChannelIDs(ctx, guildID)
 	if err != nil {
 		return SyncStats{}, false, err
 	}

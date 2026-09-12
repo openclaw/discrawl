@@ -577,6 +577,54 @@ func (r *runtime) runEmbed(args []string) error {
 	return r.print(stats)
 }
 
+const (
+	// messageUnavailableSuffix matches channel:<id>:unavailable and, because
+	// the ':' is literal, never channel:<id>:thread_catalog_unavailable.
+	messageUnavailableSuffix = ":unavailable"
+	// unavailableMarkerWindow mirrors the seven-day window applied in
+	// queries.sql. It is used only to describe markers in the doctor report.
+	unavailableMarkerWindow = 7 * 24 * time.Hour
+)
+
+// unavailableMarkerCounts buckets the channel-unavailable markers for the
+// doctor report. Active markers are the operationally interesting number: they
+// are the channels a routine sync passes over. Expired markers describe
+// channels the next routine sync attempts again.
+type unavailableMarkerCounts struct {
+	Active     int
+	Expired    int
+	Unparsed   int
+	OldestDays int
+}
+
+// countUnavailableMarkers buckets markers by age. A marker whose updated_at
+// matches none of the store's layouts is counted as unparsed rather than
+// folded into either age bucket, because the SQL window compares such a value
+// lexically and the two predicates would otherwise report different answers
+// for the same row.
+func countUnavailableMarkers(markers []store.SyncStateEntry, now time.Time) unavailableMarkerCounts {
+	counts := unavailableMarkerCounts{}
+	oldest := time.Time{}
+	for _, marker := range markers {
+		switch {
+		case marker.UpdatedAt.IsZero():
+			counts.Unparsed++
+			continue
+		case now.Sub(marker.UpdatedAt) < unavailableMarkerWindow:
+			counts.Active++
+		default:
+			counts.Expired++
+		}
+		if oldest.IsZero() || marker.UpdatedAt.Before(oldest) {
+			oldest = marker.UpdatedAt
+		}
+	}
+	if !oldest.IsZero() {
+		counts.OldestDays = int(now.Sub(oldest).Hours() / 24)
+	}
+	return counts
+}
+
 func (r *runtime) runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -666,6 +714,15 @@ func (r *runtime) runDoctor(args []string) error {
 				report["fts"] = ftsErr.Error()
 			} else {
 				report["fts"] = "ok"
+			}
+			if markers, markerErr := db.SyncStateBySuffix(r.ctx, messageUnavailableSuffix); markerErr != nil {
+				report["unavailable_markers_error"] = markerErr.Error()
+			} else if len(markers) > 0 {
+				counts := countUnavailableMarkers(markers, r.nowUTC())
+				report["unavailable_markers_active"] = counts.Active
+				report["unavailable_markers_expired"] = counts.Expired
+				report["unavailable_markers_unparsed"] = counts.Unparsed
+				report["unavailable_markers_oldest_days"] = counts.OldestDays
 			}
 			report["vector"] = "not configured"
 			_ = db.Close()
