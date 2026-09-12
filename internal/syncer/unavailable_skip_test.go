@@ -139,3 +139,39 @@ func TestFilterFreshUnavailableChannelsDegradesSafely(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, out)
 }
+
+func TestFullSyncAttemptsChannelWithFreshUnavailableMarker(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "blocked", GuildID: "g1", Kind: "text", Name: "mods", RawJSON: `{}`}))
+	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("blocked"), "missing_access"))
+
+	blocked := &discordgo.Channel{ID: "blocked", GuildID: "g1", Name: "mods", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"}
+	channels := []*discordgo.Channel{blocked}
+	client := &fakeClient{messages: map[string][]*discordgo.Message{}}
+	svc := New(client, s, nil)
+
+	// A routine run passes over the channel while the marker is inside the window.
+	_, err = svc.syncMessageChannels(ctx, "g1", channels, SyncOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 0, client.messageCalls["blocked"])
+
+	// A full run asks for the complete job, so the same marker does not hold it
+	// back: this is the path that picks up a channel whose access was restored
+	// without waiting out the window.
+	_, err = svc.syncMessageChannels(ctx, "g1", channels, SyncOptions{Full: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, client.messageCalls["blocked"], "a full sync must attempt a channel carrying a fresh marker")
+
+	// The successful read clears the marker, so routine syncs resume too.
+	reason, err := s.GetSyncState(ctx, channelMessageUnavailableScope("blocked"))
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	_, err = svc.syncMessageChannels(ctx, "g1", channels, SyncOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 2, client.messageCalls["blocked"])
+}

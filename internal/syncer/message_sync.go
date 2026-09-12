@@ -52,10 +52,14 @@ func (s *Syncer) syncMessageChannels(
 // Markers age out, so an excluded channel is retried once the window passes: a
 // successful sync then clears the marker via clearUnavailableChannel, and a
 // repeated failure rewrites it for another window. The marker set is loaded
-// once per guild rather than probed per channel. Explicitly requested channels
-// are never filtered, because an operator naming a channel wants it attempted.
+// once per guild rather than probed per channel.
+//
+// The filter applies to routine syncs only. Explicitly requested channels and
+// full syncs both carry an operator asking for the channel to be attempted now,
+// so a marker inside the window does not hold either of them back; that is what
+// lets a channel whose access was restored be picked up before the window ends.
 func (s *Syncer) filterFreshUnavailableChannels(ctx context.Context, guildID string, channels []*discordgo.Channel, opts SyncOptions) ([]*discordgo.Channel, error) {
-	if s == nil || s.store == nil || len(channels) == 0 || len(opts.ChannelIDs) > 0 {
+	if s == nil || s.store == nil || len(channels) == 0 || len(opts.ChannelIDs) > 0 || opts.Full {
 		return channels, nil
 	}
 	unavailable, err := s.store.FreshUnavailableChannelIDs(ctx)
