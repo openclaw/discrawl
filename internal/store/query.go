@@ -854,8 +854,8 @@ func (s *Store) FreshUnavailableChannelIDs(ctx context.Context) ([]string, error
 }
 
 // SyncStateBySuffix lists sync_state rows whose scope ends with suffix, oldest
-// first. Rows with an unparsable timestamp are returned with a zero UpdatedAt
-// rather than failing the whole listing.
+// first. Rows whose timestamp matches none of the layouts parseTime accepts are
+// returned with a zero UpdatedAt rather than failing the whole listing.
 func (s *Store) SyncStateBySuffix(ctx context.Context, suffix string) ([]SyncStateEntry, error) {
 	if suffix == "" {
 		return nil, nil
@@ -866,11 +866,7 @@ func (s *Store) SyncStateBySuffix(ctx context.Context, suffix string) ([]SyncSta
 	}
 	entries := make([]SyncStateEntry, 0, len(rows))
 	for _, row := range rows {
-		entry := SyncStateEntry{Scope: row.Scope}
-		if parsed, parseErr := time.Parse(time.RFC3339Nano, row.UpdatedAt); parseErr == nil {
-			entry.UpdatedAt = parsed
-		}
-		entries = append(entries, entry)
+		entries = append(entries, SyncStateEntry{Scope: row.Scope, UpdatedAt: parseTime(row.UpdatedAt)})
 	}
 	return entries, nil
 }

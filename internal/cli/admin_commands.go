@@ -570,34 +570,43 @@ const (
 	unavailableMarkerWindow = 7 * 24 * time.Hour
 )
 
-// unavailableMarkerSummary describes the channel-unavailable markers for the
-// doctor report. printHuman renders map values with %v, so this returns a
-// preformatted string. It returns "" when there is nothing to report.
-func unavailableMarkerSummary(markers []store.SyncStateEntry, now time.Time) string {
-	if len(markers) == 0 {
-		return ""
-	}
-	excluded := 0
+// unavailableMarkerCounts buckets the channel-unavailable markers for the
+// doctor report. Active markers are the operationally interesting number: they
+// are the channels a routine sync passes over. Expired markers describe
+// channels the next routine sync attempts again.
+type unavailableMarkerCounts struct {
+	Active     int
+	Expired    int
+	Unparsed   int
+	OldestDays int
+}
+
+// countUnavailableMarkers buckets markers by age. A marker whose updated_at
+// matches none of the store's layouts is counted as unparsed rather than
+// folded into either age bucket, because the SQL window compares such a value
+// lexically and the two predicates would otherwise report different answers
+// for the same row.
+func countUnavailableMarkers(markers []store.SyncStateEntry, now time.Time) unavailableMarkerCounts {
+	counts := unavailableMarkerCounts{}
 	oldest := time.Time{}
 	for _, marker := range markers {
-		if marker.UpdatedAt.IsZero() {
+		switch {
+		case marker.UpdatedAt.IsZero():
+			counts.Unparsed++
 			continue
-		}
-		if now.Sub(marker.UpdatedAt) < unavailableMarkerWindow {
-			excluded++
+		case now.Sub(marker.UpdatedAt) < unavailableMarkerWindow:
+			counts.Active++
+		default:
+			counts.Expired++
 		}
 		if oldest.IsZero() || marker.UpdatedAt.Before(oldest) {
 			oldest = marker.UpdatedAt
 		}
 	}
-	summary := fmt.Sprintf(
-		"%d channels marked unavailable, %d excluded from backfill, %d past the %dd window",
-		len(markers), excluded, len(markers)-excluded, int(unavailableMarkerWindow.Hours()/24),
-	)
 	if !oldest.IsZero() {
-		summary += fmt.Sprintf(", oldest %dd", int(now.Sub(oldest).Hours()/24))
+		counts.OldestDays = int(now.Sub(oldest).Hours() / 24)
 	}
-	return summary
+	return counts
 }
 
 func (r *runtime) runDoctor(args []string) error {
@@ -691,9 +700,13 @@ func (r *runtime) runDoctor(args []string) error {
 				report["fts"] = "ok"
 			}
 			if markers, markerErr := db.SyncStateBySuffix(r.ctx, messageUnavailableSuffix); markerErr != nil {
-				report["stale_sync_markers"] = markerErr.Error()
-			} else if summary := unavailableMarkerSummary(markers, r.nowUTC()); summary != "" {
-				report["stale_sync_markers"] = summary
+				report["unavailable_markers_error"] = markerErr.Error()
+			} else if len(markers) > 0 {
+				counts := countUnavailableMarkers(markers, r.nowUTC())
+				report["unavailable_markers_active"] = counts.Active
+				report["unavailable_markers_expired"] = counts.Expired
+				report["unavailable_markers_unparsed"] = counts.Unparsed
+				report["unavailable_markers_oldest_days"] = counts.OldestDays
 			}
 			report["vector"] = "not configured"
 			_ = db.Close()

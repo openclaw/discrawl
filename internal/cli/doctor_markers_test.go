@@ -14,26 +14,31 @@ import (
 	"github.com/openclaw/discrawl/internal/store"
 )
 
-func TestUnavailableMarkerSummary(t *testing.T) {
+func TestCountUnavailableMarkers(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	require.Empty(t, unavailableMarkerSummary(nil, now))
+	require.Equal(t, unavailableMarkerCounts{}, countUnavailableMarkers(nil, now))
 
 	markers := []store.SyncStateEntry{
 		{Scope: "channel:a:unavailable", UpdatedAt: now.Add(-91 * 24 * time.Hour)},
 		{Scope: "channel:b:unavailable", UpdatedAt: now.Add(-30 * 24 * time.Hour)},
 		{Scope: "channel:c:unavailable", UpdatedAt: now.Add(-24 * time.Hour)},
+		// A timestamp none of the store layouts accept arrives with a zero
+		// UpdatedAt and belongs in its own bucket, not in either age bucket.
+		{Scope: "channel:d:unavailable"},
 	}
-	summary := unavailableMarkerSummary(markers, now)
-	require.Equal(t, "3 channels marked unavailable, 1 excluded from backfill, 2 past the 7d window, oldest 91d", summary)
+	require.Equal(t, unavailableMarkerCounts{Active: 1, Expired: 2, Unparsed: 1, OldestDays: 91}, countUnavailableMarkers(markers, now))
 
-	// An unparsable timestamp must not crash or claim to be the oldest.
-	summary = unavailableMarkerSummary([]store.SyncStateEntry{{Scope: "channel:x:unavailable"}}, now)
-	require.Equal(t, "1 channels marked unavailable, 0 excluded from backfill, 1 past the 7d window", summary)
+	// An unparsed row on its own leaves both age buckets empty and reports no age.
+	require.Equal(
+		t,
+		unavailableMarkerCounts{Unparsed: 1},
+		countUnavailableMarkers([]store.SyncStateEntry{{Scope: "channel:x:unavailable"}}, now),
+	)
 }
 
-func TestDoctorReportsStaleUnavailableMarkers(t *testing.T) {
+func TestDoctorReportsUnavailableMarkerCounts(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
@@ -72,7 +77,10 @@ func TestDoctorReportsStaleUnavailableMarkers(t *testing.T) {
 	}
 	require.NoError(t, rt.runDoctor(nil))
 	// The thread-catalog marker must not be counted.
-	require.Contains(t, out.String(), "stale_sync_markers=2 channels marked unavailable, 1 excluded from backfill, 1 past the 7d window, oldest 91d")
+	require.Contains(t, out.String(), "unavailable_markers_active=1")
+	require.Contains(t, out.String(), "unavailable_markers_expired=1")
+	require.Contains(t, out.String(), "unavailable_markers_unparsed=0")
+	require.Contains(t, out.String(), "unavailable_markers_oldest_days=91")
 }
 
 func TestDoctorOmitsMarkerLineWhenNoneExist(t *testing.T) {
@@ -91,6 +99,6 @@ func TestDoctorOmitsMarkerLineWhenNoneExist(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtime{ctx: ctx, configPath: cfgPath, stdout: &out, stderr: &bytes.Buffer{}, logger: discardLogger()}
 	require.NoError(t, rt.runDoctor(nil))
-	require.NotContains(t, out.String(), "stale_sync_markers")
+	require.NotContains(t, out.String(), "unavailable_markers_")
 	require.Contains(t, out.String(), "database=ok")
 }
