@@ -68,8 +68,7 @@ func (r *runtime) runSearch(args []string) error {
 			return err
 		}
 		if len(results) == 0 {
-			r.explainEmptyChannel(opts.Channel)
-			r.explainEmptySearchTerms(opts)
+			r.explainEmptySearch(opts, normalizedMode)
 		}
 		return r.print(results)
 	case "semantic":
@@ -78,7 +77,7 @@ func (r *runtime) runSearch(args []string) error {
 			return err
 		}
 		if len(results) == 0 {
-			r.explainEmptyChannel(opts.Channel)
+			r.explainEmptySearch(opts, normalizedMode)
 		}
 		return r.print(results)
 	case "hybrid":
@@ -87,7 +86,7 @@ func (r *runtime) runSearch(args []string) error {
 			return err
 		}
 		if len(results) == 0 {
-			r.explainEmptyChannel(opts.Channel)
+			r.explainEmptySearch(opts, normalizedMode)
 		}
 		return r.print(results)
 	default:

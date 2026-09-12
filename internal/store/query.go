@@ -77,28 +77,126 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 	return row.OldestID, row.NewestID, nil
 }
 
-// ChannelMessageStats holds a cheap summary of a channel's visible (not
-// soft-deleted) messages, used to explain otherwise-silent zero-result
-// queries: how many messages the channel has and when the newest one landed.
-type ChannelMessageStats struct {
+// MessageScopeOptions names the rows a `messages` or `search` query was
+// allowed to return: an optional channel id, an optional guild scope, and
+// whether empty/attachment-only messages were in play. Zero-result
+// explanations pass the same values the query used so the explanation and
+// the query describe one row set rather than two.
+type MessageScopeOptions struct {
+	ChannelID    string
+	GuildIDs     []string
+	IncludeEmpty bool
+}
+
+// MessageScopeStats summarises the non-deleted messages in a scope. Count,
+// Oldest and Newest cover the rows the query itself could return; Total
+// additionally counts rows the empty-content filter removes, so a caller can
+// distinguish "nothing archived here" from "nothing here has text".
+type MessageScopeStats struct {
 	Count  int
+	Total  int
+	Oldest time.Time
 	Newest time.Time
 }
 
-func (s *Store) ChannelMessageStats(ctx context.Context, channelID string) (ChannelMessageStats, error) {
+func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (string, []any) {
+	clauses := []string{column("deleted_at") + " is null"}
+	args := []any{}
+	if strings.TrimSpace(opts.ChannelID) != "" {
+		clauses = append(clauses, column("channel_id")+" = ?")
+		args = append(args, opts.ChannelID)
+	}
+	if len(opts.GuildIDs) > 0 {
+		clauses = append(clauses, column("guild_id")+" in ("+placeholders(len(opts.GuildIDs))+")")
+		for _, guildID := range opts.GuildIDs {
+			args = append(args, guildID)
+		}
+	}
+	return strings.Join(clauses, " and "), args
+}
+
+func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions) (MessageScopeStats, error) {
+	where, whereArgs := messageScopeClauses(opts, func(name string) string { return name })
+	visible := "(? or trim(coalesce(normalized_content, '')) <> '')"
+	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
+	args = append(args, whereArgs...)
 	queryCtx, cancel := withQueryTimeout(ctx)
 	defer cancel()
 	row := s.db.QueryRowContext(queryCtx, `
-		select count(*), coalesce(max(created_at), '')
+		select
+			coalesce(sum(case when `+visible+` then 1 else 0 end), 0),
+			count(*),
+			coalesce(min(case when `+visible+` then created_at end), ''),
+			coalesce(max(case when `+visible+` then created_at end), '')
 		from messages
-		where channel_id = ? and deleted_at is null
-	`, channelID)
-	var count int
-	var newest string
-	if err := row.Scan(&count, &newest); err != nil {
-		return ChannelMessageStats{}, err
+		where `+where, args...)
+	var count, total int
+	var oldest, newest string
+	if err := row.Scan(&count, &total, &oldest, &newest); err != nil {
+		return MessageScopeStats{}, err
 	}
-	return ChannelMessageStats{Count: count, Newest: parseTime(newest)}, nil
+	return MessageScopeStats{Count: count, Total: total, Oldest: parseTime(oldest), Newest: parseTime(newest)}, nil
+}
+
+// MessageEmbeddingCoverage counts how many messages in the scope carry an
+// embedding for the given provider/model/input-version triple. Semantic
+// search can only ever return embedded messages, so a scope with messages
+// and zero coverage explains an empty semantic result.
+func (s *Store) MessageEmbeddingCoverage(ctx context.Context, opts MessageScopeOptions, provider, model, inputVersion string) (int, error) {
+	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "m." + name })
+	args := []any{strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model), strings.TrimSpace(inputVersion)}
+	args = append(args, whereArgs...)
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	row := s.db.QueryRowContext(queryCtx, `
+		select count(*)
+		from messages m
+		join message_embeddings e
+			on e.message_id = m.id and e.provider = ? and e.model = ? and e.input_version = ?
+		where `+where, args...)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// ChannelByID resolves one channel row by its primary key. Callers that need
+// a single channel use this instead of Channels(ctx, "") plus a linear scan
+// over every archived channel.
+func (s *Store) ChannelByID(ctx context.Context, channelID string) (ChannelRow, bool, error) {
+	if strings.TrimSpace(channelID) == "" {
+		return ChannelRow{}, false, nil
+	}
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	row := s.db.QueryRowContext(queryCtx, `
+		select id, guild_id, coalesce(parent_id, ''), kind, name,
+		       coalesce(topic, ''), coalesce(position, 0), is_nsfw, is_archived,
+		       is_locked, is_private_thread, coalesce(thread_parent_id, ''),
+		       coalesce(archive_timestamp, '')
+		from channels
+		where id = ?
+	`, channelID)
+	var out ChannelRow
+	var position int64
+	var isNSFW, isArchived, isLocked, isPrivateThread int64
+	var archiveTimestamp string
+	if err := row.Scan(&out.ID, &out.GuildID, &out.ParentID, &out.Kind, &out.Name,
+		&out.Topic, &position, &isNSFW, &isArchived, &isLocked, &isPrivateThread,
+		&out.ThreadParentID, &archiveTimestamp); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ChannelRow{}, false, nil
+		}
+		return ChannelRow{}, false, err
+	}
+	out.Position = int(position)
+	out.IsNSFW = isNSFW == 1
+	out.IsArchived = isArchived == 1
+	out.IsLocked = isLocked == 1
+	out.IsPrivateThread = isPrivateThread == 1
+	out.ArchiveTimestamp = parseTime(archiveTimestamp)
+	return out, true, nil
 }
 
 func (s *Store) CatalogIntegrity(ctx context.Context) (CatalogIntegrity, error) {
@@ -1106,12 +1204,26 @@ func stringify(value any) string {
 	}
 }
 
+// FTSQueryTerms splits a raw search query into the units normalizeFTSQuery
+// ANDs together in the MATCH expression. A double quote is not a phrase
+// operator on this path -- it is replaced by a space inside the unit it
+// appears in -- so callers that explain an empty result report the same
+// units the query used rather than a second guess at them.
+func FTSQueryTerms(raw string) []string {
+	return strings.Fields(strings.TrimSpace(raw))
+}
+
+// FTSTermText renders one unit from FTSQueryTerms the way the index sees it.
+func FTSTermText(term string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(term, `"`, " ")), " ")
+}
+
 func normalizeFTSQuery(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return raw
 	}
-	fields := strings.Fields(raw)
+	fields := FTSQueryTerms(raw)
 	for i, field := range fields {
 		fields[i] = crawlstore.FTS5Phrase(strings.ReplaceAll(field, `"`, " "))
 	}

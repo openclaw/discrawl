@@ -2446,7 +2446,21 @@ func TestSearchMessagesTreatsFTSSyntaxAsTerms(t *testing.T) {
 	require.ElementsMatch(t, []string{"panic-token", "panic-star"}, searchResultIDs(results))
 }
 
-func TestChannelMessageStats(t *testing.T) {
+func msgAt(id, channelID, created, content string) MessageRecord {
+	return MessageRecord{
+		ID:                id,
+		GuildID:           "g1",
+		ChannelID:         channelID,
+		ChannelName:       "general",
+		AuthorID:          "u1",
+		CreatedAt:         created,
+		Content:           content,
+		NormalizedContent: content,
+		RawJSON:           `{}`,
+	}
+}
+
+func TestMessageScopeStats(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -2454,54 +2468,148 @@ func TestChannelMessageStats(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
-	stats, err := s.ChannelMessageStats(ctx, "empty-channel")
+	stats, err := s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "empty-channel"})
 	require.NoError(t, err)
 	require.Equal(t, 0, stats.Count)
+	require.Equal(t, 0, stats.Total)
+	require.True(t, stats.Oldest.IsZero())
 	require.True(t, stats.Newest.IsZero())
 
-	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
-		ID:                "m1",
-		GuildID:           "g1",
-		ChannelID:         "c1",
-		ChannelName:       "general",
-		AuthorID:          "u1",
-		CreatedAt:         "2026-01-01T00:00:00Z",
-		Content:           "one",
-		NormalizedContent: "one",
-		RawJSON:           `{}`,
-	}))
-	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
-		ID:                "m2",
-		GuildID:           "g1",
-		ChannelID:         "c1",
-		ChannelName:       "general",
-		AuthorID:          "u1",
-		CreatedAt:         "2026-01-02T00:00:00Z",
-		Content:           "two",
-		NormalizedContent: "two",
-		RawJSON:           `{}`,
-	}))
-	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
-		ID:                "m3",
-		GuildID:           "g1",
-		ChannelID:         "c1",
-		ChannelName:       "general",
-		AuthorID:          "u1",
-		CreatedAt:         "2026-01-03T00:00:00Z",
-		Content:           "three",
-		NormalizedContent: "three",
-		RawJSON:           `{}`,
-	}))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "one")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m2", "c1", "2026-01-02T00:00:00Z", "two")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m3", "c1", "2026-01-03T00:00:00Z", "three")))
 
-	stats, err = s.ChannelMessageStats(ctx, "c1")
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "c1"})
 	require.NoError(t, err)
 	require.Equal(t, 3, stats.Count)
+	require.Equal(t, 3, stats.Total)
+	require.Equal(t, parseTime("2026-01-01T00:00:00Z"), stats.Oldest)
 	require.Equal(t, parseTime("2026-01-03T00:00:00Z"), stats.Newest)
 
 	// Soft-deleted messages should not count as visible.
 	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "m3"))
-	stats, err = s.ChannelMessageStats(ctx, "c1")
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "c1"})
 	require.NoError(t, err)
 	require.Equal(t, 2, stats.Count)
+	require.Equal(t, 2, stats.Total)
 	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
+
+	// Guild scope with no channel filter covers every channel in the guild.
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m4", "c2", "2026-02-01T00:00:00Z", "four")))
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{GuildIDs: []string{"g1"}})
+	require.NoError(t, err)
+	require.Equal(t, 3, stats.Count)
+	require.Equal(t, parseTime("2026-02-01T00:00:00Z"), stats.Newest)
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{GuildIDs: []string{"other"}})
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.Total)
+}
+
+// A channel holding only empty-content (attachment-only) messages reports
+// Total above zero and Count zero, which is what separates "nothing is
+// archived here" from "the default empty-content filter dropped everything".
+func TestMessageScopeStatsSeparatesEmptyContentFromNoMessages(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m2", "c1", "2026-01-02T00:00:00Z", "   ")))
+
+	stats, err := s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "c1"})
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.Count)
+	require.Equal(t, 2, stats.Total)
+	require.True(t, stats.Newest.IsZero())
+
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "c1", IncludeEmpty: true})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Count)
+	require.Equal(t, 2, stats.Total)
+	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
+}
+
+func TestMessageEmbeddingCoverage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "one")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m2", "c2", "2026-01-02T00:00:00Z", "two")))
+
+	embedded, err := s.MessageEmbeddingCoverage(ctx, MessageScopeOptions{ChannelID: "c1"}, "openai", "m", EmbeddingInputVersion)
+	require.NoError(t, err)
+	require.Equal(t, 0, embedded)
+
+	_, err = s.DB().ExecContext(ctx, `
+		insert into message_embeddings(message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at)
+		values('m2', 'openai', 'm', ?, 1, x'00', '2026-01-02T00:00:00Z')
+	`, EmbeddingInputVersion)
+	require.NoError(t, err)
+
+	// Coverage is scoped: the embedded message lives in c2, not c1.
+	embedded, err = s.MessageEmbeddingCoverage(ctx, MessageScopeOptions{ChannelID: "c1"}, "openai", "m", EmbeddingInputVersion)
+	require.NoError(t, err)
+	require.Equal(t, 0, embedded)
+
+	embedded, err = s.MessageEmbeddingCoverage(ctx, MessageScopeOptions{ChannelID: "c2"}, "openai", "m", EmbeddingInputVersion)
+	require.NoError(t, err)
+	require.Equal(t, 1, embedded)
+
+	embedded, err = s.MessageEmbeddingCoverage(ctx, MessageScopeOptions{GuildIDs: []string{"g1"}}, "openai", "m", EmbeddingInputVersion)
+	require.NoError(t, err)
+	require.Equal(t, 1, embedded)
+
+	// A different provider or model is not compatible coverage.
+	embedded, err = s.MessageEmbeddingCoverage(ctx, MessageScopeOptions{ChannelID: "c2"}, "openai", "other", EmbeddingInputVersion)
+	require.NoError(t, err)
+	require.Equal(t, 0, embedded)
+}
+
+func TestChannelByID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	_, found, err := s.ChannelByID(ctx, "missing")
+	require.NoError(t, err)
+	require.False(t, found)
+
+	_, found, err = s.ChannelByID(ctx, "")
+	require.NoError(t, err)
+	require.False(t, found)
+
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{
+		ID: "c1", GuildID: "g1", Kind: "forum", Name: "help-desk", ParentID: "p1", RawJSON: `{}`,
+	}))
+
+	row, found, err := s.ChannelByID(ctx, "c1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "help-desk", row.Name)
+	require.Equal(t, "forum", row.Kind)
+	require.Equal(t, "g1", row.GuildID)
+	require.Equal(t, "p1", row.ParentID)
+}
+
+func TestFTSQueryTermsMatchesNormalizedQueryUnits(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, FTSQueryTerms("   "))
+	require.Equal(t, []string{"alpha"}, FTSQueryTerms("alpha"))
+	// A double quote is not a phrase operator here, so a quoted two-word
+	// query is still two ANDed units.
+	require.Equal(t, []string{`"alpha`, `zulu"`}, FTSQueryTerms(`"alpha zulu"`))
+	require.Equal(t, "alpha", FTSTermText(`"alpha`))
+	require.Equal(t, "zulu", FTSTermText(`zulu"`))
 }
