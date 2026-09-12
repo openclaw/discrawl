@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.15.0 - 2026-09-11
 
 **Highlights:** Keep embeddings current during continuous capture, recover restart gaps on demand, and inspect live archive freshness.
