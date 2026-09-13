@@ -148,8 +148,10 @@ func (r *runtime) runMessages(args []string) error {
 		return err
 	}
 	if len(rows) == 0 {
-		if scope, ok := r.newZeroResultScope(opts.Channel, opts.GuildIDs, opts.IncludeEmpty); ok {
-			r.explainEmptyMessages(scope, *days, *since, *before, sinceTime, beforeTime)
+		if scope, ok := r.listMessagesScope(opts.Channel, opts.GuildIDs, opts.IncludeEmpty); ok {
+			r.explainEmptyMessages(scope, zeroResultWindow{
+				days: *days, sinceRaw: *since, beforeRaw: *before, since: sinceTime, before: beforeTime,
+			})
 		}
 	}
 	return r.print(rows)

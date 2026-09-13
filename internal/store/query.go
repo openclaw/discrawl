@@ -82,10 +82,16 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 // whether empty/attachment-only messages were in play. Zero-result
 // explanations pass the same values the query used so the explanation and
 // the query describe one row set rather than two.
+//
+// IncludeDeleted exists because the two queries differ on soft-deleted rows:
+// SearchMessages filters `deleted_at is null`, ListMessages carries no
+// deleted_at predicate and so returns them. A caller sets it to match the
+// query it is explaining.
 type MessageScopeOptions struct {
-	ChannelID    string
-	GuildIDs     []string
-	IncludeEmpty bool
+	ChannelID      string
+	GuildIDs       []string
+	IncludeEmpty   bool
+	IncludeDeleted bool
 }
 
 // MessageScopeStats summarises the non-deleted messages in a scope. Count,
@@ -100,8 +106,11 @@ type MessageScopeStats struct {
 }
 
 func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (string, []any) {
-	clauses := []string{column("deleted_at") + " is null"}
+	clauses := []string{"1=1"}
 	args := []any{}
+	if !opts.IncludeDeleted {
+		clauses = append(clauses, column("deleted_at")+" is null")
+	}
 	if strings.TrimSpace(opts.ChannelID) != "" {
 		clauses = append(clauses, column("channel_id")+" = ?")
 		args = append(args, opts.ChannelID)

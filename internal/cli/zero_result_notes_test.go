@@ -20,6 +20,8 @@ const (
 	zeroResultEmptyTextChannelID  = "3333333333333333"
 	zeroResultAttachmentChannelID = "4444444444444444"
 	zeroResultForumThreadID       = "5555555555555555"
+	zeroResultDeletedChannelID    = "6666666666666666"
+	zeroResultDMChannelID         = "7777777777777777"
 )
 
 func setupZeroResultStore(t *testing.T) (ctx context.Context, cfgPath string) {
@@ -78,6 +80,44 @@ func setupZeroResultStore(t *testing.T) (ctx context.Context, cfgPath string) {
 		HasAttachments: true,
 		RawJSON:        `{}`,
 	}))
+	// A channel whose only message was later deleted over the gateway.
+	// store.ListMessages carries no deleted_at predicate and still lists it;
+	// store.SearchMessages filters it out. The notes for each have to agree
+	// with their own query. It sits in its own guild so the guild-wide counts
+	// the other cases assert stay what they were.
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g2", Name: "Other Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID: zeroResultDeletedChannelID, GuildID: "g2", Kind: "text", Name: "purged", RawJSON: `{}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "m-deleted",
+		GuildID:           "g2",
+		ChannelID:         zeroResultDeletedChannelID,
+		ChannelName:       "purged",
+		AuthorID:          "u1",
+		AuthorName:        "Peter",
+		CreatedAt:         "2020-01-01T00:00:00Z",
+		Content:           "kilo was posted then deleted",
+		NormalizedContent: "kilo was posted then deleted",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g2", zeroResultDeletedChannelID, "m-deleted"))
+	// One direct message, so `dms` has a non-empty scope to report on.
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID: zeroResultDMChannelID, GuildID: store.DirectMessageGuildID, Kind: "dm", Name: "Alice", RawJSON: `{}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "m-dm",
+		GuildID:           store.DirectMessageGuildID,
+		ChannelID:         zeroResultDMChannelID,
+		ChannelName:       "Alice",
+		AuthorID:          "u2",
+		AuthorName:        "Alice",
+		CreatedAt:         "2020-03-01T00:00:00Z",
+		Content:           "delta echo in a direct message",
+		NormalizedContent: "delta echo in a direct message",
+		RawJSON:           `{}`,
+	}))
 	require.NoError(t, s.Close())
 	return ctx, cfgPath
 }
@@ -102,14 +142,14 @@ func TestExplainEmptyResults_UnresolvedChannelNameGetsNoNote(t *testing.T) {
 	rt, stderr, cleanup := newZeroResultRuntime(t, ctx, cfgPath)
 	defer cleanup()
 
-	_, ok := rt.newZeroResultScope("some-unresolved-name", []string{"g1"}, false)
+	_, ok := rt.newZeroResultScope("some-unresolved-name", []string{"g1"}, false, true)
 	require.False(t, ok)
 
-	scope, ok := rt.newZeroResultScope("", []string{"g1"}, false)
+	scope, ok := rt.newZeroResultScope("", []string{"g1"}, false, true)
 	require.True(t, ok)
 	require.Empty(t, scope.channelID)
 
-	scope, ok = rt.newZeroResultScope(zeroResultTextChannelID, nil, false)
+	scope, ok = rt.newZeroResultScope(zeroResultTextChannelID, nil, false, true)
 	require.True(t, ok)
 	require.Equal(t, zeroResultTextChannelID, scope.channelID)
 
@@ -167,17 +207,14 @@ func TestExplainEmptyResults_AttachmentOnlyChannelPointsAtIncludeEmpty(t *testin
 		require.Contains(t, stderr.String(), "discrawl messages --channel "+zeroResultAttachmentChannelID+" --include-empty")
 		require.NotContains(t, stderr.String(), "has no messages in the local mirror")
 	}
-}
 
-// The recommendation in that note has to work: --include-empty returns the row.
-func TestExplainEmptyResults_IncludeEmptyRecommendationReturnsRows(t *testing.T) {
-	ctx, cfgPath := setupZeroResultStore(t)
-
+	// The command that note recommends has to return the row, checked here
+	// rather than in a test of its own: on its own it would pass with the
+	// notes removed, since --include-empty already worked.
 	var stdout, stderr bytes.Buffer
 	require.NoError(t, Run(ctx, []string{
 		"--config", cfgPath, "messages", "--channel", zeroResultAttachmentChannelID, "--include-empty",
 	}, &stdout, &stderr))
-
 	require.NotEmpty(t, stdout.String())
 	require.Empty(t, stderr.String())
 }
@@ -315,14 +352,12 @@ func TestExplainEmptyResults_MultiTermANDHint(t *testing.T) {
 	// Finding 1: the recommendation has to be one this path can honour.
 	require.Contains(t, stderr.String(), "search one distinctive term and narrow the result with --channel or --author")
 	require.NotContains(t, stderr.String(), "exact phrase")
-}
 
-// Finding 1, the other half: the note's advice returns rows, and the advice
-// it replaced does not -- quoting is not phrase search on this path.
-func TestExplainEmptyResults_RecommendedSingleTermReturnsRows(t *testing.T) {
-	ctx, cfgPath := setupZeroResultStore(t)
-
-	var stdout, stderr bytes.Buffer
+	// Finding 1, the other half: the advice the note gives returns rows, and
+	// the advice it replaced does not. Checked here rather than in a test of
+	// its own, which would pass with the notes removed.
+	stdout.Reset()
+	stderr.Reset()
 	require.NoError(t, Run(ctx, []string{
 		"--config", cfgPath, "search", "--channel", zeroResultTextChannelID, "alpha",
 	}, &stdout, &stderr))
@@ -406,18 +441,15 @@ func TestExplainEmptyResults_SemanticWithoutEmbeddings(t *testing.T) {
 	require.Contains(t, stderr.String(), "note: none of the 1 messages in scope have embeddings for provider=openai model=text-embedding-3-small")
 	require.Contains(t, stderr.String(), "discrawl embed")
 	require.Contains(t, stderr.String(), "--mode fts")
-}
 
-// The recommended fallback in that note returns rows.
-func TestExplainEmptyResults_SemanticFallbackRecommendationReturnsRows(t *testing.T) {
-	ctx, cfgPath := setupZeroResultStore(t)
-
-	var stdout, stderr bytes.Buffer
+	// The fallback that note recommends returns rows, checked here rather than
+	// in a test of its own, which would pass with the notes removed.
+	var stdout, fallbackStderr bytes.Buffer
 	require.NoError(t, Run(ctx, []string{
 		"--config", cfgPath, "search", "--mode", "fts", "--channel", zeroResultTextChannelID, "alpha",
-	}, &stdout, &stderr))
+	}, &stdout, &fallbackStderr))
 	require.NotEmpty(t, stdout.String())
-	require.Empty(t, stderr.String())
+	require.Empty(t, fallbackStderr.String())
 }
 
 // None of the notes should ever land on stdout, or appear at all once
@@ -445,4 +477,118 @@ func TestExplainEmptyResults_SuppressedWhenResultsReturnedOrJSON(t *testing.T) {
 	}, &stdout, &stderr))
 	require.NotEmpty(t, stdout.String())
 	require.Empty(t, stderr.String())
+}
+
+// Finding 4: store.ListMessages carries no deleted_at predicate, so a channel
+// whose messages were all deleted over the gateway still lists them. A stats
+// query that filtered soft-deleted rows out reported that channel as empty and
+// `messages --channel ID --days 1` claimed it "has no messages in the local
+// mirror" while `messages --channel ID` printed the row.
+// The two directions are one test because the pair is the invariant: the same
+// channel is non-empty for `messages` and empty for `search`, and each note has
+// to report its own query's answer rather than a single shared one.
+func TestExplainEmptyResults_SoftDeletedRowsMatchEachQuery(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	// The claim the note must not contradict: the plain listing returns the row.
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultDeletedChannelID,
+	}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "kilo was posted then deleted")
+
+	// `messages`: narrowing to a window that excludes the row must blame the
+	// window, not call a channel empty that the line above just printed from.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultDeletedChannelID, "--days", "1",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.NotContains(t, stderr.String(), "has no messages in the local mirror")
+	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 1 days")
+
+	// `search`: store.SearchMessages does filter `deleted_at is null`, so here
+	// the channel really is empty and the note says so rather than counting
+	// rows search can never return.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--channel", zeroResultDeletedChannelID, "kilo",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "note: channel "+zeroResultDeletedChannelID+" (purged, kind=text) has no messages in the local mirror")
+	require.NotContains(t, stderr.String(), "are empty or attachment-only")
+}
+
+// `dms` reaches the same store.ListMessages query, so an empty listing there
+// was silent in exactly the same way and gets the window note.
+func TestExplainEmptyResults_DirectMessagesWindowNote(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--days", "1"}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 1 days")
+	require.Contains(t, stderr.String(), "try without --days")
+}
+
+// --hours is a `dms` flag that `messages` does not have, so the note names it
+// instead of falling through to the --days wording or printing nothing.
+func TestExplainEmptyResults_DirectMessagesHoursWindowNote(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--hours", "6"}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 6 hours")
+	require.Contains(t, stderr.String(), "try without --hours")
+}
+
+// `dms --search` reaches the same FTS query, so the implicit-AND note applies.
+func TestExplainEmptyResults_DirectMessagesMultiTermANDHint(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "dms", "--search", "delta whiskey",
+	}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "no message contains all 2 terms together")
+	require.Contains(t, stderr.String(), `"delta" alone matches`)
+}
+
+// --with names a person and the query matches it against channel id and
+// channel name alike, which the channel_id-keyed stats query cannot reproduce.
+// Such a run gets no note rather than a count over every conversation.
+func TestExplainEmptyResults_DirectMessagesWithFilterGetsNoNote(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	for _, args := range [][]string{
+		{"--config", cfgPath, "dms", "--with", "Alice", "--days", "1"},
+		{"--config", cfgPath, "dms", "--with", "Alice", "--search", "delta whiskey"},
+	} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(ctx, args, &stdout, &stderr))
+		require.Empty(t, stdout.String())
+		require.Empty(t, stderr.String())
+	}
+}
+
+// --json suppresses the `dms` notes the same way it suppresses the others, so
+// a JSON consumer's stderr stays clean.
+func TestExplainEmptyResults_DirectMessagesNotesSuppressedUnderJSON(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	for _, args := range [][]string{
+		{"--config", cfgPath, "--json", "dms", "--days", "1"},
+		{"--config", cfgPath, "--json", "dms", "--search", "delta whiskey"},
+	} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(ctx, args, &stdout, &stderr))
+		require.Empty(t, stderr.String())
+	}
 }

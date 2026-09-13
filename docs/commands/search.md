@@ -56,6 +56,18 @@ silently searching multiple channels. Use `discrawl channels resolve <name>
 
 Run `discrawl sync --with-embeddings` to enqueue, then `discrawl embed` to generate vectors.
 
+## Empty results
+
+A search that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows. The causes covered are: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels); every message in the channel is empty or attachment-only and so dropped by the default content filter; the query has several terms and one of them matches on its own, because every term is required; and a `--mode semantic` or `--mode hybrid` run over a scope whose messages carry no embeddings for the configured provider and model.
+
+These notes are diagnostics, not output:
+
+- they go to stderr, never stdout
+- `--json` suppresses them, so machine-readable output is unaffected
+- stdout bytes and the exit code are unchanged either way, so a shell pipeline behaves exactly as before
+
+A run that resolved `--channel` to a name fragment rather than a concrete id gets no note, because the counts behind one cannot reproduce that row set.
+
 ## See also
 
 - [Search modes](../guides/search-modes.html)
