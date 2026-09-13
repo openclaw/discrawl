@@ -22,6 +22,7 @@ const (
 	zeroResultForumThreadID       = "5555555555555555"
 	zeroResultDeletedChannelID    = "6666666666666666"
 	zeroResultDMChannelID         = "7777777777777777"
+	zeroResultOrphanChannelID     = "8888888888888888"
 )
 
 func setupZeroResultStore(t *testing.T) (ctx context.Context, cfgPath string) {
@@ -102,6 +103,23 @@ func setupZeroResultStore(t *testing.T) (ctx context.Context, cfgPath string) {
 		RawJSON:           `{}`,
 	}))
 	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g2", zeroResultDeletedChannelID, "m-deleted"))
+	// A message in a channel that was never catalogued, so a --channel id can
+	// resolve for the query while the notes have no name or kind to report. It
+	// sits in its own guild so the guild-wide counts other cases assert stay
+	// what they were.
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g3", Name: "Third Guild", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "m-orphan",
+		GuildID:           "g3",
+		ChannelID:         zeroResultOrphanChannelID,
+		ChannelName:       "uncatalogued",
+		AuthorID:          "u1",
+		AuthorName:        "Peter",
+		CreatedAt:         "2020-01-01T00:00:00Z",
+		Content:           "mike has no channels row",
+		NormalizedContent: "mike has no channels row",
+		RawJSON:           `{}`,
+	}))
 	// One direct message, so `dms` has a non-empty scope to report on.
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
 		ID: zeroResultDMChannelID, GuildID: store.DirectMessageGuildID, Kind: "dm", Name: "Alice", RawJSON: `{}`,
@@ -203,7 +221,7 @@ func TestExplainEmptyResults_AttachmentOnlyChannelPointsAtIncludeEmpty(t *testin
 		var stdout, stderr bytes.Buffer
 		require.NoError(t, Run(ctx, args, &stdout, &stderr))
 		require.Empty(t, stdout.String())
-		require.Contains(t, stderr.String(), "note: all 1 messages in channel "+zeroResultAttachmentChannelID+" are empty or attachment-only")
+		require.Contains(t, stderr.String(), "note: all 1 messages in channel "+zeroResultAttachmentChannelID+" (screenshots, kind=text) are empty or attachment-only")
 		require.Contains(t, stderr.String(), "discrawl messages --channel "+zeroResultAttachmentChannelID+" --include-empty")
 		require.NotContains(t, stderr.String(), "has no messages in the local mirror")
 	}
@@ -245,9 +263,7 @@ func TestExplainEmptyResults_DaysWindowExcludesEverything(t *testing.T) {
 	}, &stdout, &stderr))
 
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 7 days")
-	require.Contains(t, stderr.String(), "newest: 2020-01-01T00:00:00Z")
-	require.Contains(t, stderr.String(), "try without --days")
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none within the last 7 days (newest: 2020-01-01T00:00:00Z); try without --days")
 }
 
 // Finding 4: the same window note has to fire guild-wide, with no --channel
@@ -261,8 +277,10 @@ func TestExplainEmptyResults_DaysWindowGuildWide(t *testing.T) {
 	}, &stdout, &stderr))
 
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 7 days")
-	require.Contains(t, stderr.String(), "try without --days")
+	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 7 days (newest: 2020-01-01T00:00:00Z); try without --days")
+	// No single channel resolved, so the note must not leave a parenthetical
+	// with nothing in it behind.
+	require.NotContains(t, stderr.String(), "kind=")
 }
 
 // Finding 5: --before is its own half of the window and gets its own note,
@@ -276,9 +294,7 @@ func TestExplainEmptyResults_BeforeWindowExcludesEverything(t *testing.T) {
 	}, &stdout, &stderr))
 
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "note: 1 messages in scope but none before 2019-01-01T00:00:00Z")
-	require.Contains(t, stderr.String(), "oldest: 2020-01-01T00:00:00Z")
-	require.Contains(t, stderr.String(), "try without --before")
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none before 2019-01-01T00:00:00Z (oldest: 2020-01-01T00:00:00Z); try without --before")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -287,8 +303,8 @@ func TestExplainEmptyResults_BeforeWindowExcludesEverything(t *testing.T) {
 		"--since", "2021-01-01T00:00:00Z", "--before", "2019-01-01T00:00:00Z",
 	}, &stdout, &stderr))
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "try without --since")
-	require.Contains(t, stderr.String(), "try without --before")
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none since 2021-01-01T00:00:00Z (newest: 2020-01-01T00:00:00Z); try without --since")
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none before 2019-01-01T00:00:00Z (oldest: 2020-01-01T00:00:00Z); try without --before")
 }
 
 // A --before that the data does sit inside must not be blamed.
@@ -424,6 +440,33 @@ func TestExplainEmptyResults_MultiTermNoHintWhenNoTermMatches(t *testing.T) {
 	require.Empty(t, stderr.String())
 }
 
+// A --channel id that resolves for the query but matches no channels row has
+// no name or kind to report. The note keeps the id and stops there rather than
+// printing a parenthetical with nothing in it.
+func TestExplainEmptyResults_WindowNoteOmitsIdentityForUncataloguedChannel(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultOrphanChannelID, "--days", "7",
+	}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultOrphanChannelID+" but none within the last 7 days (newest: 2020-01-01T00:00:00Z); try without --days")
+	require.NotContains(t, stderr.String(), "kind=")
+	require.NotContains(t, stderr.String(), "()")
+
+	// The same note on a channel that does have a channels row, so the check
+	// above is about the missing row rather than the note having lost its
+	// identity everywhere.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultTextChannelID, "--days", "7",
+	}, &stdout, &stderr))
+	require.Contains(t, stderr.String(), "(general, kind=text)")
+}
+
 // Finding 9: a semantic search over a channel that has messages but no
 // embeddings for the configured provider/model.
 func TestExplainEmptyResults_SemanticWithoutEmbeddings(t *testing.T) {
@@ -438,7 +481,7 @@ func TestExplainEmptyResults_SemanticWithoutEmbeddings(t *testing.T) {
 	opts := store.SearchOptions{Query: "alpha", Channel: zeroResultTextChannelID, Limit: 20}
 	rt.explainEmptySearch(opts, "semantic")
 
-	require.Contains(t, stderr.String(), "note: none of the 1 messages in scope have embeddings for provider=openai model=text-embedding-3-small")
+	require.Contains(t, stderr.String(), "note: none of the 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) have embeddings for provider=openai model=text-embedding-3-small")
 	require.Contains(t, stderr.String(), "discrawl embed")
 	require.Contains(t, stderr.String(), "--mode fts")
 
@@ -506,7 +549,7 @@ func TestExplainEmptyResults_SoftDeletedRowsMatchEachQuery(t *testing.T) {
 	}, &stdout, &stderr))
 	require.Empty(t, stdout.String())
 	require.NotContains(t, stderr.String(), "has no messages in the local mirror")
-	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 1 days")
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultDeletedChannelID+" (purged, kind=text) but none within the last 1 days (newest: 2020-01-01T00:00:00Z); try without --days")
 
 	// `search`: store.SearchMessages does filter `deleted_at is null`, so here
 	// the channel really is empty and the note says so rather than counting
@@ -530,8 +573,8 @@ func TestExplainEmptyResults_DirectMessagesWindowNote(t *testing.T) {
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--days", "1"}, &stdout, &stderr))
 
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 1 days")
-	require.Contains(t, stderr.String(), "try without --days")
+	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 1 days (newest: 2020-03-01T00:00:00Z); try without --days")
+	require.NotContains(t, stderr.String(), "kind=")
 }
 
 // --hours is a `dms` flag that `messages` does not have, so the note names it
@@ -543,8 +586,7 @@ func TestExplainEmptyResults_DirectMessagesHoursWindowNote(t *testing.T) {
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--hours", "6"}, &stdout, &stderr))
 
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "1 messages in scope but none within the last 6 hours")
-	require.Contains(t, stderr.String(), "try without --hours")
+	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 6 hours (newest: 2020-03-01T00:00:00Z); try without --hours")
 }
 
 // `dms --search` reaches the same FTS query, so the implicit-AND note applies.
@@ -617,7 +659,7 @@ func TestExplainEmptyResults_ChannelOutsideGuildScopeBlamesTheGuildFilter(t *tes
 		stderr.Reset()
 		require.NoError(t, Run(ctx, args, &stdout, &stderr))
 		require.Empty(t, stdout.String())
-		require.Contains(t, stderr.String(), "note: channel "+zeroResultTextChannelID+" (general) is in guild g1, which is outside the requested guild scope (g2)")
+		require.Contains(t, stderr.String(), "note: channel "+zeroResultTextChannelID+" (general, kind=text) is in guild g1, which is outside the requested guild scope (g2)")
 		require.Contains(t, stderr.String(), "use --guild g1")
 		require.NotContains(t, stderr.String(), "has no messages in the local mirror")
 	}
@@ -655,5 +697,5 @@ func TestExplainEmptyResults_HybridModeAlsoReportsMissingEmbeddings(t *testing.T
 	}, "hybrid")
 
 	require.Contains(t, stderr.String(), "no message contains all 2 terms together")
-	require.Contains(t, stderr.String(), "have embeddings for provider=openai")
+	require.Contains(t, stderr.String(), "in channel "+zeroResultTextChannelID+" (general, kind=text) have embeddings for provider=openai")
 }

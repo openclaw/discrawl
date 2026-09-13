@@ -95,7 +95,7 @@ func (r *runtime) explainEmptyMessages(scope zeroResultScope, window zeroResultW
 	if r.explainEmptyScopeContents(scope, stats, "discrawl messages") {
 		return
 	}
-	r.explainEmptyDateWindow(window, stats)
+	r.explainEmptyDateWindow(scope, window, stats)
 }
 
 // explainEmptySearch writes stderr notes for a `search` run that returned
@@ -183,22 +183,44 @@ func (r *runtime) explainEmptyScopeContents(scope zeroResultScope, stats store.M
 		// saying it has none at all contradicts what the same command prints
 		// without the guild filter. Name the filter that emptied it instead.
 		if found && len(scope.guildIDs) > 0 && !slices.Contains(scope.guildIDs, row.GuildID) {
-			_, _ = fmt.Fprintf(r.stderr, "note: channel %s (%s) is in guild %s, which is outside the requested guild scope (%s); drop --guild/--guilds or use --guild %s\n",
-				scope.channelID, row.Name, row.GuildID, strings.Join(scope.guildIDs, ","), row.GuildID)
+			_, _ = fmt.Fprintf(r.stderr, "note: %s is in guild %s, which is outside the requested guild scope (%s); drop --guild/--guilds or use --guild %s\n",
+				channelIdentity(scope.channelID, row), row.GuildID, strings.Join(scope.guildIDs, ","), row.GuildID)
 			return true
 		}
-		name, kind := row.Name, row.Kind
-		_, _ = fmt.Fprintf(r.stderr, "note: channel %s (%s, kind=%s) has no messages in the local mirror\n", scope.channelID, name, kind)
-		if kind == "forum" {
+		_, _ = fmt.Fprintf(r.stderr, "note: %s has no messages in the local mirror\n", channelIdentity(scope.channelID, row))
+		if row.Kind == "forum" {
 			_, _ = fmt.Fprintf(r.stderr, "note: a forum holds its posts as separate thread channels; list them with `discrawl --json channels list` (thread_parent_id=%s) and query one with `discrawl messages --channel THREAD_ID`\n", scope.channelID)
 		}
 		return true
 	}
 	if stats.Count == 0 {
-		_, _ = fmt.Fprintf(r.stderr, "note: all %d messages in channel %s are empty or attachment-only, which the default filter drops; list them with `%s --channel %s --include-empty`\n", stats.Total, scope.channelID, listCmd, scope.channelID)
+		_, _ = fmt.Fprintf(r.stderr, "note: all %d messages %s are empty or attachment-only, which the default filter drops; list them with `%s --channel %s --include-empty`\n", stats.Total, r.zeroResultScopeLabel(scope), listCmd, scope.channelID)
 		return true
 	}
 	return false
+}
+
+// channelIdentity renders the "channel ID (name, kind=k)" label the
+// channel-empty note prints. Every note that identifies a channel goes through
+// it, so the whole set reads as one tool rather than each note inventing its
+// own shape.
+func channelIdentity(channelID string, row store.ChannelRow) string {
+	return fmt.Sprintf("channel %s (%s, kind=%s)", channelID, row.Name, row.Kind)
+}
+
+// zeroResultScopeLabel names the rows a count was taken over, for the notes
+// that report one. A guild-wide query has no single channel to name and reads
+// as "in scope"; an id that matches no channels row keeps the id and drops the
+// parenthetical rather than printing an empty one.
+func (r *runtime) zeroResultScopeLabel(scope zeroResultScope) string {
+	if scope.channelID == "" {
+		return "in scope"
+	}
+	row, found := r.lookupChannel(scope.channelID)
+	if !found {
+		return "in channel " + scope.channelID
+	}
+	return "in " + channelIdentity(scope.channelID, row)
 }
 
 func (r *runtime) lookupChannel(channelID string) (store.ChannelRow, bool) {
@@ -215,22 +237,30 @@ func (r *runtime) lookupChannel(channelID string) (store.ChannelRow, bool) {
 // outside it, which stays true no matter what other filters (--author, and so
 // on) were also applied, so the note never blames the window for someone
 // else's exclusion.
-func (r *runtime) explainEmptyDateWindow(window zeroResultWindow, stats store.MessageScopeStats) {
+func (r *runtime) explainEmptyDateWindow(scope zeroResultScope, window zeroResultWindow, stats store.MessageScopeStats) {
 	if stats.Count == 0 {
 		return
 	}
-	if !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since) {
+	sinceExcludes := !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since)
+	beforeExcludes := !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != ""
+	if !sinceExcludes && !beforeExcludes {
+		return
+	}
+	// Resolved once: both halves can fire on the same run, and the label costs
+	// a channel lookup.
+	where := r.zeroResultScopeLabel(scope)
+	if sinceExcludes {
 		switch {
 		case window.hours > 0:
-			_, _ = fmt.Fprintf(r.stderr, "note: %d messages in scope but none within the last %d hours (newest: %s); try without --hours\n", stats.Count, window.hours, formatTime(stats.Newest))
+			_, _ = fmt.Fprintf(r.stderr, "note: %d messages %s but none within the last %d hours (newest: %s); try without --hours\n", stats.Count, where, window.hours, formatTime(stats.Newest))
 		case window.days > 0:
-			_, _ = fmt.Fprintf(r.stderr, "note: %d messages in scope but none within the last %d days (newest: %s); try without --days\n", stats.Count, window.days, formatTime(stats.Newest))
+			_, _ = fmt.Fprintf(r.stderr, "note: %d messages %s but none within the last %d days (newest: %s); try without --days\n", stats.Count, where, window.days, formatTime(stats.Newest))
 		case strings.TrimSpace(window.sinceRaw) != "":
-			_, _ = fmt.Fprintf(r.stderr, "note: %d messages in scope but none since %s (newest: %s); try without --since\n", stats.Count, window.sinceRaw, formatTime(stats.Newest))
+			_, _ = fmt.Fprintf(r.stderr, "note: %d messages %s but none since %s (newest: %s); try without --since\n", stats.Count, where, window.sinceRaw, formatTime(stats.Newest))
 		}
 	}
-	if !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != "" {
-		_, _ = fmt.Fprintf(r.stderr, "note: %d messages in scope but none before %s (oldest: %s); try without --before\n", stats.Count, window.beforeRaw, formatTime(stats.Oldest))
+	if beforeExcludes {
+		_, _ = fmt.Fprintf(r.stderr, "note: %d messages %s but none before %s (oldest: %s); try without --before\n", stats.Count, where, window.beforeRaw, formatTime(stats.Oldest))
 	}
 }
 
@@ -252,7 +282,7 @@ func (r *runtime) explainEmptyEmbeddings(scope zeroResultScope, stats store.Mess
 	if err != nil || embedded > 0 {
 		return
 	}
-	_, _ = fmt.Fprintf(r.stderr, "note: none of the %d messages in scope have embeddings for provider=%s model=%s, and semantic search only matches embedded messages; run `discrawl embed`, or use --mode fts\n", stats.Count, r.cfg.Search.Embeddings.Provider, r.cfg.Search.Embeddings.Model)
+	_, _ = fmt.Fprintf(r.stderr, "note: none of the %d messages %s have embeddings for provider=%s model=%s, and semantic search only matches embedded messages; run `discrawl embed`, or use --mode fts\n", stats.Count, r.zeroResultScopeLabel(scope), r.cfg.Search.Embeddings.Provider, r.cfg.Search.Embeddings.Model)
 }
 
 // explainEmptySearchTerms writes a stderr note when a multi-term query
