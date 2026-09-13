@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Avoid repeated requests to unavailable Discord channels for seven days during routine sync, while full and targeted syncs retry immediately, unavailable-only backlogs keep discovering channels, and doctor reports marker health using the same timestamp policy. Thanks @rnavarro.
+- Keep the generated documentation identity stable when building from a renamed checkout.
 
 ## 0.15.0 - 2026-09-11
 

@@ -59,7 +59,7 @@ console.log(`built docs site: ${path.relative(root, outDir)}`);
 function llmsTxt() {
   const origin = siteUrl;
   const source = repoEditBase.replace(/\/edit\/main\/docs\/?$/, "");
-  const name = path.basename(root);
+  const name = "discrawl";
   const description = `${name} documentation index.`;
   const install = brewInstall;
   const docPages = docsLlmsPages().map((page) => `- ${page.title}: ${pageUrl(origin, page.outRel)}`);
