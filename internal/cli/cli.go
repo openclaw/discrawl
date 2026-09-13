@@ -46,7 +46,8 @@ func ExitCode(err error) int {
 	return 1
 }
 
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr error) {
+	defer func() { runErr = store.NormalizeContextError(ctx, runErr) }()
 	if len(args) == 0 || rootHelpRequested(args, "config") {
 		return printUsage(stdout)
 	}

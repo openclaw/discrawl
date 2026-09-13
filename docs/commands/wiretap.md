@@ -28,6 +28,8 @@ discrawl wiretap --watch-every 10s --stats --json
 
 ## Notes
 
+- cancellation during database initialization or import is reported as cancellation, with the SQLite cause retained for diagnostics
+
 - stores classifiable cache messages in the same `guilds`, `channels`, and `messages` tables used by bot sync
 - stores proven DMs under the synthetic guild id `@me`
 - `@me` rows stay local-only: never exported to `publish` / Git snapshot import / embedding snapshots
