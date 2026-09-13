@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -155,17 +156,19 @@ func writeLargeWiretapCache(t *testing.T, path string, count int) {
 	file, err := os.Create(path)
 	requireNoError(t, err)
 	defer func() { requireNoError(t, file.Close()) }()
-	_, err = fmt.Fprintln(file, `{"id":"111111111111111117","guild_id":"999999999999999997","type":0,"name":"sigterm-import"}`)
+	writer := bufio.NewWriter(file)
+	_, err = fmt.Fprintln(writer, `{"id":"111111111111111117","guild_id":"999999999999999997","type":0,"name":"sigterm-import"}`)
 	requireNoError(t, err)
 	for i := range count {
 		_, err = fmt.Fprintf(
-			file,
+			writer,
 			`{"id":"3333333333%09d","channel_id":"111111111111111117","content":"sigterm import message %d","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222228","username":"alice"}}`+"\n",
 			i,
 			i,
 		)
 		requireNoError(t, err)
 	}
+	requireNoError(t, writer.Flush())
 }
 
 func isContextCanceledExit(err error, output []byte) bool {
