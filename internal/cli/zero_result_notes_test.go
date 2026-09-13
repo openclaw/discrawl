@@ -699,3 +699,29 @@ func TestExplainEmptyResults_HybridModeAlsoReportsMissingEmbeddings(t *testing.T
 	require.Contains(t, stderr.String(), "no message contains all 2 terms together")
 	require.Contains(t, stderr.String(), "in channel "+zeroResultTextChannelID+" (general, kind=text) have embeddings for provider=openai")
 }
+
+// Round 2, finding 1: `messages --hours N` resolved the window for the query
+// but the diagnostic was built without the flag, so a run whose every archived
+// message predates the window printed nothing at all. Driven through Run() so
+// the flag has to survive the entry point, which is where it was being dropped.
+func TestExplainEmptyResults_MessagesHoursWindowNote(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultTextChannelID, "--hours", "6",
+	}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none within the last 6 hours (newest: 2020-01-01T00:00:00Z); try without --hours")
+
+	// The command the note recommends returns the row, checked here rather
+	// than in a test of its own, which would pass with the note removed.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultTextChannelID,
+	}, &stdout, &stderr))
+	require.NotEmpty(t, stdout.String())
+	require.Empty(t, stderr.String())
+}
