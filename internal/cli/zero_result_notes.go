@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -177,7 +178,16 @@ func (r *runtime) explainEmptyScopeContents(scope zeroResultScope, stats store.M
 		return false
 	}
 	if stats.Total == 0 {
-		name, kind := r.lookupChannelNameKind(scope.channelID)
+		row, found := r.lookupChannel(scope.channelID)
+		// A channel outside the requested guild scope has no rows *here*, but
+		// saying it has none at all contradicts what the same command prints
+		// without the guild filter. Name the filter that emptied it instead.
+		if found && len(scope.guildIDs) > 0 && !slices.Contains(scope.guildIDs, row.GuildID) {
+			_, _ = fmt.Fprintf(r.stderr, "note: channel %s (%s) is in guild %s, which is outside the requested guild scope (%s); drop --guild/--guilds or use --guild %s\n",
+				scope.channelID, row.Name, row.GuildID, strings.Join(scope.guildIDs, ","), row.GuildID)
+			return true
+		}
+		name, kind := row.Name, row.Kind
 		_, _ = fmt.Fprintf(r.stderr, "note: channel %s (%s, kind=%s) has no messages in the local mirror\n", scope.channelID, name, kind)
 		if kind == "forum" {
 			_, _ = fmt.Fprintf(r.stderr, "note: a forum holds its posts as separate thread channels; list them with `discrawl --json channels list` (thread_parent_id=%s) and query one with `discrawl messages --channel THREAD_ID`\n", scope.channelID)
@@ -191,12 +201,12 @@ func (r *runtime) explainEmptyScopeContents(scope zeroResultScope, stats store.M
 	return false
 }
 
-func (r *runtime) lookupChannelNameKind(channelID string) (string, string) {
+func (r *runtime) lookupChannel(channelID string) (store.ChannelRow, bool) {
 	row, found, err := r.store.ChannelByID(r.ctx, channelID)
 	if err != nil || !found {
-		return "", ""
+		return store.ChannelRow{}, false
 	}
-	return row.Name, row.Kind
+	return row, true
 }
 
 // explainEmptyDateWindow writes a stderr note when an

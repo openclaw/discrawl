@@ -39,7 +39,7 @@ discrawl --json messages --channel maintainers --days 3
 
 ## Empty results
 
-A listing that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels), every message in it is empty or attachment-only and so needs `--include-empty`, or the `--hours`/`--days`/`--since`/`--before` window sits entirely outside the data, in which case the note reports the newest or oldest timestamp actually in scope.
+A listing that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels), every message in it is empty or attachment-only and so needs `--include-empty`, the `--hours`/`--days`/`--since`/`--before` window sits entirely outside the data, in which case the note reports the newest or oldest timestamp actually in scope, or the channel exists but sits in a guild outside the `--guild`/`--guilds` scope, in which case the note names the guild to use instead.
 
 These notes are diagnostics, not output: they go to stderr and never stdout, `--json` suppresses them, and stdout bytes and the exit code are unchanged either way, so a shell pipeline behaves exactly as before.
 

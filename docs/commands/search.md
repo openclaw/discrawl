@@ -58,7 +58,7 @@ Run `discrawl sync --with-embeddings` to enqueue, then `discrawl embed` to gener
 
 ## Empty results
 
-A search that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows. The causes covered are: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels); every message in the channel is empty or attachment-only and so dropped by the default content filter; the query has several terms and one of them matches on its own, because every term is required; and a `--mode semantic` or `--mode hybrid` run over a scope whose messages carry no embeddings for the configured provider and model.
+A search that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows. The causes covered are: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels); every message in the channel is empty or attachment-only and so dropped by the default content filter; the query has several terms and one of them matches on its own, because every term is required; a `--mode semantic` or `--mode hybrid` run over a scope whose messages carry no embeddings for the configured provider and model; and a `--channel` that exists but sits in a guild outside the `--guild`/`--guilds` scope, which names the guild to use instead.
 
 These notes are diagnostics, not output:
 

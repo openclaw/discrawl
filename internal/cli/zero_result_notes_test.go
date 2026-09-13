@@ -592,3 +592,68 @@ func TestExplainEmptyResults_DirectMessagesNotesSuppressedUnderJSON(t *testing.T
 		require.Empty(t, stderr.String())
 	}
 }
+
+// Finding 5: a channel that exists but sits outside the requested guild scope
+// has no rows for this query, and the old wording said it had none at all,
+// which the same command without --guild contradicts. The note names the guild
+// filter instead.
+func TestExplainEmptyResults_ChannelOutsideGuildScopeBlamesTheGuildFilter(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	// The claim the note must not contradict: under its own guild, it has rows.
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--guild", "g1", "--channel", zeroResultTextChannelID,
+	}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "alpha appears here on its own")
+
+	// Both entry points reach the shared helper, so both get the note. A raw
+	// channel id skips name resolution, which is what lets `search` reach it.
+	for _, args := range [][]string{
+		{"--config", cfgPath, "messages", "--guild", "g2", "--channel", zeroResultTextChannelID},
+		{"--config", cfgPath, "search", "--guild", "g2", "--channel", zeroResultTextChannelID, "alpha"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		require.NoError(t, Run(ctx, args, &stdout, &stderr))
+		require.Empty(t, stdout.String())
+		require.Contains(t, stderr.String(), "note: channel "+zeroResultTextChannelID+" (general) is in guild g1, which is outside the requested guild scope (g2)")
+		require.Contains(t, stderr.String(), "use --guild g1")
+		require.NotContains(t, stderr.String(), "has no messages in the local mirror")
+	}
+}
+
+// --mode hybrid runs the same FTS query on its lexical leg, so it gets the
+// multi-term note. With embeddings disabled it never runs a vector query, so it
+// must not also claim missing embedding coverage.
+func TestExplainEmptyResults_HybridModeGetsTheFTSNoteOnly(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--mode", "hybrid", "alpha beta",
+	}, &stdout, &stderr))
+
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), `note: no message contains all 2 terms together; "alpha" alone matches`)
+	require.NotContains(t, stderr.String(), "have embeddings for provider=")
+}
+
+// The hybrid path also reports missing embedding coverage once embeddings are
+// configured, which the fts path never does.
+func TestExplainEmptyResults_HybridModeAlsoReportsMissingEmbeddings(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+
+	rt, stderr, cleanup := newZeroResultRuntime(t, ctx, cfgPath)
+	defer cleanup()
+	rt.cfg.Search.Embeddings.Enabled = true
+	rt.cfg.Search.Embeddings.Provider = "openai"
+	rt.cfg.Search.Embeddings.Model = "text-embedding-3-small"
+
+	rt.explainEmptySearch(store.SearchOptions{
+		Query: "alpha beta", Channel: zeroResultTextChannelID, Limit: 20,
+	}, "hybrid")
+
+	require.Contains(t, stderr.String(), "no message contains all 2 terms together")
+	require.Contains(t, stderr.String(), "have embeddings for provider=openai")
+}
