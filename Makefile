@@ -44,7 +44,7 @@ test-race:
 	GOWORK=off go test -count=1 -race ./...
 
 test-coverage:
-	GOWORK=off go test -count=1 ./... -coverprofile=coverage.out
+	GOWORK=off go test -count=1 -race ./... -coverprofile=coverage.out
 	@grep -v '^github.com/openclaw/discrawl/internal/store/storedb/' coverage.out > coverage.filtered.out
 	@total="$$(go tool cover -func=coverage.filtered.out | awk '/^total:/ { sub(/%$$/, "", $$3); print $$3 }')"; \
 	awk -v total="$$total" 'BEGIN { if (total == "" || total + 0 < 85.0) { printf("coverage %s%% is below 85%%\n", total == "" ? "missing" : total); exit 1 } printf("coverage %.1f%%\n", total + 0) }'
@@ -73,7 +73,7 @@ smoke: build
 	@$(BINARY) metadata --json | grep -q '"schema_version"'
 	@$(BINARY) help tui | grep -q 'Usage: discrawl tui'
 
-check: tidy-check fmt lint test-coverage test-race smoke snapshot
+check: tidy-check fmt lint test-coverage smoke snapshot
 
 snapshot:
 	GOWORK=off goreleaser release --snapshot --clean --skip=publish
