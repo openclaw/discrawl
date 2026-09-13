@@ -306,6 +306,10 @@ type tailEmbeddingsConfigurer interface {
 	SetTailEmbeddings(bool)
 }
 
+type tailStartupRepairConfigurer interface {
+	SetTailRepairOnStart(bool)
+}
+
 type tailMessageFailureReplayer interface {
 	ReplayTailMessageFailures(context.Context, []string, int) (syncer.TailMessageReplayStats, error)
 }

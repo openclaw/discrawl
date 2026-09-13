@@ -66,6 +66,7 @@ func (r *runtime) runMetadata(args []string) error {
 }
 
 type archiveControlStatus struct {
+	BackgroundWork *store.EmbeddingWorkerStatus `json:"background_work,omitempty"`
 	control.Status
 	LastTailEventAt string `json:"last_tail_event_at,omitempty"`
 }
@@ -98,7 +99,7 @@ func controlStatus(configPath string, cfg config.Config, status store.Status, sh
 		Branch:      cfg.Share.Branch,
 		NeedsUpdate: shareNeedsUpdate,
 	}
-	result := archiveControlStatus{Status: out}
+	result := archiveControlStatus{Status: out, BackgroundWork: status.BackgroundWork}
 	if !status.LastTailEventAt.IsZero() {
 		result.LastTailEventAt = status.LastTailEventAt.UTC().Format(time.RFC3339)
 	}

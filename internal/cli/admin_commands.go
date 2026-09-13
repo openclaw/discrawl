@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/openclaw/crawlkit/embed"
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/discord"
 	"github.com/openclaw/discrawl/internal/discorddesktop"
@@ -330,7 +329,9 @@ func (r *runtime) runTail(args []string) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repairEvery := fs.Duration("repair-every", mustDuration(r.cfg.Sync.RepairEvery), "")
+	repairOnStart := fs.Bool("repair-on-start", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
+	embedLive := fs.Bool("embed-live", false, "")
 	replayFailuresOnly := fs.Bool("replay-failures-only", false, "")
 	replayLimit := fs.Int("replay-limit", syncer.TailMessageReplayLimit, "")
 	guildsFlag := fs.String("guilds", "", "")
@@ -354,8 +355,22 @@ func (r *runtime) runTail(args []string) error {
 			syncer.TailMessageReplayLimit,
 		))
 	}
+	if *embedLive && *replayFailuresOnly {
+		return usageErr(errors.New("--embed-live cannot be combined with --replay-failures-only"))
+	}
+	if *repairOnStart && *replayFailuresOnly {
+		return usageErr(errors.New("--repair-on-start cannot be combined with --replay-failures-only"))
+	}
+	if configurable, ok := r.syncer.(tailStartupRepairConfigurer); ok {
+		configurable.SetTailRepairOnStart(*repairOnStart)
+	} else if *repairOnStart {
+		return errors.New("startup tail repair is unavailable")
+	}
+	if *embedLive && !r.cfg.Search.Embeddings.Enabled {
+		return usageErr(errors.New("--embed-live requires embeddings enabled in config"))
+	}
 	if configurable, ok := r.syncer.(tailEmbeddingsConfigurer); ok {
-		configurable.SetTailEmbeddings(*withEmbeddings)
+		configurable.SetTailEmbeddings(*withEmbeddings || *embedLive)
 	}
 	guildIDs := r.resolveSyncGuilds(*guildFlag, *guildsFlag)
 	if *replayFailuresOnly {
@@ -377,6 +392,9 @@ func (r *runtime) runTail(args []string) error {
 			return r.activateTailSyncLock()
 		})
 		defer configurable.SetTailReadyCallback(nil)
+	}
+	if *embedLive {
+		return r.runTailWithEmbeddingWorker(ctx, guildIDs, *repairEvery)
 	}
 	return r.syncer.RunTail(ctx, guildIDs, *repairEvery)
 }
@@ -529,9 +547,7 @@ func (r *runtime) runEmbed(args []string) error {
 	}
 	providerFactory := r.newEmbed
 	if providerFactory == nil {
-		providerFactory = func(cfg config.EmbeddingsConfig) (embed.Provider, error) {
-			return embed.NewProvider(crawlkitEmbeddingConfig(cfg))
-		}
+		providerFactory = newEmbeddingProvider
 	}
 	provider, err := providerFactory(r.cfg.Search.Embeddings)
 	if err != nil {
@@ -559,54 +575,6 @@ func (r *runtime) runEmbed(args []string) error {
 	}
 	stats.Requeued = requeued
 	return r.print(stats)
-}
-
-const (
-	// messageUnavailableSuffix matches channel:<id>:unavailable and, because
-	// the ':' is literal, never channel:<id>:thread_catalog_unavailable.
-	messageUnavailableSuffix = ":unavailable"
-	// unavailableMarkerWindow mirrors the seven-day window applied in
-	// queries.sql. It is used only to describe markers in the doctor report.
-	unavailableMarkerWindow = 7 * 24 * time.Hour
-)
-
-// unavailableMarkerCounts buckets the channel-unavailable markers for the
-// doctor report. Active markers are the operationally interesting number: they
-// are the channels a routine sync passes over. Expired markers describe
-// channels the next routine sync attempts again.
-type unavailableMarkerCounts struct {
-	Active     int
-	Expired    int
-	Unparsed   int
-	OldestDays int
-}
-
-// countUnavailableMarkers buckets markers by age. A marker whose updated_at
-// matches none of the store's layouts is counted as unparsed rather than
-// folded into either age bucket, because the SQL window compares such a value
-// lexically and the two predicates would otherwise report different answers
-// for the same row.
-func countUnavailableMarkers(markers []store.SyncStateEntry, now time.Time) unavailableMarkerCounts {
-	counts := unavailableMarkerCounts{}
-	oldest := time.Time{}
-	for _, marker := range markers {
-		switch {
-		case marker.UpdatedAt.IsZero():
-			counts.Unparsed++
-			continue
-		case now.Sub(marker.UpdatedAt) < unavailableMarkerWindow:
-			counts.Active++
-		default:
-			counts.Expired++
-		}
-		if oldest.IsZero() || marker.UpdatedAt.Before(oldest) {
-			oldest = marker.UpdatedAt
-		}
-	}
-	if !oldest.IsZero() {
-		counts.OldestDays = int(now.Sub(oldest).Hours() / 24)
-	}
-	return counts
 }
 
 func (r *runtime) runDoctor(args []string) error {
@@ -639,7 +607,7 @@ func (r *runtime) runDoctor(args []string) error {
 		report["share_stale_after"] = cfg.Share.StaleAfter
 	}
 	if cfg.Search.Embeddings.Enabled {
-		check := embed.CheckProvider(r.ctx, crawlkitEmbeddingConfig(cfg.Search.Embeddings))
+		check := checkEmbeddingProvider(r.ctx, cfg.Search.Embeddings)
 		report["embeddings"] = check.Status
 		report["embeddings_provider"] = check.Provider
 		report["embeddings_model"] = check.Model
@@ -699,7 +667,7 @@ func (r *runtime) runDoctor(args []string) error {
 			} else {
 				report["fts"] = "ok"
 			}
-			if markers, markerErr := db.SyncStateBySuffix(r.ctx, messageUnavailableSuffix); markerErr != nil {
+			if markers, markerErr := db.SyncStateBySuffix(r.ctx, store.ChannelUnavailableSuffix); markerErr != nil {
 				report["unavailable_markers_error"] = markerErr.Error()
 			} else if len(markers) > 0 {
 				counts := countUnavailableMarkers(markers, r.nowUTC())

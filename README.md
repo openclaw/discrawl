@@ -71,6 +71,8 @@ discrawl sync
 
 `sync` collects recent data by default. Run `discrawl sync --full` when you want a historical backfill; large guilds can take time because Discord rate-limits history requests. [`tail`](docs/commands/tail.md) keeps an archive current from Gateway events and periodic repair passes.
 
+With embeddings configured, `discrawl tail --embed-live` keeps embeddings current in background workers while capture continues. See [continuous embeddings](docs/guides/embeddings.md#continuous-embedding-during-capture).
+
 ## Search and inspect
 
 FTS5 search works without external services:

@@ -123,7 +123,13 @@ create table embedding_jobs (
 	input_version text not null default '',
 	last_error text not null default '',
 	locked_at text,
-	updated_at text not null
+	updated_at text not null,
+	revision integer not null default 1,
+	lease_token text not null default '',
+	lease_until text not null default '',
+	available_at text not null default '',
+	priority integer not null default 0,
+	enqueued_at text not null default ''
 );
 
 create table message_embeddings (

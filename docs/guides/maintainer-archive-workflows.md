@@ -200,7 +200,7 @@ passed over now, and `unavailable_markers_expired`, the channels due for another
 attempt. After restoring a permission, `discrawl sync --guild <id> --full`
 attempts every channel in the guild immediately and `discrawl sync --channels
 <id>` retries one channel; left alone, the first routine sync past the window
-picks the channel up, so within seven days.
+retries the channel.
 
 ## See also
 

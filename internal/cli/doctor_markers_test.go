@@ -30,6 +30,9 @@ func TestCountUnavailableMarkers(t *testing.T) {
 	}
 	require.Equal(t, unavailableMarkerCounts{Active: 1, Expired: 2, Unparsed: 1, OldestDays: 91}, countUnavailableMarkers(markers, now))
 
+	require.Equal(t, unavailableMarkerCounts{Active: 1}, countUnavailableMarkers([]store.SyncStateEntry{{UpdatedAt: now.Add(time.Hour)}}, now))
+	require.Equal(t, unavailableMarkerCounts{Expired: 1, OldestDays: 7}, countUnavailableMarkers([]store.SyncStateEntry{{UpdatedAt: now.Add(-store.UnavailableMarkerWindow)}}, now))
+
 	// An unparsed row on its own leaves both age buckets empty and reports no age.
 	require.Equal(
 		t,
@@ -45,6 +48,7 @@ func TestDoctorReportsUnavailableMarkerCounts(t *testing.T) {
 	dbPath := filepath.Join(dir, "discrawl.db")
 
 	cfg := config.Default()
+	cfg.Discord.TokenSource = "none"
 	cfg.DBPath = dbPath
 	require.NoError(t, config.Write(cfgPath, cfg))
 
@@ -90,6 +94,7 @@ func TestDoctorOmitsMarkerLineWhenNoneExist(t *testing.T) {
 	dbPath := filepath.Join(dir, "discrawl.db")
 
 	cfg := config.Default()
+	cfg.Discord.TokenSource = "none"
 	cfg.DBPath = dbPath
 	require.NoError(t, config.Write(cfgPath, cfg))
 	s, err := store.Open(ctx, dbPath)

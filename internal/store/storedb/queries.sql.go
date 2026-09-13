@@ -863,40 +863,6 @@ func (q *Queries) ListExistingAttachmentMedia(ctx context.Context, messageID str
 	return items, nil
 }
 
-const listFreshUnavailableChannelIDs = `-- name: ListFreshUnavailableChannelIDs :many
-select replace(replace(scope, 'channel:', ''), ':unavailable', '') as channel_id
-from sync_state
-where scope like 'channel:%:unavailable'
-  and updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
-order by channel_id
-`
-
-// Channels carrying a message-unavailable marker written inside the retry
-// window. Markers older than the window are omitted so the channel is retried
-// once; a retry that fails again refreshes updated_at for another window.
-func (q *Queries) ListFreshUnavailableChannelIDs(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listFreshUnavailableChannelIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var channel_id string
-		if err := rows.Scan(&channel_id); err != nil {
-			return nil, err
-		}
-		items = append(items, channel_id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listGuildIDs = `-- name: ListGuildIDs :many
 select id
 from guilds
@@ -906,89 +872,6 @@ order by id
 
 func (q *Queries) ListGuildIDs(ctx context.Context) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listGuildIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIncompleteMessageChannelIDs = `-- name: ListIncompleteMessageChannelIDs :many
-select c.id
-from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':history_complete'
-  )
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':unavailable'
-	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
-  )
-order by c.id
-`
-
-func (q *Queries) ListIncompleteMessageChannelIDs(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listIncompleteMessageChannelIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIncompleteMessageChannelIDsByGuild = `-- name: ListIncompleteMessageChannelIDsByGuild :many
-select c.id
-from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
-  and c.guild_id = ?
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':history_complete'
-  )
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':unavailable'
-	  and s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
-  )
-order by c.id
-`
-
-func (q *Queries) ListIncompleteMessageChannelIDsByGuild(ctx context.Context, guildID string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listIncompleteMessageChannelIDsByGuild, guildID)
 	if err != nil {
 		return nil, err
 	}

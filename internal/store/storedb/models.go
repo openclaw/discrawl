@@ -36,6 +36,12 @@ type EmbeddingJob struct {
 	LastError    string
 	LockedAt     sql.NullString
 	UpdatedAt    string
+	Revision     int64
+	LeaseToken   string
+	LeaseUntil   string
+	AvailableAt  string
+	Priority     int64
+	EnqueuedAt   string
 }
 
 type FailureLedger struct {

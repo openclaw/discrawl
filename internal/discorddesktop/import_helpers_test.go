@@ -24,8 +24,20 @@ func TestFileFingerprintStatusHelpers(t *testing.T) {
 	require.False(t, isImportedFingerprint(skippedFingerprint(base)))
 	require.Equal(t, fileStatusImported, importedFingerprint(base).Status)
 	require.Equal(t, fileStatusSkipped, skippedFingerprint(base).Status)
-	require.Equal(t, wiretapFileIndexScope, fileIndexScope(Options{}))
-	require.Equal(t, wiretapFileIndexScope, fileIndexScope(Options{FullCache: true}))
+}
+
+func TestFileIndexSharedAcrossScanModes(t *testing.T) {
+	ctx := t.Context()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
+	index := map[string]fileFingerprint{"fixture.json": {Size: 123, ModUnixNS: 456, Status: fileStatusImported}}
+	require.NoError(t, saveFileIndex(ctx, st, index))
+	for _, opts := range []Options{{}, {FullCache: true}} {
+		state, err := loadScanState(ctx, st, opts)
+		require.NoError(t, err)
+		require.Equal(t, index, state.previous)
+	}
 }
 
 func TestSnapshotCopyHelpers(t *testing.T) {
@@ -126,7 +138,7 @@ func TestImportAndStateEdgeBranches(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, stats.FullCache)
 
-	require.NoError(t, s.SetSyncState(ctx, fileIndexScope(Options{}), "{not-json"))
+	require.NoError(t, s.SetSyncState(ctx, wiretapFileIndexScope, "{not-json"))
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
 	state, err := loadScanState(ctx, s, Options{})
 	require.NoError(t, err)

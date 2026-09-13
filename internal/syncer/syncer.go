@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +52,7 @@ type Syncer struct {
 	tailRepairOffsetMu    sync.RWMutex
 	tailRepairOffset      time.Duration
 	tailEmbeddings        bool
+	tailRepairOnStart     bool
 	channelExclusions     channelExclusions
 }
 
@@ -73,6 +76,10 @@ type SyncOptions struct {
 
 func (s *Syncer) SetTailReadyCallback(fn func(context.Context) error) {
 	s.tailReady = fn
+}
+
+func (s *Syncer) SetTailRepairOnStart(enabled bool) {
+	s.tailRepairOnStart = enabled
 }
 
 func (s *Syncer) SetChannelExclusions(channelIDs, channelKinds []string) {
@@ -195,13 +202,15 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 
 	stats := SyncStats{}
 	catalogMode := catalogModeForSync(opts)
+	var resumed incompleteBatchResult
 	if shouldResumeIncompleteFullSync(opts) {
-		batched, ok, err := s.syncGuildIncompleteBatches(ctx, guildID, opts)
+		var err error
+		resumed, err = s.syncGuildIncompleteBatches(ctx, guildID, opts)
 		if err != nil {
 			return stats, err
 		}
-		if ok {
-			stats.add(batched)
+		stats.add(resumed.stats)
+		if resumed.hasUnmarkedBacklog {
 			members, err := s.refreshGuildMembersForSync(ctx, guildID, false, opts)
 			if err != nil {
 				return stats, err
@@ -228,8 +237,15 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 	if err != nil {
 		return stats, err
 	}
-	if err := s.storeChannelList(ctx, channelList, cachedChannels, &stats); err != nil {
+	if err := s.storeChannelList(ctx, channelList, cachedChannels, resumed.channelIDs, &stats); err != nil {
 		return stats, err
+	}
+
+	if len(resumed.channelIDs) > 0 {
+		channelList = slices.DeleteFunc(channelList, func(channel *discordgo.Channel) bool {
+			_, attempted := resumed.channelIDs[channel.ID]
+			return attempted
+		})
 	}
 
 	members, err := s.refreshGuildMembersForSync(ctx, guildID, targeted, opts)
@@ -269,7 +285,7 @@ func shouldResumeIncompleteFullSync(opts SyncOptions) bool {
 	return opts.Full && len(opts.ChannelIDs) == 0
 }
 
-func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Channel, cachedChannels map[*discordgo.Channel]struct{}, stats *SyncStats) error {
+func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Channel, cachedChannels map[*discordgo.Channel]struct{}, alreadyCounted map[string]struct{}, stats *SyncStats) error {
 	for _, channel := range channels {
 		record := toChannelRecord(channel, marshalJSONString(channel, "{}"))
 		// Cached reconstructions omit raw permission evidence and are not new observations.
@@ -278,7 +294,9 @@ func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Cha
 				return err
 			}
 		}
-		stats.addChannel(record)
+		if _, counted := alreadyCounted[channel.ID]; !counted {
+			stats.addChannel(record)
+		}
 	}
 	return nil
 }
@@ -300,39 +318,64 @@ func (s *Syncer) refreshGuildMembersForSync(ctx context.Context, guildID string,
 	return members, nil
 }
 
-func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string, opts SyncOptions) (SyncStats, bool, error) {
+type incompleteBatchResult struct {
+	stats              SyncStats
+	channelIDs         map[string]struct{}
+	hasUnmarkedBacklog bool
+}
+
+func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string, opts SyncOptions) (incompleteBatchResult, error) {
+	result := incompleteBatchResult{}
 	if s.store == nil {
-		return SyncStats{}, false, nil
+		return result, nil
 	}
-	// The listing includes channels carrying a fresh unavailable marker. This
-	// planner runs only under shouldResumeIncompleteFullSync, so every call is
-	// already a full sync asking for every channel, and a non-empty plan makes
-	// syncGuild return before the general catalog: leaving marked channels out
-	// here strands a channel whose access was restored until its marker expires.
-	// The routine-sync skip lives in filterFreshUnavailableChannels instead.
 	incomplete, err := s.store.AllIncompleteMessageChannelIDs(ctx, guildID)
 	if err != nil {
-		return SyncStats{}, false, err
+		return result, err
 	}
-	incomplete, err = s.filterExcludedStoredChannelIDs(ctx, guildID, incomplete, opts)
+	markers, err := s.store.SyncStateBySuffix(ctx, store.ChannelUnavailableSuffix)
 	if err != nil {
-		return SyncStats{}, false, err
+		return result, err
 	}
-	if len(incomplete) == 0 {
-		return SyncStats{}, false, nil
+	unavailable := make(map[string]struct{}, len(markers))
+	for _, marker := range markers {
+		unavailable[marker.Scope] = struct{}{}
 	}
-	stats := SyncStats{}
-	for start := 0; start < len(incomplete); start += fullSyncBatchSize {
-		end := min(start+fullSyncBatchSize, len(incomplete))
+	candidates := makeGuildSet(incomplete)
+	if len(unavailable) > 0 {
+		channels, err := s.store.Channels(ctx, guildID)
+		if err != nil {
+			return result, err
+		}
+		for _, channel := range channels {
+			if _, marked := unavailable[channelMessageUnavailableScope(channel.ID)]; marked && isMessageChannel(channelFromRow(channel)) {
+				candidates[channel.ID] = struct{}{}
+			}
+		}
+	}
+	channelIDs, err := s.filterExcludedStoredChannelIDs(ctx, guildID, slices.Sorted(maps.Keys(candidates)), opts)
+	if err != nil || len(channelIDs) == 0 {
+		return result, err
+	}
+	result.channelIDs = makeGuildSet(channelIDs)
+	// Unavailable-only retries must not keep a full run out of catalog discovery.
+	for _, id := range channelIDs {
+		if _, marked := unavailable[channelMessageUnavailableScope(id)]; !marked {
+			result.hasUnmarkedBacklog = true
+			break
+		}
+	}
+	for start := 0; start < len(channelIDs); start += fullSyncBatchSize {
+		end := min(start+fullSyncBatchSize, len(channelIDs))
 		batchOpts := opts
-		batchOpts.ChannelIDs = incomplete[start:end]
+		batchOpts.ChannelIDs = channelIDs[start:end]
 		one, err := s.syncGuild(ctx, guildID, batchOpts)
 		if err != nil {
-			return stats, true, err
+			return result, err
 		}
-		stats.add(one)
+		result.stats.add(one)
 	}
-	return stats, true, nil
+	return result, nil
 }
 
 func (stats *SyncStats) add(other SyncStats) {

@@ -10,8 +10,7 @@ import (
 )
 
 func (r *runtime) resolveSyncGuilds(guild, guilds string) []string {
-	requested := append(csvList(guilds), strings.TrimSpace(guild))
-	requested = csvList(strings.Join(requested, ","))
+	requested := requestedGuilds(guild, guilds)
 	if len(requested) > 0 {
 		return requested
 	}
@@ -32,14 +31,17 @@ func (r *runtime) resolveSyncGuildsAll(guild, guilds string, all bool) ([]string
 }
 
 func (r *runtime) resolveSearchGuilds(guild, guilds string) []string {
+	return requestedGuilds(guild, guilds)
+}
+
+func requestedGuilds(guild, guilds string) []string {
 	requested := append(csvList(guilds), strings.TrimSpace(guild))
 	return csvList(strings.Join(requested, ","))
 }
 
 func directMessageGuildScope(dm bool, guild, guilds string) ([]string, error) {
 	if !dm {
-		requested := append(csvList(guilds), strings.TrimSpace(guild))
-		return csvList(strings.Join(requested, ",")), nil
+		return requestedGuilds(guild, guilds), nil
 	}
 	if len(csvList(guilds)) > 0 || strings.TrimSpace(guild) != "" {
 		return nil, errors.New("use either --dm or --guild/--guilds")

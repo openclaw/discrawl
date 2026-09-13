@@ -176,14 +176,7 @@ func TestFullSyncAttemptsChannelWithFreshUnavailableMarker(t *testing.T) {
 	require.Equal(t, 2, client.messageCalls["blocked"])
 }
 
-// TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker drives the same
-// door the CLI uses. Two channels are incomplete, one marker is expired and one
-// is fresh, and both channels are now readable again. The expired marker alone
-// makes the full-sync batch plan non-empty, and a non-empty plan makes syncGuild
-// return before the general catalog, so a plan that omits the fresh-marked
-// channel never visits it. Asserting through Sync is what catches that;
-// TestFullSyncAttemptsChannelWithFreshUnavailableMarker calls the worker with a
-// channel list already in hand and so cannot see a planning gap.
+// Both cached channels must be retried even when absent from the live catalog.
 func TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
@@ -222,4 +215,67 @@ func TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker(t *testing.T
 		require.NoError(t, err)
 		require.Empty(t, reason, "a successful read must clear the marker on %s", id)
 	}
+}
+
+func TestFullSyncUnavailableBacklogDoesNotStarveCatalog(t *testing.T) {
+	for _, age := range []time.Duration{time.Hour, 8 * 24 * time.Hour} {
+		t.Run(age.String(), func(t *testing.T) {
+			ctx := t.Context()
+			dbPath := filepath.Join(t.TempDir(), "archive.db")
+			st, err := store.Open(ctx, dbPath)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, st.Close()) })
+			require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{ID: "blocked", GuildID: "g1", Kind: "text", Name: "blocked", RawJSON: `{}`}))
+			require.NoError(t, st.SetSyncState(ctx, channelMessageUnavailableScope("blocked"), "missing_access"))
+			backdateMarker(ctx, t, dbPath, channelMessageUnavailableScope("blocked"), age)
+			client := &fakeClient{
+				guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+				guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
+				channels: map[string][]*discordgo.Channel{"g1": {
+					{ID: "blocked", GuildID: "g1", Name: "blocked", Type: discordgo.ChannelTypeGuildText},
+					{ID: "new", GuildID: "g1", Name: "new", Type: discordgo.ChannelTypeGuildText, LastMessageID: "20"},
+				}},
+				messageErrors: map[string]error{"blocked": errors.New("HTTP 403 Forbidden: Missing Access")},
+				messages:      map[string][]*discordgo.Message{"new": {{ID: "20", GuildID: "g1", ChannelID: "new", Content: "discovered checklist", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "fixture"}}}},
+			}
+			svc := New(client, st, nil)
+			for run := 1; run <= 2; run++ {
+				stats, err := svc.Sync(ctx, SyncOptions{Full: true, SkipMembers: true, Concurrency: 1})
+				require.NoError(t, err)
+				require.Equal(t, run, client.guildChanCalls, "unavailable-only backlog must not suppress discovery")
+				require.Equal(t, run, client.messageCalls["blocked"], "explicit full sync retries each marked channel once")
+				require.Equal(t, 2, stats.Channels, "a channel visited during resume and discovery is counted once")
+				results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "discovered", Limit: 10})
+				require.NoError(t, err)
+				require.Len(t, results, 1)
+			}
+		})
+	}
+}
+
+func TestFullSyncRetriesUnavailableCompletedChannelAlongsideBackfill(t *testing.T) {
+	ctx := t.Context()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
+	for _, id := range []string{"complete", "resume"} {
+		require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{ID: id, GuildID: "g1", Kind: "text", Name: id, RawJSON: `{}`}))
+	}
+	require.NoError(t, st.UpsertMessage(ctx, store.MessageRecord{ID: "10", GuildID: "g1", ChannelID: "complete", AuthorID: "u1", Content: "existing", NormalizedContent: "existing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), RawJSON: `{}`}))
+	require.NoError(t, st.SetSyncState(ctx, channelHistoryCompleteScope("complete"), "1"))
+	require.NoError(t, st.SetSyncState(ctx, channelLatestScope("complete"), "10"))
+	require.NoError(t, st.SetSyncState(ctx, channelMessageUnavailableScope("complete"), "missing_access"))
+	client := &fakeClient{
+		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
+		messages:  map[string][]*discordgo.Message{},
+	}
+	_, err = New(client, st, nil).Sync(ctx, SyncOptions{Full: true, SkipMembers: true, Concurrency: 1})
+	require.NoError(t, err)
+	require.Equal(t, 1, client.messageCalls["complete"], "a completed history must not hide an explicit permission retry")
+	require.Equal(t, 1, client.messageCalls["resume"])
+	require.Zero(t, client.guildChanCalls, "ordinary cached backfill keeps its fast path")
+	marker, err := st.GetSyncState(ctx, channelMessageUnavailableScope("complete"))
+	require.NoError(t, err)
+	require.Empty(t, marker)
 }

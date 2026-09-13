@@ -1,7 +1,11 @@
 version: 2
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/tools/discrawl-ja"
+      - "/tools/discrawl-kiwi"
+      - "/tools/discrawl-zh"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10

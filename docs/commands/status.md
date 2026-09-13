@@ -29,3 +29,5 @@ discrawl status
 - [`doctor`](doctor.html) - liveness check (config, auth, DB, FTS wiring)
 - [`remote`](remote.html) - direct Cloudflare remote archive checks
 - [`report`](report.html) - Markdown activity block for the shared backup README
+
+When continuous embeddings have been used, `background_work` reports worker lifecycle, pending and in-flight work, queue age, last completion, and safe error codes. A missing heartbeat is reported as stale, rather than claiming a stopped worker is healthy.

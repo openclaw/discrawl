@@ -77,7 +77,7 @@ jobs:
           cache: false
       - name: Capture trusted test Node
         id: node
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             if (process.versions.node.split(".")[0] !== "24") core.setFailed("node_runtime");
@@ -123,7 +123,7 @@ jobs:
     steps:
       - name: Validate acknowledgement and exact execution context
         id: context
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             function validateContext(env) {
@@ -189,7 +189,7 @@ jobs:
           persist-credentials: false
       - name: Verify restore and save entrypoints before private access
         id: runtime
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");
@@ -254,7 +254,7 @@ jobs:
 
       - name: Validate backup acknowledgement, current main and cache winner
         id: before
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PHASE: before
         with:
@@ -390,7 +390,7 @@ jobs:
       - name: Exact lookup with contained stock restore
         id: lookup
         timeout-minutes: 2
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
           NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
@@ -559,7 +559,7 @@ jobs:
       - name: Restore exact backed-up cache without fallback
         id: restore
         timeout-minutes: 10
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
           NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
@@ -569,7 +569,7 @@ jobs:
           script: *contained_cache
       - name: Revalidate main and winner before private copy
         id: copy-gate
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PHASE: copy
         with:
@@ -626,7 +626,7 @@ jobs:
       - name: Revalidate main, backed-up winner and absent new key before save
         id: save-gate
         if: ${{ steps.helper.outputs.cache_ready == 'true' }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PHASE: save
         with:
@@ -635,7 +635,7 @@ jobs:
         id: save
         if: ${{ steps.helper.outputs.cache_ready == 'true' && steps.save-gate.outcome == 'success' }}
         timeout-minutes: 10
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PRIVATE_TEMP: ${{ steps.build.outputs.private_temp }}
           NODE_BINARY: ${{ steps.runtime.outputs.node_binary }}
@@ -645,7 +645,7 @@ jobs:
           script: *contained_cache
       - name: Require immutable main-cache installation receipt
         if: ${{ steps.save.outcome == 'success' }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           PHASE: after
         with:

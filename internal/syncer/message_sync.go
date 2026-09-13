@@ -44,20 +44,7 @@ func (s *Syncer) syncMessageChannels(
 	return total, err
 }
 
-// filterFreshUnavailableChannels drops channels whose message-unavailable
-// marker is still inside the retry window. Without it the routine sync path
-// re-attempts every known-inaccessible channel on every run, spending one
-// request per channel per run to arrive at the same 403.
-//
-// Markers age out, so an excluded channel is retried once the window passes: a
-// successful sync then clears the marker via clearUnavailableChannel, and a
-// repeated failure rewrites it for another window. The marker set is loaded
-// once per guild rather than probed per channel.
-//
-// The filter applies to routine syncs only. Explicitly requested channels and
-// full syncs both carry an operator asking for the channel to be attempted now,
-// so a marker inside the window does not hold either of them back; that is what
-// lets a channel whose access was restored be picked up before the window ends.
+// Full and targeted syncs bypass the retry window for immediate recovery.
 func (s *Syncer) filterFreshUnavailableChannels(ctx context.Context, guildID string, channels []*discordgo.Channel, opts SyncOptions) ([]*discordgo.Channel, error) {
 	if s == nil || s.store == nil || len(channels) == 0 || len(opts.ChannelIDs) > 0 || opts.Full {
 		return channels, nil
@@ -840,6 +827,7 @@ func buildMessageMutations(ctx context.Context, messages []*discordgo.Message, c
 		if err != nil {
 			return nil, "", err
 		}
+		mutation.Options.EmbeddingCatchUp = true
 		mutations = append(mutations, mutation)
 		newest = maxSnowflake(newest, message.ID)
 	}

@@ -961,10 +961,13 @@ func TestStandaloneSaveBoundary(t *testing.T) {
 	if !ok {
 		t.Fatal("save boundary missing")
 	}
-	for _, scenario := range []string{"valid", "wal", "empty", "symlink", "hardlink", "mode", "wrong-key", "unsafe-size"} {
+	for _, scenario := range []string{"valid", "wal", "empty", "symlink", "hardlink", "mode", "wrong-key", "unsafe-size", "wrong-platform", "wrong-runtime", "wrong-binary"} {
 		t.Run(scenario, func(t *testing.T) {
 			program := `const fs=require("node:fs"),os=require("node:os"),path=require("node:path");
 const scenario=process.argv[1],workspace=fs.mkdtempSync(path.join(os.tmpdir(),"repair-save-test-"));
+// Exercise the workflow runtime explicitly, independent of the test host.
+Object.defineProperty(process,"platform",{value:scenario==="wrong-platform"?"darwin":"linux"});
+Object.defineProperty(process.versions,"node",{value:scenario==="wrong-runtime"?"22.0.0":"24.0.0"});
 const root=path.join(workspace,".discrawl-ci"),db=path.join(root,"discrawl.db");
 fs.mkdirSync(root,{mode:0o700});fs.writeFileSync(db,"synthetic",{mode:0o600});
 if(scenario==="wal")fs.writeFileSync(path.join(root,"discrawl.db-wal"),"synthetic");
@@ -976,7 +979,7 @@ if(scenario==="unsafe-size"){
   const lstat=fs.lstatSync;
   fs.lstatSync=(file,...args)=>{const info=lstat(file,...args);if(file===db)info.size=10*1024**3+1;return info;};
 }
-Object.assign(process.env,{CACHE_MODE:"save",NODE_BINARY:process.execPath,GITHUB_WORKSPACE:workspace,
+Object.assign(process.env,{CACHE_MODE:"save",NODE_BINARY:scenario==="wrong-binary"?"wrong-node":process.execPath,GITHUB_WORKSPACE:workspace,
   GITHUB_RUN_ID:"400",EXPECTED_KEY:"discrawl-discord-db-Linux-main-"+(scenario==="wrong-key"?"399":"400")+"-1"});
 const failed=[];let called=0;
 const core={setFailed:value=>failed.push(value),setOutput:()=>{throw new Error("unexpected output");}};

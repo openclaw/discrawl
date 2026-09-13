@@ -160,3 +160,30 @@ func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, narrow, "c-fresh")
 }
+
+func TestUnavailableMarkerTimestampsUseParsedInstants(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	now := time.Now().UTC()
+	timestamps := map[string]string{
+		"inside":    now.Add(-7*24*time.Hour + time.Hour).In(time.FixedZone("west", -12*60*60)).Format(time.RFC3339Nano),
+		"outside":   now.Add(-7*24*time.Hour - time.Hour).In(time.FixedZone("east", 14*60*60)).Format(time.RFC3339Nano),
+		"malformed": "not-a-timestamp",
+	}
+	for id, stamp := range timestamps {
+		require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: id, GuildID: "g1", Kind: "text", Name: id, RawJSON: `{}`}))
+		_, err := s.DB().ExecContext(ctx, `insert into sync_state(scope,cursor,updated_at) values(?, 'missing_access', ?)`, "channel:"+id+":unavailable", stamp)
+		require.NoError(t, err)
+	}
+	fresh, err := s.FreshUnavailableChannelIDs(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"inside"}, fresh, "compare timestamp instants, not their text or malformed values")
+	for _, guild := range []string{"", "g1"} {
+		incomplete, err := s.IncompleteMessageChannelIDs(ctx, guild)
+		require.NoError(t, err)
+		require.Equal(t, []string{"malformed", "outside"}, incomplete)
+	}
+}

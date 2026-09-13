@@ -30,6 +30,8 @@ discrawl doctor
 - "schema newer than binary" - update `discrawl` to a build that supports the local DB schema
 - `unavailable_markers_active` - channels a routine sync passes over until their marker ages out of the seven-day window; `sync --guild <id> --full` or `sync --channels <id>` attempts them now
 - `unavailable_markers_expired` - channels whose marker has aged out, so the next routine sync attempts them again
+- `unavailable_markers_unparsed` - markers with invalid timestamps; these remain eligible for retry so a new observation can repair them
+- `unavailable_markers_oldest_days` - age of the oldest parsed marker, clamped to zero for future timestamps
 
 ## See also
 

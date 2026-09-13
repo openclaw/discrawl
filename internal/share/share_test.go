@@ -1281,6 +1281,7 @@ func TestSnapshotExcludesAndPreservesDirectMessages(t *testing.T) {
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
 	seedDirectMessageData(t, ctx, src)
+	require.NoError(t, src.SetSyncState(ctx, "worker:embeddings", "private worker status"))
 
 	repo := filepath.Join(t.TempDir(), "share")
 	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
@@ -1292,6 +1293,7 @@ func TestSnapshotExcludesAndPreservesDirectMessages(t *testing.T) {
 	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, manifest, "channels")), directMessageGuildID)
 	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, manifest, "messages")), "private dm content")
 	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, manifest, "sync_state")), "wiretap:last_import")
+	require.NotContains(t, snapshotTableText(t, repo, tableEntry(t, manifest, "sync_state")), "worker:embeddings")
 	manifest = appendSnapshotRow(t, repo, manifest, "messages", map[string]any{
 		"id":                 "hostile-dm",
 		"guild_id":           directMessageGuildID,
@@ -2158,7 +2160,7 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, "select * from guilds where id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
 	query, args = snapshotExportQuery("sync_state")
-	require.Equal(t, "select * from sync_state where scope not like 'wiretap:%'", query)
+	require.Equal(t, "select * from sync_state where scope not like 'wiretap:%' and scope not like 'worker:%'", query)
 	require.Nil(t, args)
 	query, args = snapshotExportQuery("custom")
 	require.Equal(t, "select * from custom", query)
@@ -2174,7 +2176,7 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, "delete from message_events where guild_id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
 	query, args = snapshotDeleteQuery("sync_state")
-	require.Equal(t, "delete from sync_state where scope not like 'wiretap:%'", query)
+	require.Equal(t, "delete from sync_state where scope not like 'wiretap:%' and scope not like 'worker:%'", query)
 	require.Nil(t, args)
 	query, args = snapshotDeleteQuery("custom")
 	require.Equal(t, "delete from custom", query)
