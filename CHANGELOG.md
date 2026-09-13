@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.16.2 and the optional Chinese tokenizer to gse v1.1.0 with cedar v0.50.0, retaining the Go minimum and SQLite runtime pairing.
 - Avoid repeated requests to unavailable Discord channels for seven days during routine sync, while full and targeted syncs retry immediately, unavailable-only backlogs keep discovering channels, and doctor reports marker health using the same timestamp policy. Thanks @rnavarro.
 - Preserve cancellation for interrupted SQLite work and closed transactions, while retaining the underlying diagnostic.
 - Keep the generated documentation identity stable when building from a renamed checkout.
