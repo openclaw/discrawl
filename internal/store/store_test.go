@@ -2613,3 +2613,56 @@ func TestFTSQueryTermsMatchesNormalizedQueryUnits(t *testing.T) {
 	require.Equal(t, "alpha", FTSTermText(`"alpha`))
 	require.Equal(t, "zulu", FTSTermText(`zulu"`))
 }
+
+// MessagePendingEmbeddingJobs has to count what an embed run would actually
+// pick up, not every embedding_jobs row: the drain skips soft-deleted messages
+// and direct messages whatever the scope asked for, and a note that counted
+// those would recommend `discrawl embed` for work embed will never do.
+func TestMessagePendingEmbeddingJobsCountsWhatEmbedWouldDrain(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "one")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m2", "c1", "2026-01-02T00:00:00Z", "two")))
+	require.NoError(t, s.UpsertMessage(ctx, msgAt("m3", "c2", "2026-01-03T00:00:00Z", "three")))
+	dm := msgAt("m-dm", "c-dm", "2026-01-04T00:00:00Z", "four")
+	dm.GuildID = DirectMessageGuildID
+	require.NoError(t, s.UpsertMessage(ctx, dm))
+
+	// No jobs yet, which is the state where `discrawl embed` drains nothing.
+	pending, err := s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{ChannelID: "c1"})
+	require.NoError(t, err)
+	require.Equal(t, 0, pending)
+
+	opts := EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", InputVersion: EmbeddingInputVersion}
+	_, err = s.RequeueAllEmbeddingJobs(ctx, opts)
+	require.NoError(t, err)
+
+	pending, err = s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{ChannelID: "c1"})
+	require.NoError(t, err)
+	require.Equal(t, 2, pending)
+
+	pending, err = s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{GuildIDs: []string{"g1"}})
+	require.NoError(t, err)
+	require.Equal(t, 3, pending)
+
+	// The rebuild creates no job for a direct message, so a DM scope counts
+	// zero however it is addressed.
+	pending, err = s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{ChannelID: "c-dm"})
+	require.NoError(t, err)
+	require.Equal(t, 0, pending)
+	pending, err = s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{GuildIDs: []string{DirectMessageGuildID}})
+	require.NoError(t, err)
+	require.Equal(t, 0, pending)
+
+	// A soft-deleted message keeps its job row but the drain skips it, so the
+	// count drops with it even when the caller asked to include deleted rows.
+	require.NoError(t, s.MarkMessageDeletedWithoutEvent(ctx, "g1", "c1", "m2"))
+	pending, err = s.MessagePendingEmbeddingJobs(ctx, MessageScopeOptions{ChannelID: "c1", IncludeDeleted: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, pending)
+}

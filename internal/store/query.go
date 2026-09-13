@@ -170,6 +170,35 @@ func (s *Store) MessageEmbeddingCoverage(ctx context.Context, opts MessageScopeO
 	return count, nil
 }
 
+// MessagePendingEmbeddingJobs counts the messages in the scope that carry a
+// pending embedding job `discrawl embed` would pick up. The three extra
+// predicates are the ones ListPendingEmbeddingJobs applies, so the count is
+// what an embed run would actually act on rather than every embedding_jobs row:
+// a soft-deleted message and a direct message are both skipped by the drain no
+// matter what the scope asked for.
+//
+// `discrawl embed` drains pending jobs and creates none, so this count is what
+// separates a scope one embed run covers from one where embed has nothing to do
+// and only `embed --rebuild` can enqueue the work.
+func (s *Store) MessagePendingEmbeddingJobs(ctx context.Context, opts MessageScopeOptions) (int, error) {
+	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "m." + name })
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	row := s.db.QueryRowContext(queryCtx, `
+		select count(*)
+		from messages m
+		join embedding_jobs j on j.message_id = m.id
+		where j.state = 'pending'
+		  and m.deleted_at is null
+		  and m.guild_id != '@me'
+		  and `+where, whereArgs...)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // ChannelByID resolves one channel row by its primary key. Callers that need
 // a single channel use this instead of Channels(ctx, "") plus a linear scan
 // over every archived channel.

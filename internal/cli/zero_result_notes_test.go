@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -700,6 +703,79 @@ func TestExplainEmptyResults_HybridModeAlsoReportsMissingEmbeddings(t *testing.T
 	require.Contains(t, stderr.String(), "in channel "+zeroResultTextChannelID+" (general, kind=text) have embeddings for provider=openai")
 }
 
+// stubEmbeddingVector is the one vector the stub provider returns for every
+// input, so each stored embedding equals the query embedding and cosine
+// ranking can never be the reason a semantic search comes back empty.
+var stubEmbeddingVector = []float64{1, 0, 0, 0}
+
+// newStubEmbeddingServer serves the OpenAI-compatible /embeddings shape the
+// `openai_compatible` provider posts to. It needs no API key, so `embed` and
+// `search --mode semantic` can both run through Run() against it.
+func newStubEmbeddingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var payload struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		data := make([]map[string]any, 0, len(payload.Input))
+		for index := range payload.Input {
+			data = append(data, map[string]any{"index": index, "embedding": stubEmbeddingVector})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": zeroResultStubEmbedModel, "data": data})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+const zeroResultStubEmbedModel = "stub-embed"
+
+// zeroResultLateChannelID holds a message archived after the first embed run,
+// so its scope has messages with no embedding and no embedding job while the
+// rest of the archive is already embedded.
+const zeroResultLateChannelID = "9999999999999999"
+
+func addLateMessage(t *testing.T, ctx context.Context, cfgPath string) {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	s, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{
+		ID: zeroResultLateChannelID, GuildID: "g1", Kind: "text", Name: "late", RawJSON: `{}`,
+	}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "m-late",
+		GuildID:           "g1",
+		ChannelID:         zeroResultLateChannelID,
+		ChannelName:       "late",
+		AuthorID:          "u1",
+		AuthorName:        "Peter",
+		CreatedAt:         "2020-04-01T00:00:00Z",
+		Content:           "november arrived after the first embed run",
+		NormalizedContent: "november arrived after the first embed run",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, s.Close())
+}
+
+// enableStubEmbeddings rewrites the fixture config so the whole embedding
+// pipeline runs against the stub server.
+func enableStubEmbeddings(t *testing.T, cfgPath string, server *httptest.Server) {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	cfg.Search.Embeddings.Enabled = true
+	cfg.Search.Embeddings.Provider = "openai_compatible"
+	cfg.Search.Embeddings.Model = zeroResultStubEmbedModel
+	cfg.Search.Embeddings.BaseURL = server.URL + "/v1"
+	require.NoError(t, config.Write(cfgPath, cfg))
+}
+
 // Round 2, finding 1: `messages --hours N` resolved the window for the query
 // but the diagnostic was built without the flag, so a run whose every archived
 // message predates the window printed nothing at all. Driven through Run() so
@@ -721,6 +797,169 @@ func TestExplainEmptyResults_MessagesHoursWindowNote(t *testing.T) {
 	stderr.Reset()
 	require.NoError(t, Run(ctx, []string{
 		"--config", cfgPath, "messages", "--channel", zeroResultTextChannelID,
+	}, &stdout, &stderr))
+	require.NotEmpty(t, stdout.String())
+	require.Empty(t, stderr.String())
+}
+
+// Round 2, finding 2: for a scope with no pending embedding jobs, `discrawl
+// embed` drains nothing and leaves the search empty. `runEmbed` only creates
+// missing jobs under --rebuild, through store.RequeueAllEmbeddingJobs, so that
+// is what the note has to name, and its archive-wide scope has to be stated
+// because it is wider than the query's.
+//
+// The fixture is the real shape of this case: the archive is embedded once,
+// then one more message is archived. store.SearchMessagesSemantic returns
+// ErrNoCompatibleEmbeddings when the archive holds no compatible embeddings at
+// all, so this note is only ever reached when some exist and none are in scope.
+// Every command the note names is executed here through Run(), and the search
+// after it is asserted to return rows.
+func TestExplainEmptyResults_SemanticWithoutPendingJobsPointsAtRebuild(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	enableStubEmbeddings(t, cfgPath, newStubEmbeddingServer(t))
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"succeeded": 2`)
+	addLateMessage(t, ctx, cfgPath)
+
+	// Plain `embed` is what the old note recommended. It drains nothing,
+	// because the late message has no job for it to pick up.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"processed": 0`)
+
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "november",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "note: none of the 1 messages in channel "+zeroResultLateChannelID+" (late, kind=text) have embeddings for provider=openai_compatible model="+zeroResultStubEmbedModel)
+	require.Contains(t, stderr.String(), "none of them has a pending embedding job either, so `discrawl embed` drains nothing")
+	require.Contains(t, stderr.String(), "`discrawl embed --rebuild` is what enqueues the missing jobs")
+	require.Contains(t, stderr.String(), "archive-wide, not just this scope")
+
+	// Run exactly what the note recommends.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"succeeded": 3`)
+
+	// The same semantic search now returns rows and prints no note.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "november",
+	}, &stdout, &stderr))
+	require.NotEmpty(t, stdout.String())
+	require.Empty(t, stderr.String())
+}
+
+// The other half of the same finding: when the scope does have pending jobs,
+// plain `discrawl embed` is the command that resolves it, and the note must not
+// send the reader to an archive-wide rebuild they do not need.
+func TestExplainEmptyResults_SemanticWithPendingJobsPointsAtPlainEmbed(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	enableStubEmbeddings(t, cfgPath, newStubEmbeddingServer(t))
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"succeeded": 2`)
+	addLateMessage(t, ctx, cfgPath)
+
+	// Give the late message a pending job without embedding it, which is the
+	// state a sync leaves behind before `embed` has run.
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	s, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	requeued, err := s.RequeueAllEmbeddingJobs(ctx, store.EmbeddingDrainOptions{
+		Provider: "openai_compatible", Model: zeroResultStubEmbedModel, InputVersion: store.EmbeddingInputVersion,
+	})
+	require.NoError(t, err)
+	require.Positive(t, requeued)
+	require.NoError(t, s.Close())
+
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "november",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "pending embedding jobs cover 1 of them, so `discrawl embed` embeds them")
+	require.NotContains(t, stderr.String(), "--rebuild")
+
+	// Run exactly what the note recommends, with no --rebuild.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"succeeded": 3`)
+
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "november",
+	}, &stdout, &stderr))
+	require.NotEmpty(t, stdout.String())
+	require.Empty(t, stderr.String())
+}
+
+// A semantic search scoped to direct messages reaches the same note, and
+// neither the enqueue-on-write path nor store.RequeueAllEmbeddingJobs creates a
+// job for guild_id '@me'. No embed run resolves it, so the note recommends
+// --mode fts and names no embed command.
+func TestExplainEmptyResults_SemanticOverDirectMessagesRecommendsNoEmbed(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	enableStubEmbeddings(t, cfgPath, newStubEmbeddingServer(t))
+
+	// One archive-wide rebuild, so the guild messages are embedded and the
+	// semantic query reaches the note instead of ErrNoCompatibleEmbeddings.
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), `"succeeded": 2`)
+
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--dm", "--mode", "semantic", "delta",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "embedding jobs are never created for direct messages, so no `discrawl embed` run changes this. Use --mode fts")
+	require.NotContains(t, stderr.String(), "--rebuild")
+	require.NotContains(t, stderr.String(), "drains nothing")
+
+	// The rebuild really does leave the DM scope without embeddings, so the
+	// note is not declining to recommend something that would have worked.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--dm", "--mode", "semantic", "delta",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "embedding jobs are never created for direct messages")
+
+	// A DM reached by its channel id rather than by --dm is the same case, and
+	// the scope has to be recognised from the channel's guild instead of from
+	// the guild filter.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--channel", zeroResultDMChannelID, "--mode", "semantic", "delta",
+	}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "embedding jobs are never created for direct messages")
+	require.NotContains(t, stderr.String(), "--rebuild")
+
+	// The fallback the note does recommend returns the direct message.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "search", "--dm", "--mode", "fts", "delta",
 	}, &stdout, &stderr))
 	require.NotEmpty(t, stdout.String())
 	require.Empty(t, stderr.String())

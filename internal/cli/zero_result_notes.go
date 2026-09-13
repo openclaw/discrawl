@@ -69,7 +69,9 @@ func (s zeroResultScope) storeOptions() store.MessageScopeOptions {
 
 // zeroResultWindow describes the time window as the user expressed it, so a
 // note can name the flag that was actually passed rather than the resolved
-// timestamp it turned into. `messages` has no --hours; `dms` does.
+// timestamp it turned into. `messages` and `dms` both take all four, and each
+// entry point forwards every one of them, since the resolved `since` alone
+// cannot say which flag produced it.
 type zeroResultWindow struct {
 	hours     int
 	days      int
@@ -282,7 +284,52 @@ func (r *runtime) explainEmptyEmbeddings(scope zeroResultScope, stats store.Mess
 	if err != nil || embedded > 0 {
 		return
 	}
-	_, _ = fmt.Fprintf(r.stderr, "note: none of the %d messages %s have embeddings for provider=%s model=%s, and semantic search only matches embedded messages; run `discrawl embed`, or use --mode fts\n", stats.Count, r.zeroResultScopeLabel(scope), r.cfg.Search.Embeddings.Provider, r.cfg.Search.Embeddings.Model)
+	lead := fmt.Sprintf("note: none of the %d messages %s have embeddings for provider=%s model=%s, and semantic search only matches embedded messages",
+		stats.Count, r.zeroResultScopeLabel(scope), r.cfg.Search.Embeddings.Provider, r.cfg.Search.Embeddings.Model)
+	// Neither the enqueue-on-write path nor store.RequeueAllEmbeddingJobs
+	// creates a job for guild_id '@me', so no embed run of any kind can give
+	// these messages embeddings. Recommending one would send the reader to a
+	// command that cannot resolve what they are looking at.
+	if r.directMessageOnlyScope(scope) {
+		_, _ = fmt.Fprintf(r.stderr, "%s; embedding jobs are never created for direct messages, so no `discrawl embed` run changes this. Use --mode fts\n", lead)
+		return
+	}
+	pending, err := r.store.MessagePendingEmbeddingJobs(r.ctx, scope.storeOptions())
+	if err != nil {
+		return
+	}
+	// `discrawl embed` drains jobs that already exist and creates none, so it
+	// resolves this only when the scope has pending jobs. With none, the
+	// supported way to create them is `embed --rebuild`, whose scope is the
+	// whole archive rather than this query's, and which drains at most --limit
+	// messages per run.
+	if pending == 0 {
+		_, _ = fmt.Fprintf(r.stderr, "%s; none of them has a pending embedding job either, so `discrawl embed` drains nothing. `discrawl embed --rebuild` is what enqueues the missing jobs, and it requeues every non-deleted message outside DMs archive-wide, not just this scope, embedding up to --limit (default %d) per run; or use --mode fts\n", lead, store.DefaultEmbedLimit())
+		return
+	}
+	_, _ = fmt.Fprintf(r.stderr, "%s; pending embedding jobs cover %d of them, so `discrawl embed` embeds them, or use --mode fts\n", lead, pending)
+}
+
+// directMessageOnlyScope reports whether every row the scope can reach is a
+// direct message, which the embedding note needs because the embed pipeline
+// skips guild_id '@me' at both the enqueue-on-write and the rebuild step.
+func (r *runtime) directMessageOnlyScope(scope zeroResultScope) bool {
+	if len(scope.guildIDs) > 0 {
+		onlyDMs := true
+		for _, guildID := range scope.guildIDs {
+			if guildID != store.DirectMessageGuildID {
+				onlyDMs = false
+			}
+		}
+		if onlyDMs {
+			return true
+		}
+	}
+	if scope.channelID == "" {
+		return false
+	}
+	row, found := r.lookupChannel(scope.channelID)
+	return found && row.GuildID == store.DirectMessageGuildID
 }
 
 // explainEmptySearchTerms writes a stderr note when a multi-term query
