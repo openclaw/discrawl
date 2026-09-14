@@ -4,12 +4,11 @@ launchd runs Discrawl directly. Discrawl loads both credentials, owns the archiv
 writer, captures Gateway events, repairs history, and processes embeddings.
 There is no Python coordinator or credential-loading shell wrapper.
 
-The installed application is commit
-`c5b1f78e6275ca2a739ad5301be7cca9a111164c`, version `0.15.1-2-gc5b1f78`, with
-Crawlkit v0.16.3. It contains upstream `ae7fa0f` plus the dependency update in
-[PR #237](https://github.com/openclaw/discrawl/pull/237), pending upstream merge.
-The PR changes only the module pin, checksums, and changelog. Machine-specific
-service and signing files remain on this local operations branch.
+The installed application is clean upstream commit
+`0d365ac801954ad69fac3c2771f3d6ff6d22297c`, version `0.15.1-2-g0d365ac`, with
+Crawlkit v0.16.3. [PR #237](https://github.com/openclaw/discrawl/pull/237) is merged.
+The application has no local patches. Machine-specific service and signing
+files remain on this local operations branch.
 
 ## Installed configuration
 
@@ -75,8 +74,7 @@ with compression. Copy/truncate preserves the running process's file descriptors
 The live rollout verified both keys from launchd with credential environment
 values empty, advancing capture and embeddings, startup repair completion, and
 a graceful native restart with exit code 0. The previous process exited in about
-two seconds. Application behavior remains upstream; the only pending application
-difference is the Crawlkit dependency update in PR #237.
+two seconds. Application behavior and dependencies now match upstream.
 
 The temporary native-service cutover files and retired coordinator copies were
 removed after verification. Do not retain obsolete cutover directories or
@@ -137,5 +135,7 @@ fails with upstream's original dependency. Autoreview and all six platform/arch
 snapshot builds passed. Deployment receipts are in
 `~/.local/share/discrawl-upgrades/20260914-crawlkit-0163/`.
 
-Until PR #237 merges, use its commit above as the signing helper's `REF` to
-reproduce this deployment; `origin/main` still has the older dependency.
+After PR #237 merged, the application was rebuilt from upstream `0d365ac`.
+Its source tree is identical to the previously tested PR revision; the rebuilt
+binary records the upstream commit. Post-merge deployment receipts are in
+`~/.local/share/discrawl-upgrades/20260914-upstream-0d365ac/`.
