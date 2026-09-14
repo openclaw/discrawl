@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.15.1 - 2026-09-13
 
 - Explain empty `search`, `messages`, and `dms` results with stderr diagnostics for restrictive filters and missing local data, while preserving stdout, JSON output, and exit codes. Thanks @rnavarro.
