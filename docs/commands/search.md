@@ -58,15 +58,17 @@ Run `discrawl sync --with-embeddings` to enqueue, then `discrawl embed` to gener
 
 ## Empty results
 
-A search that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows. The causes covered are: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels); every message in the channel is empty or attachment-only and so dropped by the default content filter; the query has several terms and one of them matches on its own, because every term is required; a `--mode semantic` or `--mode hybrid` run over a scope whose messages carry no embeddings for the configured provider and model; and a `--channel` that exists but sits in a guild outside the `--guild`/`--guilds` scope, which names the guild to use instead.
+A search that matches nothing can print a note to **stderr** naming the likely cause and a suggested next step. The causes covered are: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels); every message in the channel is empty or attachment-only and so dropped by the default content filter; the query has several terms and one of them matches on its own, because every term is required; a `--mode semantic` or `--mode hybrid` run over a scope whose messages carry no embeddings for the configured provider and model; and a `--channel` that exists but sits in a guild outside the `--guild`/`--guilds` scope, which names the guild to use instead.
 
-The embedding-coverage note names the command that applies to the scope it found. With pending embedding jobs in scope, `discrawl embed` embeds them. With none, `discrawl embed` has nothing to drain, so the note names `discrawl embed --rebuild`, which is the supported way to enqueue the missing jobs and requeues every non-deleted message outside DMs archive-wide rather than only the queried scope. Direct messages are never queued for embedding at all, so a DM-scoped note recommends `--mode fts` and names no embed command.
+The embedding-coverage note names the command that applies to the scope it found. With pending non-empty embedding jobs in scope, `discrawl embed` processes the archive-wide queue up to `--limit` (default 1000) per run; other jobs can come first, so repeated runs may be needed. With none, `discrawl embed` has nothing to drain, so the note names `discrawl embed --rebuild`, which is the supported way to enqueue the missing jobs and requeues every non-deleted message outside DMs archive-wide rather than only the queried scope. Direct messages are never queued for embedding at all, so a DM-scoped note recommends `--mode fts` and names no embed command.
 
 These notes are diagnostics, not output:
 
 - they go to stderr, never stdout
 - `--json` suppresses them, so machine-readable output is unaffected
-- stdout bytes and the exit code are unchanged either way, so a shell pipeline behaves exactly as before
+- stdout bytes and the exit code are unchanged either way, so stdout-only pipelines retain their existing output; consumers merging stderr into stdout will see the new notes
+
+With `--author`, only lexical term hints are emitted because they preserve the query’s author matching.
 
 A run that resolved `--channel` to a name fragment rather than a concrete id gets no note, because the counts behind one cannot reproduce that row set.
 

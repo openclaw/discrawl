@@ -306,8 +306,13 @@ func TestExplainEmptyResults_BeforeWindowExcludesEverything(t *testing.T) {
 		"--since", "2021-01-01T00:00:00Z", "--before", "2019-01-01T00:00:00Z",
 	}, &stdout, &stderr))
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none since 2021-01-01T00:00:00Z (newest: 2020-01-01T00:00:00Z); try without --since")
-	require.Contains(t, stderr.String(), "note: 1 messages in channel "+zeroResultTextChannelID+" (general, kind=text) but none before 2019-01-01T00:00:00Z (oldest: 2020-01-01T00:00:00Z); try without --before")
+	require.Contains(t, stderr.String(), "both --since and --before exclude all 1 messages")
+	require.Contains(t, stderr.String(), "try without both --since and --before")
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "messages", "--channel", zeroResultTextChannelID}, &stdout, &stderr))
+	require.NotEmpty(t, stdout.String())
+	require.Empty(t, stderr.String())
 }
 
 // A --before that the data does sit inside must not be blamed.
@@ -369,7 +374,7 @@ func TestExplainEmptyResults_MultiTermANDHint(t *testing.T) {
 	require.Contains(t, stderr.String(), `note: no message contains all 2 terms together; "alpha" alone matches`)
 	require.Contains(t, stderr.String(), "Every term is required")
 	// Finding 1: the recommendation has to be one this path can honour.
-	require.Contains(t, stderr.String(), "search one distinctive term and narrow the result with --channel or --author")
+	require.Contains(t, stderr.String(), "search one distinctive term with the same filters")
 	require.NotContains(t, stderr.String(), "exact phrase")
 
 	// Finding 1, the other half: the advice the note gives returns rows, and
@@ -709,11 +714,14 @@ func TestExplainEmptyResults_HybridModeAlsoReportsMissingEmbeddings(t *testing.T
 var stubEmbeddingVector = []float64{1, 0, 0, 0}
 
 // newStubEmbeddingServer serves the OpenAI-compatible /embeddings shape the
-// `openai_compatible` provider posts to. It needs no API key, so `embed` and
-// `search --mode semantic` can both run through Run() against it.
+// `openai_compatible` provider posts to using an isolated synthetic API key.
 func newStubEmbeddingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "Bearer fixture-only" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		var payload struct {
 			Input []string `json:"input"`
 		}
@@ -767,12 +775,14 @@ func addLateMessage(t *testing.T, ctx context.Context, cfgPath string) {
 // pipeline runs against the stub server.
 func enableStubEmbeddings(t *testing.T, cfgPath string, server *httptest.Server) {
 	t.Helper()
+	t.Setenv("DISCRAWL_ZERO_RESULT_TEST_KEY", "fixture-only")
 	cfg, err := config.Load(cfgPath)
 	require.NoError(t, err)
 	cfg.Search.Embeddings.Enabled = true
 	cfg.Search.Embeddings.Provider = "openai_compatible"
 	cfg.Search.Embeddings.Model = zeroResultStubEmbedModel
 	cfg.Search.Embeddings.BaseURL = server.URL + "/v1"
+	cfg.Search.Embeddings.APIKeyEnv = "DISCRAWL_ZERO_RESULT_TEST_KEY"
 	require.NoError(t, config.Write(cfgPath, cfg))
 }
 
@@ -888,7 +898,8 @@ func TestExplainEmptyResults_SemanticWithPendingJobsPointsAtPlainEmbed(t *testin
 		"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "november",
 	}, &stdout, &stderr))
 	require.Empty(t, stdout.String())
-	require.Contains(t, stderr.String(), "pending embedding jobs cover 1 of them, so `discrawl embed` embeds them")
+	require.Contains(t, stderr.String(), "pending embedding jobs cover 1 of them")
+	require.Contains(t, stderr.String(), "archive-wide queue up to --limit (default 1000) per run; repeat until this scope is covered")
 	require.NotContains(t, stderr.String(), "--rebuild")
 
 	// Run exactly what the note recommends, with no --rebuild.
@@ -963,4 +974,46 @@ func TestExplainEmptyResults_SemanticOverDirectMessagesRecommendsNoEmbed(t *test
 	}, &stdout, &stderr))
 	require.NotEmpty(t, stdout.String())
 	require.Empty(t, stderr.String())
+}
+
+func TestExplainEmptyResultsAuthorFilterDoesNotBlameOtherFilters(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	for _, args := range [][]string{
+		{"messages", "--channel", zeroResultTextChannelID, "--days", "1", "--author", "nobody"},
+		{"search", "--channel", zeroResultAttachmentChannelID, "--author", "nobody", "missing"},
+	} {
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, Run(ctx, append([]string{"--config", cfgPath}, args...), &stdout, &stderr))
+		require.Empty(t, stdout.String())
+		require.Empty(t, stderr.String())
+	}
+	enableStubEmbeddings(t, cfgPath, newStubEmbeddingServer(t))
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	addLateMessage(t, ctx, cfgPath)
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultLateChannelID, "--author", "nobody", "november"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Empty(t, stderr.String())
+}
+
+func TestExplainEmptyResultsUncataloguedDMDoesNotRecommendEmbedding(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	enableStubEmbeddings(t, cfgPath, newStubEmbeddingServer(t))
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "embed", "--rebuild"}, &stdout, &stderr))
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	s, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `delete from channels where id = ?`, zeroResultDMChannelID)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "search", "--mode", "semantic", "--channel", zeroResultDMChannelID, "delta"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "embedding jobs are never created for direct messages")
+	require.NotContains(t, stderr.String(), "--rebuild")
 }

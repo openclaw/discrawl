@@ -108,6 +108,14 @@ func (r *runtime) explainEmptySearch(opts store.SearchOptions, mode string) {
 	if r.json {
 		return
 	}
+	// Author matching differs across lexical, semantic, and message queries.
+	// Only term probes preserve that predicate without reconstructing it.
+	if strings.TrimSpace(opts.Author) != "" {
+		if mode == "" || mode == "fts" || mode == "hybrid" {
+			r.explainEmptySearchTerms(opts)
+		}
+		return
+	}
 	scope, ok := r.searchScope(opts.Channel, opts.GuildIDs, opts.IncludeEmpty)
 	if !ok {
 		return
@@ -207,6 +215,9 @@ func (r *runtime) explainEmptyScopeContents(scope zeroResultScope, stats store.M
 // it, so the whole set reads as one tool rather than each note inventing its
 // own shape.
 func channelIdentity(channelID string, row store.ChannelRow) string {
+	if row.ID == "" {
+		return "channel " + channelID
+	}
 	return fmt.Sprintf("channel %s (%s, kind=%s)", channelID, row.Name, row.Kind)
 }
 
@@ -251,6 +262,16 @@ func (r *runtime) explainEmptyDateWindow(scope zeroResultScope, window zeroResul
 	// Resolved once: both halves can fire on the same run, and the label costs
 	// a channel lookup.
 	where := r.zeroResultScopeLabel(scope)
+	if sinceExcludes && beforeExcludes {
+		sinceFlag := "--since"
+		if window.hours > 0 {
+			sinceFlag = "--hours"
+		} else if window.days > 0 {
+			sinceFlag = "--days"
+		}
+		_, _ = fmt.Fprintf(r.stderr, "note: both %s and --before exclude all %d messages %s (oldest: %s; newest: %s); try without both %s and --before\n", sinceFlag, stats.Count, where, formatTime(stats.Oldest), formatTime(stats.Newest), sinceFlag)
+		return
+	}
 	if sinceExcludes {
 		switch {
 		case window.hours > 0:
@@ -290,8 +311,11 @@ func (r *runtime) explainEmptyEmbeddings(scope zeroResultScope, stats store.Mess
 	// creates a job for guild_id '@me', so no embed run of any kind can give
 	// these messages embeddings. Recommending one would send the reader to a
 	// command that cannot resolve what they are looking at.
-	if r.directMessageOnlyScope(scope) {
+	if stats.DirectMessages == stats.Count {
 		_, _ = fmt.Fprintf(r.stderr, "%s; embedding jobs are never created for direct messages, so no `discrawl embed` run changes this. Use --mode fts\n", lead)
+		return
+	}
+	if stats.Embeddable == 0 {
 		return
 	}
 	pending, err := r.store.MessagePendingEmbeddingJobs(r.ctx, scope.storeOptions())
@@ -307,29 +331,7 @@ func (r *runtime) explainEmptyEmbeddings(scope zeroResultScope, stats store.Mess
 		_, _ = fmt.Fprintf(r.stderr, "%s; none of them has a pending embedding job either, so `discrawl embed` drains nothing. `discrawl embed --rebuild` is what enqueues the missing jobs, and it requeues every non-deleted message outside DMs archive-wide, not just this scope, embedding up to --limit (default %d) per run; or use --mode fts\n", lead, store.DefaultEmbedLimit())
 		return
 	}
-	_, _ = fmt.Fprintf(r.stderr, "%s; pending embedding jobs cover %d of them, so `discrawl embed` embeds them, or use --mode fts\n", lead, pending)
-}
-
-// directMessageOnlyScope reports whether every row the scope can reach is a
-// direct message, which the embedding note needs because the embed pipeline
-// skips guild_id '@me' at both the enqueue-on-write and the rebuild step.
-func (r *runtime) directMessageOnlyScope(scope zeroResultScope) bool {
-	if len(scope.guildIDs) > 0 {
-		onlyDMs := true
-		for _, guildID := range scope.guildIDs {
-			if guildID != store.DirectMessageGuildID {
-				onlyDMs = false
-			}
-		}
-		if onlyDMs {
-			return true
-		}
-	}
-	if scope.channelID == "" {
-		return false
-	}
-	row, found := r.lookupChannel(scope.channelID)
-	return found && row.GuildID == store.DirectMessageGuildID
+	_, _ = fmt.Fprintf(r.stderr, "%s; pending embedding jobs cover %d of them. `discrawl embed` processes the archive-wide queue up to --limit (default %d) per run; repeat until this scope is covered, or use --mode fts\n", lead, pending, store.DefaultEmbedLimit())
 }
 
 // explainEmptySearchTerms writes a stderr note when a multi-term query
@@ -353,7 +355,7 @@ func (r *runtime) explainEmptySearchTerms(opts store.SearchOptions) {
 		if err != nil || len(results) == 0 {
 			continue
 		}
-		_, _ = fmt.Fprintf(r.stderr, "note: no message contains all %d terms together; %q alone matches. Every term is required, so search one distinctive term and narrow the result with --channel or --author\n", len(terms), store.FTSTermText(term))
+		_, _ = fmt.Fprintf(r.stderr, "note: no message contains all %d terms together; %q alone matches. Every term is required, so search one distinctive term with the same filters\n", len(terms), store.FTSTermText(term))
 		return
 	}
 }

@@ -39,11 +39,11 @@ discrawl --json messages --channel maintainers --days 3
 
 ## Empty results
 
-A listing that matches nothing prints a one-line note to **stderr** naming the likely cause and a command that returns rows: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels), every message in it is empty or attachment-only and so needs `--include-empty`, the `--hours`/`--days`/`--since`/`--before` window sits entirely outside the data, in which case the note reports the newest or oldest timestamp actually in scope, or the channel exists but sits in a guild outside the `--guild`/`--guilds` scope, in which case the note names the guild to use instead.
+A listing that matches nothing can print a note to **stderr** naming the likely cause and a suggested next step: the channel has no messages in the local mirror (with a follow-up for a forum id, whose posts live in separate thread channels), every message in it is empty or attachment-only and so needs `--include-empty`, the `--hours`/`--days`/`--since`/`--before` window sits entirely outside the data, in which case the note reports the newest or oldest timestamp actually in scope, or the channel exists but sits in a guild outside the `--guild`/`--guilds` scope, in which case the note names the guild to use instead.
 
-These notes are diagnostics, not output: they go to stderr and never stdout, `--json` suppresses them, and stdout bytes and the exit code are unchanged either way, so a shell pipeline behaves exactly as before.
+These notes are diagnostics, not output: they go to stderr and never stdout, `--json` suppresses them, and stdout bytes and the exit code are unchanged either way, so stdout-only pipelines retain their existing output; consumers merging stderr into stdout will see the new notes.
 
-A note appears only when the filter named is the whole reason the result is empty. A `--channel` that resolved to a name fragment rather than a concrete id gets none, because the counts behind one cannot reproduce that row set.
+With `--author`, these notes are suppressed because the scope counts do not reproduce author-name matching. When both time bounds exclude every row, the note recommends removing both. A `--channel` that resolved to a name fragment rather than a concrete id gets none, because the counts behind one cannot reproduce that row set.
 
 ## See also
 

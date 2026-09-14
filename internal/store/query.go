@@ -94,15 +94,17 @@ type MessageScopeOptions struct {
 	IncludeDeleted bool
 }
 
-// MessageScopeStats summarises the non-deleted messages in a scope. Count,
+// MessageScopeStats summarises the messages allowed by the scope. Count,
 // Oldest and Newest cover the rows the query itself could return; Total
 // additionally counts rows the empty-content filter removes, so a caller can
 // distinguish "nothing archived here" from "nothing here has text".
 type MessageScopeStats struct {
-	Count  int
-	Total  int
-	Oldest time.Time
-	Newest time.Time
+	Count          int
+	Total          int
+	DirectMessages int
+	Embeddable     int
+	Oldest         time.Time
+	Newest         time.Time
 }
 
 func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (string, []any) {
@@ -127,7 +129,7 @@ func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (
 func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions) (MessageScopeStats, error) {
 	where, whereArgs := messageScopeClauses(opts, func(name string) string { return name })
 	visible := "(? or trim(coalesce(normalized_content, '')) <> '')"
-	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
+	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
 	args = append(args, whereArgs...)
 	queryCtx, cancel := withQueryTimeout(ctx)
 	defer cancel()
@@ -136,15 +138,17 @@ func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions)
 			coalesce(sum(case when `+visible+` then 1 else 0 end), 0),
 			count(*),
 			coalesce(min(case when `+visible+` then created_at end), ''),
-			coalesce(max(case when `+visible+` then created_at end), '')
+			coalesce(max(case when `+visible+` then created_at end), ''),
+			coalesce(sum(case when `+visible+` and guild_id = '@me' then 1 else 0 end), 0),
+			coalesce(sum(case when deleted_at is null and guild_id != '@me' and trim(coalesce(normalized_content, '')) <> '' then 1 else 0 end), 0)
 		from messages
 		where `+where, args...)
-	var count, total int
+	var count, total, directMessages, embeddable int
 	var oldest, newest string
-	if err := row.Scan(&count, &total, &oldest, &newest); err != nil {
+	if err := row.Scan(&count, &total, &oldest, &newest, &directMessages, &embeddable); err != nil {
 		return MessageScopeStats{}, err
 	}
-	return MessageScopeStats{Count: count, Total: total, Oldest: parseTime(oldest), Newest: parseTime(newest)}, nil
+	return MessageScopeStats{Count: count, Total: total, DirectMessages: directMessages, Embeddable: embeddable, Oldest: parseTime(oldest), Newest: parseTime(newest)}, nil
 }
 
 // MessageEmbeddingCoverage counts how many messages in the scope carry an
@@ -153,6 +157,9 @@ func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions)
 // and zero coverage explains an empty semantic result.
 func (s *Store) MessageEmbeddingCoverage(ctx context.Context, opts MessageScopeOptions, provider, model, inputVersion string) (int, error) {
 	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "m." + name })
+	if !opts.IncludeEmpty {
+		where += " and trim(coalesce(m.normalized_content, '')) <> ''"
+	}
 	args := []any{strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model), strings.TrimSpace(inputVersion)}
 	args = append(args, whereArgs...)
 	queryCtx, cancel := withQueryTimeout(ctx)
@@ -170,16 +177,8 @@ func (s *Store) MessageEmbeddingCoverage(ctx context.Context, opts MessageScopeO
 	return count, nil
 }
 
-// MessagePendingEmbeddingJobs counts the messages in the scope that carry a
-// pending embedding job `discrawl embed` would pick up. The three extra
-// predicates are the ones ListPendingEmbeddingJobs applies, so the count is
-// what an embed run would actually act on rather than every embedding_jobs row:
-// a soft-deleted message and a direct message are both skipped by the drain no
-// matter what the scope asked for.
-//
-// `discrawl embed` drains pending jobs and creates none, so this count is what
-// separates a scope one embed run covers from one where embed has nothing to do
-// and only `embed --rebuild` can enqueue the work.
+// MessagePendingEmbeddingJobs counts pending, non-empty, non-deleted guild
+// messages. Empty jobs are completed without producing a searchable vector.
 func (s *Store) MessagePendingEmbeddingJobs(ctx context.Context, opts MessageScopeOptions) (int, error) {
 	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "m." + name })
 	queryCtx, cancel := withQueryTimeout(ctx)
@@ -191,6 +190,7 @@ func (s *Store) MessagePendingEmbeddingJobs(ctx context.Context, opts MessageSco
 		where j.state = 'pending'
 		  and m.deleted_at is null
 		  and m.guild_id != '@me'
+		  and trim(coalesce(m.normalized_content, '')) <> ''
 		  and `+where, whereArgs...)
 	var count int
 	if err := row.Scan(&count); err != nil {
