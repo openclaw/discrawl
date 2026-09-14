@@ -4,10 +4,12 @@ launchd runs Discrawl directly. Discrawl loads both credentials, owns the archiv
 writer, captures Gateway events, repairs history, and processes embeddings.
 There is no Python coordinator or credential-loading shell wrapper.
 
-The application is clean upstream commit
-`1907d9f70353eb331212d6ba584be055b8bd7eba`, version `0.14.1-10-g1907d9f`, with
-Crawlkit v0.16.1. PR #220 supplies native embedding keyring selection; PR #219
-supplies opt-in startup repair. Both passed CI and final ClawSweeper review.
+The installed application is commit
+`c5b1f78e6275ca2a739ad5301be7cca9a111164c`, version `0.15.1-2-gc5b1f78`, with
+Crawlkit v0.16.3. It contains upstream `ae7fa0f` plus the dependency update in
+[PR #237](https://github.com/openclaw/discrawl/pull/237), pending upstream merge.
+The PR changes only the module pin, checksums, and changelog. Machine-specific
+service and signing files remain on this local operations branch.
 
 ## Installed configuration
 
@@ -73,7 +75,8 @@ with compression. Copy/truncate preserves the running process's file descriptors
 The live rollout verified both keys from launchd with credential environment
 values empty, advancing capture and embeddings, startup repair completion, and
 a graceful native restart with exit code 0. The previous process exited in about
-two seconds. The application has no local patches.
+two seconds. Application behavior remains upstream; the only pending application
+difference is the Crawlkit dependency update in PR #237.
 
 The temporary native-service cutover files and retired coordinator copies were
 removed after verification. Do not retain obsolete cutover directories or
@@ -124,3 +127,15 @@ Verified on September 11, 2026: two builds with different binary hashes retained
 the same certificate-bound identity. Both ran through launchd and processed live
 capture and embeddings. The second build retained Data access without another
 permission prompt. Temporary builds and the superseded executable were removed.
+
+Verified on September 14, 2026: the Crawlkit v0.16.3 build retained that signing
+identity, resumed live capture and embeddings, and completed startup repair across
+882 channels. The configuration, archive schema version, and existing
+`tempplan.md` were unchanged. Local race/coverage checks passed at 85.9% with
+isolated Git configuration; the default-branch-sensitive publication fixture also
+fails with upstream's original dependency. Autoreview and all six platform/arch
+snapshot builds passed. Deployment receipts are in
+`~/.local/share/discrawl-upgrades/20260914-crawlkit-0163/`.
+
+Until PR #237 merges, use its commit above as the signing helper's `REF` to
+reproduce this deployment; `origin/main` still has the older dependency.
