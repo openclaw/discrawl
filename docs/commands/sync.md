@@ -79,6 +79,8 @@ discrawl sync --with-media
 - Guild and archived-thread pagination reports a cursor error if Discord repeats a page instead of continuing indefinitely.
 - Full message pages with missing or repeated cursors stop the channel crawl with an error and preserve its last usable backfill checkpoint.
 - Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
+- A channel that fails with missing access carries an unavailable marker, and routine syncs pass over it while the marker is inside its seven-day window. The next routine sync after the marker reaches seven days retries the channel. To retry sooner: `sync --guild <id> --full` attempts every channel in the guild immediately, marked ones included, and `sync --channels <id>` retries a single channel immediately. `doctor` reports `unavailable_markers_active` (inside the window, so currently passed over) and `unavailable_markers_expired` (due for another attempt).
+- Full sync retries marked channels even when their older history is complete. When only unavailable channels remain in the cached backlog, it also discovers new channels; the retry and discovery phases do not request the same channel twice.
 - Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
 - Member refresh is best-effort and gives up after five minutes without a caller-supplied deadline. Routine latest-only syncs skip it unless `--with-members` is set.
 - Routine refreshes keep a per-parent archived-thread cursor, so they discover threads archived between runs without rescanning the historical thread catalog.

@@ -146,7 +146,7 @@ func (s *Store) RecordFailureWithMessageScopeTimed(
 		diagnostics.ContextDeadline = deadline
 	}
 	defer func() {
-		diagnostics.SQLiteCode, diagnostics.SQLiteCategory = sqliteFailureCodes(returnErr)
+		diagnostics.SQLiteCode, diagnostics.SQLiteCategory = sqliteErrorCodes(returnErr)
 	}()
 	if failure == nil {
 		return diagnostics, errors.New("message-scoped failure is required")
@@ -232,19 +232,6 @@ func (s *Store) RecordFailureWithMessageScopeTimed(
 
 type failureExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}
-
-type sqliteErrorCoder interface {
-	Code() int
-}
-
-func sqliteFailureCodes(err error) (code, category int) {
-	var coder sqliteErrorCoder
-	if err == nil || !errors.As(err, &coder) {
-		return 0, 0
-	}
-	code = coder.Code()
-	return code, code & 0xff
 }
 
 func recordFailure(

@@ -17,6 +17,12 @@ where scope = ?;
 -- name: ChannelHasMessages :one
 select exists(select 1 from messages where channel_id = ? limit 1) as has_messages;
 
+-- name: ListSyncStateBySuffix :many
+select scope, updated_at
+from sync_state
+where scope like '%' || sqlc.arg(suffix)
+order by updated_at;
+
 -- name: ChannelMessageBounds :one
 select cast(coalesce(min(id), '') as text) as oldest_id,
        cast(coalesce(max(id), '') as text) as newest_id
@@ -219,7 +225,10 @@ from channels
 where guild_id = ?
 order by guild_id, position, name;
 
--- name: ListIncompleteMessageChannelIDs :many
+-- name: ListAllIncompleteMessageChannelIDs :many
+-- Every channel whose message history is not complete, unavailable markers
+-- included. A full sync plans from this listing so a channel whose access was
+-- restored is visited without waiting out its marker's retry window.
 select c.id
 from channels c
 where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
@@ -228,14 +237,9 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':history_complete'
   )
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':unavailable'
-  )
 order by c.id;
 
--- name: ListIncompleteMessageChannelIDsByGuild :many
+-- name: ListAllIncompleteMessageChannelIDsByGuild :many
 select c.id
 from channels c
 where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
@@ -244,11 +248,6 @@ where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_privat
 	select 1
 	from sync_state s
 	where s.scope = 'channel:' || c.id || ':history_complete'
-  )
-  and not exists (
-	select 1
-	from sync_state s
-	where s.scope = 'channel:' || c.id || ':unavailable'
   )
 order by c.id;
 

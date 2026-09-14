@@ -2441,7 +2441,7 @@ func TestSyncSkipsGitShareByDefaultAndCanImportBeforeLiveDiscord(t *testing.T) {
 
 func TestSyncLockSerializesConcurrentRuns(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("sync lock is currently a no-op on Windows")
+		t.Skip("lock timing coverage is not enabled on Windows")
 	}
 	ctx := context.Background()
 	dir := t.TempDir()

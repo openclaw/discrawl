@@ -79,6 +79,9 @@ func (r *runtime) runDirectMessages(args []string) error {
 		if err != nil {
 			return err
 		}
+		if len(results) == 0 {
+			r.explainEmptyDirectMessageSearch(*with, opts)
+		}
 		return r.print(results)
 	}
 
@@ -104,6 +107,12 @@ func (r *runtime) runDirectMessages(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if len(rows) == 0 {
+		r.explainEmptyDirectMessageList(*with, *includeEmpty, zeroResultWindow{
+			hours: *hours, days: *days, sinceRaw: *since, beforeRaw: *before,
+			since: sinceTime, before: beforeTime,
+		})
 	}
 	return r.print(rows)
 }

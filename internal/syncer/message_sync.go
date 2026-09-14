@@ -21,6 +21,10 @@ func (s *Syncer) syncMessageChannels(
 	opts SyncOptions,
 ) (int, error) {
 	messageChannels := filterMessageChannels(channels, opts.ChannelIDs)
+	messageChannels, err := s.filterFreshUnavailableChannels(ctx, guildID, messageChannels, opts)
+	if err != nil {
+		return 0, err
+	}
 	if len(messageChannels) == 0 {
 		return 0, nil
 	}
@@ -38,6 +42,39 @@ func (s *Syncer) syncMessageChannels(
 		progress.finish(err)
 	}
 	return total, err
+}
+
+// Full and targeted syncs bypass the retry window for immediate recovery.
+func (s *Syncer) filterFreshUnavailableChannels(ctx context.Context, guildID string, channels []*discordgo.Channel, opts SyncOptions) ([]*discordgo.Channel, error) {
+	if s == nil || s.store == nil || len(channels) == 0 || len(opts.ChannelIDs) > 0 || opts.Full {
+		return channels, nil
+	}
+	unavailable, err := s.store.FreshUnavailableChannelIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	skip := makeGuildSet(unavailable)
+	if len(skip) == 0 {
+		return channels, nil
+	}
+	out := make([]*discordgo.Channel, 0, len(channels))
+	for _, channel := range channels {
+		if channel != nil {
+			if _, blocked := skip[channel.ID]; blocked {
+				continue
+			}
+		}
+		out = append(out, channel)
+	}
+	if skipped := len(channels) - len(out); skipped > 0 {
+		s.logger.Info(
+			"channels skipped by unavailable marker",
+			"guild_id", guildID,
+			"skipped", skipped,
+			"attempted", len(out),
+		)
+	}
+	return out, nil
 }
 
 func filterMessageChannels(channels []*discordgo.Channel, requested []string) []*discordgo.Channel {

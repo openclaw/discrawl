@@ -37,6 +37,9 @@ jobs:
         with:
           node-version: 26
 
+      - name: Test site builder
+        run: node --test scripts/build-docs-site.test.mjs
+
       - name: Build site
         run: node scripts/build-docs-site.mjs
 

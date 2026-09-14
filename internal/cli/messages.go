@@ -147,6 +147,14 @@ func (r *runtime) runMessages(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(rows) == 0 && strings.TrimSpace(opts.Author) == "" {
+		if scope, ok := r.listMessagesScope(opts.Channel, opts.GuildIDs, opts.IncludeEmpty); ok {
+			r.explainEmptyMessages(scope, zeroResultWindow{
+				hours: *hours, days: *days, sinceRaw: *since, beforeRaw: *before,
+				since: sinceTime, before: beforeTime,
+			})
+		}
+	}
 	return r.print(rows)
 }
 

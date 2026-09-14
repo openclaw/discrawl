@@ -67,17 +67,26 @@ func (r *runtime) runSearch(args []string) error {
 		if err != nil {
 			return err
 		}
+		if len(results) == 0 {
+			r.explainEmptySearch(opts, normalizedMode)
+		}
 		return r.print(results)
 	case "semantic":
 		results, err := r.searchMessagesSemantic(opts)
 		if err != nil {
 			return err
 		}
+		if len(results) == 0 {
+			r.explainEmptySearch(opts, normalizedMode)
+		}
 		return r.print(results)
 	case "hybrid":
 		results, err := r.searchMessagesHybrid(opts)
 		if err != nil {
 			return err
+		}
+		if len(results) == 0 {
+			r.explainEmptySearch(opts, normalizedMode)
 		}
 		return r.print(results)
 	default:

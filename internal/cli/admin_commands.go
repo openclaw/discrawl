@@ -667,6 +667,15 @@ func (r *runtime) runDoctor(args []string) error {
 			} else {
 				report["fts"] = "ok"
 			}
+			if markers, markerErr := db.SyncStateBySuffix(r.ctx, store.ChannelUnavailableSuffix); markerErr != nil {
+				report["unavailable_markers_error"] = markerErr.Error()
+			} else if len(markers) > 0 {
+				counts := countUnavailableMarkers(markers, r.nowUTC())
+				report["unavailable_markers_active"] = counts.Active
+				report["unavailable_markers_expired"] = counts.Expired
+				report["unavailable_markers_unparsed"] = counts.Unparsed
+				report["unavailable_markers_oldest_days"] = counts.OldestDays
+			}
 			report["vector"] = "not configured"
 			_ = db.Close()
 		}

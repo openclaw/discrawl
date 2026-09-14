@@ -211,10 +211,10 @@ func TestRecordFailureWithMessageScopeTimedReportsExternalSQLiteBusy(t *testing.
 
 func TestSQLiteFailureCodesUseNumericCategory(t *testing.T) {
 	t.Parallel()
-	code, category := sqliteFailureCodes(&codedFailureError{code: 6 | 2<<8})
+	code, category := sqliteErrorCodes(&codedFailureError{code: 6 | 2<<8})
 	require.Equal(t, 518, code)
 	require.Equal(t, 6, category)
-	code, category = sqliteFailureCodes(errors.New("plain"))
+	code, category = sqliteErrorCodes(errors.New("plain"))
 	require.Zero(t, code)
 	require.Zero(t, category)
 }
