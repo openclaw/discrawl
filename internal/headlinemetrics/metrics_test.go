@@ -28,7 +28,7 @@ func newMetrics(t *testing.T) *store.Store {
 
 func testConfig(t *testing.T, database string) string {
 	t.Helper()
-	b, err := json.Marshal(Config{Database: database, Targets: []Target{{"openclaw", "clawd"}, {"hermes", "nousresearch"}}})
+	b, err := json.Marshal(Config{Database: database, Targets: []Target{{"sample-alpha", "example-alpha"}, {"sample-beta", "example-beta"}}})
 	require.NoError(t, err)
 	p := filepath.Join(t.TempDir(), "metrics.json")
 	require.NoError(t, os.WriteFile(p, b, 0o600))
@@ -120,16 +120,16 @@ func TestWritePreservesHistoryAndRollsBackBadBatches(t *testing.T) {
 	s := newMetrics(t)
 	rows := []Row{}
 	for i, value := range []*float64{new(20.0), new(0.0), new(19.0), nil} {
-		r := Counter(Target{"openclaw", "clawd"}, "members", value, sampleTime, "historical-source")
+		r := Counter(Target{"sample-alpha", "example-alpha"}, "members", value, sampleTime, "historical-source")
 		r.ID = fmt.Sprintf("counter-%d", i)
 		rows = append(rows, r)
 	}
 	for i, value := range []float64{10, 9, 9} {
-		r := Counter(Target{"openclaw", "clawd"}, "members", new(value), "2026-09-14T00:00:00Z", "native-history")
+		r := Counter(Target{"sample-alpha", "example-alpha"}, "members", new(value), "2026-09-14T00:00:00Z", "native-history")
 		r.ID, r.Kind, r.ObservedAt = fmt.Sprintf("daily-%d", i), "daily", sampleTime
 		rows = append(rows, r)
 	}
-	rows = append(rows, Row{Type: "event", ID: "event-1", Entity: "hermes", Target: "nousresearch", Kind: "release", TS: sampleTime, ObservedAt: sampleTime, Provenance: "historical-source", Label: "release", URL: "https://example.test/release"})
+	rows = append(rows, Row{Type: "event", ID: "event-1", Entity: "sample-beta", Target: "example-beta", Kind: "release", TS: sampleTime, ObservedAt: sampleTime, Provenance: "historical-source", Label: "release", URL: "https://example.test/release"})
 	written, err := Write(t.Context(), s, rows)
 	require.NoError(t, err)
 	require.Equal(t, len(rows), written)
@@ -145,7 +145,7 @@ func TestWritePreservesHistoryAndRollsBackBadBatches(t *testing.T) {
 	var latest float64
 	require.NoError(t, s.DB().QueryRowContext(t.Context(), "SELECT value FROM metric_observations WHERE kind='daily' ORDER BY sequence DESC LIMIT 1").Scan(&latest))
 	require.InDelta(t, 9, latest, 0)
-	good := Counter(Target{"openclaw", "clawd"}, "online", new(3.0), sampleTime, "native")
+	good := Counter(Target{"sample-alpha", "example-alpha"}, "online", new(3.0), sampleTime, "native")
 	bad := good
 	bad.Value = new(-1.0)
 	written, err = Write(t.Context(), s, []Row{good, bad})
@@ -160,7 +160,7 @@ func TestWritePreservesHistoryAndRollsBackBadBatches(t *testing.T) {
 }
 
 func TestValidationRejectsInvalidObservations(t *testing.T) {
-	good := Counter(Target{"openclaw", "clawd"}, "members", new(1.0), sampleTime, "native")
+	good := Counter(Target{"sample-alpha", "example-alpha"}, "members", new(1.0), sampleTime, "native")
 	for _, change := range []func(*Row){
 		func(r *Row) { r.Type = "other" }, func(r *Row) { r.Entity = " " },
 		func(r *Row) { r.TS = "yesterday" }, func(r *Row) { r.ObservedAt = "unknown" },
@@ -209,7 +209,7 @@ func TestImportCanResumeCommittedBatchesAndPreserveNulls(t *testing.T) {
 	var input bytes.Buffer
 	enc := json.NewEncoder(&input)
 	for i := range 501 {
-		r := Counter(Target{"openclaw", "clawd"}, "members", nil, sampleTime, "history")
+		r := Counter(Target{"sample-alpha", "example-alpha"}, "members", nil, sampleTime, "history")
 		r.ID = fmt.Sprintf("history-%d", i)
 		require.NoError(t, enc.Encode(r))
 	}
@@ -236,7 +236,7 @@ func TestImportRejectsScopeMissingIDAndUnknownFields(t *testing.T) {
 		func(r map[string]any) { r["unexpected"] = true },
 		func(r map[string]any) { r["ts"] = "invalid" },
 	} {
-		r := map[string]any{"type": "metric", "id": "one", "entity": "openclaw", "target": "clawd", "metric": "members", "kind": "counter", "ts": sampleTime, "observed_at": sampleTime, "provenance": "history", "value": nil}
+		r := map[string]any{"type": "metric", "id": "one", "entity": "sample-alpha", "target": "example-alpha", "metric": "members", "kind": "counter", "ts": sampleTime, "observed_at": sampleTime, "provenance": "history", "value": nil}
 		mutation(r)
 		b, err := json.Marshal(r)
 		require.NoError(t, err)
@@ -260,9 +260,9 @@ func TestConfigHelpAndMissingDatabase(t *testing.T) {
 	require.Error(t, Run(t.Context(), []string{"status", "--config", config}, "discrawl", nil, nil, io.Discard, io.Discard))
 	require.NoFileExists(t, path)
 	for _, raw := range []string{
-		`{}`, `{"database":"relative","targets":[{"entity":"x","target":"clawd"}]}`,
+		`{}`, `{"database":"relative","targets":[{"entity":"x","target":"example-alpha"}]}`,
 		`{"database":"/tmp/x","targets":[{"entity":"x","target":"../bad"}]}`,
-		`{"database":"/tmp/x","targets":[{"entity":"x","target":"clawd"},{"entity":"y","target":"clawd"}]}`,
+		`{"database":"/tmp/x","targets":[{"entity":"x","target":"example-alpha"},{"entity":"y","target":"example-alpha"}]}`,
 		`{"unexpected":true}`, `{} {}`, `invalid`,
 	} {
 		require.NoError(t, os.WriteFile(config, []byte(raw), 0o600))

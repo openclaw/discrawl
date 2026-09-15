@@ -46,12 +46,12 @@ func TestCollectDiscordPublicCountsAndUnknowns(t *testing.T) {
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				calls++
 				require.Equal(t, http.MethodGet, req.Method)
-				require.Equal(t, "https://discord.com/api/v10/invites/clawd?with_counts=true", req.URL.String())
+				require.Equal(t, "https://discord.com/api/v10/invites/example-alpha?with_counts=true", req.URL.String())
 				require.Empty(t, req.Header.Get("Authorization"))
 				require.Empty(t, req.Header.Get("Cookie"))
 				return &http.Response{StatusCode: tc.status, Body: body, Header: http.Header{"Retry-After": []string{"3600"}}}, nil
 			})}
-			rows, err := collectDiscord(t.Context(), Config{Targets: []Target{{Entity: "openclaw", Target: "clawd"}}}, sampleTime, client)
+			rows, err := collectDiscord(t.Context(), Config{Targets: []Target{{Entity: "sample-alpha", Target: "example-alpha"}}}, sampleTime, client)
 			require.Len(t, rows, 2)
 			require.Equal(t, tc.members, rows[0].Value)
 			require.Equal(t, tc.online, rows[1].Value)
@@ -88,18 +88,18 @@ func TestCollectDiscordIgnoresCredentialsAndRefusesRedirects(t *testing.T) {
 		require.Equal(t, "discord.com", req.URL.Host)
 		require.Empty(t, req.Header.Get("Authorization"))
 		require.Empty(t, req.Header.Get("Cookie"))
-		if strings.HasSuffix(req.URL.Path, "/clawd") {
+		if strings.HasSuffix(req.URL.Path, "/example-alpha") {
 			return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://elsewhere.invalid/private"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"guild":{"id":"456"},"approximate_member_count":50,"approximate_presence_count":7}`))}, nil
 	})
-	rows, err := CollectDiscord(t.Context(), Config{CookieJar: "/never/read", TokenEnv: "DISCORD_BOT_TOKEN", Targets: []Target{{"openclaw", "clawd"}, {"hermes", "nousresearch"}}}, sampleTime)
+	rows, err := CollectDiscord(t.Context(), Config{CookieJar: "/never/read", TokenEnv: "DISCORD_BOT_TOKEN", Targets: []Target{{"sample-alpha", "example-alpha"}, {"sample-beta", "example-beta"}}}, sampleTime)
 	require.Error(t, err)
 	require.Len(t, requested, 2)
 	require.Len(t, rows, 4)
 	require.Nil(t, rows[0].Value)
 	require.Equal(t, new(50.0), rows[2].Value)
-	require.Equal(t, "hermes", rows[2].Entity)
+	require.Equal(t, "sample-beta", rows[2].Entity)
 }
 
 func TestCollectDiscordInvalidTargetAndTransportFailure(t *testing.T) {
@@ -108,7 +108,7 @@ func TestCollectDiscordInvalidTargetAndTransportFailure(t *testing.T) {
 		calls++
 		return nil, errors.New("fixture transport failure")
 	})}
-	rows, err := collectDiscord(t.Context(), Config{Targets: []Target{{"bad", "../private"}, {"valid", "clawd"}}}, sampleTime, client)
+	rows, err := collectDiscord(t.Context(), Config{Targets: []Target{{"bad", "../private"}, {"valid", "example-alpha"}}}, sampleTime, client)
 	require.Error(t, err)
 	require.Len(t, rows, 4)
 	require.Equal(t, 1, calls)
@@ -117,6 +117,6 @@ func TestCollectDiscordInvalidTargetAndTransportFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err = collectDiscord(ctx, Config{Targets: []Target{{"valid", "clawd"}}}, sampleTime, &http.Client{})
+	_, err = collectDiscord(ctx, Config{Targets: []Target{{"valid", "example-alpha"}}}, sampleTime, &http.Client{})
 	require.Error(t, err)
 }

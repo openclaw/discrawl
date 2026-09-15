@@ -25,8 +25,7 @@ sequence, and the most recent observation time (`null` for an empty store).
 {
   "database": "/absolute/path/discrawl-metrics.sqlite",
   "targets": [
-    {"entity": "openclaw", "target": "clawd"},
-    {"entity": "hermes", "target": "nousresearch"}
+    {"entity": "openclaw", "target": "clawd"}
   ]
 }
 ```
@@ -106,7 +105,7 @@ nonempty `id` and an exact configured `entity`/`target` pair. Times use RFC 3339
 ```json
 {"type":"metric","id":"historical-members-1","entity":"openclaw","target":"clawd","metric":"members","kind":"counter","ts":"2026-09-14T12:00:00Z","value":1200,"observed_at":"2026-09-14T12:00:00Z","provenance":"historical-import"}
 {"type":"metric","id":"historical-online-1","entity":"openclaw","target":"clawd","metric":"online","kind":"counter","ts":"2026-09-14T12:00:00Z","value":null,"observed_at":"2026-09-14T12:00:00Z","provenance":"historical-import"}
-{"type":"event","id":"historical-event-1","entity":"hermes","target":"nousresearch","kind":"milestone","ts":"2026-09-14T12:00:00Z","label":"Example milestone","url":"https://example.org/milestone","observed_at":"2026-09-14T12:00:00Z","provenance":"historical-import"}
+{"type":"event","id":"historical-event-1","entity":"openclaw","target":"clawd","kind":"milestone","ts":"2026-09-14T12:00:00Z","label":"Example milestone","url":"https://example.org/milestone","observed_at":"2026-09-14T12:00:00Z","provenance":"historical-import"}
 ```
 
 Metric rows use `kind: "counter"` or `"daily"` and a nonnegative numeric value or
