@@ -74,6 +74,47 @@ belong to the metrics deployment owner, which selects the exact executable path
 for each job. Existing message-collector binaries, command symlinks, settings,
 and processes remain independently managed.
 
+### Hourly scheduling on macOS
+
+A user LaunchAgent can invoke the versioned executable directly. Keep the plist
+private (`0600`) under `~/Library/LaunchAgents`, with private (`0700`) log
+directories and pre-created log files (`0600`). Use absolute executable,
+configuration, and log paths; plist strings do not expand `$HOME` or `~`.
+
+For an hourly job at minute 4, configure these launchd keys:
+
+| Key | Value |
+| --- | --- |
+| `Label` | A dedicated label, such as `org.example.discrawl-metrics` |
+| `ProgramArguments` | Versioned executable, `metrics`, `collect`, `--config`, absolute metrics config path |
+| `StartCalendarInterval` | Dictionary with integer `Minute` set to `4` |
+| `RunAtLoad` | `true` for one collection when the job is bootstrapped |
+| `KeepAlive` | `false`; provider failures must not trigger a restart loop |
+| `Umask` | Integer `63` (octal `077`) |
+| `StandardOutPath`, `StandardErrorPath` | Absolute paths to the private log files |
+
+Set `PATH=/usr/bin:/bin:/usr/sbin:/sbin` in `EnvironmentVariables`. Include
+`DISCRAWL_NO_AUTO_UPDATE=1` and `DISCRAWL_NO_UPDATE_CHECK=1`; metrics commands already
+bypass archive update hooks, and the job should retain its verified executable.
+Do not put tokens or cookies in the plist. Public invite metrics need neither.
+
+Validate the plist with `plutil -lint`, then bootstrap it in the owning user's
+GUI domain. `RunAtLoad` supplies the first run, so a second kickstart is not
+needed. Verify `launchctl print` retains `Minute = 4`, the expected arguments,
+and a successful exit. Confirm a current `metric_runs` row with `status = 'ok'`
+and non-NULL observations for every configured target's required metrics.
+
+Launchd runs one instance of a label at a time. Native SQLite transactions
+serialize database writes across independent connections; a competing write
+must wait or fail without inserting a partial batch. This is transaction-level
+write exclusion, not a mutex covering the preceding HTTP requests. Avoid adding
+another scheduler for the same metrics job.
+
+If macOS requests access to the configured volume, report the permission gate
+before claiming successful collection. Do not change identities, broaden access,
+or repeatedly restart a blocked job. Database ownership and private permissions
+remain required for scheduled operation.
+
 ## What is measured
 
 Each collection makes one public `GET /api/v10/invites/{code}?with_counts=true`

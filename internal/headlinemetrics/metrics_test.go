@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/openclaw/crawlkit/store"
 	"github.com/stretchr/testify/require"
@@ -114,6 +115,31 @@ func TestOpenRejectsDanglingDatabaseSymlink(t *testing.T) {
 	leftovers, err := filepath.Glob(filepath.Join(root, ".metrics-init-*"))
 	require.NoError(t, err)
 	require.Empty(t, leftovers)
+}
+
+func TestConcurrentWritesUseNativeSQLiteLock(t *testing.T) {
+	first := newMetrics(t)
+	second, err := Open(t.Context(), first.Path(), "discrawl")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+	tx, err := first.DB().BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	_, err = tx.ExecContext(t.Context(), "INSERT INTO metric_meta(key,value) VALUES('test-writer','held')")
+	require.NoError(t, err)
+	row := Counter(Target{"sample-alpha", "example-alpha"}, "members", new(12.0), sampleTime, "fixture")
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	written, err := Write(ctx, second, []Row{row})
+	require.Error(t, err)
+	require.Zero(t, written)
+	var count int
+	require.NoError(t, second.DB().QueryRowContext(t.Context(), "SELECT count(*) FROM metric_observations").Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, tx.Rollback())
+	written, err = Write(t.Context(), second, []Row{row})
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
 }
 
 func TestWritePreservesHistoryAndRollsBackBadBatches(t *testing.T) {
