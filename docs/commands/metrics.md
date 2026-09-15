@@ -43,6 +43,38 @@ databases are refused before write access. `status` never creates a database.
 No token or cookie is needed. The shared configuration fields `cookieJar` and
 `tokenEnv` are accepted but unused by this collector.
 
+## Standalone metrics runtime
+
+Metrics can use a dedicated, versioned copy of the normal Discrawl executable.
+Keep its path distinct from the executable used by an existing message collector.
+For example, a private per-user installation can use:
+
+```text
+~/.local/libexec/discrawl-metrics/<source-commit>/discrawl
+```
+
+Keep the runtime directories and executable private to the owning user (`0700`
+on Unix). Copy the validated artifact into a new version directory, preserve its
+bytes and signature, then verify the installed SHA-256 against the artifact
+receipt. On macOS, also verify the copied executable against the approved signing
+identity and designated requirement. Record the source commit, hash, and
+verification result with the installation. A locally signed build remains a
+local build; it is not an official notarized release.
+
+Use the full versioned executable path and explicit metrics JSON configuration:
+
+```bash
+metrics_runtime="$HOME/.local/libexec/discrawl-metrics/<source-commit>/discrawl"
+"$metrics_runtime" metrics status --config "$HOME/.config/discrawl/metrics.json"
+```
+
+Replace `<source-commit>` with the installed build's commit. Read-only `status`
+verifies access to the existing metrics store before cutover. Installing this
+runtime does not register schedules or run collection/imports. Those operations
+belong to the metrics deployment owner, which selects the exact executable path
+for each job. Existing message-collector binaries, command symlinks, settings,
+and processes remain independently managed.
+
 ## What is measured
 
 Each collection makes one public `GET /api/v10/invites/{code}?with_counts=true`
