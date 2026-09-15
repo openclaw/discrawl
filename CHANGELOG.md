@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix large message listings and TUI reply/mention hydration failing with SQLite's parameter limit, preserving all requested rows and display names.
 - Update Crawlkit to v0.16.3, retaining the existing Go minimum and SQLite runtime pairing.
 
 ## 0.15.1 - 2026-09-13
