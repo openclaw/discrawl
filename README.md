@@ -101,6 +101,12 @@ The preflight is read-only and reports the export scope before any snapshot is w
 
 ## Automation
 
+For public server-size observations without a bot token, use
+[`metrics collect`](docs/commands/metrics.md) with a separate metrics database.
+It records approximate members and online presence; online presence does not
+measure active posters. `metrics import` preserves historical observations and
+`metrics status` reports their freshness.
+
 Discrawl exposes stable JSON for launchers, agents, and CI:
 
 ```bash
