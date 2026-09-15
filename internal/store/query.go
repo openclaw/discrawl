@@ -87,11 +87,20 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 // SearchMessages filters `deleted_at is null`, ListMessages carries no
 // deleted_at predicate and so returns them. A caller sets it to match the
 // query it is explaining.
+//
+// CataloguedChannelsOnly exists for the same reason. Queries that select from
+// messages reach a channel with no channels row, and
+// DirectMessageConversations selects from channels and joins messages to it on
+// both channel id and guild id, so a message whose channel was never
+// catalogued under its guild is in that result at no window. A caller
+// explaining that listing sets this; a caller explaining a messages-driven
+// query does not.
 type MessageScopeOptions struct {
-	ChannelID      string
-	GuildIDs       []string
-	IncludeEmpty   bool
-	IncludeDeleted bool
+	ChannelID              string
+	GuildIDs               []string
+	IncludeEmpty           bool
+	IncludeDeleted         bool
+	CataloguedChannelsOnly bool
 }
 
 // MessageScopeStats summarises the messages allowed by the scope. Count,
@@ -123,11 +132,24 @@ func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (
 			args = append(args, guildID)
 		}
 	}
+	if opts.CataloguedChannelsOnly {
+		// Both tables carry channel-identifying columns, so every reference
+		// here is qualified: the unqualified name inside the subquery would
+		// resolve to the channels row it selects from, which would compare
+		// that row against itself and quietly reduce the clause to "some
+		// channels row has this id". Callers pass a column function that
+		// qualifies with the outer messages table for the same reason.
+		clauses = append(clauses, "exists (select 1 from channels cat where cat.id = "+column("channel_id")+
+			" and cat.guild_id = "+column("guild_id")+")")
+	}
 	return strings.Join(clauses, " and "), args
 }
 
 func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions) (MessageScopeStats, error) {
-	where, whereArgs := messageScopeClauses(opts, func(name string) string { return name })
+	// Qualified with the table this statement selects from, so a correlated
+	// subquery in the scope clauses binds to this query's messages row rather
+	// than to whatever row the subquery itself selects.
+	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "messages." + name })
 	visible := "(? or trim(coalesce(normalized_content, '')) <> '')"
 	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
 	args = append(args, whereArgs...)
