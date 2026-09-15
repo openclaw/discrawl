@@ -112,21 +112,22 @@ func Open(ctx context.Context, path, owner string) (*store.Store, error) {
 }
 
 func initialize(ctx context.Context, path, owner string) (*store.Store, error) {
-	// Publish a fully initialized database without replacing an existing path.
-	// Concurrent creators must re-check the winning file's identity.
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".metrics-init-*")
+	// Reserve only a previously nonexistent path. A concurrent creator must
+	// validate the existing database, never initialize over the winning file.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return Open(ctx, path, owner)
+	}
 	if err != nil {
 		return nil, err
 	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	s, err := store.Open(ctx, store.Options{Path: tmp, MaxOpenConns: 1, MaxIdleConns: 1})
+	s, err := store.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
 	if err != nil {
 		return nil, err
 	}
@@ -137,17 +138,11 @@ func initialize(ctx context.Context, path, owner string) (*store.Store, error) {
 		_, err := tx.ExecContext(ctx, "INSERT INTO metric_meta VALUES('owner',?),('version','1')", owner)
 		return err
 	})
-	closeErr := s.Close() // Checkpoint the private WAL before linking its database.
 	if err != nil {
+		_ = s.Close()
 		return nil, err
 	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	if err := os.Link(tmp, path); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
-	return Open(ctx, path, owner)
+	return s, nil
 }
 
 func Validate(r Row) error {
