@@ -18,10 +18,11 @@ const maxZeroResultTermProbes = 4
 // run with, so every note below is derived from the same row set the query
 // looked at rather than a re-modelled one.
 type zeroResultScope struct {
-	channelID      string
-	guildIDs       []string
-	includeEmpty   bool
-	includeDeleted bool
+	channelID              string
+	guildIDs               []string
+	includeEmpty           bool
+	includeDeleted         bool
+	cataloguedChannelsOnly bool
 }
 
 // listMessagesScope models a store.ListMessages query. ListMessages carries no
@@ -60,10 +61,11 @@ func (r *runtime) newZeroResultScope(channel string, guildIDs []string, includeE
 
 func (s zeroResultScope) storeOptions() store.MessageScopeOptions {
 	return store.MessageScopeOptions{
-		ChannelID:      s.channelID,
-		GuildIDs:       s.guildIDs,
-		IncludeEmpty:   s.includeEmpty,
-		IncludeDeleted: s.includeDeleted,
+		ChannelID:              s.channelID,
+		GuildIDs:               s.guildIDs,
+		IncludeEmpty:           s.includeEmpty,
+		IncludeDeleted:         s.includeDeleted,
+		CataloguedChannelsOnly: s.cataloguedChannelsOnly,
 	}
 }
 
@@ -151,6 +153,12 @@ func (r *runtime) explainEmptySearch(opts store.SearchOptions, mode string) {
 // explainEmptyDirectMessageList explains an empty `dms` listing. Only the
 // window notes can apply: `dms` has no --channel, so there is no concrete
 // channel for the content notes to describe.
+//
+// The scope is narrowed to catalogued conversations. Dropping the window sends
+// the reader to store.DirectMessageConversations, which selects from channels
+// and joins messages to it, so a direct message whose channel has no channels
+// row is absent from that listing at every window. Counting it would name rows
+// the recommended command does not return.
 func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, window zeroResultWindow) {
 	if r.json || strings.TrimSpace(with) != "" {
 		return
@@ -159,6 +167,7 @@ func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, 
 	if !ok {
 		return
 	}
+	scope.cataloguedChannelsOnly = true
 	r.explainEmptyMessages(scope, window)
 }
 

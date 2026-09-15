@@ -2681,3 +2681,71 @@ func TestMessagePendingEmbeddingJobsCountsWhatEmbedWouldDrain(t *testing.T) {
 	require.Equal(t, 1, stats.DirectMessages)
 	require.Zero(t, stats.Embeddable)
 }
+
+// CataloguedChannelsOnly narrows a scope to the rows
+// DirectMessageConversations can return. That listing selects from channels
+// and joins messages on both channel id and guild id, so a direct message
+// whose channel has no channels row under its guild is in no listing at any
+// window, and a count taken over messages alone reports rows the listing
+// cannot produce.
+func TestMessageScopeStatsCataloguedChannelsOnlyMatchesTheConversationListing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: DirectMessageGuildID, Name: "Direct Messages", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{
+		ID: "c-dm", GuildID: DirectMessageGuildID, Kind: "dm", Name: "Alice", RawJSON: `{}`,
+	}))
+	dm := func(id, channelID, created string) MessageRecord {
+		return MessageRecord{
+			ID: id, GuildID: DirectMessageGuildID, ChannelID: channelID, ChannelName: "Alice",
+			AuthorID: "u2", CreatedAt: created, Content: "hello", NormalizedContent: "hello", RawJSON: `{}`,
+		}
+	}
+	require.NoError(t, s.UpsertMessage(ctx, dm("m-dm", "c-dm", "2026-01-02T00:00:00Z")))
+	require.NoError(t, s.UpsertMessage(ctx, dm("m-dm-orphan", "c-dm-orphan", "2026-01-03T00:00:00Z")))
+
+	// Both messages are in the guild scope, and the newest of them is the one
+	// with no channels row.
+	stats, err := s.MessageScopeStats(ctx, MessageScopeOptions{GuildIDs: []string{DirectMessageGuildID}})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Count)
+	require.Equal(t, parseTime("2026-01-03T00:00:00Z"), stats.Newest)
+
+	// The listing returns one conversation, and the narrowed scope counts one.
+	rows, err := s.DirectMessageConversations(ctx, DirectMessageConversationOptions{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "c-dm", rows[0].ChannelID)
+
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{
+		GuildIDs: []string{DirectMessageGuildID}, CataloguedChannelsOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Count)
+	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
+
+	// The listing joins on guild as well as channel id, so a channels row
+	// carrying the same id under a different guild leaves the orphan out. Both
+	// tables carry a guild_id, so this also pins the correlated subquery to the
+	// messages row: with the guild half dropped, or with its outer reference
+	// resolving to the channels row it selects from, the count below is 2 and
+	// the newest timestamp is 2026-01-03.
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{
+		ID: "c-dm-orphan", GuildID: "g1", Kind: "text", Name: "same id, other guild", RawJSON: `{}`,
+	}))
+	rows, err = s.DirectMessageConversations(ctx, DirectMessageConversationOptions{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	stats, err = s.MessageScopeStats(ctx, MessageScopeOptions{
+		GuildIDs: []string{DirectMessageGuildID}, CataloguedChannelsOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Count)
+	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
+}
