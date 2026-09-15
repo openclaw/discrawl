@@ -115,6 +115,13 @@ before claiming successful collection. Do not change identities, broaden access,
 or repeatedly restart a blocked job. Database ownership and private permissions
 remain required for scheduled operation.
 
+After owner-granted consent, recheck the original invocation read-only. Acceptance
+requires exit code `0`, a corresponding successful `metric_runs` row, and
+non-NULL required measurements. The hourly calendar definition must remain
+loaded. A completed batch job normally shows `state = not running` while it
+waits for its next scheduled time. Leave the accepted job loaded; verifying this
+state does not require another collection or kickstart.
+
 ## What is measured
 
 Each collection makes one public `GET /api/v10/invites/{code}?with_counts=true`
