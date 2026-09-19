@@ -15,6 +15,7 @@ import (
 
 	crawlremote "github.com/openclaw/crawlkit/remote"
 	"github.com/openclaw/discrawl/internal/config"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,9 +36,9 @@ func TestCloudExportOnlyUsesFilteredSnapshotWithoutRemote(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, db.Close()) }()
 	var count int
-	require.NoError(t, db.QueryRow("select count(*) from messages where guild_id='@me'").Scan(&count))
+	require.NoError(t, db.QueryRowContext(ctx, "select count(*) from messages where guild_id='@me'").Scan(&count))
 	require.Zero(t, count)
-	require.NoError(t, db.QueryRow("select count(*) from messages").Scan(&count))
+	require.NoError(t, db.QueryRowContext(ctx, "select count(*) from messages").Scan(&count))
 	require.Equal(t, 1, count)
 	require.ErrorContains(t, Run(ctx, args, &bytes.Buffer{}, &bytes.Buffer{}), "must not already exist")
 }
@@ -52,7 +53,7 @@ func TestCloudPublishUsesSameSnapshotWhenSourceChangesDuringUpload(t *testing.T)
 	source := seedCLIStore(t, cfg.DBPath)
 	defer func() { require.NoError(t, source.Close()) }()
 	var original string
-	require.NoError(t, source.DB().QueryRow("select content from messages where id='m100'").Scan(&original))
+	require.NoError(t, source.DB().QueryRowContext(ctx, "select content from messages where id='m100'").Scan(&original))
 	t.Setenv("DISCRAWL_TEST_FROZEN_TOKEN", "fixture-token")
 	changed := false
 	var ingested string
@@ -61,27 +62,39 @@ func TestCloudPublishUsesSameSnapshotWhenSourceChangesDuringUpload(t *testing.T)
 		w.Header().Set("Content-Type", "application/json")
 		if req.Method == http.MethodPost {
 			if !changed {
-				_, err := source.DB().Exec("update messages set content='newer local content' where id='m100'")
-				require.NoError(t, err)
+				_, err := source.DB().ExecContext(ctx, "update messages set content='newer local content' where id='m100'")
+				if !assert.NoError(t, err) {
+					http.Error(w, "fixture failure", http.StatusInternalServerError)
+					return
+				}
 				changed = true
 			}
 			var body crawlremote.IngestRequest
-			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			if !assert.NoError(t, json.NewDecoder(req.Body).Decode(&body)) {
+				http.Error(w, "invalid fixture request", http.StatusBadRequest)
+				return
+			}
 			if body.Table == "messages" {
 				ingested = body.Rows[0][5].(string)
 			}
-			require.NoError(t, json.NewEncoder(w).Encode(crawlremote.IngestResult{RowsAccepted: int64(len(body.Rows)), Complete: body.Final}))
+			assert.NoError(t, json.NewEncoder(w).Encode(crawlremote.IngestResult{RowsAccepted: int64(len(body.Rows)), Complete: body.Final}))
 			return
 		}
 		if req.Header.Get("X-Crawl-Sqlite-Upload") == "bundle-part" {
 			_, err := io.Copy(&compressed, req.Body)
-			require.NoError(t, err)
-			require.NoError(t, json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{Complete: false}))
+			if !assert.NoError(t, err) {
+				http.Error(w, "fixture failure", http.StatusInternalServerError)
+				return
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(crawlremote.SQLiteUploadResult{Complete: false}))
 			return
 		}
 		var manifest crawlremote.SQLiteBundleManifest
-		require.NoError(t, json.NewDecoder(req.Body).Decode(&manifest))
-		require.NoError(t, json.NewEncoder(w).Encode(crawlremote.SQLiteBundleUploadResult{Complete: true, Bundle: &crawlremote.SQLiteBundle{Manifest: &manifest}}))
+		if !assert.NoError(t, json.NewDecoder(req.Body).Decode(&manifest)) {
+			http.Error(w, "invalid fixture manifest", http.StatusBadRequest)
+			return
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(crawlremote.SQLiteBundleUploadResult{Complete: true, Bundle: &crawlremote.SQLiteBundle{Manifest: &manifest}}))
 	}))
 	defer server.Close()
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "cloud", "publish", "--remote", server.URL, "--archive", "discrawl/fixture", "--token-env", "DISCRAWL_TEST_FROZEN_TOKEN"}, &bytes.Buffer{}, &bytes.Buffer{}))
@@ -97,6 +110,6 @@ func TestCloudPublishUsesSameSnapshotWhenSourceChangesDuringUpload(t *testing.T)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, db.Close()) }()
 	var downloaded string
-	require.NoError(t, db.QueryRow("select content from messages where message_id='m100'").Scan(&downloaded))
+	require.NoError(t, db.QueryRowContext(ctx, "select content from messages where message_id='m100'").Scan(&downloaded))
 	require.Equal(t, ingested, downloaded)
 }
