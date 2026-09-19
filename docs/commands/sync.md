@@ -52,7 +52,7 @@ discrawl sync --with-media
 ## Flags
 
 - `--source <both|discord|wiretap>` - which archive sources to read
-- `--update <auto|force|none>` - apply the configured stale snapshot update mode, force an exact replacement, or skip snapshot import before live deltas
+- `--update <auto|force|never>` - apply the configured stale snapshot update mode, force an exact replacement, or skip snapshot import before live deltas
 - `--full` - historical backfill (slow on large guilds)
 - `--all-channels` - broader incremental sweep across every stored channel/thread
 - `--latest-only` - explicit latest-only run (also the default for untargeted `sync`)
