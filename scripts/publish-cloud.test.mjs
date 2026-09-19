@@ -43,3 +43,19 @@ test('HTTP failures never expose private server responses', async () => {
   const request=cloudRequest('https://fixture.invalid/',{authorization:'fixture-token'},async()=>new Response('private backend detail',{status:403}));
   await assert.rejects(request('current-state'),error=>error.message==='cloud request failed (HTTP 403)');
 });
+
+
+test('a connection drop after successful headers retries the identical mutation', async () => {
+  const requests = [];
+  const request = cloudRequest('https://fixture.invalid/', { authorization: 'fixture-token' }, async (_url, options) => {
+    requests.push({ method: options.method, body: options.body, generation: options.headers['x-crawl-publication'] });
+    if (requests.length === 1) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"complete":'));
+      controller.error(new Error('connection dropped after headers'));
+    } }), { status: 200 });
+    return Response.json({ complete: true, skipped: true });
+  });
+  assert.deepEqual(await request('current-state?batch=3', { method: 'POST', body: '[["fixture"]]', generation: 'fixture-generation' }), { complete: true, skipped: true });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1], requests[0]);
+});

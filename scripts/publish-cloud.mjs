@@ -107,10 +107,11 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
             ...(generation ? { 'x-crawl-publication': generation } : {}) },
           body: body === undefined ? undefined : typeof body === 'string' || binary ? body : JSON.stringify(body),
           signal: AbortSignal.timeout(10 * 60_000) });
+        if (response.ok) return await response.json();
       } catch {
         if (attempt >= 3) throw new PublishError('cloud request failed; no private response was logged');
+        response = undefined;
       }
-      if (response?.ok) return response.json();
       const retryable = !response || response.status === 429 || response.status >= 500;
       if (!retryable || attempt >= 3) throw new PublishError(`cloud request failed (HTTP ${response?.status ?? 'unavailable'})`);
       await response?.body?.cancel();
