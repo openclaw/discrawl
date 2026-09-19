@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.3 - 2026-09-19
 
 - Hydrate Desktop-imported channels and their ancestors during targeted bot syncs so publication can use authoritative types, parents, and permissions without resetting stored history or weakening privacy filters.
 
