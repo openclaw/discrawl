@@ -38,8 +38,9 @@ and R2. It saves the runtime cache before Cloud publication. A Cloud failure
 therefore does not discard the Discord sync or the published Git snapshot.
 
 Enable `DISCRAWL_CLOUD_PUBLISH_ENABLED=1` only after the backend supports
-`discrawl.current-state.v1` and the first archive inventory has been checked.
-Configure these GitHub Actions secrets:
+`discrawl.current-state.v1` and publisher credentials are configured. The first
+run checks the archive inventory before adoption. Configure these GitHub Actions
+secrets:
 
 - `DISCRAWL_CLOUD_ENDPOINT`: the Worker URL.
 - `DISCRAWL_CLOUD_ARCHIVE`: the existing archive ID.
@@ -57,8 +58,9 @@ supported and also use one fixed export for both destinations.
 
 D1 keeps one current set of rows. Unchanged key ranges are skipped; changed ranges
 include updates and deletions. Failed uploads resume from server progress. Query
-commands can return a temporary HTTP 503 during a refresh. The last completed
-SQLite snapshot remains downloadable. R2 retains the current and previous
+commands stay available as batches update in place. Readers can see newer batches
+before the whole refresh finishes. The last completed SQLite snapshot remains
+downloadable. R2 retains the current and previous
 snapshots, plus an unfinished upload; it leaves other archives and legacy objects
 alone. Public job logs contain aggregate counts, not archive IDs or message data.
 
