@@ -198,7 +198,10 @@ func (f *snapshotFilter) allowChannelID(channelID string) bool {
 
 func (f *snapshotFilter) allowSyncState(scope string) bool {
 	if rest, ok := strings.CutPrefix(scope, "channel:"); ok {
-		channelID, _, _ := strings.Cut(rest, ":")
+		channelID, cursor, _ := strings.Cut(rest, ":")
+		if f.publicOnly && cursor == "archived_private_threads_after" {
+			return false
+		}
 		return f.allowChannelID(channelID)
 	}
 	if strings.HasPrefix(scope, "wiretap:") || strings.HasPrefix(scope, "worker:") {

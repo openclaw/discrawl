@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Exclude private-thread crawl cursors from public-only snapshots while preserving public-thread cursors, full backups, and local sync state.
 - Fix large message listings and TUI reply/mention hydration failing with SQLite's parameter limit, preserving all requested rows and display names.
 - Update Crawlkit to v0.16.3, retaining the existing Go minimum and SQLite runtime pairing.
 
