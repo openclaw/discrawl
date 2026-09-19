@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.15.2 - 2026-09-19
 
 - Exclude private-thread crawl cursors from public-only snapshots while preserving public-thread cursors, full backups, and local sync state.
