@@ -44,10 +44,12 @@ secrets:
 
 - `DISCRAWL_CLOUD_ENDPOINT`: the Worker URL.
 - `DISCRAWL_CLOUD_ARCHIVE`: the existing archive ID.
-- `DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN`: a dedicated publisher identity accepted by
-  the Worker's existing organization and team checks.
 - `DISCRAWL_CLOUD_ACCESS_CLIENT_ID` and `DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET`:
   service credentials, if the endpoint also requires Cloudflare Access.
+
+The job uses its existing `DISCORD_BACKUP_TOKEN` for Cloud login. The Worker
+still checks the token's organization and team membership; an unauthorized token
+fails before any Cloud data changes. No local CLI credential is copied into CI.
 
 The workflow creates one filtered SQLite export with
 `discrawl cloud publish --export-only PATH`. The output must not already exist.
