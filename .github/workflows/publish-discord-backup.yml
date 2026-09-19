@@ -46,6 +46,7 @@ jobs:
           git config --global user.email "discrawl-publisher@users.noreply.github.com"
 
       - name: Sync and publish Discord archive
+        id: git-publish
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
@@ -113,6 +114,7 @@ jobs:
             --readme "$BACKUP_REPO/README.md" \
             --message "sync: discord archive" \
             --push
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Save Discord DB cache
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -122,3 +124,28 @@ jobs:
             .discrawl-ci/discrawl.db-shm
             .discrawl-ci/discrawl.db-wal
           key: ${{ steps.restore-discord-db.outputs.cache-primary-key }}
+
+      - name: Setup Node for cloud publication
+        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Publish the same current state to D1 and R2
+        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        timeout-minutes: 40
+        env:
+          DISCRAWL_CLOUD_ENDPOINT: ${{ secrets.DISCRAWL_CLOUD_ENDPOINT }}
+          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
+          DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN: ${{ secrets.DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_ID: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_ID }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET }}
+          DISCRAWL_CLOUD_SNAPSHOT: ${{ runner.temp }}/discrawl/cloud.db
+          DISCRAWL_CLOUD_SOURCE_DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
+        run: |
+          umask 077
+          trap 'rm -f "$DISCRAWL_CLOUD_SNAPSHOT"' EXIT
+          export DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$RUNNER_TEMP/discord-backup" rev-parse HEAD)"
+          go run ./cmd/discrawl --config "$RUNNER_TEMP/discrawl/config.toml" cloud publish \
+            --export-only "$DISCRAWL_CLOUD_SNAPSHOT" > /dev/null
+          node scripts/publish-cloud.mjs
