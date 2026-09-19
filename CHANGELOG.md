@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hydrate Desktop-imported channels and their ancestors during targeted bot syncs so publication can use authoritative types, parents, and permissions without resetting stored history or weakening privacy filters.
+
 ## 0.15.2 - 2026-09-19
 
 - Exclude private-thread crawl cursors from public-only snapshots while preserving public-thread cursors, full backups, and local sync state.

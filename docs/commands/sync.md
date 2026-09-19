@@ -72,6 +72,7 @@ discrawl sync --with-media
 - `--with-media` records expired or removed Discord CDN URLs as failed fetches with the HTTP status, commonly `404`.
 - `--with-media` updates the local cache only; run `publish --push` afterward to include cached non-DM media in the Git backup as gzip-compressed files.
 - `--since` does not mark older history as complete, so a later `sync --full` without `--since` can continue the backfill.
+- Targeted bot syncs (`--source discord --channels <ids>`) refresh Desktop-imported channel placeholders and their parent metadata from Discord before crawling messages. Unavailable metadata or missing parent or permission evidence fails the sync visibly; ordinary cached channels keep their existing behavior. Ancestor metadata refreshes do not crawl ancestor messages or reset history and archive cursors. This is still a message sync: `--since` limits initial history and backfill, not fetching new messages after an existing cursor.
 - Long runs emit periodic progress logs to stderr.
 - Heartbeat logs (`message sync waiting`) name the oldest active channel and per-channel page activity if in-flight channels stop completing for a while.
 - Every run ends with a `message sync finished` summary.

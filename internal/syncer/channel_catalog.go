@@ -45,6 +45,7 @@ func (s *Syncer) channelList(
 	requestedSet := makeGuildSet(requested)
 	storedByID := map[string]*discordgo.Channel{}
 	storedCatalog := map[string]*discordgo.Channel{}
+	desktopTargets := map[string]struct{}{}
 	if s.store != nil {
 		rows, err := s.store.Channels(ctx, guildID)
 		if err != nil {
@@ -52,6 +53,16 @@ func (s *Syncer) channelList(
 		}
 		storedCatalog = storedChannelCatalog(rows)
 		storedByID = selectStoredChannels(rows, requestedSet)
+		desktopIDs, err := s.store.DesktopChannelIDs(ctx, guildID)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, id := range desktopIDs {
+			if _, requested := requestedSet[id]; requested {
+				desktopTargets[id] = struct{}{}
+				delete(storedByID, id)
+			}
+		}
 		for _, channel := range storedByID {
 			if cachedChannels != nil {
 				cachedChannels[channel] = struct{}{}
@@ -71,6 +82,12 @@ func (s *Syncer) channelList(
 	for _, channel := range topLevel {
 		allChannels[channel.ID] = channel
 	}
+	if directChannelResults == nil {
+		directChannelResults = make(map[string]directChannelResult, len(requestedSet))
+	}
+	if err := s.hydrateDesktopChannelMetadata(ctx, guildID, allChannels, desktopTargets, directChannelResults); err != nil {
+		return nil, false, err
+	}
 
 	selected := selectRequestedChannels(allChannels, storedByID, requestedSet)
 	requestedForums := requestedForumParents(allChannels, requestedSet)
@@ -82,9 +99,6 @@ func (s *Syncer) channelList(
 	}
 
 	if unresolvedRequestedIDs(selected, requestedSet) > 0 {
-		if directChannelResults == nil {
-			directChannelResults = make(map[string]directChannelResult, len(requestedSet))
-		}
 		if err := s.appendDirectRequestedChannels(ctx, guildID, allChannels, requestedSet, selectedGuildIDs, directChannelResults); err != nil {
 			return nil, false, err
 		}
@@ -97,11 +111,12 @@ func (s *Syncer) channelList(
 		}
 		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	}
-	return filterExcludedDiscordChannelsWithCatalog(
+	selected = filterExcludedDiscordChannelsWithCatalog(
 		selected,
 		mergedChannelCatalog(storedCatalog, allChannels),
 		exclusions,
-	), true, nil
+	)
+	return withHydratedAncestors(selected, allChannels, desktopTargets), true, nil
 }
 
 func (s *Syncer) appendDirectRequestedChannels(
@@ -116,11 +131,7 @@ func (s *Syncer) appendDirectRequestedChannels(
 		if _, ok := allChannels[requestedID]; ok {
 			continue
 		}
-		result, cached := directChannelResults[requestedID]
-		if !cached {
-			result.channel, result.err = s.client.Channel(ctx, requestedID)
-			directChannelResults[requestedID] = result
-		}
+		result := s.directChannel(ctx, requestedID, directChannelResults)
 		if result.err != nil {
 			return fmt.Errorf("fetch requested channel %s: %w", requestedID, result.err)
 		}
@@ -144,6 +155,15 @@ func (s *Syncer) appendDirectRequestedChannels(
 		allChannels[channel.ID] = channel
 	}
 	return nil
+}
+
+func (s *Syncer) directChannel(ctx context.Context, channelID string, results map[string]directChannelResult) directChannelResult {
+	result, cached := results[channelID]
+	if !cached {
+		result.channel, result.err = s.client.Channel(ctx, channelID)
+		results[channelID] = result
+	}
+	return result
 }
 
 func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, error) {

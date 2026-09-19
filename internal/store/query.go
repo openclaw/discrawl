@@ -930,6 +930,28 @@ func (s *Store) MemberByID(ctx context.Context, userID string) ([]MemberRow, err
 	return out, nil
 }
 
+func (s *Store) DesktopChannelIDs(ctx context.Context, guildID string) ([]string, error) {
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	rows, err := s.db.QueryContext(queryCtx, `
+		select id from channels where guild_id = ?
+		and case when json_valid(raw_json) then json_extract(raw_json, '$.source') end = 'discord_desktop'
+	`, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, error) {
 	var out []ChannelRow
 	if guildID != "" {
