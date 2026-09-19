@@ -244,6 +244,35 @@ func (c *Client) ChannelMessages(ctx context.Context, channelID string, limit in
 	return c.session.ChannelMessages(channelID, limit, beforeID, afterID, "", discordgo.WithContext(reqCtx))
 }
 
+// CanReadHistory resolves current bot permissions, including thread inheritance.
+func (c *Client) CanReadHistory(ctx context.Context, channel *discordgo.Channel) (bool, error) {
+	reqCtx, cancel := c.requestContext(ctx)
+	defer cancel()
+	self, err := c.session.User("@me", discordgo.WithContext(reqCtx))
+	if err != nil {
+		return false, err
+	}
+	permissionChannel := channel.ID
+	if channel.IsThread() {
+		if channel.ParentID == "" {
+			return false, errors.New("thread parent is unavailable")
+		}
+		permissionChannel = channel.ParentID
+	}
+	permissions, err := c.session.UserChannelPermissions(self.ID, permissionChannel, discordgo.WithContext(reqCtx))
+	if err != nil {
+		return false, err
+	}
+	required := int64(discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory)
+	return permissions&required == required, nil
+}
+
+func (c *Client) GuildMember(ctx context.Context, guildID, userID string) (*discordgo.Member, error) {
+	reqCtx, cancel := c.requestContext(ctx)
+	defer cancel()
+	return c.session.GuildMember(guildID, userID, discordgo.WithContext(reqCtx))
+}
+
 func (c *Client) ChannelMessage(ctx context.Context, channelID, messageID string) (*discordgo.Message, error) {
 	reqCtx, cancel := c.requestContext(ctx)
 	defer cancel()

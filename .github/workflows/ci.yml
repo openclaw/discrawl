@@ -96,6 +96,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test source reconciliation entry point
+        run: go test -count=1 scripts/reconcile_cloud_source.go scripts/reconcile_cloud_source_test.go
+
       - name: Test with race detector and coverage
         run: go test -count=1 -race ./... -coverprofile=coverage.out
 

@@ -69,3 +69,23 @@ alone. Public job logs contain aggregate counts, not archive IDs or message data
 Before first adoption, the publisher checks remote keys against the runtime,
 including deleted source rows. If a remote key is absent, publication stops for
 owner review. Do not bypass this check or reset the remote tables.
+
+### Reconciling an older hosted archive
+
+If first adoption finds identities missing from the source, keep Cloud publication
+paused. The backup workflow has an optional `reconcile_cloud` input for a manual
+run on reviewed `main`. Its private `DISCRAWL_CLOUD_RECONCILE_PLAN` Actions secret
+contains a gzip/base64 JSON plan with the target archive, member identities and
+message identities, including their guild/channel and original creation time.
+The plan must match the configured archive and collector guild.
+
+The helper checks current guild/channel access, then fetches those exact records
+from Discord. It restores live records through the normal store converters.
+Only HTTP 404 with Discord's specific Unknown Member or Unknown Message code
+creates a deletion record. Permission errors, other failures and mismatched
+identities stop before observations are applied. Existing source rows, including
+deletion records, are preserved. Media downloads and embeddings are disabled.
+
+Git publication and cache persistence follow reconciliation in the same job.
+The normal Cloud adoption guard remains required. Remove the private plan secret
+after recovery succeeds; scheduled runs never enable reconciliation themselves.
