@@ -24,6 +24,7 @@ func TestPublishProducerValidationBeforeMutation(t *testing.T) {
 	cfg.DBPath = filepath.Join(dir, "source.db")
 	cfg.Share.RepoPath = filepath.Join(dir, "share")
 	cfg.Share.Remote = filepath.Join(dir, "remote.git")
+	cfg.Share.AutoUpdate = false // The report reads the local, unpushed publication.
 	runGit(t, dir, "init", "--bare", cfg.Share.Remote)
 	cfgPath := filepath.Join(dir, "config.toml")
 	require.NoError(t, config.Write(cfgPath, cfg))

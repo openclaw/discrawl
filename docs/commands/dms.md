@@ -37,7 +37,7 @@ discrawl dms --with Molty --search "invoice"
 
 `dms` reads the same tables as [`messages`](messages.html) and [`search`](search.html) and prints the same stderr notes when a run returns nothing: the window notes for a `--hours`/`--days`/`--since`/`--before` listing, and the multi-term note for `--search`. They go to stderr, `--json` suppresses them, and stdout and the exit code are unchanged.
 
-The window notes count only messages in a conversation `dms` can list. A direct message whose channel has no `channels` row is returned by no `dms` listing at any window, so it is left out of the count rather than reported as a row that dropping the window would show.
+When a window note recommends removing all date filters, it counts only messages in catalogued conversations that the default `dms` listing can show. Uncatalogued DMs remain available through message queries, including `dms` with a matching date window. If the recommendation leaves another date filter in place, the note continues to count those messages.
 
 A run that sets `--with` gets no note. `--with` names a person and the query matches it against channel id and channel name alike, which the counts behind a note cannot reproduce, so a `--with` run stays silent rather than reporting numbers taken from every conversation.
 

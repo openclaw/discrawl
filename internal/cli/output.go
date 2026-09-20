@@ -361,9 +361,10 @@ Show the configured remote identity.
 
 Publishes the local non-DM SQLite archive into a Cloudflare-backed remote archive, using configured remote targets when flags are omitted.
 `,
-	"cloud publish": `Usage: discrawl cloud publish [--remote URL] [--archive ID] [--token-env ENV] [--sqlite-only] [--json]
+	"cloud publish": `Usage: discrawl cloud publish [--remote URL] [--archive ID] [--token-env ENV] [--sqlite-only | --export-only PATH] [--json]
 
 Publish the local non-DM archive to a Cloudflare-backed remote, using configured targets when flags are omitted.
+Use --export-only PATH to create the filtered SQLite snapshot without network access.
 `,
 	"publish": `Usage:
   discrawl publish [flags]

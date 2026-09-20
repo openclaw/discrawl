@@ -1110,3 +1110,52 @@ func TestExplainEmptyResults_DirectMessageWindowNoteSilentWhenNoConversationIsLi
 	}, &stdout, &stderr))
 	require.Contains(t, stdout.String(), "quebec has no channels row")
 }
+
+func TestExplainEmptyResults_DirectMessageWindowNoteWithRemainingDateFilter(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		followup []string
+		want     string
+	}{
+		{
+			name: "before remains", args: []string{"--since", "2021-01-01T00:00:00Z", "--before", "2030-01-01T00:00:00Z"},
+			followup: []string{"--before", "2030-01-01T00:00:00Z"}, want: "note: 2 messages in scope but none since 2021-01-01T00:00:00Z (newest: 2020-07-01T00:00:00Z); try without --since",
+		},
+		{
+			name: "since remains", args: []string{"--since", "2019-01-01T00:00:00Z", "--before", "2019-06-01T00:00:00Z"},
+			followup: []string{"--since", "2019-01-01T00:00:00Z"}, want: "note: 2 messages in scope",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			require.NoError(t, Run(ctx, append([]string{"--config", cfgPath, "dms"}, tc.args...), &stdout, &stderr))
+			require.Empty(t, stdout.String())
+			require.Contains(t, stderr.String(), tc.want)
+			stdout.Reset()
+			stderr.Reset()
+			require.NoError(t, Run(ctx, append([]string{"--config", cfgPath, "dms"}, tc.followup...), &stdout, &stderr))
+			require.Contains(t, stdout.String(), "quebec has no channels row")
+			require.Contains(t, stdout.String(), "delta echo in a direct message")
+			require.Empty(t, stderr.String())
+		})
+	}
+}
+
+func TestExplainEmptyResults_DirectMessageWindowNoteDropsBothBounds(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--since", "2021-01-01T00:00:00Z", "--before", "2019-01-01T00:00:00Z"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "both --since and --before exclude all 1 messages")
+	require.Contains(t, stderr.String(), "try without both --since and --before")
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), zeroResultDMChannelID)
+	require.NotContains(t, stdout.String(), zeroResultOrphanDMChannelID)
+	require.Empty(t, stderr.String())
+}

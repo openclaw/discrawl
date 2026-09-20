@@ -29,6 +29,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
+	require.NoError(t, src.SetSyncState(ctx, "channel:c1:archived_private_threads_after", "2026-09-19T12:00:00Z"))
 
 	repo := filepath.Join(t.TempDir(), "share")
 	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
@@ -36,6 +37,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	require.NotEmpty(t, manifest.Tables)
 	require.FileExists(t, filepath.Join(repo, ManifestName))
 	require.NotEmpty(t, tableEntry(t, manifest, "messages").Files)
+	require.Contains(t, snapshotTableText(t, repo, tableEntry(t, manifest, "sync_state")), "channel:c1:archived_private_threads_after")
 
 	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
 	require.NoError(t, err)
@@ -1375,6 +1377,8 @@ func TestSnapshotFilterKeepsOnlyIncludedPublicChannels(t *testing.T) {
 	upsertSnapshotFilterMessage(t, ctx, src, "mtp1", "tp1", "u2", "private thread content")
 	require.NoError(t, src.SetSyncState(ctx, "channel:c1:latest_message_id", "m1"))
 	require.NoError(t, src.SetSyncState(ctx, "channel:c2:latest_message_id", "m2"))
+	require.NoError(t, src.SetSyncState(ctx, "channel:c1:archived_public_threads_after", "2026-09-19T12:00:00Z"))
+	require.NoError(t, src.SetSyncState(ctx, "channel:c1:archived_private_threads_after", "2026-09-19T11:00:00Z"))
 	require.NoError(t, src.SetSyncState(ctx, "guild:g1:members:last_success", time.Now().UTC().Format(time.RFC3339Nano)))
 	require.NoError(t, src.SetSyncState(ctx, "guild:g1:custom", "ok"))
 	require.NoError(t, src.SetSyncState(ctx, LastImportManifestJSONScope, `{"tables":[{"name":"messages","rows":999}],"leak":"private content"}`))
@@ -1413,12 +1417,38 @@ func TestSnapshotFilterKeepsOnlyIncludedPublicChannels(t *testing.T) {
 
 	syncText := snapshotTableText(t, repo, tableEntry(t, manifest, "sync_state"))
 	require.Contains(t, syncText, "channel:c1:latest_message_id")
+	require.Contains(t, syncText, "channel:c1:archived_public_threads_after")
+	require.NotContains(t, syncText, "archived_private_threads_after")
 	require.Contains(t, syncText, "guild:g1:custom")
 	require.NotContains(t, syncText, "channel:c2:latest_message_id")
 	require.NotContains(t, syncText, "guild:g1:members:last_success")
 	require.NotContains(t, syncText, "share:last_import_manifest_json")
 	require.NotContains(t, syncText, "private content")
 	require.NotContains(t, syncText, `"rows":999`)
+
+	dst, err := store.Open(ctx, filepath.Join(t.TempDir(), "dst.db"))
+	require.NoError(t, err)
+	defer func() { _ = dst.Close() }()
+	_, err = Import(ctx, dst, Options{RepoPath: repo, Branch: "main"})
+	require.NoError(t, err)
+	publicCursor, err := dst.GetSyncState(ctx, "channel:c1:archived_public_threads_after")
+	require.NoError(t, err)
+	require.Equal(t, "2026-09-19T12:00:00Z", publicCursor)
+	privateCursor, err := dst.GetSyncState(ctx, "channel:c1:archived_private_threads_after")
+	require.NoError(t, err)
+	require.Empty(t, privateCursor)
+	privateCursor, err = src.GetSyncState(ctx, "channel:c1:archived_private_threads_after")
+	require.NoError(t, err)
+	require.Equal(t, "2026-09-19T11:00:00Z", privateCursor)
+
+	selectedRepo := filepath.Join(t.TempDir(), "selected-share")
+	selected, err := Export(ctx, src, Options{
+		RepoPath: selectedRepo,
+		Branch:   "main",
+		Filter:   FilterOptions{IncludeChannelIDs: []string{"c1"}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, snapshotTableText(t, selectedRepo, tableEntry(t, selected, "sync_state")), "channel:c1:archived_private_threads_after")
 
 	_, rows, err := src.ReadOnlyQuery(ctx, "select count(*) from messages where content like '%private%'")
 	require.NoError(t, err)

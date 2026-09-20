@@ -88,13 +88,8 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 // deleted_at predicate and so returns them. A caller sets it to match the
 // query it is explaining.
 //
-// CataloguedChannelsOnly exists for the same reason. Queries that select from
-// messages reach a channel with no channels row, and
-// DirectMessageConversations selects from channels and joins messages to it on
-// both channel id and guild id, so a message whose channel was never
-// catalogued under its guild is in that result at no window. A caller
-// explaining that listing sets this; a caller explaining a messages-driven
-// query does not.
+// CataloguedChannelsOnly matches conversation listings, which join messages
+// to channels by both guild and channel ID.
 type MessageScopeOptions struct {
 	ChannelID              string
 	GuildIDs               []string
@@ -133,12 +128,7 @@ func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (
 		}
 	}
 	if opts.CataloguedChannelsOnly {
-		// Both tables carry channel-identifying columns, so every reference
-		// here is qualified: the unqualified name inside the subquery would
-		// resolve to the channels row it selects from, which would compare
-		// that row against itself and quietly reduce the clause to "some
-		// channels row has this id". Callers pass a column function that
-		// qualifies with the outer messages table for the same reason.
+		// Qualify outer columns so the subquery cannot bind to its own guild_id.
 		clauses = append(clauses, "exists (select 1 from channels cat where cat.id = "+column("channel_id")+
 			" and cat.guild_id = "+column("guild_id")+")")
 	}
@@ -146,9 +136,6 @@ func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (
 }
 
 func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions) (MessageScopeStats, error) {
-	// Qualified with the table this statement selects from, so a correlated
-	// subquery in the scope clauses binds to this query's messages row rather
-	// than to whatever row the subquery itself selects.
 	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "messages." + name })
 	visible := "(? or trim(coalesce(normalized_content, '')) <> '')"
 	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
@@ -950,6 +937,28 @@ func (s *Store) MemberByID(ctx context.Context, userID string) ([]MemberRow, err
 		out = append(out, member)
 	}
 	return out, nil
+}
+
+func (s *Store) DesktopChannelIDs(ctx context.Context, guildID string) ([]string, error) {
+	queryCtx, cancel := withQueryTimeout(ctx)
+	defer cancel()
+	rows, err := s.db.QueryContext(queryCtx, `
+		select id from channels where guild_id = ?
+		and case when json_valid(raw_json) then json_extract(raw_json, '$.source') end = 'discord_desktop'
+	`, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, error) {

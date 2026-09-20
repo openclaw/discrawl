@@ -154,11 +154,7 @@ func (r *runtime) explainEmptySearch(opts store.SearchOptions, mode string) {
 // window notes can apply: `dms` has no --channel, so there is no concrete
 // channel for the content notes to describe.
 //
-// The scope is narrowed to catalogued conversations. Dropping the window sends
-// the reader to store.DirectMessageConversations, which selects from channels
-// and joins messages to it, so a direct message whose channel has no channels
-// row is absent from that listing at every window. Counting it would name rows
-// the recommended command does not return.
+// Removing the last date filter switches to catalogued conversation summaries.
 func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, window zeroResultWindow) {
 	if r.json || strings.TrimSpace(with) != "" {
 		return
@@ -167,8 +163,19 @@ func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, 
 	if !ok {
 		return
 	}
-	scope.cataloguedChannelsOnly = true
-	r.explainEmptyMessages(scope, window)
+	stats, ok := r.zeroResultStats(scope)
+	if !ok {
+		return
+	}
+	sinceExcludes, beforeExcludes := window.excludedBounds(stats)
+	if (window.since.IsZero() || sinceExcludes) && (window.before.IsZero() || beforeExcludes) {
+		scope.cataloguedChannelsOnly = true
+		stats, ok = r.zeroResultStats(scope)
+		if !ok {
+			return
+		}
+	}
+	r.explainEmptyDateWindow(scope, window, stats)
 }
 
 // explainEmptyDirectMessageSearch explains an empty `dms --search`. That path
@@ -253,6 +260,12 @@ func (r *runtime) lookupChannel(channelID string) (store.ChannelRow, bool) {
 	return row, true
 }
 
+func (window zeroResultWindow) excludedBounds(stats store.MessageScopeStats) (since, before bool) {
+	since = !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since)
+	before = !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != ""
+	return since, before
+}
+
 // explainEmptyDateWindow writes a stderr note when an
 // --hours/--days/--since/--before window looks like the reason the query
 // returned nothing. Each side fires only when every message in scope sits
@@ -263,8 +276,7 @@ func (r *runtime) explainEmptyDateWindow(scope zeroResultScope, window zeroResul
 	if stats.Count == 0 {
 		return
 	}
-	sinceExcludes := !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since)
-	beforeExcludes := !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != ""
+	sinceExcludes, beforeExcludes := window.excludedBounds(stats)
 	if !sinceExcludes && !beforeExcludes {
 		return
 	}
