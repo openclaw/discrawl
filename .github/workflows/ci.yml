@@ -211,7 +211,7 @@ jobs:
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: v2.18.1
+          version: v2.18.2
           args: release --snapshot --clean --skip=publish
 
   kiwi-helper:
@@ -233,7 +233,7 @@ jobs:
           go-version-file: tools/discrawl-kiwi/go.mod
           cache-dependency-path: tools/discrawl-kiwi/go.sum
 
-      - name: Install Kiwi 0.23.2
+      - name: Install Kiwi 0.24.0
         working-directory: tools/discrawl-kiwi
         run: bash install-kiwi.sh
 

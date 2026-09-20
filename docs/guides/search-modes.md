@@ -19,7 +19,7 @@
 
 ### Optional multilingual lexical fields
 
-Install Kiwi 0.23.2's dynamic library and base model, then build the Go helper:
+Install Kiwi 0.24.0's dynamic library and base model, then build the Go helper:
 
 ```bash
 git clone https://github.com/openclaw/discrawl
@@ -29,7 +29,7 @@ go build -o ~/.local/share/discrawl/bin/discrawl-kiwi .
 
 `github.com/codingpot/kiwigo` links to the system Kiwi C API. Its upstream
 installation expects Kiwi headers and dynamic libraries under `/usr/local`;
-the model is the `kiwi_model_v0.23.2_base.tgz` release asset.
+the model is the `kiwi_model_v0.24.0_base.tgz` release asset.
 
 Build the optional Japanese and Chinese helpers:
 

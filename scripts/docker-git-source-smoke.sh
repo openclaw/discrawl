@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)"
-image="${DISCRAWL_DOCKER_IMAGE:-golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452}"
+image="${DISCRAWL_DOCKER_IMAGE:-golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195}"
 tmp="$(mktemp -d /tmp/discrawl-docker-smoke.XXXXXX)"
 cleanup() {
   rm -rf "$tmp"

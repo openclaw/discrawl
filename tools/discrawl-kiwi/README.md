@@ -6,15 +6,15 @@ Go binding and Kiwi's public C API. It does not use Python.
 
 ## Native prerequisites
 
-- Kiwi 0.23.2 headers and dynamic library
-- Kiwi 0.23.2 base model
+- Kiwi 0.24.0 headers and dynamic library
+- Kiwi 0.24.0 base model
 - a C/C++ toolchain supported by CGO
 
 The `kiwigo` build currently looks for headers and libraries under
 `/usr/local/include` and `/usr/local/lib`. The official Kiwi release assets are:
 
-- `kiwi_<platform>_<architecture>_v0.23.2.tgz`
-- `kiwi_model_v0.23.2_base.tgz`
+- `kiwi_<platform>_<architecture>_v0.24.0.tgz`
+- `kiwi_model_v0.24.0_base.tgz`
 
 Build:
 
@@ -33,18 +33,18 @@ The helper speaks newline-delimited JSON over stdin/stdout and stays alive so
 the model is loaded once:
 
 ```text
-{"ready":true,"version":"0.23.2"}
+{"ready":true,"version":"0.24.0"}
 {"text":"오늘 저녁먹음 기록"}
 {"tokens":"오늘 저녁 먹 음 기록"}
 ```
 
 ## License boundary
 
-Kiwi and `github.com/codingpot/kiwigo` are licensed under
-LGPL-2.1-or-later. Discrawl invokes this separately distributed helper as an
+Kiwi 0.24.0 is licensed under Apache-2.0; the unchanged
+`github.com/codingpot/kiwigo` binding remains LGPL-2.1. Discrawl invokes this separately distributed helper as an
 optional process, and the helper dynamically links to the replaceable Kiwi
 library. Distributors of the helper or Kiwi binary assets must include the
-applicable LGPL notices and corresponding Kiwi source access.
+applicable license notices and satisfy the binding's LGPL source requirements.
 
 Query requests add `"query":true` to the JSON request. The response includes
 `"groups":[["surface","base"],["required-term"]]`: groups are conjoined,
