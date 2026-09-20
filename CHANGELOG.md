@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.15.5 - 2026-09-20
 
 - Add explicit public Discord invite-count collection, scoped history import, and read-only status in a separate metrics database, preserving partial observations and existing archives. Thanks @hannesrudolph.
