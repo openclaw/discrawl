@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.15.4 - 2026-09-20
+
+- Update Crawlkit to v0.16.4 so normal snapshot updates accept equivalent attachment schemas with reordered columns, preserving locally retained history without requiring forced replacement.
 
 ## 0.15.3 - 2026-09-19
 
