@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add explicit public Discord invite-count collection, scoped history import, and read-only status in a separate metrics database, preserving partial observations and existing archives. Thanks @hannesrudolph.
+- Keep empty DM date-window hints consistent with the suggested follow-up command, excluding uncatalogued conversations only when removing the final date filter. Thanks @rnavarro.
 
 ## 0.15.4 - 2026-09-20
 

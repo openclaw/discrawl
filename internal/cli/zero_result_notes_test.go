@@ -26,6 +26,7 @@ const (
 	zeroResultDeletedChannelID    = "6666666666666666"
 	zeroResultDMChannelID         = "7777777777777777"
 	zeroResultOrphanChannelID     = "8888888888888888"
+	zeroResultOrphanDMChannelID   = "9999999999999999"
 )
 
 func setupZeroResultStore(t *testing.T) (ctx context.Context, cfgPath string) {
@@ -1016,4 +1017,145 @@ func TestExplainEmptyResultsUncataloguedDMDoesNotRecommendEmbedding(t *testing.T
 	require.Empty(t, stdout.String())
 	require.Contains(t, stderr.String(), "embedding jobs are never created for direct messages")
 	require.NotContains(t, stderr.String(), "--rebuild")
+}
+
+// addUncataloguedDirectMessage stores a direct message whose channel has no
+// channels row, which is what an archive holds after a DM is captured without
+// its conversation ever being catalogued.
+func addUncataloguedDirectMessage(t *testing.T, ctx context.Context, cfgPath string) {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	s, err := store.Open(ctx, cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: store.DirectMessageGuildID, Name: "Direct Messages", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
+		ID:                "m-dm-uncatalogued",
+		GuildID:           store.DirectMessageGuildID,
+		ChannelID:         zeroResultOrphanDMChannelID,
+		ChannelName:       "Bob",
+		AuthorID:          "u3",
+		AuthorName:        "Bob",
+		CreatedAt:         "2020-07-01T00:00:00Z",
+		Content:           "quebec has no channels row",
+		NormalizedContent: "quebec has no channels row",
+		RawJSON:           `{}`,
+	}))
+	require.NoError(t, s.Close())
+}
+
+// `dms --days 1` over an archive holding one catalogued conversation and one
+// direct message with no channels row reported 2 messages in scope and the
+// newest timestamp of the row `dms` cannot print.
+// store.DirectMessageConversations selects from channels and joins messages to
+// it, so the uncatalogued message is in no listing at any window. The count
+// behind the note now matches the listing's own row set.
+func TestExplainEmptyResults_DirectMessageWindowNoteCountsOnlyCataloguedConversations(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--days", "1"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	// One conversation, and the newest timestamp is that conversation's, not
+	// the uncatalogued message's 2020-07-01.
+	require.Contains(t, stderr.String(), "note: 1 messages in scope but none within the last 1 days (newest: 2020-03-01T00:00:00Z); try without --days")
+
+	// The command the note recommends lists the conversation it counted.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), zeroResultDMChannelID)
+	require.NotContains(t, stdout.String(), zeroResultOrphanDMChannelID)
+	require.Empty(t, stderr.String())
+}
+
+// The same fix from the other side: when every direct message in the archive
+// has no channels row, `dms` returns no conversation at any window, so
+// dropping the window resolves nothing and there is no note to print.
+func TestExplainEmptyResults_DirectMessageWindowNoteSilentWhenNoConversationIsListed(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--days", "1"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Empty(t, stderr.String())
+
+	// Dropping the window, which is what a window note would have recommended,
+	// returns no conversation either. The human listing still prints its column
+	// header, as every table in this CLI does with no rows.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "--json", "dms"}, &stdout, &stderr))
+	require.Equal(t, "[]\n", stdout.String())
+	require.Empty(t, stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms"}, &stdout, &stderr))
+	require.NotContains(t, stdout.String(), zeroResultOrphanDMChannelID)
+
+	// The message is reachable, just not as a conversation, so the archive is
+	// not simply empty.
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{
+		"--config", cfgPath, "messages", "--channel", zeroResultOrphanDMChannelID,
+	}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), "quebec has no channels row")
+}
+
+func TestExplainEmptyResults_DirectMessageWindowNoteWithRemainingDateFilter(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		followup []string
+		want     string
+	}{
+		{
+			name: "before remains", args: []string{"--since", "2021-01-01T00:00:00Z", "--before", "2030-01-01T00:00:00Z"},
+			followup: []string{"--before", "2030-01-01T00:00:00Z"}, want: "note: 2 messages in scope but none since 2021-01-01T00:00:00Z (newest: 2020-07-01T00:00:00Z); try without --since",
+		},
+		{
+			name: "since remains", args: []string{"--since", "2019-01-01T00:00:00Z", "--before", "2019-06-01T00:00:00Z"},
+			followup: []string{"--since", "2019-01-01T00:00:00Z"}, want: "note: 2 messages in scope",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			require.NoError(t, Run(ctx, append([]string{"--config", cfgPath, "dms"}, tc.args...), &stdout, &stderr))
+			require.Empty(t, stdout.String())
+			require.Contains(t, stderr.String(), tc.want)
+			stdout.Reset()
+			stderr.Reset()
+			require.NoError(t, Run(ctx, append([]string{"--config", cfgPath, "dms"}, tc.followup...), &stdout, &stderr))
+			require.Contains(t, stdout.String(), "quebec has no channels row")
+			require.Contains(t, stdout.String(), "delta echo in a direct message")
+			require.Empty(t, stderr.String())
+		})
+	}
+}
+
+func TestExplainEmptyResults_DirectMessageWindowNoteDropsBothBounds(t *testing.T) {
+	ctx, cfgPath := setupZeroResultStore(t)
+	addUncataloguedDirectMessage(t, ctx, cfgPath)
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms", "--since", "2021-01-01T00:00:00Z", "--before", "2019-01-01T00:00:00Z"}, &stdout, &stderr))
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "both --since and --before exclude all 1 messages")
+	require.Contains(t, stderr.String(), "try without both --since and --before")
+	stdout.Reset()
+	stderr.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "dms"}, &stdout, &stderr))
+	require.Contains(t, stdout.String(), zeroResultDMChannelID)
+	require.NotContains(t, stdout.String(), zeroResultOrphanDMChannelID)
+	require.Empty(t, stderr.String())
 }

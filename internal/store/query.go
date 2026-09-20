@@ -87,11 +87,15 @@ func (s *Store) ChannelMessageBounds(ctx context.Context, channelID string) (str
 // SearchMessages filters `deleted_at is null`, ListMessages carries no
 // deleted_at predicate and so returns them. A caller sets it to match the
 // query it is explaining.
+//
+// CataloguedChannelsOnly matches conversation listings, which join messages
+// to channels by both guild and channel ID.
 type MessageScopeOptions struct {
-	ChannelID      string
-	GuildIDs       []string
-	IncludeEmpty   bool
-	IncludeDeleted bool
+	ChannelID              string
+	GuildIDs               []string
+	IncludeEmpty           bool
+	IncludeDeleted         bool
+	CataloguedChannelsOnly bool
 }
 
 // MessageScopeStats summarises the messages allowed by the scope. Count,
@@ -123,11 +127,16 @@ func messageScopeClauses(opts MessageScopeOptions, column func(string) string) (
 			args = append(args, guildID)
 		}
 	}
+	if opts.CataloguedChannelsOnly {
+		// Qualify outer columns so the subquery cannot bind to its own guild_id.
+		clauses = append(clauses, "exists (select 1 from channels cat where cat.id = "+column("channel_id")+
+			" and cat.guild_id = "+column("guild_id")+")")
+	}
 	return strings.Join(clauses, " and "), args
 }
 
 func (s *Store) MessageScopeStats(ctx context.Context, opts MessageScopeOptions) (MessageScopeStats, error) {
-	where, whereArgs := messageScopeClauses(opts, func(name string) string { return name })
+	where, whereArgs := messageScopeClauses(opts, func(name string) string { return "messages." + name })
 	visible := "(? or trim(coalesce(normalized_content, '')) <> '')"
 	args := []any{opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty, opts.IncludeEmpty}
 	args = append(args, whereArgs...)
