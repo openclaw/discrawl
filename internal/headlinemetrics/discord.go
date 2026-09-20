@@ -65,8 +65,8 @@ func inviteCounts(ctx context.Context, client *http.Client, code string) (*float
 		Guild *struct {
 			ID string `json:"id"`
 		} `json:"guild"`
-		Members *int64 `json:"approximate_member_count"`
-		Online  *int64 `json:"approximate_presence_count"`
+		Members json.RawMessage `json:"approximate_member_count"`
+		Online  json.RawMessage `json:"approximate_presence_count"`
 	}
 	if json.Unmarshal(body, &data) != nil || data.Guild == nil || data.Guild.ID == "" {
 		return nil, nil
@@ -74,8 +74,9 @@ func inviteCounts(ctx context.Context, client *http.Client, code string) (*float
 	return approximateCount(data.Members), approximateCount(data.Online)
 }
 
-func approximateCount(n *int64) *float64 {
-	if n == nil || *n < 0 || *n > 1<<53 {
+func approximateCount(raw json.RawMessage) *float64 {
+	var n *int64
+	if json.Unmarshal(raw, &n) != nil || n == nil || *n < 0 || *n > 1<<53 {
 		return nil
 	}
 	value := float64(*n)

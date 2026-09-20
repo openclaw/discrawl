@@ -75,8 +75,8 @@ func checkOwner(ctx context.Context, db *sql.DB, owner string) error {
 }
 
 func openReadOnly(ctx context.Context, path, owner string) (*store.Store, error) {
-	if !filepath.IsAbs(path) {
-		return nil, errors.New("metrics database path must be absolute")
+	if !filepath.IsAbs(path) || strings.TrimSpace(path) != path {
+		return nil, errors.New("metrics database path must be absolute without surrounding whitespace")
 	}
 	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
@@ -90,8 +90,8 @@ func openReadOnly(ctx context.Context, path, owner string) (*store.Store, error)
 }
 
 func Open(ctx context.Context, path, owner string) (*store.Store, error) {
-	if !filepath.IsAbs(path) || strings.TrimSpace(owner) == "" {
-		return nil, errors.New("metrics database path must be absolute and owner must be set")
+	if !filepath.IsAbs(path) || strings.TrimSpace(path) != path || strings.TrimSpace(owner) == "" {
+		return nil, errors.New("metrics database path must be absolute without surrounding whitespace and owner must be set")
 	}
 	_, err := os.Lstat(path)
 	if err == nil {
@@ -103,7 +103,14 @@ func Open(ctx context.Context, path, owner string) (*store.Store, error) {
 		if err := read.Close(); err != nil {
 			return nil, err
 		}
-		return store.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
+		writable, err := store.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
+		if err != nil {
+			return nil, err
+		}
+		if err := checkOwner(ctx, writable.DB(), owner); err != nil {
+			return nil, errors.Join(err, writable.Close())
+		}
+		return writable, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -111,7 +118,7 @@ func Open(ctx context.Context, path, owner string) (*store.Store, error) {
 	return initialize(ctx, path, owner)
 }
 
-func initialize(ctx context.Context, path, owner string) (*store.Store, error) {
+func initialize(ctx context.Context, path, owner string) (_ *store.Store, resultErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -124,6 +131,28 @@ func initialize(ctx context.Context, path, owner string) (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	reserved, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	initialized, closed := false, true
+	defer func() {
+		if initialized || !closed {
+			return
+		}
+		current, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		// A failed attempt owns only the exact file it reserved.
+		if os.SameFile(reserved, current) {
+			resultErr = errors.Join(resultErr, os.Remove(path))
+		}
+	}()
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
@@ -139,9 +168,11 @@ func initialize(ctx context.Context, path, owner string) (*store.Store, error) {
 		return err
 	})
 	if err != nil {
-		_ = s.Close()
-		return nil, err
+		closeErr := s.Close()
+		closed = closeErr == nil
+		return nil, errors.Join(err, closeErr)
 	}
+	initialized = true
 	return s, nil
 }
 
@@ -166,40 +197,47 @@ func Validate(r Row) error {
 func Write(ctx context.Context, s *store.Store, rows []Row) (int, error) {
 	written := 0
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
-		for _, r := range rows {
-			if err := Validate(r); err != nil {
-				return err
-			}
-			if r.ID == "" {
-				b, err := json.Marshal(r)
-				if err != nil {
-					return err
-				}
-				h := sha256.Sum256(b)
-				r.ID = hex.EncodeToString(h[:])
-			}
-			// Only IDs deduplicate. Retain repeated values, decreases, unknowns,
-			// and revised daily rows; consumers select the latest daily sequence.
-			var result sql.Result
-			var err error
-			if r.Type == "metric" {
-				result, err = tx.ExecContext(ctx, "INSERT INTO metric_observations(id,entity,target,metric,kind,ts,value,observed_at,provenance) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.ID, r.Entity, r.Target, r.Metric, r.Kind, r.TS, r.Value, r.ObservedAt, r.Provenance)
-			} else {
-				result, err = tx.ExecContext(ctx, "INSERT INTO metric_events(id,entity,target,kind,ts,label,url,observed_at,provenance) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.ID, r.Entity, r.Target, r.Kind, r.TS, r.Label, r.URL, r.ObservedAt, r.Provenance)
-			}
-			if err != nil {
-				return err
-			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return err
-			}
-			written += int(n)
-		}
-		return nil
+		var err error
+		written, err = writeRows(ctx, tx, rows)
+		return err
 	})
 	if err != nil {
-		return 0, err // The entire batch rolled back.
+		return 0, err
+	}
+	return written, nil
+}
+
+func writeRows(ctx context.Context, tx *sql.Tx, rows []Row) (int, error) {
+	written := 0
+	for _, r := range rows {
+		if err := Validate(r); err != nil {
+			return 0, err
+		}
+		if r.ID == "" {
+			b, err := json.Marshal(r)
+			if err != nil {
+				return 0, err
+			}
+			h := sha256.Sum256(b)
+			r.ID = hex.EncodeToString(h[:])
+		}
+		// Only IDs deduplicate. Retain repeated values, decreases, unknowns,
+		// and revised daily rows; consumers select the latest daily sequence.
+		var result sql.Result
+		var err error
+		if r.Type == "metric" {
+			result, err = tx.ExecContext(ctx, "INSERT INTO metric_observations(id,entity,target,metric,kind,ts,value,observed_at,provenance) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.ID, r.Entity, r.Target, r.Metric, r.Kind, r.TS, r.Value, r.ObservedAt, r.Provenance)
+		} else {
+			result, err = tx.ExecContext(ctx, "INSERT INTO metric_events(id,entity,target,kind,ts,label,url,observed_at,provenance) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.ID, r.Entity, r.Target, r.Kind, r.TS, r.Label, r.URL, r.ObservedAt, r.Provenance)
+		}
+		if err != nil {
+			return 0, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		written += int(n)
 	}
 	return written, nil
 }
@@ -224,8 +262,8 @@ func loadConfig(path string) (Config, error) {
 	if err := d.Decode(&c); err != nil {
 		return c, errors.New("invalid metrics config")
 	}
-	if d.Decode(new(any)) != io.EOF || !filepath.IsAbs(c.Database) || len(c.Targets) == 0 {
-		return c, errors.New("metrics config requires an absolute database path and targets")
+	if d.Decode(new(any)) != io.EOF || !filepath.IsAbs(c.Database) || strings.TrimSpace(c.Database) != c.Database || len(c.Targets) == 0 {
+		return c, errors.New("metrics config requires an absolute database path without surrounding whitespace and targets")
 	}
 	seen := map[string]bool{}
 	for _, t := range c.Targets {
@@ -294,15 +332,21 @@ func Run(ctx context.Context, args []string, owner string, collect Collector, in
 	// final write that cannot reach the message/member archive.
 	writeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	written, err := Write(writeCtx, s, rows)
-	if err != nil {
-		return err
-	}
 	runStatus := "ok"
 	if collectionErr != nil {
 		runStatus = "partial"
 	}
-	if _, err := s.DB().ExecContext(writeCtx, "INSERT INTO metric_runs(ts,status,rows_written) VALUES(?,?,?)", ts, runStatus, written); err != nil {
+	written := 0
+	err = s.WithTx(writeCtx, func(tx *sql.Tx) error {
+		var err error
+		written, err = writeRows(writeCtx, tx, rows)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(writeCtx, "INSERT INTO metric_runs(ts,status,rows_written) VALUES(?,?,?)", ts, runStatus, written)
+		return err
+	})
+	if err != nil {
 		return err
 	}
 	if err := json.NewEncoder(out).Encode(map[string]any{"source": owner, "command": command, "rows_written": written, "ok": collectionErr == nil}); err != nil {

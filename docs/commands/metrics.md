@@ -34,10 +34,10 @@ sequence, and the most recent observation time (`null` for an empty store).
 or guild ID. Codes must be unique in the configuration. Other servers can be
 configured with their own invite codes.
 
-The database path must be absolute. `collect` and `import` create a new metrics
+The database path must be absolute without leading or trailing whitespace. `collect` and `import` create a new metrics
 database if that path does not exist. Existing databases must identify their
 owner as `discrawl` and metrics version as `1`; unrelated, empty, or newer-version
-databases are refused before write access. `status` never creates a database.
+databases are refused before write access. Failed initialization removes only the file reserved by that attempt, after closing SQLite, so a subsequent attempt can retry. `status` never creates a database.
 
 No token or cookie is needed. The shared configuration fields `cookieJar` and
 `tokenEnv` are accepted but unused by this collector.
@@ -139,7 +139,7 @@ engagement. See Discord's [Invite object and Get Invite documentation](https://d
 
 Zero is a valid count. Missing or invalid values, expired invites, HTTP failures,
 and rate limits produce SQL `NULL`, never a fabricated zero. Valid fields and
-other successful targets are retained. Such a run records `partial`, outputs
+other successful targets are retained. Each collection commits its observations and run record together. Such a run records `partial`, outputs
 `"ok": false`, and exits nonzero. Responses are bounded in size, requests have a
 30-second timeout, and redirects are refused. There is no automatic retry loop
 or scheduler; invoke `collect` at the cadence appropriate for your application.

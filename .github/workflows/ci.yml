@@ -24,6 +24,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26
+      - name: Test cloud publisher
+        run: node --test scripts/publish-cloud.test.mjs
       - name: Test documentation build
         run: node --test scripts/build-docs-site.test.mjs
       - name: Build documentation
@@ -93,6 +95,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Test source reconciliation entry point
+        run: go test -count=1 scripts/reconcile_cloud_source.go scripts/reconcile_cloud_source_test.go
 
       - name: Test with race detector and coverage
         run: go test -count=1 -race ./... -coverprofile=coverage.out

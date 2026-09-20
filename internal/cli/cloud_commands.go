@@ -44,6 +44,7 @@ func (r *runtime) runCloudPublish(args []string) error {
 	archive := fs.String("archive", "", "")
 	tokenEnv := fs.String("token-env", "", "")
 	sqliteOnly := fs.Bool("sqlite-only", false, "")
+	exportPath := fs.String("export-only", "", "")
 	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
@@ -57,6 +58,19 @@ func (r *runtime) runCloudPublish(args []string) error {
 	return r.withExistingLocalStoreReadOnly(func() error {
 		if r.store == nil {
 			return dbErr(errors.New("cloud publish requires a local SQLite archive"))
+		}
+		if *exportPath != "" {
+			if *sqliteOnly {
+				return usageErr(errors.New("--export-only and --sqlite-only cannot be combined"))
+			}
+			if _, err := os.Stat(*exportPath); !errors.Is(err, os.ErrNotExist) {
+				return usageErr(errors.New("cloud export output must not already exist"))
+			}
+			if err := writeCloudSQLiteExport(r.ctx, r.store.DB(), *exportPath); err != nil {
+				_ = os.Remove(*exportPath)
+				return err
+			}
+			return r.print(map[string]any{"exported": true})
 		}
 		endpoint := firstNonEmpty(*remoteEndpoint, r.cfg.Remote.Endpoint)
 		archiveID := firstNonEmpty(*archive, r.cfg.Remote.Archive)
@@ -88,45 +102,41 @@ func (r *runtime) runCloudPublish(args []string) error {
 			Mode:          crawlremote.ModePublisher,
 			Source:        "sqlite",
 		}
-		guildCount, channelCount, memberCount, messageCount, err := cloudPublishCounts(r.ctx, r.store.DB())
+		snapshotPath, cleanup, err := sqliteSnapshotPath(r.ctx, r.store.DB())
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		snapshot, err := sql.Open("sqlite", snapshotPath)
 		if err != nil {
 			return dbErr(err)
 		}
-		if !*sqliteOnly {
-			ingest := client.Ingest
-			guildCount, err = publishIngestRows(r.ctx, r.store.DB(), discrawlGuildExportSQL, ingest, archiveID, manifest, "guilds", discrawlGuildColumns, false)
+		defer func() { _ = snapshot.Close() }()
+		counts := make(map[string]int64)
+		for i, export := range discrawlCloudSQLiteExports {
+			counts[export.table], err = countCloudRows(r.ctx, snapshot, "select count(*) from "+export.table)
 			if err != nil {
-				return err
+				return dbErr(err)
 			}
-			channelCount, err = publishIngestRows(r.ctx, r.store.DB(), discrawlChannelExportSQL, ingest, archiveID, manifest, "channels", discrawlChannelColumns, false)
-			if err != nil {
-				return err
-			}
-			memberCount, err = publishIngestRows(r.ctx, r.store.DB(), discrawlMemberExportSQL, ingest, archiveID, manifest, "members", discrawlMemberColumns, false)
-			if err != nil {
-				return err
-			}
-			messageCount, err = publishIngestRows(r.ctx, r.store.DB(), discrawlMessageExportSQL, ingest, archiveID, manifest, "messages", discrawlMessageColumns, true)
-			if err != nil {
-				return err
+			if !*sqliteOnly {
+				_, err = publishIngestRows(r.ctx, snapshot, "select "+strings.Join(export.columns, ",")+" from "+export.table,
+					client.Ingest, archiveID, manifest, export.table, export.columns, i == len(discrawlCloudSQLiteExports)-1)
+				if err != nil {
+					return err
+				}
 			}
 		}
-		sqliteBundle, err := uploadSQLiteArchive(r.ctx, client, "discrawl", archiveID, r.store.DB(), r.cfg.DBPath, manifest, map[string]int64{
-			"guilds":   guildCount,
-			"channels": channelCount,
-			"members":  memberCount,
-			"messages": messageCount,
-		})
+		sqliteBundle, err := uploadSQLiteArchive(r.ctx, client, "discrawl", archiveID, snapshotPath, counts)
 		if err != nil {
 			return err
 		}
 		return r.print(map[string]any{
 			"remote":        strings.TrimRight(endpoint, "/"),
 			"archive":       archiveID,
-			"guilds":        guildCount,
-			"channels":      channelCount,
-			"members":       memberCount,
-			"messages":      messageCount,
+			"guilds":        counts["guilds"],
+			"channels":      counts["channels"],
+			"members":       counts["members"],
+			"messages":      counts["messages"],
 			"sqlite_only":   *sqliteOnly,
 			"sqlite_bundle": sqliteBundle,
 		})
@@ -287,12 +297,7 @@ func cursorFor(start int) string {
 	return strconv.Itoa(start)
 }
 
-func uploadSQLiteArchive(ctx context.Context, client *crawlremote.Client, app, archive string, db *sql.DB, dbPath string, manifest crawlremote.IngestManifest, counts map[string]int64) (*crawlremote.SQLiteBundle, error) {
-	snapshotPath, cleanup, err := sqliteSnapshotPath(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
+func uploadSQLiteArchive(ctx context.Context, client *crawlremote.Client, app, archive, snapshotPath string, counts map[string]int64) (*crawlremote.SQLiteBundle, error) {
 	bundle, err := crawlremote.BuildGzipSQLiteBundle(ctx, crawlremote.SQLiteBundleBuildOptions{
 		App:        app,
 		Archive:    archive,
@@ -344,10 +349,18 @@ func writeCloudSQLiteExport(ctx context.Context, source *sql.DB, snapshotPath st
 			return fmt.Errorf("write sqlite cloud export: %w", err)
 		}
 	}
+	read, err := source.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin cloud export snapshot: %w", err)
+	}
+	defer func() { _ = read.Rollback() }()
 	for _, export := range discrawlCloudSQLiteExports {
-		if err := copyCloudSQLiteRows(ctx, source, out, export.table, export.columns, export.query); err != nil {
+		if err := copyCloudSQLiteRows(ctx, read, out, export.table, export.columns, export.query); err != nil {
 			return err
 		}
+	}
+	if err := read.Commit(); err != nil {
+		return fmt.Errorf("finish cloud export snapshot: %w", err)
 	}
 	for _, stmt := range discrawlCloudSQLiteIndexes {
 		if _, err := out.ExecContext(ctx, stmt); err != nil {
@@ -360,7 +373,11 @@ func writeCloudSQLiteExport(ctx context.Context, source *sql.DB, snapshotPath st
 	return nil
 }
 
-func copyCloudSQLiteRows(ctx context.Context, source, out *sql.DB, table string, columns []string, query string) error {
+type cloudRowSource interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func copyCloudSQLiteRows(ctx context.Context, source cloudRowSource, out *sql.DB, table string, columns []string, query string) error {
 	rows, err := source.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("query sqlite cloud export %s: %w", table, err)

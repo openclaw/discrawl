@@ -62,6 +62,20 @@ func TestOpenPreservesUnownedAndNewerDatabases(t *testing.T) {
 			require.NoError(t, err)
 			_, err = Open(t.Context(), path, "discrawl")
 			require.Error(t, err)
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+			for _, suffix := range []string{" ", "\t"} {
+				_, err = Open(t.Context(), path+suffix, "discrawl")
+				require.Error(t, err)
+				for _, command := range []string{"import", "collect", "status"} {
+					err = Run(t.Context(), []string{command, "--config", testConfig(t, path+suffix)}, "discrawl", nil, strings.NewReader(""), io.Discard, io.Discard)
+					require.Error(t, err)
+				}
+				require.NoFileExists(t, path+suffix)
+			}
+			afterInfo, err := os.Stat(path)
+			require.NoError(t, err)
+			require.Equal(t, info.Mode(), afterInfo.Mode())
 			_, err = openReadOnly(t.Context(), path, "discrawl")
 			require.Error(t, err)
 			after, err := os.ReadFile(path)
@@ -295,4 +309,38 @@ func TestConfigHelpAndMissingDatabase(t *testing.T) {
 		_, err := loadConfig(config)
 		require.Error(t, err)
 	}
+}
+
+func TestCanceledInitializationCanRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.sqlite")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := Open(ctx, path, "discrawl")
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoFileExists(t, path)
+	s, err := Open(t.Context(), path, "discrawl")
+	require.NoError(t, err)
+	require.NoError(t, checkOwner(t.Context(), s.DB(), "discrawl"))
+	require.NoError(t, s.Close())
+}
+
+func TestCollectionRunFailureRollsBackObservations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.sqlite")
+	s, err := Open(t.Context(), path, "discrawl")
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(t.Context(), `CREATE TRIGGER reject_run BEFORE INSERT ON metric_runs BEGIN SELECT RAISE(ABORT, 'run rejected'); END`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	collect := func(_ context.Context, c Config, ts string) ([]Row, error) {
+		return []Row{Counter(c.Targets[0], "members", new(42.0), ts, "fixture")}, nil
+	}
+	err = Run(t.Context(), []string{"collect", "--config", testConfig(t, path)}, "discrawl", collect, nil, io.Discard, io.Discard)
+	require.ErrorContains(t, err, "run rejected")
+	s, err = openReadOnly(t.Context(), path, "discrawl")
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s.Close()) }()
+	var observations, runs int
+	require.NoError(t, s.DB().QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM metric_observations), (SELECT count(*) FROM metric_runs)`).Scan(&observations, &runs))
+	require.Zero(t, observations)
+	require.Zero(t, runs)
 }

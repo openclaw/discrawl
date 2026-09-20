@@ -5,6 +5,11 @@ on:
     - cron: "*/15 * * * *"
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      reconcile_cloud:
+        description: Reconcile the configured private identity plan against Discord before publication
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,15 +51,23 @@ jobs:
           git config --global user.email "discrawl-publisher@users.noreply.github.com"
 
       - name: Sync and publish Discord archive
+        id: git-publish
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
+          RECONCILE_CLOUD: ${{ github.event_name == 'workflow_dispatch' && inputs.reconcile_cloud && '1' || '0' }}
+          DISCRAWL_CLOUD_RECONCILE_PLAN: ${{ github.event_name == 'workflow_dispatch' && inputs.reconcile_cloud && secrets.DISCRAWL_CLOUD_RECONCILE_PLAN || '' }}
+          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
           CONFIG: ${{ runner.temp }}/discrawl/config.toml
           DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
           BACKUP_REPO: ${{ runner.temp }}/discord-backup
         run: |
+          if [ "$RECONCILE_CLOUD" = "1" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Source reconciliation requires the reviewed main branch."
+            exit 1
+          fi
           if [ -z "${DISCRAWL_BACKUP_REPOSITORY:-}" ]; then
             echo "::notice title=Backup publish skipped::Configure DISCRAWL_BACKUP_REPOSITORY as owner/repo to enable archive publishing."
             exit 0
@@ -97,6 +110,9 @@ jobs:
             echo "Refreshing Discord member roles and profiles."
           fi
           go run ./cmd/discrawl --config "$CONFIG" sync "${sync_args[@]}"
+          if [ "$RECONCILE_CLOUD" = "1" ]; then
+            go run scripts/reconcile_cloud_source.go
+          fi
           git -C "$BACKUP_REPO" pull --ff-only origin main
           SOURCE_REVISION="$(git rev-parse HEAD)"
           if [ "$SOURCE_REVISION" != "$GITHUB_SHA" ]; then
@@ -113,6 +129,7 @@ jobs:
             --readme "$BACKUP_REPO/README.md" \
             --message "sync: discord archive" \
             --push
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Save Discord DB cache
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -122,3 +139,28 @@ jobs:
             .discrawl-ci/discrawl.db-shm
             .discrawl-ci/discrawl.db-wal
           key: ${{ steps.restore-discord-db.outputs.cache-primary-key }}
+
+      - name: Setup Node for cloud publication
+        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Publish the same current state to D1 and R2
+        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        timeout-minutes: 40
+        env:
+          DISCRAWL_CLOUD_ENDPOINT: ${{ secrets.DISCRAWL_CLOUD_ENDPOINT }}
+          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
+          DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_ID: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_ID }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET }}
+          DISCRAWL_CLOUD_SNAPSHOT: ${{ runner.temp }}/discrawl/cloud.db
+          DISCRAWL_CLOUD_SOURCE_DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
+        run: |
+          umask 077
+          trap 'rm -f "$DISCRAWL_CLOUD_SNAPSHOT"' EXIT
+          export DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$RUNNER_TEMP/discord-backup" rev-parse HEAD)"
+          go run ./cmd/discrawl --config "$RUNNER_TEMP/discrawl/config.toml" cloud publish \
+            --export-only "$DISCRAWL_CLOUD_SNAPSHOT" > /dev/null
+          node scripts/publish-cloud.mjs

@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+- Add explicit public Discord invite-count collection, scoped history import, and read-only status in a separate metrics database, preserving partial observations and existing archives. Thanks @hannesrudolph.
+
+## 0.15.4 - 2026-09-20
+
+- Update Crawlkit to v0.16.4 so normal snapshot updates accept equivalent attachment schemas with reordered columns, preserving locally retained history without requiring forced replacement.
+
+## 0.15.3 - 2026-09-19
+
+- Hydrate Desktop-imported channels and their ancestors during targeted bot syncs so publication can use authoritative types, parents, and permissions without resetting stored history or weakening privacy filters.
+
+## 0.15.2 - 2026-09-19
+
+- Exclude private-thread crawl cursors from public-only snapshots while preserving public-thread cursors, full backups, and local sync state.
 - Fix large message listings and TUI reply/mention hydration failing with SQLite's parameter limit, preserving all requested rows and display names.
+- Add opt-in D1/R2 publication to the existing backup workflow, using one filtered export with resumable uploads and guarded archive adoption. Thanks @obviyus.
+- Recover missing source members and messages through manual Discord reconciliation before adopting an existing hosted archive, preserving permission checks and existing source records. Thanks @obviyus.
 - Update Crawlkit to v0.16.3, retaining the existing Go minimum and SQLite runtime pairing.
 
 ## 0.15.1 - 2026-09-13
