@@ -59,3 +59,40 @@ test('a connection drop after successful headers retries the identical mutation'
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[1], requests[0]);
 });
+
+test('adoption stops when the server repeats a pagination cursor', async t => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  for (const [table, { sourceKeys }] of Object.entries(tables)) {
+    db.exec(`create table ${table}(${sourceKeys.map(key => `${key} text`).join(',')})`);
+  }
+  db.exec("insert into guilds values('known-guild')");
+  let calls = 0;
+  await assert.rejects(verifyAdoption(db, async () => {
+    if (++calls > 2) throw new Error('unexpected third request');
+    return { keys: [['known-guild']], next: ['known-guild'] };
+  }, 'current-state'), /cloud adoption pagination did not advance/);
+  assert.equal(calls, 2);
+});
+
+test('terminal HTTP failures release the unread response body', async () => {
+  let cancelled = false;
+  const request = cloudRequest('https://fixture.invalid/', {}, async () => new Response(new ReadableStream({
+    cancel() { cancelled = true; },
+  }), { status: 403 }));
+  await assert.rejects(request('current-state'), /cloud request failed \(HTTP 403\)/);
+  assert.equal(cancelled, true);
+});
+
+test('errored response bodies preserve HTTP failures and retries', async () => {
+  const response = status => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error('private stream failure')); },
+  }), { status });
+  const terminal = cloudRequest('https://fixture.invalid/', {}, async () => response(403));
+  await assert.rejects(terminal('current-state'), error => error.message === 'cloud request failed (HTTP 403)');
+  let calls = 0;
+  const retry = cloudRequest('https://fixture.invalid/', {}, async () =>
+    ++calls === 1 ? response(503) : Response.json({ complete: true }));
+  assert.deepEqual(await retry('current-state'), { complete: true });
+  assert.equal(calls, 2);
+});

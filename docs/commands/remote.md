@@ -68,7 +68,9 @@ alone. Public job logs contain aggregate counts, not archive IDs or message data
 
 Before first adoption, the publisher checks remote keys against the runtime,
 including deleted source rows. If a remote key is absent, publication stops for
-owner review. Do not bypass this check or reset the remote tables.
+owner review. Repeated pagination cursors also stop adoption without changing
+Cloud data instead of requesting the same inventory indefinitely. Do not bypass
+this check or reset the remote tables.
 
 ### Reconciling an older hosted archive
 

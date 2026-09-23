@@ -113,8 +113,10 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
         response = undefined;
       }
       const retryable = !response || response.status === 429 || response.status >= 500;
+      try { await response?.body?.cancel(); } catch {
+        // Cleanup must preserve the HTTP status and retry policy, even for an errored stream.
+      }
       if (!retryable || attempt >= 3) throw new PublishError(`cloud request failed (HTTP ${response?.status ?? 'unavailable'})`);
-      await response?.body?.cancel();
       await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
     }
   };
@@ -123,6 +125,7 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
 export async function verifyAdoption(source, request, path) {
   for (const [table, { sourceKeys }] of Object.entries(tables)) {
     const exists = source.prepare(`select 1 from ${table} where ${sourceKeys.map(c => `${c}=?`).join(' and ')}`);
+    const cursors = new Set();
     let after = null;
     do {
       const page = await request(`${path}?table=${table}${after ? `&after=${encodeURIComponent(JSON.stringify(after))}` : ''}`);
@@ -131,6 +134,11 @@ export async function verifyAdoption(source, request, path) {
         if (!exists.get(...key)) throw new PublishError('cloud archive has rows absent from the source; adoption stopped without changing data');
       }
       after = page.next;
+      if (after) {
+        const cursor = JSON.stringify(after);
+        if (cursors.has(cursor)) throw new PublishError('cloud adoption pagination did not advance');
+        cursors.add(cursor);
+      }
     } while (after);
   }
 }
