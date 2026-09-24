@@ -4,11 +4,15 @@ launchd runs Discrawl directly. Discrawl loads both credentials, owns the archiv
 writer, captures Gateway events, repairs history, and processes embeddings.
 There is no Python coordinator or credential-loading shell wrapper.
 
-The installed application is clean upstream commit
-`0d365ac801954ad69fac3c2771f3d6ff6d22297c`, version `0.15.1-2-g0d365ac`, with
-Crawlkit v0.16.3. [PR #237](https://github.com/openclaw/discrawl/pull/237) is merged.
-The application has no local patches. Machine-specific service and signing
-files remain on this local operations branch.
+The installed application is `eca8514ce68ddf67795943e82fbf1bafe795f219`,
+adding only the member-change timestamp index to the previously deployed upstream
+`0d365ac801954ad69fac3c2771f3d6ff6d22297c`, with Crawlkit v0.16.3.
+[PR #257](https://github.com/openclaw/discrawl/pull/257) tracks this focused patch;
+it is not yet merged upstream. The signed binary retains the existing identity,
+configuration and writer ownership. The normal writable-open migration created
+`idx_members_updated_identity` without rewriting source rows or changing the
+schema version. Machine-specific service and signing files remain on this local
+operations branch.
 
 ## Installed configuration
 
