@@ -70,3 +70,13 @@ last_message=2026-03-08T15:59:58Z
 
 - [`channels`](channels.html)
 - [Data layout](../guides/data-storage.html)
+
+## Incremental archive readers
+
+Gateway member additions, profile changes and removals update `members.updated_at`.
+The collector owns an ordered index on `(updated_at, guild_id, user_id)` so
+read-only downstream consumers can poll changes without scanning the roster.
+A normal writable open installs this index on existing archives as part of the
+idempotent query-index migration; member rows, tombstones and schema version
+remain unchanged. Readers should overlap timestamp boundaries, deduplicate by
+the composite member key, and reconcile periodically for older/backdated changes.
