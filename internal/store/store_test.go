@@ -33,7 +33,7 @@ func TestMemberChangeIndexMigratesExistingArchive(t *testing.T) {
 	require.NoError(t, s.Close())
 	s, err = Open(ctx, path)
 	require.NoError(t, err)
-	defer s.Close()
+	defer func() { require.NoError(t, s.Close()) }()
 	var after string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at || ':' || deleted_at || ':' || deletion_source from members where guild_id='g1' and user_id='u1'`).Scan(&after))
 	require.Equal(t, before, after)
