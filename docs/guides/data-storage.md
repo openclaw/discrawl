@@ -65,6 +65,45 @@ estimates or acceptance of those costs. The historical operational decision in
 [PR214](https://github.com/openclaw/discrawl/pull/214) is not resolved by this
 documentation.
 
+### Member update-cursor index
+
+Discrawl adds `idx_members_updated_identity` on
+`members(updated_at, guild_id, user_id)` for incremental roster readers.
+It includes removal tombstones. The first writable open builds the missing
+index synchronously, including on archives at the current schema version.
+This does not change `user_version` or rewrite member rows. Later writable
+opens retain the index. Read-only opens do not install it.
+
+Index creation can delay the initiating command and other writers. The index
+also consumes disk space and adds work to subsequent member writes.
+[The synthetic benchmark](../benchmarks/member-change-index.html) measures
+first-open cost and persistent growth without using an existing archive.
+Those local results are not production timings or a completed canary.
+Peak memory, temporary disk use, writer contention, and ongoing write overhead
+still require evaluation for the intended archive.
+
+**Merging this change to main activates the migration in the scheduled
+publisher.** `.github/workflows/publish-discord-backup.yml` declares a
+15-minute schedule. Scheduled runs check out main. The workflow restores the Discord
+database cache and runs `go run` commands for `init`, `sync`, and `publish`.
+The publish command pushes the archive. A later step saves the changed
+database cache.
+
+The next configured scheduled publisher run can install this index during
+its first writable open. No tagged release or manual binary upgrade is
+required. Source approval alone is therefore not a safe merge boundary.
+
+Keep this change unmerged until a separately reviewed, backup-first publisher
+canary and activation qualification are complete and the owner approves
+activation. The review must cover the publisher's cache identity, verified
+restore, writer coordination, measured costs, and rollback after new writes.
+Synthetic benchmarks and green CI do not complete that review.
+
+Use the backup-first procedure below for the separately approved canary.
+Do not inspect an existing archive with a command that may open it for writing.
+This change does not authorize workflow disabling or pinning, credential
+changes, cache replacement, or live archive operations.
+
 ### Before broader index rollout
 
 Require an explicitly approved, backup-first canary and a decision on its

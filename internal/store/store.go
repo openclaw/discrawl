@@ -550,6 +550,7 @@ func (s *Store) applyBaselineSchema(ctx context.Context) error {
 		`create index if not exists idx_messages_channel_id on messages(channel_id);`,
 		`create index if not exists idx_messages_guild_id on messages(guild_id);`,
 		`create index if not exists idx_messages_created_id on messages(created_at, id);`,
+		`create index if not exists idx_members_updated_identity on members(updated_at, guild_id, user_id);`,
 		`create index if not exists idx_messages_guild_created_id on messages(guild_id, created_at, id);`,
 		`create index if not exists idx_messages_channel_created_id on messages(channel_id, created_at, id);`,
 		`create index if not exists idx_messages_channel_updated_id on messages(channel_id, updated_at, id);`,
@@ -716,6 +717,7 @@ func (s *Store) applyQueryIndexMigration(ctx context.Context) error {
 			embedded_at text not null,
 			primary key (message_id, provider, model, input_version)
 		);`,
+		`create index if not exists idx_members_updated_identity on members(updated_at, guild_id, user_id);`,
 		`create index if not exists idx_messages_guild_created_id on messages(guild_id, created_at, id);`,
 		`create index if not exists idx_messages_channel_created_id on messages(channel_id, created_at, id);`,
 		`create index if not exists idx_messages_channel_updated_id on messages(channel_id, updated_at, id);`,

@@ -16,6 +16,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The query-index migration runs on every writable Open, including archives
+// already at the current schema version. No source rows are rewritten.
+func TestMemberChangeIndexMigratesExistingArchive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discrawl.db")
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertMember(ctx, MemberRecord{GuildID: "g1", UserID: "u1", Username: "kept", JoinedAt: "2026-09-01T00:00:00Z", RoleIDsJSON: "[]", RawJSON: "{}"}))
+	require.NoError(t, s.MarkMemberDeleted(ctx, "g1", "u1", "discord-gateway", "member-remove-event"))
+	var before string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at || ':' || deleted_at || ':' || deletion_source from members where guild_id='g1' and user_id='u1'`).Scan(&before))
+	_, err = s.DB().ExecContext(ctx, `drop index idx_members_updated_identity`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	s, err = Open(ctx, path)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s.Close()) }()
+	var after string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at || ':' || deleted_at || ':' || deletion_source from members where guild_id='g1' and user_id='u1'`).Scan(&after))
+	require.Equal(t, before, after)
+	var id, parent, unused int
+	var plan string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `explain query plan select * from members where updated_at >= ? order by updated_at,guild_id,user_id`, "2026-09-01T00:00:00Z").Scan(&id, &parent, &unused, &plan))
+	require.Contains(t, plan, "idx_members_updated_identity")
+	var version int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
+	require.Equal(t, storeSchemaVersion, version)
+}
+
 func TestDefaultEmbedLimit(t *testing.T) {
 	t.Parallel()
 

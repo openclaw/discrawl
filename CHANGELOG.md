@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Speed incremental roster reads with an index on member update timestamps and identities, including removal tombstones. Existing archives build it on the first writable open without changing member rows or the schema version. Merging to main activates the scheduled publisher's migration and requires separately reviewed backup-first publisher canary and activation qualification. Document synthetic cost measurement and rollout requirements. Thanks @hannesrudolph.
 - Select the actual latest metrics observation at nanosecond precision, including imported timestamps with different offsets, without rewriting retained history.
 - Stop cloud adoption when inventory pagination repeats a cursor, and release unread HTTP error responses before reporting publication failures.
 
