@@ -84,4 +84,6 @@ the composite member key, and reconcile periodically for older/backdated changes
 Before upgrading an existing archive, read the
 [member index migration and backup-first procedure](../guides/data-storage.html#member-update-cursor-index).
 The first writable open builds the index synchronously. Source approval does
-not approve a production rollout.
+not make a main merge safe: the scheduled publisher checks out main and opens
+its cached archive for writing. Keep the change unmerged until the separately
+reviewed, backup-first publisher canary and activation qualification are complete.

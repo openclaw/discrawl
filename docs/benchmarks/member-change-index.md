@@ -56,14 +56,15 @@ Checks assert correctness, not arbitrary performance thresholds.
 
 Measured on September 25, 2026 with Go 1.27.1, `GOMAXPROCS=2`, Linux amd64,
 an AMD EPYC-Genoa CPU, and Btrfs storage. Each scale used one iteration.
-The branch pins Crawlkit v0.16.3, modernc SQLite v1.58.0, and libc v1.75.6.
-SQLite reported runtime version 3.53.4. These are branch-specific measurements,
-not qualification of a different dependency set.
+The integrated branch pins Crawlkit v0.16.4, modernc SQLite v1.59.0, and
+libc v1.75.7, matching main at `a7ec0d0e3079c7225f09fcfc135cce8362d6abd3`.
+SQLite reported runtime version 3.53.4. These measurements do not qualify a
+different dependency set or a live publisher.
 
 | Members | Migration open | Indexed reopen | File bytes before | File bytes after | Net growth |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 200,000 | 485.005 ms | 3.323 ms | 79,925,248 | 83,943,424 | 4,018,176 |
-| 1,000,000 | 9,439.607 ms | 4.860 ms | 393,498,624 | 414,232,576 | 20,733,952 |
+| 200,000 | 395.764 ms | 2.208 ms | 79,925,248 | 83,943,424 | 4,018,176 |
+| 1,000,000 | 2,018.261 ms | 1.462 ms | 393,498,624 | 414,232,576 | 20,733,952 |
 
 At a 4,096-byte page size, page counts changed from 19,513 to 20,494 and
 from 96,069 to 101,131. Both scales preserved the row hash across all three
@@ -80,6 +81,9 @@ behavior can change timings. This fixture has no concurrent writers.
 The index can reuse free database pages, so file growth is not its standalone
 size. Logical file growth is not a disk-space budget for a real archive.
 
-No result authorizes a live upgrade. Use the
-[backup-first rollout procedure](../guides/data-storage.html#before-broader-index-rollout)
-before a separately approved canary or production installation.
+No result authorizes a main merge or live upgrade. The scheduled publisher
+consumes main, so merging activates the migration on its next configured run.
+Complete the separately reviewed, backup-first publisher canary and activation
+qualification before merging. See the
+[publisher activation boundary](../guides/data-storage.html#member-update-cursor-index)
+and [backup-first procedure](../guides/data-storage.html#before-broader-index-rollout).

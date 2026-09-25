@@ -82,10 +82,27 @@ Those local results are not production timings or a completed canary.
 Peak memory, temporary disk use, writer contention, and ongoing write overhead
 still require evaluation for the intended archive.
 
-Merging the source change does not approve production installation.
-Before the first writable open on an existing archive, use the backup-first
-procedure below. Do not use an ordinary command to inspect that archive
-unless its open mode is known.
+**Merging this change to main activates the migration in the scheduled
+publisher.** `.github/workflows/publish-discord-backup.yml` declares a
+15-minute schedule. Scheduled runs check out main. The workflow restores the Discord
+database cache and runs `go run` commands for `init`, `sync`, and `publish`.
+The publish command pushes the archive. A later step saves the changed
+database cache.
+
+The next configured scheduled publisher run can install this index during
+its first writable open. No tagged release or manual binary upgrade is
+required. Source approval alone is therefore not a safe merge boundary.
+
+Keep this change unmerged until a separately reviewed, backup-first publisher
+canary and activation qualification are complete and the owner approves
+activation. The review must cover the publisher's cache identity, verified
+restore, writer coordination, measured costs, and rollback after new writes.
+Synthetic benchmarks and green CI do not complete that review.
+
+Use the backup-first procedure below for the separately approved canary.
+Do not inspect an existing archive with a command that may open it for writing.
+This change does not authorize workflow disabling or pinning, credential
+changes, cache replacement, or live archive operations.
 
 ### Before broader index rollout
 
