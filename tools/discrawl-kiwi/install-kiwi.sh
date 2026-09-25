@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=v0.23.2
+version=v0.24.0
 case "$(uname -s)" in
   Darwin) platform=mac ;;
   Linux) platform=lnx ;;
@@ -26,10 +26,10 @@ trap 'rm -rf "$work"' EXIT
 
 curl --fail --location "$url" --output "$work/kiwi.tgz"
 case "$archive" in
-  kiwi_lnx_aarch64_v0.23.2.tgz) expected_sha256=7e093121a367087d21e7c696bcc69a505935b07798d1e95c87f3b66a646c124e ;;
-  kiwi_lnx_x86_64_v0.23.2.tgz) expected_sha256=0b6694a795891de22fb14ae46825403af02063450126282c18448d6562b97174 ;;
-  kiwi_mac_arm64_v0.23.2.tgz) expected_sha256=ac124e32e013e2089cb4d842e2b735a1e6b4f3b126cdf692d78fda1130b8a382 ;;
-  kiwi_mac_x86_64_v0.23.2.tgz) expected_sha256=422c4284cc73a7499a714090e4d2f1c039dbc565aa2b425e5a0c0656d7b483a5 ;;
+  kiwi_lnx_aarch64_v0.24.0.tgz) expected_sha256=431fafce1bafc7bf5a4abcf7d306321df47cb4daabb9e8e16d40bb528a432fac ;;
+  kiwi_lnx_x86_64_v0.24.0.tgz) expected_sha256=577768800258154da5fe6665081c73dafd6a0c39c8e091325d2b2bef8b5fb5d8 ;;
+  kiwi_mac_arm64_v0.24.0.tgz) expected_sha256=87eda17f319c371824d5a2cc2e497eda6327ba3ddbf08a018db967f61ddbe48d ;;
+  kiwi_mac_x86_64_v0.24.0.tgz) expected_sha256=98d64a1fd7acd409bb4b26889fa67355ed569e8be3568f731c3f3e27eb45a5f6 ;;
   *) echo "missing pinned Kiwi checksum for $archive" >&2; exit 1 ;;
 esac
 actual_sha256="$(shasum -a 256 "$work/kiwi.tgz" | awk '{print $1}')"

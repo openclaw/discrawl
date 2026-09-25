@@ -20,6 +20,7 @@ Mirror Discord guilds into local SQLite. Search server history without depending
 - **Need DM search?** [`wiretap`](commands/wiretap.html) imports local Discord Desktop cache.
 - **Need multilingual lexical search?** Configure [language analyzers](guides/search-modes.html) and run [`lexical rebuild`](commands/lexical.html).
 - **Want semantic search?** Configure [Embeddings](guides/embeddings.html), then run [`embed`](commands/embed.html).
+- **Need public server-size history without a bot?** [`metrics`](commands/metrics.html) records approximate membership and online presence in a separate database.
 - **Wiring an agent or launcher?** `discrawl metadata --json`, `discrawl status --json`, `discrawl diagnostics --json`, `discrawl coverage --json`, `discrawl failures --json`, `discrawl remote status`, and `discrawl doctor --json` expose the read-only crawlkit control surface.
 
 ## At a glance

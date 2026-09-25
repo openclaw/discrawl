@@ -18,10 +18,11 @@ const maxZeroResultTermProbes = 4
 // run with, so every note below is derived from the same row set the query
 // looked at rather than a re-modelled one.
 type zeroResultScope struct {
-	channelID      string
-	guildIDs       []string
-	includeEmpty   bool
-	includeDeleted bool
+	channelID              string
+	guildIDs               []string
+	includeEmpty           bool
+	includeDeleted         bool
+	cataloguedChannelsOnly bool
 }
 
 // listMessagesScope models a store.ListMessages query. ListMessages carries no
@@ -60,10 +61,11 @@ func (r *runtime) newZeroResultScope(channel string, guildIDs []string, includeE
 
 func (s zeroResultScope) storeOptions() store.MessageScopeOptions {
 	return store.MessageScopeOptions{
-		ChannelID:      s.channelID,
-		GuildIDs:       s.guildIDs,
-		IncludeEmpty:   s.includeEmpty,
-		IncludeDeleted: s.includeDeleted,
+		ChannelID:              s.channelID,
+		GuildIDs:               s.guildIDs,
+		IncludeEmpty:           s.includeEmpty,
+		IncludeDeleted:         s.includeDeleted,
+		CataloguedChannelsOnly: s.cataloguedChannelsOnly,
 	}
 }
 
@@ -151,6 +153,8 @@ func (r *runtime) explainEmptySearch(opts store.SearchOptions, mode string) {
 // explainEmptyDirectMessageList explains an empty `dms` listing. Only the
 // window notes can apply: `dms` has no --channel, so there is no concrete
 // channel for the content notes to describe.
+//
+// Removing the last date filter switches to catalogued conversation summaries.
 func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, window zeroResultWindow) {
 	if r.json || strings.TrimSpace(with) != "" {
 		return
@@ -159,7 +163,19 @@ func (r *runtime) explainEmptyDirectMessageList(with string, includeEmpty bool, 
 	if !ok {
 		return
 	}
-	r.explainEmptyMessages(scope, window)
+	stats, ok := r.zeroResultStats(scope)
+	if !ok {
+		return
+	}
+	sinceExcludes, beforeExcludes := window.excludedBounds(stats)
+	if (window.since.IsZero() || sinceExcludes) && (window.before.IsZero() || beforeExcludes) {
+		scope.cataloguedChannelsOnly = true
+		stats, ok = r.zeroResultStats(scope)
+		if !ok {
+			return
+		}
+	}
+	r.explainEmptyDateWindow(scope, window, stats)
 }
 
 // explainEmptyDirectMessageSearch explains an empty `dms --search`. That path
@@ -244,6 +260,12 @@ func (r *runtime) lookupChannel(channelID string) (store.ChannelRow, bool) {
 	return row, true
 }
 
+func (window zeroResultWindow) excludedBounds(stats store.MessageScopeStats) (since, before bool) {
+	since = !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since)
+	before = !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != ""
+	return since, before
+}
+
 // explainEmptyDateWindow writes a stderr note when an
 // --hours/--days/--since/--before window looks like the reason the query
 // returned nothing. Each side fires only when every message in scope sits
@@ -254,8 +276,7 @@ func (r *runtime) explainEmptyDateWindow(scope zeroResultScope, window zeroResul
 	if stats.Count == 0 {
 		return
 	}
-	sinceExcludes := !window.since.IsZero() && !stats.Newest.IsZero() && stats.Newest.Before(window.since)
-	beforeExcludes := !window.before.IsZero() && !stats.Oldest.IsZero() && !stats.Oldest.Before(window.before) && strings.TrimSpace(window.beforeRaw) != ""
+	sinceExcludes, beforeExcludes := window.excludedBounds(stats)
 	if !sinceExcludes && !beforeExcludes {
 		return
 	}

@@ -18,6 +18,11 @@ The shared pipeline also publishes verifier control assets (`ASSET-INVENTORY.jso
 
 ## Release
 
+When refreshing dependencies, keep `modernc.org/libc` at the exact version
+required by the selected `modernc.org/sqlite` module. SQLite v1.59.0 requires
+libc v1.75.7; upgrading libc independently bypasses the upstream compatibility
+contract.
+
 Prepare a dated changelog section and land it on protected `main`, then dispatch the workflow from that exact head:
 
 ```sh

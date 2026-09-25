@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -198,7 +202,7 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 	if len(rows) == 0 {
 		return rows, nil
 	}
-	rootIDs := make([]any, 0, len(rows))
+	rootIDs := make([]string, 0, len(rows))
 	seenRoots := map[string]struct{}{}
 	visible := map[string]struct{}{}
 	for _, row := range rows {
@@ -256,9 +260,9 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 		left join guilds g on g.id = m.guild_id and g.deleted_at is null
 		left join channels c on c.id = m.channel_id
 		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
-		where m.id in (` + placeholders(len(rootIDs)) + `)
+		where m.id in (select value from json_each(?))
 		order by m.created_at asc, m.id asc`
-	contextRows, err := s.db.QueryContext(ctx, query, rootIDs...)
+	contextRows, err := s.queryMessageIDs(ctx, query, rootIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +353,7 @@ func (s *Store) resolveMessageDisplayMentions(ctx context.Context, rows []Messag
 	if len(rows) == 0 {
 		return nil
 	}
-	ids := make([]any, 0, len(rows))
+	ids := make([]string, 0, len(rows))
 	indexByID := make(map[string]int, len(rows))
 	for index, row := range rows {
 		id := strings.TrimSpace(row.MessageID)
@@ -362,8 +366,8 @@ func (s *Store) resolveMessageDisplayMentions(ctx context.Context, rows []Messag
 	if len(ids) == 0 {
 		return nil
 	}
-	query := `select message_id, target_type, target_id, target_name from mention_events where message_id in (` + placeholders(len(ids)) + `)`
-	mentionRows, err := s.db.QueryContext(ctx, query, ids...)
+	query := `select message_id, target_type, target_id, target_name from mention_events where message_id in (select value from json_each(?))`
+	mentionRows, err := s.queryMessageIDs(ctx, query, ids)
 	if err != nil {
 		return err
 	}
@@ -458,7 +462,6 @@ func (s *Store) discordMemberDisplayNames(ctx context.Context, ids map[string]st
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	args := mapKeysAsAny(ids)
 	query := `
 		select guild_id, user_id,
 			coalesce(
@@ -469,9 +472,9 @@ func (s *Store) discordMemberDisplayNames(ctx context.Context, ids map[string]st
 				''
 			)
 		from members
-		where deleted_at is null and user_id in (` + placeholders(len(args)) + `)
+		where deleted_at is null and user_id in (select value from json_each(?))
 	`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryMessageIDs(ctx, query, slices.Collect(maps.Keys(ids)))
 	if err != nil {
 		return nil, err
 	}
@@ -491,9 +494,8 @@ func (s *Store) discordChannelNames(ctx context.Context, ids map[string]struct{}
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	args := mapKeysAsAny(ids)
-	query := `select guild_id, id, coalesce(nullif(name, ''), '') from channels where id in (` + placeholders(len(args)) + `)`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	query := `select guild_id, id, coalesce(nullif(name, ''), '') from channels where id in (select value from json_each(?))`
+	rows, err := s.queryMessageIDs(ctx, query, slices.Collect(maps.Keys(ids)))
 	if err != nil {
 		return nil, err
 	}
@@ -509,12 +511,13 @@ func (s *Store) discordChannelNames(ctx context.Context, ids map[string]struct{}
 	return out, rows.Err()
 }
 
-func mapKeysAsAny(values map[string]struct{}) []any {
-	out := make([]any, 0, len(values))
-	for value := range values {
-		out = append(out, value)
+func (s *Store) queryMessageIDs(ctx context.Context, query string, ids []string) (*sql.Rows, error) {
+	// Bind one JSON array so uncapped listings do not exhaust SQLite parameters.
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
 	}
-	return out
+	return s.db.QueryContext(ctx, query, string(encoded))
 }
 
 func rememberResolvedDiscordName(out map[string]string, guildID, id, name string) {

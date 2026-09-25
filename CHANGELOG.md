@@ -3,6 +3,31 @@
 ## Unreleased
 
 - Speed incremental roster reads with an index on member update timestamps and identities, including removal tombstones. Existing archives build it on the first writable open without changing member rows or the schema version. Document synthetic cost measurement and backup-first rollout requirements. Thanks @hannesrudolph.
+- Select the actual latest metrics observation at nanosecond precision, including imported timestamps with different offsets, without rewriting retained history.
+- Stop cloud adoption when inventory pagination repeats a cursor, and release unread HTTP error responses before reporting publication failures.
+
+## 0.15.5 - 2026-09-20
+
+- Add explicit public Discord invite-count collection, scoped history import, and read-only status in a separate metrics database, preserving partial observations and existing archives. Thanks @hannesrudolph.
+- Keep empty DM date-window hints consistent with the suggested follow-up command, excluding uncatalogued conversations only when removing the final date filter. Thanks @rnavarro.
+- Refresh SQLite to v1.59.0 with its matching libc v1.75.7, go-humanize to v1.1.0, and terminfo to v1.2.0; retain the Go 1.27.0 minimum and current published Crawlkit v0.16.4.
+- Update the optional Korean helper's native Kiwi library and model to 0.24.0, preserving the separate helper process and documented lexical-index rebuild procedure.
+- Refresh CodeQL, GoReleaser, and pinned Go container images; align the Docker source smoke with Go 1.27.1.
+
+## 0.15.4 - 2026-09-20
+
+- Update Crawlkit to v0.16.4 so normal snapshot updates accept equivalent attachment schemas with reordered columns, preserving locally retained history without requiring forced replacement.
+
+## 0.15.3 - 2026-09-19
+
+- Hydrate Desktop-imported channels and their ancestors during targeted bot syncs so publication can use authoritative types, parents, and permissions without resetting stored history or weakening privacy filters.
+
+## 0.15.2 - 2026-09-19
+
+- Exclude private-thread crawl cursors from public-only snapshots while preserving public-thread cursors, full backups, and local sync state.
+- Fix large message listings and TUI reply/mention hydration failing with SQLite's parameter limit, preserving all requested rows and display names.
+- Add opt-in D1/R2 publication to the existing backup workflow, using one filtered export with resumable uploads and guarded archive adoption. Thanks @obviyus.
+- Recover missing source members and messages through manual Discord reconciliation before adopting an existing hosted archive, preserving permission checks and existing source records. Thanks @obviyus.
 - Update Crawlkit to v0.16.3, retaining the existing Go minimum and SQLite runtime pairing.
 
 ## 0.15.1 - 2026-09-13

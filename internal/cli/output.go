@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/openclaw/discrawl/internal/discorddesktop"
+	"github.com/openclaw/discrawl/internal/headlinemetrics"
 	"github.com/openclaw/discrawl/internal/media"
 	"github.com/openclaw/discrawl/internal/report"
 	"github.com/openclaw/discrawl/internal/share"
@@ -113,6 +114,10 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"metrics":         headlinemetrics.Usage,
+	"metrics collect": headlinemetrics.Usage,
+	"metrics import":  headlinemetrics.Usage,
+	"metrics status":  headlinemetrics.Usage,
 	"lexical":         "Usage: discrawl lexical rebuild\n\nRebuild configured language indexes locally, without contacting Discord.\n",
 	"lexical rebuild": "Usage: discrawl lexical rebuild\n\nRun after enabling languages or replacing helpers, dictionaries, or Kiwi models.\n",
 	"metadata": `Usage: discrawl metadata [--json]
@@ -361,9 +366,10 @@ Show the configured remote identity.
 
 Publishes the local non-DM SQLite archive into a Cloudflare-backed remote archive, using configured remote targets when flags are omitted.
 `,
-	"cloud publish": `Usage: discrawl cloud publish [--remote URL] [--archive ID] [--token-env ENV] [--sqlite-only] [--json]
+	"cloud publish": `Usage: discrawl cloud publish [--remote URL] [--archive ID] [--token-env ENV] [--sqlite-only | --export-only PATH] [--json]
 
 Publish the local non-DM archive to a Cloudflare-backed remote, using configured targets when flags are omitted.
+Use --export-only PATH to create the filtered SQLite snapshot without network access.
 `,
 	"publish": `Usage:
   discrawl publish [flags]

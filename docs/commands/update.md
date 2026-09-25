@@ -2,7 +2,7 @@
 
 Pulls a Git snapshot and safely merges changed rows into the local cache.
 
-Routine imports are delta-planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests. Changed and new shards are upserted without deleting destination-only rows. Discrawl never falls back to an exact replacement unless you pass `--force` or explicitly configure `share.update_mode = "exact"`.
+Routine imports are delta-planned from crawlkit shard fingerprints, with a Git-object fallback for older manifests. Changed and new shards are upserted without deleting destination-only rows. Discrawl never falls back to an exact replacement unless you pass `--force` or explicitly configure `share.update_mode = "exact"`. Equivalent schemas with the same unique column names can merge even when their column order differs. Added, removed, renamed, or duplicate columns still require replacement.
 
 ## Usage
 

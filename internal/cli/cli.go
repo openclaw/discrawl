@@ -15,6 +15,7 @@ import (
 	"github.com/openclaw/crawlkit/embed"
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/discord"
+	"github.com/openclaw/discrawl/internal/headlinemetrics"
 	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/openclaw/discrawl/internal/syncer"
@@ -72,6 +73,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 	if rest[0] == "version" {
 		_, _ = io.WriteString(stdout, currentVersion()+"\n")
 		return nil
+	}
+	if rest[0] == "metrics" {
+		// Metrics have their own explicit config and database; do not initialize
+		// archive services, resolve credentials, or run archive update checks.
+		return headlinemetrics.Run(ctx, rest[1:], "discrawl", headlinemetrics.CollectDiscord, os.Stdin, stdout, stderr)
 	}
 	level := slog.LevelInfo
 	if global.Quiet {
@@ -133,6 +139,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "messages", description: "List archived messages."},
 	{name: "digest", description: "Summarize recent archive activity."},
 	{name: "analytics", description: "Analyze archive activity and trends."},
+	{name: "metrics", description: "Collect public invite counts in a separate metrics database."},
 	{name: "dms", description: "List local Discord Desktop conversations."},
 	{name: "mentions", description: "List archived mentions."},
 	{name: "attachments", description: "List or fetch archived attachments."},

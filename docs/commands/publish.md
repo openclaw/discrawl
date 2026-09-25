@@ -97,6 +97,8 @@ directory from the requested snapshot output. Local stored vectors are unchanged
 - `@me` DM media files
 - when filters are enabled: share manifest state and guild-level member
   freshness markers, because they describe the full archive
+- with `--public-only`: private-thread crawl cursors, including those stored
+  against a public parent channel; public-thread cursors remain included
 - `embedding_jobs`
 - raw bot tokens or any local secret
 

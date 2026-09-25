@@ -35,6 +35,7 @@ discrawl --json messages --channel maintainers --days 3
 - if `tail` is already running, plain `messages` reads the local archive without waiting; `messages --sync` fails fast instead of waiting behind the tail lock
 - `--dm` skips Git snapshot auto-update because DMs are never imported from the shared mirror
 - use either `--last` for the newest matching rows or `--all` for an uncapped oldest-to-newest slice
+- uncapped and large listings retain mention display names even beyond 32,766 messages; reply and mention lookups do not impose a separate row cap
 - ambiguous channel names fail with candidate guild/channel ids; resolve once with `discrawl channels resolve <name> --json` and reuse the numeric id
 
 ## Empty results
