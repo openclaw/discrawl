@@ -409,8 +409,29 @@ func status(ctx context.Context, c Config, owner string, out io.Writer) error {
 		return err
 	}
 	var last *string
-	err = s.DB().QueryRowContext(ctx, "SELECT observed_at FROM metric_observations ORDER BY julianday(observed_at) DESC,sequence DESC LIMIT 1").Scan(&last)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	rows, err := s.DB().QueryContext(ctx, "SELECT observed_at FROM metric_observations ORDER BY sequence DESC")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	var latest time.Time
+	for rows.Next() {
+		var observed string
+		if err := rows.Scan(&observed); err != nil {
+			return err
+		}
+		instant, err := time.Parse(time.RFC3339Nano, observed)
+		if err != nil {
+			return errors.New("invalid stored observation time")
+		}
+		// SQLite date functions lose fractional precision. Compare parsed
+		// instants, retaining the latest sequence when offsets denote a tie.
+		if last == nil || instant.After(latest) {
+			last = &observed
+			latest = instant
+		}
+	}
+	if err := rows.Err(); err != nil {
 		return err
 	}
 	return json.NewEncoder(out).Encode(map[string]any{"source": owner, "observations": observations, "events": events, "sequence": sequence, "last_observed": last})

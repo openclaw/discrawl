@@ -243,6 +243,93 @@ func TestRunPartialCollectionAndReadOnlyStatus(t *testing.T) {
 	require.Equal(t, before, after)
 }
 
+func TestStatusOrdersImportedObservationInstants(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		times []string
+		want  *string
+	}{
+		{name: "empty"},
+		{
+			name:  "sub-millisecond",
+			times: []string{"2026-09-25T00:00:00.000900Z", "2026-09-25T00:00:00.000800Z"},
+			want:  new("2026-09-25T00:00:00.000900Z"),
+		},
+		{
+			name:  "nanosecond",
+			times: []string{"2026-09-25T00:00:00.000000002Z", "2026-09-25T00:00:00.000000001Z"},
+			want:  new("2026-09-25T00:00:00.000000002Z"),
+		},
+		{
+			name:  "offsets",
+			times: []string{"2026-09-25T01:00:00+02:00", "2026-09-24T23:30:00Z", "2026-09-24T18:00:00-05:00"},
+			want:  new("2026-09-24T23:30:00Z"),
+		},
+		{
+			name:  "equal-instant-later-sequence",
+			times: []string{"2026-09-25T00:00:00.1Z", "2026-09-25T01:00:00.100000000+01:00"},
+			want:  new("2026-09-25T01:00:00.100000000+01:00"),
+		},
+		{
+			name:  "fractional-width",
+			times: []string{"2026-09-25T00:00:00.1Z", "2026-09-25T00:00:00Z"},
+			want:  new("2026-09-25T00:00:00.1Z"),
+		},
+		{
+			name:  "outside-unix-nanosecond-range",
+			times: []string{"2500-01-01T00:00:00Z", "1600-01-01T00:00:00Z"},
+			want:  new("2500-01-01T00:00:00Z"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := filepath.Join(t.TempDir(), "metrics.sqlite")
+			config := testConfig(t, database)
+			var input bytes.Buffer
+			for i, observed := range tc.times {
+				row := Counter(Target{"sample-alpha", "example-alpha"}, "members", nil, sampleTime, "history")
+				row.ID = fmt.Sprintf("history-%d", i)
+				row.ObservedAt = observed
+				require.NoError(t, json.NewEncoder(&input).Encode(row))
+			}
+			require.NoError(t, Run(t.Context(), []string{"import", "--config", config}, "discrawl", nil, &input, io.Discard, io.Discard))
+			before, err := os.ReadFile(database)
+			require.NoError(t, err)
+			var out bytes.Buffer
+			require.NoError(t, Run(t.Context(), []string{"status", "--config", config}, "discrawl", nil, nil, &out, io.Discard))
+			var state struct {
+				Observations int     `json:"observations"`
+				Sequence     int     `json:"sequence"`
+				LastObserved *string `json:"last_observed"`
+			}
+			require.NoError(t, json.Unmarshal(out.Bytes(), &state))
+			require.Equal(t, len(tc.times), state.Observations)
+			require.Equal(t, len(tc.times), state.Sequence)
+			if tc.want == nil {
+				require.Nil(t, state.LastObserved)
+			} else {
+				require.NotNil(t, state.LastObserved)
+				require.Equal(t, *tc.want, *state.LastObserved)
+			}
+			after, err := os.ReadFile(database)
+			require.NoError(t, err)
+			require.Equal(t, before, after)
+		})
+	}
+}
+
+func TestStatusRejectsMalformedStoredObservationTime(t *testing.T) {
+	s := newMetrics(t)
+	row := Counter(Target{"sample-alpha", "example-alpha"}, "members", nil, sampleTime, "history")
+	_, err := Write(t.Context(), s, []Row{row})
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(t.Context(), "UPDATE metric_observations SET observed_at='invalid'")
+	require.NoError(t, err)
+	var out bytes.Buffer
+	err = Run(t.Context(), []string{"status", "--config", testConfig(t, s.Path())}, "discrawl", nil, nil, &out, io.Discard)
+	require.ErrorContains(t, err, "invalid stored observation time")
+	require.Empty(t, out.String())
+}
+
 func TestImportCanResumeCommittedBatchesAndPreserveNulls(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "metrics.sqlite")
 	config := testConfig(t, database)
