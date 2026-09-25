@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Speed incremental roster reads with an index on member update timestamps and identities, including removal tombstones. Existing archives build it on the first writable open without changing member rows or the schema version. Document synthetic cost measurement and backup-first rollout requirements. Thanks @hannesrudolph.
 - Update Crawlkit to v0.16.3, retaining the existing Go minimum and SQLite runtime pairing.
 
 ## 0.15.1 - 2026-09-13

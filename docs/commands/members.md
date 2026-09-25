@@ -80,3 +80,8 @@ A normal writable open installs this index on existing archives as part of the
 idempotent query-index migration; member rows, tombstones and schema version
 remain unchanged. Readers should overlap timestamp boundaries, deduplicate by
 the composite member key, and reconcile periodically for older/backdated changes.
+
+Before upgrading an existing archive, read the
+[member index migration and backup-first procedure](../guides/data-storage.html#member-update-cursor-index).
+The first writable open builds the index synchronously. Source approval does
+not approve a production rollout.

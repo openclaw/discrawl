@@ -65,6 +65,28 @@ estimates or acceptance of those costs. The historical operational decision in
 [PR214](https://github.com/openclaw/discrawl/pull/214) is not resolved by this
 documentation.
 
+### Member update-cursor index
+
+Discrawl adds `idx_members_updated_identity` on
+`members(updated_at, guild_id, user_id)` for incremental roster readers.
+It includes removal tombstones. The first writable open builds the missing
+index synchronously, including on archives at the current schema version.
+This does not change `user_version` or rewrite member rows. Later writable
+opens retain the index. Read-only opens do not install it.
+
+Index creation can delay the initiating command and other writers. The index
+also consumes disk space and adds work to subsequent member writes.
+[The synthetic benchmark](../benchmarks/member-change-index.html) measures
+first-open cost and persistent growth without using an existing archive.
+Those local results are not production timings or a completed canary.
+Peak memory, temporary disk use, writer contention, and ongoing write overhead
+still require evaluation for the intended archive.
+
+Merging the source change does not approve production installation.
+Before the first writable open on an existing archive, use the backup-first
+procedure below. Do not use an ordinary command to inspect that archive
+unless its open mode is known.
+
 ### Before broader index rollout
 
 Require an explicitly approved, backup-first canary and a decision on its
