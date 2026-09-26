@@ -8,6 +8,17 @@ import (
 	"database/sql"
 )
 
+type AttachmentTextHistory struct {
+	AttachmentID    string
+	MessageID       string
+	GuildID         string
+	ChannelID       string
+	TextSha256      string
+	TextContent     string
+	TextSucceededAt sql.NullString
+	RetainedAt      string
+}
+
 type Channel struct {
 	ID               string
 	GuildID          string
@@ -24,6 +35,11 @@ type Channel struct {
 	ArchiveTimestamp sql.NullString
 	RawJson          string
 	UpdatedAt        string
+	CollectionScope  string
+	DeletedAt        sql.NullString
+	DeletionSource   sql.NullString
+	ScopePolicy      string
+	ScopeUpdatedAt   sql.NullString
 }
 
 type EmbeddingJob struct {
@@ -45,20 +61,21 @@ type EmbeddingJob struct {
 }
 
 type FailureLedger struct {
-	FailureID    int64
-	Operation    string
-	Source       string
-	GuildID      string
-	ChannelID    string
-	MessageID    string
-	RelatedKind  string
-	RelatedID    string
-	ErrorClass   string
-	ErrorMessage string
-	FirstSeenAt  string
-	LastSeenAt   string
-	RetryCount   int64
-	ResolvedAt   sql.NullString
+	FailureID        int64
+	Operation        string
+	Source           string
+	GuildID          string
+	ChannelID        string
+	MessageID        string
+	RelatedKind      string
+	RelatedID        string
+	ErrorClass       string
+	ErrorMessage     string
+	FirstSeenAt      string
+	LastSeenAt       string
+	RetryCount       int64
+	ResolvedAt       sql.NullString
+	ResolutionReason string
 }
 
 type Guild struct {
@@ -129,27 +146,33 @@ type Message struct {
 	HasAttachments    int64
 	RawJson           string
 	UpdatedAt         string
+	TextPartsJson     string
+	TextVersion       int64
 }
 
 type MessageAttachment struct {
-	AttachmentID  string
-	MessageID     string
-	GuildID       string
-	ChannelID     string
-	AuthorID      sql.NullString
-	Filename      string
-	ContentType   sql.NullString
-	Size          int64
-	Url           sql.NullString
-	ProxyUrl      sql.NullString
-	TextContent   string
-	MediaPath     sql.NullString
-	ContentSha256 sql.NullString
-	ContentSize   int64
-	FetchedAt     sql.NullString
-	FetchStatus   string
-	FetchError    string
-	UpdatedAt     string
+	AttachmentID    string
+	MessageID       string
+	GuildID         string
+	ChannelID       string
+	AuthorID        sql.NullString
+	Filename        string
+	ContentType     sql.NullString
+	Size            int64
+	Url             sql.NullString
+	ProxyUrl        sql.NullString
+	TextContent     string
+	MediaPath       sql.NullString
+	ContentSha256   sql.NullString
+	ContentSize     int64
+	FetchedAt       sql.NullString
+	FetchStatus     string
+	FetchError      string
+	UpdatedAt       string
+	TextAttemptedAt sql.NullString
+	TextError       string
+	TextStatus      string
+	TextSucceededAt sql.NullString
 }
 
 type MessageEmbedding struct {
@@ -160,6 +183,20 @@ type MessageEmbedding struct {
 	Dimensions    int64
 	EmbeddingBlob []byte
 	EmbeddedAt    string
+}
+
+type MessageEmbeddingHistory struct {
+	MessageID         string
+	Provider          string
+	Model             string
+	InputVersion      string
+	GuildID           string
+	ChannelID         string
+	Dimensions        int64
+	EmbeddingBlob     []byte
+	EmbeddedAt        string
+	NormalizedContent string
+	RetainedAt        string
 }
 
 type MessageEvent struct {

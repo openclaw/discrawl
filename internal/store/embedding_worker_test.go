@@ -98,7 +98,7 @@ func TestEmbeddingWorkerMigrationPreservesExistingArchive(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	version, e := s.schemaVersion(ctx)
 	require.NoError(t, e)
-	require.Equal(t, 6, version)
+	require.Equal(t, storeSchemaVersion, version)
 	var priority, revision, attempts int
 	require.NoError(t, s.db.QueryRowContext(t.Context(), `select priority,revision,attempts from embedding_jobs where message_id='old'`).Scan(&priority, &revision, &attempts))
 	require.Equal(t, 0, priority)

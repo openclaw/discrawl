@@ -68,26 +68,32 @@ type MessageRecord struct {
 	Pinned            bool
 	HasAttachments    bool
 	RawJSON           string
+	TextPartsJSON     string
+	TextVersion       int
 }
 
 type AttachmentRecord struct {
-	AttachmentID  string
-	MessageID     string
-	GuildID       string
-	ChannelID     string
-	AuthorID      string
-	Filename      string
-	ContentType   string
-	Size          int64
-	URL           string
-	ProxyURL      string
-	TextContent   string
-	MediaPath     string
-	ContentSHA256 string
-	ContentSize   int64
-	FetchedAt     string
-	FetchStatus   string
-	FetchError    string
+	AttachmentID    string
+	MessageID       string
+	GuildID         string
+	ChannelID       string
+	AuthorID        string
+	Filename        string
+	ContentType     string
+	Size            int64
+	URL             string
+	ProxyURL        string
+	TextContent     string
+	MediaPath       string
+	ContentSHA256   string
+	ContentSize     int64
+	FetchedAt       string
+	FetchStatus     string
+	FetchError      string
+	TextStatus      string
+	TextError       string
+	TextAttemptedAt string
+	TextSucceededAt string
 }
 
 type MentionEventRecord struct {
@@ -111,6 +117,7 @@ type MessageMutation struct {
 }
 
 type WriteOptions struct {
+	ScopePolicy      string
 	AppendEvent      bool
 	EnqueueEmbedding bool
 	EmbeddingCatchUp bool
@@ -130,6 +137,26 @@ func (s *Store) UpsertGuild(ctx context.Context, guild GuildRecord) error {
 	})
 }
 
+func (s *Store) UpsertObservedGuild(ctx context.Context, guild GuildRecord, started time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	var updated string
+	err = tx.QueryRowContext(ctx, `select updated_at from guilds where id=?`, guild.ID).Scan(&updated)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && parseTime(updated).After(started) {
+		return nil
+	}
+	if err = s.q.WithTx(tx).UpsertGuild(ctx, storedb.UpsertGuildParams{ID: guild.ID, Name: guild.Name, Icon: nullString(guild.Icon), RawJson: guild.RawJSON, UpdatedAt: time.Now().UTC().Format(timeLayout)}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) MarkGuildDeleted(ctx context.Context, guildID, source, reason string) error {
 	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(source) == "" || strings.TrimSpace(reason) == "" {
 		return errors.New("guild tombstone requires guild id, source, and reason")
@@ -145,7 +172,41 @@ func (s *Store) MarkGuildDeleted(ctx context.Context, guildID, source, reason st
 }
 
 func (s *Store) UpsertChannel(ctx context.Context, channel ChannelRecord) error {
-	return s.q.UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout)))
+	return s.UpsertObservedChannel(ctx, channel, time.Time{})
+}
+
+func (s *Store) UpsertObservedChannel(ctx context.Context, channel ChannelRecord, started time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	var parent, kind, updated, raw, guild, deleted string
+	err = tx.QueryRowContext(ctx, `select coalesce(parent_id,''),kind,updated_at,raw_json,guild_id,coalesce(deleted_at,'') from channels where id=?`, channel.ID).Scan(&parent, &kind, &updated, &raw, &guild, &deleted)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && !started.IsZero() && parseTime(updated).After(started) {
+		return nil
+	}
+	// Repeated full catalog observations need no write if the retained provider
+	// metadata and derived kind/ancestry are identical. Partial records do not
+	// establish this equivalence.
+	if err == nil && raw != "{}" && raw != "" && raw == channel.RawJSON && guild == channel.GuildID && parent == channel.ParentID && kind == channel.Kind && deleted == "" {
+		return nil
+	}
+	if err == nil && (parent != channel.ParentID || kind != channel.Kind) {
+		if err = invalidateChannelScope(ctx, tx, channel.ID); err != nil {
+			return err
+		}
+	}
+	if err = s.q.WithTx(tx).UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout))); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `update channels set deleted_at=null,deletion_source=null where id=?`, channel.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // MergeMembers refreshes observed members without treating absence as deletion.
@@ -304,6 +365,12 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := requireMessageScope(ctx, tx, message.Record, message.Options.ScopePolicy); err != nil {
+			return err
+		}
+		if err := prepareTextMutation(ctx, tx, &message); err != nil {
+			return err
+		}
 		if message.Options.PreserveNewer {
 			keep, err := keepStoredMessage(ctx, qtx, message.Record)
 			if err != nil {
@@ -316,7 +383,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := s.upsertMessageTx(ctx, tx, qtx, message.Record, message.Options); err != nil {
 			return err
 		}
-		if err := replaceAttachmentsTx(ctx, qtx, message.Record.ID, message.Attachments); err != nil {
+		if err := replaceAttachmentsTx(ctx, tx, qtx, message.Record.ID, message.Attachments); err != nil {
 			return err
 		}
 		if err := replaceMentionEventsTx(ctx, qtx, message.Record.ID, message.Mentions); err != nil {
@@ -413,6 +480,11 @@ func (s *Store) upsertMessageTx(
 			Err:      err,
 		}
 	}
+	if message.TextVersion > 0 {
+		if _, err := tx.ExecContext(ctx, `update messages set text_parts_json=?,text_version=? where id=?`, message.TextPartsJSON, message.TextVersion, message.ID); err != nil {
+			return err
+		}
+	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return err
@@ -421,6 +493,9 @@ func (s *Store) upsertMessageTx(
 			return err
 		}
 		if message.DeletedAt != "" {
+			if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
+				return err
+			}
 			if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
 				return err
 			}
@@ -439,6 +514,9 @@ func (s *Store) upsertMessageTx(
 	queueEmbedding := opts.EnqueueEmbedding && message.GuildID != "@me" &&
 		(errors.Is(previousErr, sql.ErrNoRows) || previousNormalized.String != message.NormalizedContent || !jobExists)
 	if queueEmbedding {
+		if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
+			return err
+		}
 		if err := qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: message.ID, UpdatedAt: now}); err != nil {
 			return err
 		}
@@ -535,6 +613,13 @@ func (s *Store) markMessageDeleted(
 			return err
 		}
 	}
+	var retainedText string
+	if err := tx.QueryRowContext(ctx, `select normalized_content from messages where id=?`, messageID).Scan(&retainedText); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := archiveMessageEmbeddings(ctx, tx, messageID, retainedText); err != nil {
+		return err
+	}
 	if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, messageID); err != nil {
 		return err
 	}
@@ -568,7 +653,10 @@ func appendEventTx(ctx context.Context, q *storedb.Queries, guildID, channelID, 
 	})
 }
 
-func replaceAttachmentsTx(ctx context.Context, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord) error {
+func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord) error {
+	if err := retainAttachmentText(ctx, tx, messageID); err != nil {
+		return err
+	}
 	existing, err := existingAttachmentMediaTx(ctx, qtx, messageID)
 	if err != nil {
 		return err
@@ -605,6 +693,13 @@ func replaceAttachmentsTx(ctx context.Context, qtx *storedb.Queries, messageID s
 				Size:        attachment.Size,
 				Err:         err,
 			}
+		}
+		status := attachment.TextStatus
+		if status == "" {
+			status = "unknown"
+		}
+		if _, err := tx.ExecContext(ctx, `update message_attachments set text_status=?,text_error=?,text_attempted_at=?,text_succeeded_at=? where attachment_id=?`, status, attachment.TextError, nullString(attachment.TextAttemptedAt), nullString(attachment.TextSucceededAt), attachment.AttachmentID); err != nil {
+			return err
 		}
 	}
 	return nil

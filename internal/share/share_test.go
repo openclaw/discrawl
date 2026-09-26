@@ -682,6 +682,8 @@ func TestPreflightPublishScopeDistinguishesMissingMetadataFromEmptyScope(t *test
 	upsertSnapshotFilterMessage(t, ctx, s, "m-private", "c-private", "u2", "private")
 	upsertSnapshotFilterMessage(t, ctx, s, "m-cache", "c-cache", "u3", "cache")
 
+	allowPublicFixtureChannels(t, s)
+
 	report, err := PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true})
 	require.NoError(t, err)
 	require.False(t, report.Ready)
@@ -783,6 +785,8 @@ func TestPublicSnapshotFilterHonorsCategoryAndThreadPermissions(t *testing.T) {
 		IsPrivateThread: true,
 		RawJSON:         `{}`,
 	}))
+
+	allowPublicFixtureChannels(t, s)
 
 	filter, err := newSnapshotFilter(ctx, s.DB(), FilterOptions{PublicOnly: true})
 	require.NoError(t, err)
@@ -1380,6 +1384,8 @@ func TestSnapshotFilterKeepsOnlyIncludedPublicChannels(t *testing.T) {
 	require.NoError(t, src.SetSyncState(ctx, LastImportManifestJSONScope, `{"tables":[{"name":"messages","rows":999}],"leak":"private content"}`))
 
 	repo := filepath.Join(t.TempDir(), "share")
+	allowPublicFixtureChannels(t, src)
+
 	manifest, err := Export(ctx, src, Options{
 		RepoPath: repo,
 		Branch:   "main",
@@ -2788,4 +2794,10 @@ func progressTotalRows(t *testing.T, progress []ImportProgress, phase string) in
 	}
 	t.Fatalf("progress phase %s not found", phase)
 	return 0
+}
+
+func allowPublicFixtureChannels(t *testing.T, s *store.Store) {
+	t.Helper()
+	_, err := s.DB().ExecContext(t.Context(), `update channels set collection_scope='allowed',scope_policy='fixture'`)
+	require.NoError(t, err)
 }

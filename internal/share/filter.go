@@ -33,6 +33,8 @@ type snapshotChannel struct {
 	Kind            string
 	IsPrivateThread bool
 	RawJSON         string
+	CollectionScope string
+	DeletedAt       string
 }
 
 func newSnapshotFilter(ctx context.Context, db *sql.DB, opts FilterOptions) (*snapshotFilter, error) {
@@ -93,7 +95,7 @@ func (f *snapshotFilter) loadGuilds(ctx context.Context, db *sql.DB) error {
 func (f *snapshotFilter) loadChannels(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `
 		select id, guild_id, coalesce(parent_id, ''), kind, is_private_thread,
-		       coalesce(thread_parent_id, ''), raw_json
+		       coalesce(thread_parent_id, ''), raw_json,collection_scope,coalesce(deleted_at,'')
 		from channels
 	`)
 	if err != nil {
@@ -102,7 +104,7 @@ func (f *snapshotFilter) loadChannels(ctx context.Context, db *sql.DB) error {
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var ch snapshotChannel
-		if err := rows.Scan(&ch.ID, &ch.GuildID, &ch.ParentID, &ch.Kind, &ch.IsPrivateThread, &ch.ThreadParentID, &ch.RawJSON); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.GuildID, &ch.ParentID, &ch.Kind, &ch.IsPrivateThread, &ch.ThreadParentID, &ch.RawJSON, &ch.CollectionScope, &ch.DeletedAt); err != nil {
 			return fmt.Errorf("scan channel share filter: %w", err)
 		}
 		f.channels[ch.ID] = ch
@@ -264,6 +266,20 @@ func (f *snapshotFilter) publicChannel(channelID string) bool {
 	if ch.IsPrivateThread || ch.Kind == "thread_private" {
 		f.publicMemo[channelID] = false
 		return false
+	}
+	for id, seen := channelID, map[string]bool{}; id != ""; {
+		ancestor, known := f.channels[id]
+		if !known || seen[id] || ancestor.CollectionScope == "unknown" || ancestor.CollectionScope == "" {
+			f.publicMissing[channelID] = true
+			f.publicMemo[channelID] = false
+			return false
+		}
+		if ancestor.CollectionScope != "allowed" || ancestor.DeletedAt != "" {
+			f.publicMemo[channelID] = false
+			return false
+		}
+		seen[id] = true
+		id = channelParentID(ancestor)
 	}
 	if ch.GuildID == "" {
 		f.publicMissing[channelID] = true

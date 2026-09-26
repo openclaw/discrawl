@@ -2038,7 +2038,7 @@ func TestPublishCheckIsReadOnlyAndUsesPublishFilters(t *testing.T) {
 		Name:    "Guild",
 		RawJSON: `{"roles":[{"id":"g1","permissions":"1024"}]}`,
 	}))
-	_, err := publisher.DB().ExecContext(ctx, `update channels set raw_json = '{"permission_overwrites":[]}' where guild_id = 'g1'`)
+	_, err := publisher.DB().ExecContext(ctx, `update channels set collection_scope='allowed',scope_policy='fixture',raw_json = '{"permission_overwrites":[]}' where guild_id = 'g1'`)
 	require.NoError(t, err)
 	require.NoError(t, publisher.Close())
 

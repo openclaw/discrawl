@@ -240,6 +240,9 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 	if err := s.storeChannelList(ctx, channelList, cachedChannels, resumed.channelIDs, &stats); err != nil {
 		return stats, err
 	}
+	if _, err := refreshCollectionScopes(ctx, s.store, s.channelExclusions); err != nil {
+		return stats, err
+	}
 
 	if len(resumed.channelIDs) > 0 {
 		channelList = slices.DeleteFunc(channelList, func(channel *discordgo.Channel) bool {
@@ -262,16 +265,17 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 }
 
 func (s *Syncer) syncGuildRecord(ctx context.Context, guildID string) error {
+	started := time.Now().UTC()
 	guild, err := s.client.Guild(ctx, guildID)
 	if err != nil {
 		return fmt.Errorf("fetch guild %s: %w", guildID, err)
 	}
-	return s.store.UpsertGuild(ctx, store.GuildRecord{
+	return s.store.UpsertObservedGuild(ctx, store.GuildRecord{
 		ID:      guild.ID,
 		Name:    guild.Name,
 		Icon:    guild.Icon,
 		RawJSON: marshalJSONString(guild, "{}"),
-	})
+	}, started)
 }
 
 func catalogModeForSync(opts SyncOptions) channelCatalogMode {

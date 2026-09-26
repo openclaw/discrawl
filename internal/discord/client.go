@@ -250,6 +250,12 @@ func (c *Client) ChannelMessage(ctx context.Context, channelID, messageID string
 	return c.session.ChannelMessage(channelID, messageID, discordgo.WithContext(reqCtx))
 }
 
+func (c *Client) GuildMember(ctx context.Context, guildID, userID string) (*discordgo.Member, error) {
+	call, cancel := c.requestContext(ctx)
+	defer cancel()
+	return c.session.GuildMember(guildID, userID, discordgo.WithContext(call))
+}
+
 func uniqueChannels(in []*discordgo.Channel) []*discordgo.Channel {
 	if len(in) == 0 {
 		return nil

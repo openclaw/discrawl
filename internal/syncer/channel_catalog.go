@@ -35,9 +35,18 @@ func (s *Syncer) channelList(
 	cachedChannels map[*discordgo.Channel]struct{},
 ) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
+		started := time.Now().UTC()
 		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
 		if err != nil {
 			return nil, false, err
+		}
+		if err := s.storeScopeMetadata(ctx, guildID, channels, s.channelExclusions, started); err != nil {
+			return nil, false, err
+		}
+		if cachedChannels != nil {
+			for _, c := range channels {
+				cachedChannels[c] = struct{}{}
+			}
 		}
 		return filterExcludedDiscordChannels(channels, exclusions), false, nil
 	}
@@ -58,11 +67,15 @@ func (s *Syncer) channelList(
 			}
 		}
 		if canUseStoredTargets(storedByID, requestedSet) {
+			if _, err := refreshCollectionScopes(ctx, s.store, s.channelExclusions); err != nil {
+				return nil, false, err
+			}
 			selected := selectRequestedChannels(nil, storedByID, requestedSet)
 			return filterExcludedDiscordChannelsWithCatalog(selected, storedCatalog, exclusions), true, nil
 		}
 	}
 
+	started := time.Now().UTC()
 	topLevel, err := s.client.GuildChannels(ctx, guildID)
 	if err != nil {
 		return nil, false, fmt.Errorf("fetch channels for guild %s: %w", guildID, err)
@@ -95,8 +108,23 @@ func (s *Syncer) channelList(
 		if err := s.appendThreadCatalog(ctx, allChannels, threadParentIDs(topLevel)); err != nil {
 			return nil, false, err
 		}
-		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	}
+	for id, c := range allChannels {
+		if c != nil && c.GuildID == "" {
+			observed := *c
+			observed.GuildID = guildID
+			allChannels[id] = &observed
+		}
+	}
+	if err := s.storeScopeMetadata(ctx, guildID, mapsToSlice(allChannels), s.channelExclusions, started); err != nil {
+		return nil, false, err
+	}
+	if cachedChannels != nil {
+		for _, c := range allChannels {
+			cachedChannels[c] = struct{}{}
+		}
+	}
+	selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	return filterExcludedDiscordChannelsWithCatalog(
 		selected,
 		mergedChannelCatalog(storedCatalog, allChannels),
@@ -616,6 +644,8 @@ func isMessageChannel(channel *discordgo.Channel) bool {
 	switch channel.Type {
 	case discordgo.ChannelTypeGuildText,
 		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildVoice,
+		discordgo.ChannelTypeGuildStageVoice,
 		discordgo.ChannelTypeGuildPublicThread,
 		discordgo.ChannelTypeGuildPrivateThread,
 		discordgo.ChannelTypeGuildNewsThread:
@@ -667,6 +697,8 @@ func channelKind(channel *discordgo.Channel) string {
 		return "thread_announcement"
 	case discordgo.ChannelTypeGuildVoice:
 		return "voice"
+	case discordgo.ChannelTypeGuildStageVoice:
+		return "stage"
 	default:
 		return fmt.Sprintf("type_%d", channel.Type)
 	}
@@ -690,6 +722,8 @@ func channelTypeFromKind(kind string) discordgo.ChannelType {
 		return discordgo.ChannelTypeGuildNewsThread
 	case "voice":
 		return discordgo.ChannelTypeGuildVoice
+	case "stage":
+		return discordgo.ChannelTypeGuildStageVoice
 	default:
 		return discordgo.ChannelTypeGuildText
 	}

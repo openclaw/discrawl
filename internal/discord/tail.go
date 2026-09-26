@@ -125,7 +125,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 						if parentJoinTimedOut {
 							cancel()
 						}
-						if messageScoped {
+						if messageScoped || failureRecorder != nil {
 							if recordTailFailure(failureRecorder, failure) != nil {
 								cancel()
 								fatal.signal(errors.New("persist tail message failure"))
@@ -181,6 +181,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 	addHandler := func(eventHandler any) {
 		removers = append(removers, c.session.AddHandler(eventHandler))
 	}
+	c.addMetadataTailHandlers(tailCtx, handler, orderedWorkCh, fatal, addHandler)
 	addHandler(func(_ *discordgo.Session, evt *discordgo.MessageCreate) {
 		var msg *discordgo.Message
 		if evt != nil {
@@ -209,13 +210,14 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			before,
 		)
 		task.run = func(taskCtx context.Context) error {
-			if filter, ok := handler.(tailGuildFilter); ok && msg != nil && !filter.TailAllowsGuild(msg.GuildID) {
+			if filter, ok := handler.(tailGuildFilter); ok && msg != nil && msg.GuildID != "" && !filter.TailAllowsGuild(msg.GuildID) {
 				reportTailEventObserved(eventObserver, task, "handler_started", "")
 				reportTailEventObserved(eventObserver, task, "ignored", "guild_scope")
 				return nil
 			}
 			var refetchErr error
-			if msg != nil && msg.Content == "" {
+			owner, ownsRefetch := handler.(interface{ TailHandlesUpdateRefetch() bool })
+			if msg != nil && msg.Content == "" && (!ownsRefetch || !owner.TailHandlesUpdateRefetch()) {
 				UpdateTailFailureStage(taskCtx, TailFailureStageMessageUpdateRefetch)
 				full, err := session.ChannelMessage(msg.ChannelID, msg.ID, discordgo.WithContext(taskCtx))
 				switch {

@@ -808,6 +808,11 @@ func (s *Syncer) persistMessagePage(ctx context.Context, messages []*discordgo.M
 	if err != nil {
 		return "", err
 	}
+	if s.channelExclusions.configured() {
+		for i := range mutations {
+			mutations[i].Options.ScopePolicy = s.channelExclusions.policyID()
+		}
+	}
 	if err := s.store.UpsertMessages(ctx, mutations); err != nil {
 		return "", err
 	}

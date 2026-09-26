@@ -994,6 +994,19 @@ func (s *Store) GuildMemberCount(ctx context.Context, guildID string) (int, erro
 
 func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Status, error) {
 	status := Status{DBPath: dbPath, DefaultGuildID: defaultGuildID}
+	var repairErr error
+	status.TextRepair, repairErr = s.TextRepairStatus(ctx)
+	if repairErr != nil {
+		return Status{}, repairErr
+	}
+	var oldest string
+	if err := s.db.QueryRowContext(ctx, `select count(*),coalesce(min(first_seen_at),'') from failure_ledger where resolved_at is null`).Scan(&status.UnresolvedFailures, &oldest); err != nil {
+		return Status{}, err
+	}
+	status.OldestFailureAt = parseTime(oldest)
+	if err := s.db.QueryRowContext(ctx, `select count(*) from message_attachments where text_status='failed'`).Scan(&status.AttachmentTextFailures); err != nil {
+		return Status{}, err
+	}
 	guildCount, err := s.q.CountGuilds(ctx)
 	if err != nil {
 		return Status{}, err

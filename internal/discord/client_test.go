@@ -1554,7 +1554,7 @@ func TestTailReportsScopedChannelAndMemberUpdateFailures(t *testing.T) {
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 	require.EqualValues(t, 1, handler.channelCalls.Load())
 	require.EqualValues(t, 1, handler.memberCalls.Load())
-	require.Zero(t, handler.recordCalls.Load())
+	require.EqualValues(t, 2, handler.recordCalls.Load(), "metadata failures are durable as well as logged")
 	assertTailFailure(t, <-handler.failures, TailFailure{
 		EventType: "CHANNEL_UPDATE",
 		Kind:      "returned_error",

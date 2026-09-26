@@ -3,7 +3,9 @@ package syncer
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/openclaw/discrawl/internal/messagetext"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -24,6 +27,22 @@ const (
 
 var attachmentHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
+type attachmentTextError struct{ code string }
+
+func (e attachmentTextError) Error() string { return e.code }
+func attachmentFailureCode(err error) string {
+	if e, ok := errors.AsType[attachmentTextError](err); ok {
+		return e.code
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "request_failed"
+}
+
 func buildMessageMutation(
 	ctx context.Context,
 	message *discordgo.Message,
@@ -33,12 +52,22 @@ func buildMessageMutation(
 	attachmentText bool,
 ) (store.MessageMutation, error) {
 	guildID := effectiveMessageGuildID(message, fallbackGuildID)
-	attachments, attachmentParts, err := extractAttachments(ctx, message, guildID, attachmentText)
+	attachments, _, err := extractAttachments(ctx, message, guildID, attachmentText)
 	if err != nil {
 		return store.MessageMutation{}, err
 	}
-	normalized := normalizeMessageParts(message, attachmentParts)
-	record := toMessageRecord(message, channelName, guildID, normalized)
+	textAttachments := make([]messagetext.Attachment, 0, len(attachments))
+	for _, a := range attachments {
+		textAttachments = append(textAttachments, messagetext.Attachment{ID: a.AttachmentID, Filename: a.Filename, Text: a.TextContent})
+	}
+	parts := messagetext.Parts(message, textAttachments)
+	textJSON, err := json.Marshal(parts)
+	if err != nil {
+		return store.MessageMutation{}, err
+	}
+	record := toMessageRecord(message, channelName, guildID, messagetext.Normalize(parts))
+	record.TextPartsJSON = string(textJSON)
+	record.TextVersion = messagetext.Version
 	return store.MessageMutation{
 		Record:      record,
 		EventType:   "upsert",
@@ -71,6 +100,8 @@ func extractAttachments(ctx context.Context, message *discordgo.Message, guildID
 			Size:         int64(attachment.Size),
 			URL:          attachment.URL,
 			ProxyURL:     attachment.ProxyURL,
+			TextStatus:   "skipped",
+			TextError:    "not_eligible",
 		}
 		if message.Author != nil {
 			record.AuthorID = message.Author.ID
@@ -79,9 +110,26 @@ func extractAttachments(ctx context.Context, message *discordgo.Message, guildID
 			parts = append(parts, name)
 		}
 		if attachmentText && shouldFetchAttachmentText(attachment) && attachment.URL != "" {
+			record.TextAttemptedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			text, err := fetchAttachmentText(ctx, attachment.URL)
-			if err != nil {
+			switch {
+			case err != nil:
 				text = ""
+				record.TextStatus = "failed"
+				record.TextError = attachmentFailureCode(err)
+				if strings.HasPrefix(record.TextError, "unsupported_") || record.TextError == "too_large" {
+					record.TextStatus = "skipped"
+				}
+			case text == "" && attachment.Size > 0:
+				record.TextStatus = "failed"
+				record.TextError = "empty_response"
+			default:
+				record.TextStatus = "succeeded"
+				record.TextError = ""
+				record.TextSucceededAt = record.TextAttemptedAt
+				if text == "" {
+					record.TextStatus = "empty"
+				}
 			}
 			if text != "" {
 				record.TextContent = text
@@ -181,14 +229,14 @@ func fetchAttachmentText(ctx context.Context, url string) (string, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", nil
+		return "", attachmentTextError{code: fmt.Sprintf("http_%d", resp.StatusCode)}
 	}
 	if resp.ContentLength > attachmentFetchMaxBytes {
-		return "", nil
+		return "", attachmentTextError{code: "too_large"}
 	}
 	contentType := normalizedMediaType(resp.Header.Get("Content-Type"))
 	if contentType != "" && !isAllowedFetchedContentType(contentType) {
-		return "", nil
+		return "", attachmentTextError{code: "unsupported_type"}
 	}
 	reader := bufio.NewReader(resp.Body)
 	peek, err := reader.Peek(512)
@@ -196,14 +244,14 @@ func fetchAttachmentText(ctx context.Context, url string) (string, error) {
 		return "", err
 	}
 	if len(peek) != 0 && !isAllowedFetchedContentType(normalizedMediaType(http.DetectContentType(peek))) {
-		return "", nil
+		return "", attachmentTextError{code: "unsupported_content"}
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, attachmentFetchMaxBytes+1))
 	if err != nil {
 		return "", err
 	}
 	if len(body) > attachmentFetchMaxBytes {
-		return "", nil
+		return "", attachmentTextError{code: "too_large"}
 	}
 	return clampText(string(body), attachmentIndexMaxChars), nil
 }
