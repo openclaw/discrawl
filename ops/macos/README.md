@@ -4,15 +4,27 @@ launchd runs Discrawl directly. Discrawl loads both credentials, owns the archiv
 writer, captures Gateway events, repairs history, and processes embeddings.
 There is no Python coordinator or credential-loading shell wrapper.
 
-The installed application is `eca8514ce68ddf67795943e82fbf1bafe795f219`,
-adding only the member-change timestamp index to the previously deployed upstream
-`0d365ac801954ad69fac3c2771f3d6ff6d22297c`, with Crawlkit v0.16.3.
-[PR #257](https://github.com/openclaw/discrawl/pull/257) tracks this focused patch;
-it is not yet merged upstream. The signed binary retains the existing identity,
-configuration and writer ownership. The normal writable-open migration created
-`idx_members_updated_identity` without rewriting source rows or changing the
-schema version. Machine-specific service and signing files remain on this local
-operations branch.
+The installed application is `e6c7c2fff74572b23bd2f1d6872c5e197ba4c769`
+(`0.15.1-21-ge6c7c2f`), with Crawlkit v0.16.3 and schema 7. It includes the
+member-change index and the [ingestion integrity repair](../../docs/guides/ingestion-integrity.md):
+persisted ancestry exclusions, attributed rich text, recovery snapshots,
+attachment extraction receipts, and failure-aware status. The signed binary
+retains the existing identity, message configuration, schedule and writer
+ownership. Machine-specific service and signing files remain on this operations
+branch.
+
+Activated at `2026-09-26T01:33:54Z`; SHA-256:
+`11662da58ad262e1e028c738d1fdb3509cb89dacfc3a3d308fe14d01fe77e46f`.
+The bounded local text pass completed without resetting ingestion cursors or
+fetching historical attachments. Its checkpoint survives restarts. Existing raw
+evidence and unchanged vectors remain retained; changed text is processed by the
+normal embedding worker. Metadata-only Desktop receipts remain unchanged and
+are explicitly classified as unavailable for provider-payload reconstruction.
+
+The separate metrics-only runtime and hourly job remain in place. Their current
+targets come only from `~/.config/discrawl/metrics.json`, which contains the
+OpenClaw `clawd` invite target. The message collector does not own that schedule
+or replace the metrics executable.
 
 ## Installed configuration
 
