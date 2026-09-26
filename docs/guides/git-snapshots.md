@@ -190,6 +190,35 @@ DISCRAWL_DOCKER_TEST=1 go test ./internal/cli -run TestDockerGitSourceSmoke -cou
 
 The backup workflows restore and save `.discrawl-ci/discrawl.db` with `actions/cache`. On a warm runner cache, scheduled publishers skip the pre-sync snapshot import and go straight to the live latest-message delta before publishing. Cache misses still import the latest published snapshot first so `--latest-only` has channel cursors to resume from.
 
+### Cloud publication failures
+
+When `DISCRAWL_CLOUD_PUBLISH_ENABLED=1`, the backup workflow publishes the same
+state to D1 and R2 after Git publication and cache persistence. A failure in
+`Publish the same current state to D1 and R2` leaves those earlier results
+available, but does not establish cloud archive freshness. Check that step's
+aggregate `status: published` or `status: unchanged` result as well as the run
+conclusion.
+
+The publisher distinguishes cloud login failures from later archive requests.
+For recognized authorization errors it reports a fixed diagnostic hint; response
+messages, tokens, archive paths, and unknown error codes stay private. Diagnostic
+reads are limited to 4 KiB and one second. HTTP 401/403 failures are terminal;
+only transport failures, HTTP 429, and HTTP 5xx responses receive up to three
+retries. Repeating a run cannot repair a persistent authorization policy error.
+
+For a GitHub organization/team denial, check the cloud service's **deployed**
+team allowlist and the publishing token's ability to prove active membership.
+Git write access alone does not establish cloud publisher authorization. For
+Access authentication failures, check the configured endpoint and the paired
+`DISCRAWL_CLOUD_ACCESS_CLIENT_ID` / `DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET` secrets.
+
+The September 25–26, 2026 incident was a stale cloud-service team slug, corrected
+in [crawl-remote #88](https://github.com/openclaw/crawl-remote/pull/88) and deployed
+in [run 36148213868](https://github.com/openclaw/crawl-remote/actions/runs/36148213868).
+Discrawl's source and publishing token were unchanged when cloud publication
+recovered. The publisher and daily report workflow already share the
+`discord-backup-repo` concurrency group with cancellation disabled.
+
 ## See also
 
 - [`publish`](../commands/publish.html)
