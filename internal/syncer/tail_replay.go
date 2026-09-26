@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
@@ -27,6 +30,8 @@ var (
 )
 
 type TailMessageReplayStats struct {
+	OutOfScope     int `json:"out_of_scope"`
+	Unavailable    int `json:"unavailable"`
 	Candidates     int `json:"candidates"`
 	Recovered      int `json:"recovered"`
 	Deferred       int `json:"deferred"`
@@ -68,6 +73,12 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 		return stats, err
 	}
 	stats.Candidates = len(candidates)
+	resolver := &tailHandler{store: s.store, client: s.client, guilds: makeGuildSet(guildIDs), exclusions: s.channelExclusions}
+	if s.channelExclusions.configured() {
+		if err := resolver.seedChannelExclusions(ctx); err != nil {
+			return stats, err
+		}
+	}
 	for _, failure := range candidates {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -106,6 +117,23 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			stats.Recovered++
 			continue
 		}
+		if s.channelExclusions.configured() {
+			allowed, err := resolver.allowMessageChannel(ctx, failure.GuildID, failure.ChannelID)
+			if err != nil {
+				if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayPolicyDeferred); recordErr != nil {
+					return stats, recordErr
+				}
+				stats.PolicyDeferred++
+				continue
+			}
+			if !allowed {
+				if err := s.store.ResolveFailureWithReason(ctx, ref, "excluded_by_collection_policy"); err != nil {
+					return stats, err
+				}
+				stats.OutOfScope++
+				continue
+			}
+		}
 		if s.client == nil {
 			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayClientMissing); err != nil {
 				return stats, err
@@ -120,6 +148,14 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			return stats, ctxErr
 		}
 		if fetchErr != nil {
+			var rest *discordgo.RESTError
+			if errors.As(fetchErr, &rest) && rest.Response != nil && rest.Response.StatusCode == http.StatusNotFound && rest.Message != nil && (rest.Message.Code == 10003 || rest.Message.Code == 10008) {
+				if err := s.store.ResolveFailureWithReason(ctx, ref, "provider_unavailable_404"); err != nil {
+					return stats, err
+				}
+				stats.Unavailable++
+				continue
+			}
 			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayFetch); err != nil {
 				return stats, err
 			}
@@ -147,6 +183,10 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			stats.Deferred++
 			continue
 		}
+		mutation.Options.ScopePolicy = resolver.scopePolicy()
+		mutation.Options.AppendEvent = true
+		mutation.Options.DeduplicateEvent = true
+		mutation.EventType = "snapshot"
 		if err := s.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
@@ -215,5 +255,5 @@ func (s *Syncer) recordTailMessageReplayFailure(ctx context.Context, ref store.F
 func (s *Syncer) resolveTailMessageReplay(ctx context.Context, ref store.FailureRef) error {
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
-	return s.store.ResolveFailureIdentity(ledgerCtx, ref)
+	return s.store.ResolveFailureWithReason(ledgerCtx, ref, "exact_message_reconciled")
 }

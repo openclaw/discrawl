@@ -76,11 +76,23 @@ func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error
 		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(failure.EventType)), "MESSAGE_") {
 			return errors.New("record tail message failure: unsupported event type")
 		}
-		return nil
+		if t == nil || t.store == nil {
+			return errors.New("metadata failure store unavailable")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), tailMessageFailureLedgerTimeout)
+		defer cancel()
+		cause := "metadata event handler failed"
+		if failure.Code != "" {
+			cause += " (" + failure.Code + ")"
+		}
+		return t.store.RecordFailure(ctx, store.FailureRef{Operation: "tail_metadata", Source: "discord", GuildID: failure.GuildID, ChannelID: failure.ChannelID, RelatedKind: "gateway_event", RelatedID: failure.EventType + ":" + failure.UserID}, errors.New(cause))
 	}
 	failureKind, durableFailure, ok := tailMessageFailureSentinel(failure.Kind)
 	if !ok {
 		return errors.New("record tail message failure: unsupported failure kind")
+	}
+	if failure.Code != "" {
+		durableFailure = fmt.Errorf("%w (%s)", durableFailure, failure.Code)
 	}
 	if failure.MessageID == "" {
 		return errors.New("record tail message failure: missing message id")

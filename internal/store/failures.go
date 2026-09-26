@@ -37,20 +37,21 @@ type FailureRef struct {
 }
 
 type Failure struct {
-	FailureID    int64     `json:"failure_id"`
-	Operation    string    `json:"operation"`
-	Source       string    `json:"source"`
-	GuildID      string    `json:"guild_id,omitempty"`
-	ChannelID    string    `json:"channel_id,omitempty"`
-	MessageID    string    `json:"message_id,omitempty"`
-	RelatedKind  string    `json:"related_kind,omitempty"`
-	RelatedID    string    `json:"related_id,omitempty"`
-	ErrorClass   string    `json:"error_class"`
-	ErrorMessage string    `json:"error_message"`
-	FirstSeenAt  time.Time `json:"first_seen_at"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
-	RetryCount   int       `json:"retry_count"`
-	ResolvedAt   time.Time `json:"resolved_at,omitzero"`
+	ResolutionReason string    `json:"resolution_reason,omitempty"`
+	FailureID        int64     `json:"failure_id"`
+	Operation        string    `json:"operation"`
+	Source           string    `json:"source"`
+	GuildID          string    `json:"guild_id,omitempty"`
+	ChannelID        string    `json:"channel_id,omitempty"`
+	MessageID        string    `json:"message_id,omitempty"`
+	RelatedKind      string    `json:"related_kind,omitempty"`
+	RelatedID        string    `json:"related_id,omitempty"`
+	ErrorClass       string    `json:"error_class"`
+	ErrorMessage     string    `json:"error_message"`
+	FirstSeenAt      time.Time `json:"first_seen_at"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
+	RetryCount       int       `json:"retry_count"`
+	ResolvedAt       time.Time `json:"resolved_at,omitzero"`
 }
 
 type FailureListOptions struct {
@@ -256,6 +257,7 @@ func recordFailure(
 			error_message = excluded.error_message,
 			last_seen_at = excluded.last_seen_at,
 			retry_count = failure_ledger.retry_count + 1,
+			resolution_reason = '',
 			resolved_at = null
 	`, ref.Operation, ref.Source, ref.GuildID, ref.ChannelID, ref.MessageID, ref.RelatedKind, ref.RelatedID,
 		failureClass(failure), sanitizeFailureMessage(failure.Error()), now.Format(timeLayout), now.Format(timeLayout)); err != nil {
@@ -387,7 +389,7 @@ func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, gener
 	rows, err := s.db.QueryContext(ctx, `
 		select failure_id, operation, source, guild_id, channel_id, message_id,
 		       related_kind, related_id, error_class, error_message,
-		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
+		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, ''), resolution_reason
 		from failure_ledger
 		`+where+`
 		order by (resolved_at is null) desc, last_seen_at desc, failure_id desc
@@ -402,7 +404,7 @@ func (s *Store) ListFailures(ctx context.Context, opts FailureListOptions, gener
 		if err := rows.Scan(
 			&row.FailureID, &row.Operation, &row.Source, &row.GuildID, &row.ChannelID, &row.MessageID,
 			&row.RelatedKind, &row.RelatedID, &row.ErrorClass, &row.ErrorMessage,
-			&firstSeen, &lastSeen, &row.RetryCount, &resolved,
+			&firstSeen, &lastSeen, &row.RetryCount, &resolved, &row.ResolutionReason,
 		); err != nil {
 			return FailureReport{}, fmt.Errorf("scan failure: %w", err)
 		}
@@ -507,7 +509,7 @@ func (s *Store) listFailureReplayCandidates(
 	rows, err := s.db.QueryContext(ctx, `
 		select failure_id, operation, source, guild_id, channel_id, message_id,
 		       related_kind, related_id, error_class, error_message,
-		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, '')
+		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, ''), resolution_reason
 		from failure_ledger
 		where `+strings.Join(clauses, " and ")+`
 		order by last_seen_at asc, failure_id asc
@@ -523,7 +525,7 @@ func (s *Store) listFailureReplayCandidates(
 		if err := rows.Scan(
 			&row.FailureID, &row.Operation, &row.Source, &row.GuildID, &row.ChannelID, &row.MessageID,
 			&row.RelatedKind, &row.RelatedID, &row.ErrorClass, &row.ErrorMessage,
-			&firstSeen, &lastSeen, &row.RetryCount, &resolved,
+			&firstSeen, &lastSeen, &row.RetryCount, &resolved, &row.ResolutionReason,
 		); err != nil {
 			return nil, fmt.Errorf("scan failure replay candidate: %w", err)
 		}

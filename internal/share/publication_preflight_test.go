@@ -35,7 +35,7 @@ func TestPublicationPreflightRequiresSelectedPermissionEvidence(t *testing.T) {
 		{name: "missing category evidence", raw: public, parentRaw: `{}`, parentKind: "category"},
 		{name: "null category evidence", raw: public, parentRaw: `{"permission_overwrites":null}`, parentKind: "category"},
 		{name: "malformed category evidence", raw: public, parentRaw: `{"permission_overwrites":"bad"}`, parentKind: "category"},
-		{name: "absent category", raw: public, missingParent: true, allowed: true},
+		{name: "absent category", raw: public, missingParent: true, allowed: false},
 		{name: "denied category", raw: public, parentRaw: denied, parentKind: "category", ready: true},
 		{name: "public thread", raw: `{}`, parentRaw: public, parentKind: "forum", thread: true, ready: true, allowed: true, includeParent: true},
 		{name: "missing thread parent evidence", raw: `{}`, parentRaw: `{}`, parentKind: "forum", thread: true},
@@ -89,6 +89,7 @@ func TestPublicationPreflightRequiresSelectedPermissionEvidence(t *testing.T) {
 			if test.emptyScope {
 				opts.IncludeChannelIDs = []string{"absent"}
 			}
+			allowPublicFixtureChannels(t, s)
 			report, err := PreflightPublishScope(ctx, s, opts)
 			require.NoError(t, err)
 			require.Equal(t, test.ready, report.Ready)
@@ -197,6 +198,7 @@ func TestPublicationPreflightRequiresOrphanChannelEvidence(t *testing.T) {
 			require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from channels where id = 'orphan'`).Scan(&channelRows))
 			require.Zero(t, channelRows)
 
+			allowPublicFixtureChannels(t, s)
 			report, err := PreflightPublishScope(ctx, s, test.opts)
 			require.NoError(t, err)
 			require.Equal(t, test.ready, report.Ready)

@@ -151,6 +151,8 @@ func TestExactReplacementRemovesRowsOmittedByNewPublicSnapshot(t *testing.T) {
 
 	repo := filepath.Join(t.TempDir(), "share")
 	opts := Options{RepoPath: repo, Branch: "main", Filter: FilterOptions{PublicOnly: true}}
+	allowPublicFixtureChannels(t, src)
+
 	first, err := Export(ctx, src, opts)
 	require.NoError(t, err)
 	require.Contains(t, snapshotTableText(t, repo, tableEntry(t, first, "channels")), channel.ID)

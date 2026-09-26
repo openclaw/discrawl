@@ -66,7 +66,11 @@ func (r *runtime) runMetadata(args []string) error {
 }
 
 type archiveControlStatus struct {
-	BackgroundWork *store.EmbeddingWorkerStatus `json:"background_work,omitempty"`
+	TextRepair             []store.TextRepairProgress   `json:"text_repair,omitempty"`
+	UnresolvedFailures     int                          `json:"unresolved_failures"`
+	OldestFailureAt        time.Time                    `json:"oldest_failure_at,omitzero"`
+	AttachmentTextFailures int                          `json:"attachment_text_failures"`
+	BackgroundWork         *store.EmbeddingWorkerStatus `json:"background_work,omitempty"`
 	control.Status
 	LastTailEventAt string `json:"last_tail_event_at,omitempty"`
 }
@@ -79,9 +83,19 @@ func controlStatus(configPath string, cfg config.Config, status store.Status, sh
 		control.NewCount("messages", "Messages", int64(status.MessageCount)),
 		control.NewCount("members", "Members", int64(status.MemberCount)),
 		control.NewCount("embedding_backlog", "Embedding backlog", int64(status.EmbeddingBacklog)),
+		control.NewCount("unresolved_failures", "Unresolved failures", int64(status.UnresolvedFailures)),
+		control.NewCount("attachment_text_failures", "Attachment extraction failures", int64(status.AttachmentTextFailures)),
 	}
 	out := control.NewStatus("discrawl", fmt.Sprintf("%d messages across %d channels", status.MessageCount, status.ChannelCount))
 	out.State = "current"
+	for _, p := range status.TextRepair {
+		if !p.Complete {
+			out.State = "processing"
+		}
+	}
+	if status.UnresolvedFailures > 0 || status.AttachmentTextFailures > 0 || (status.BackgroundWork != nil && status.BackgroundWork.FailedJobs > 0) {
+		out.State = "degraded"
+	}
 	out.ConfigPath = configPath
 	out.DatabasePath = status.DBPath
 	out.Counts = counts
@@ -99,7 +113,8 @@ func controlStatus(configPath string, cfg config.Config, status store.Status, sh
 		Branch:      cfg.Share.Branch,
 		NeedsUpdate: shareNeedsUpdate,
 	}
-	result := archiveControlStatus{Status: out, BackgroundWork: status.BackgroundWork}
+	result := archiveControlStatus{Status: out, BackgroundWork: status.BackgroundWork, UnresolvedFailures: status.UnresolvedFailures, OldestFailureAt: status.OldestFailureAt, AttachmentTextFailures: status.AttachmentTextFailures}
+	result.TextRepair = status.TextRepair
 	if !status.LastTailEventAt.IsZero() {
 		result.LastTailEventAt = status.LastTailEventAt.UTC().Format(time.RFC3339)
 	}

@@ -726,7 +726,10 @@ func TestPanickedGatewayMessageReplaysExactlyWithoutTailSideEffects(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, "999", lastEvent)
 	require.NoError(t, s.DB().QueryRowContext(replayCtx, `select count(*) from message_events`).Scan(&eventCount))
-	require.Zero(t, eventCount)
+	require.Equal(t, 1, eventCount)
+	var recoveredKind string
+	require.NoError(t, s.DB().QueryRowContext(replayCtx, `select event_type from message_events limit 1`).Scan(&recoveredKind))
+	require.Equal(t, "snapshot", recoveredKind)
 
 	report, err = s.ListFailures(replayCtx, store.FailureListOptions{IncludeResolved: true}, time.Now())
 	require.NoError(t, err)
@@ -795,7 +798,10 @@ func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *t
 	require.Equal(t, "999", lastEvent)
 	var eventCount int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events`).Scan(&eventCount))
-	require.Zero(t, eventCount)
+	require.Equal(t, 1, eventCount)
+	var recoveredKind string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select event_type from message_events limit 1`).Scan(&recoveredKind))
+	require.Equal(t, "snapshot", recoveredKind)
 
 	report, err := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, err)
@@ -1774,6 +1780,8 @@ func TestTailEventTraceLogsSafeStagesAndScopeOutcomes(t *testing.T) {
 		logger:     logger,
 		exclusions: newChannelScope([]string{"blocked"}, nil, nil),
 	}
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}))
+
 	message := &discordgo.Message{
 		ID:        "100000000000000001",
 		GuildID:   "g1",

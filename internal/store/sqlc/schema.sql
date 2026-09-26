@@ -24,7 +24,12 @@ create table channels (
 	thread_parent_id text,
 	archive_timestamp text,
 	raw_json text not null,
-	updated_at text not null
+	updated_at text not null,
+	collection_scope text not null default 'unknown',
+	deleted_at text,
+	deletion_source text,
+	scope_policy text not null default '',
+	scope_updated_at text
 );
 
 create table members (
@@ -62,7 +67,9 @@ create table messages (
 	pinned integer not null default 0,
 	has_attachments integer not null default 0,
 	raw_json text not null,
-	updated_at text not null
+	updated_at text not null,
+	text_parts_json text not null default '[]',
+	text_version integer not null default 0
 );
 
 create table message_events (
@@ -93,7 +100,11 @@ create table message_attachments (
 	fetched_at text,
 	fetch_status text not null default '',
 	fetch_error text not null default '',
-	updated_at text not null
+	updated_at text not null,
+	text_attempted_at text,
+	text_error text not null default '',
+	text_status text not null default 'unknown',
+	text_succeeded_at text
 );
 
 create table mention_events (
@@ -158,7 +169,22 @@ create table failure_ledger (
 	last_seen_at text not null,
 	retry_count integer not null default 0,
 	resolved_at text,
+	resolution_reason text not null default '',
 	unique(operation, source, guild_id, channel_id, message_id, related_kind, related_id)
+);
+
+create table message_embedding_history (
+	message_id text not null, provider text not null, model text not null, input_version text not null,
+	guild_id text not null, channel_id text not null,
+	dimensions integer not null, embedding_blob blob not null, embedded_at text not null,
+	normalized_content text not null, retained_at text not null,
+	primary key(message_id,provider,model,input_version,embedded_at)
+);
+
+create table attachment_text_history (
+	attachment_id text not null, message_id text not null, guild_id text not null, channel_id text not null,
+	text_sha256 text not null, text_content text not null, text_succeeded_at text, retained_at text not null,
+	primary key(attachment_id,text_sha256)
 );
 
 -- sqlc only needs parseable table shapes. Runtime migrations create real FTS5

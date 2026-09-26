@@ -36,9 +36,18 @@ func (s *Syncer) channelList(
 	cachedChannels map[*discordgo.Channel]struct{},
 ) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
+		started := time.Now().UTC()
 		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
 		if err != nil {
 			return nil, false, err
+		}
+		if err := s.storeScopeMetadata(ctx, guildID, channels, s.channelExclusions, started); err != nil {
+			return nil, false, err
+		}
+		if cachedChannels != nil {
+			for _, c := range channels {
+				cachedChannels[c] = struct{}{}
+			}
 		}
 		return filterExcludedDiscordChannels(channels, exclusions), false, nil
 	}
@@ -70,11 +79,15 @@ func (s *Syncer) channelList(
 			}
 		}
 		if canUseStoredTargets(storedByID, requestedSet) {
+			if _, err := refreshCollectionScopes(ctx, s.store, s.channelExclusions); err != nil {
+				return nil, false, err
+			}
 			selected := selectRequestedChannels(nil, storedByID, requestedSet)
 			return filterExcludedDiscordChannelsWithCatalog(selected, storedCatalog, exclusions), true, nil
 		}
 	}
 
+	started := time.Now().UTC()
 	topLevel, err := s.client.GuildChannels(ctx, guildID)
 	if err != nil {
 		return nil, false, fmt.Errorf("fetch channels for guild %s: %w", guildID, err)
@@ -85,6 +98,10 @@ func (s *Syncer) channelList(
 	}
 	if directChannelResults == nil {
 		directChannelResults = make(map[string]directChannelResult, len(requestedSet))
+	}
+	liveIDs := make(map[string]struct{}, len(allChannels))
+	for id := range allChannels {
+		liveIDs[id] = struct{}{}
 	}
 	if err := s.hydrateDesktopChannelMetadata(ctx, guildID, allChannels, desktopTargets, directChannelResults); err != nil {
 		return nil, false, err
@@ -110,14 +127,62 @@ func (s *Syncer) channelList(
 		if err := s.appendThreadCatalog(ctx, allChannels, threadParentIDs(topLevel)); err != nil {
 			return nil, false, err
 		}
-		selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	}
+	for id, c := range allChannels {
+		if c != nil && c.GuildID == "" {
+			observed := *c
+			observed.GuildID = guildID
+			allChannels[id] = &observed
+		}
+	}
+	selected = selectRequestedChannels(allChannels, storedByID, requestedSet)
 	selected = filterExcludedDiscordChannelsWithCatalog(
 		selected,
 		mergedChannelCatalog(storedCatalog, allChannels),
 		exclusions,
 	)
-	return withHydratedAncestors(selected, allChannels, desktopTargets), true, nil
+	selected = withHydratedAncestors(selected, allChannels, desktopTargets)
+	// Live catalog metadata is retained independently of content. Metadata
+	// fetched only to hydrate Desktop targets is retained only when the target
+	// survives this run's scope, so an excluded target leaves stored rows as-is.
+	observed := hydratedObservations(allChannels, liveIDs, desktopTargets, selected)
+	if err := s.storeScopeMetadata(ctx, guildID, observed, s.channelExclusions, started); err != nil {
+		return nil, false, err
+	}
+	if cachedChannels != nil {
+		for _, c := range observed {
+			cachedChannels[c] = struct{}{}
+		}
+	}
+	return selected, true, nil
+}
+
+func hydratedObservations(
+	catalog map[string]*discordgo.Channel,
+	liveIDs map[string]struct{},
+	targets map[string]struct{},
+	selected []*discordgo.Channel,
+) []*discordgo.Channel {
+	if len(targets) == 0 {
+		return mapsToSlice(catalog)
+	}
+	kept := make(map[string]struct{}, len(selected))
+	for _, channel := range selected {
+		if channel != nil {
+			kept[channel.ID] = struct{}{}
+		}
+	}
+	out := make(map[string]*discordgo.Channel, len(catalog))
+	for id, channel := range catalog {
+		_, live := liveIDs[id]
+		_, target := targets[id]
+		_, retained := kept[id]
+		if (!live || target) && !retained {
+			continue
+		}
+		out[id] = channel
+	}
+	return mapsToSlice(out)
 }
 
 func (s *Syncer) appendDirectRequestedChannels(
@@ -713,6 +778,8 @@ func channelKind(channel *discordgo.Channel) string {
 		return "thread_announcement"
 	case discordgo.ChannelTypeGuildVoice:
 		return "voice"
+	case discordgo.ChannelTypeGuildStageVoice:
+		return "stage"
 	default:
 		return fmt.Sprintf("type_%d", channel.Type)
 	}
@@ -736,6 +803,8 @@ func channelTypeFromKind(kind string) discordgo.ChannelType {
 		return discordgo.ChannelTypeGuildNewsThread
 	case "voice":
 		return discordgo.ChannelTypeGuildVoice
+	case "stage":
+		return discordgo.ChannelTypeGuildStageVoice
 	default:
 		// Preserve native numeric kinds without turning unknown channel types
 		// into text channels that become eligible for message ingestion.

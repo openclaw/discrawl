@@ -21,6 +21,7 @@ func TestPublishProducerValidationBeforeMutation(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	cfg := config.Default()
+	cfg.Share.AutoUpdate = false
 	cfg.DBPath = filepath.Join(dir, "source.db")
 	cfg.Share.RepoPath = filepath.Join(dir, "share")
 	cfg.Share.Remote = filepath.Join(dir, "remote.git")
