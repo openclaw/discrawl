@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -52,4 +53,28 @@ func TestMetadataOnlyReceiptRemainsUnchangedAndIsNotAnIngestionFailure(t *testin
 		m.RawJSON = invalid
 		require.False(t, nonProviderTextReceipt(m))
 	}
+	for _, invalid := range []string{strings.Replace(raw, `"id":"1"`, `"id":"wrong","id":"1"`, 1), strings.Replace(raw, `"source":`, `"future_body":"unexpected","source":`, 1), raw + raw} {
+		m.RawJSON = invalid
+		require.False(t, nonProviderTextReceipt(m))
+	}
+}
+
+func TestReceiptReconciliationDoesNotStarveBehindUnrelatedFailures(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{ID: "1", GuildID: "g", ChannelID: "c", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{ID: "2", GuildID: "g", ChannelID: "c", RawJSON: `{"id":"2","guild_id":"g","channel_id":"c","source":"discord_desktop","desktop_cache_note":"raw desktop cache payload intentionally not stored"}`}))
+	_, err = s.DB().ExecContext(ctx, `with recursive n(x) as (select 1 union all select x+1 from n where x<501) insert into failure_ledger(operation,source,guild_id,channel_id,message_id,related_id,error_class,error_message,first_seen_at,last_seen_at) select 'derive_text','local','g','c','1',cast(x as text),'fixture','invalid raw','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' from n`)
+	require.NoError(t, err)
+	require.NoError(t, s.RecordFailure(ctx, FailureRef{Operation: "derive_text", Source: "local", GuildID: "g", ChannelID: "c", MessageID: "2"}, errors.New("fixture")))
+	require.NoError(t, s.ReconcileTextReceiptFailures(ctx))
+	var n int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from failure_ledger where resolved_at is null`).Scan(&n))
+	require.Equal(t, 501, n)
+	var reason string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select resolution_reason from failure_ledger where message_id='2'`).Scan(&reason))
+	require.Equal(t, "non_provider_receipt_retained", reason)
 }
