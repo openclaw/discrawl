@@ -133,6 +133,12 @@ checkpoint and fixed high-water ID. Each batch commits its checkpoint with its
 changes. It neither rewinds ingestion cursors nor starts an upstream historical
 backfill. Concurrent newer writes win. Excluded/unknown records remain retained
 and are skipped; a completed scan reports skipped/rejected counts explicitly.
+Desktop metadata receipts deliberately lack original provider content. They are
+reported as `skipped_non_provider_receipt` and retained unchanged, without a
+fallback that invents raw message text. Previously recorded projection failures
+for that exact receipt format resolve as `non_provider_receipt_retained`;
+unknown formats and actual identity/content mismatches remain unresolved.
+Historical `rejected` totals describe the pass, not the current unresolved count.
 
 Only changed eligible text needs new embedding work. Unchanged vectors are
 reused. Changed vectors are retired even when embedding generation is disabled;
