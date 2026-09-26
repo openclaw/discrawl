@@ -117,12 +117,13 @@ type MessageMutation struct {
 }
 
 type WriteOptions struct {
-	ScopePolicy      string
-	AppendEvent      bool
-	EnqueueEmbedding bool
-	EmbeddingCatchUp bool
-	PreserveNewer    bool
-	DeduplicateEvent bool
+	ObservationStartedAt time.Time
+	ScopePolicy          string
+	AppendEvent          bool
+	EnqueueEmbedding     bool
+	EmbeddingCatchUp     bool
+	PreserveNewer        bool
+	DeduplicateEvent     bool
 }
 
 const deleteMessageFTSByRowIDSQL = `delete from message_fts where rowid = ?`
@@ -233,6 +234,10 @@ func (s *Store) MergeMembers(ctx context.Context, guildID string, members []Memb
 }
 
 func (s *Store) MarkMemberDeleted(ctx context.Context, guildID, userID, source, reason string) error {
+	return s.MarkObservedMemberDeleted(ctx, guildID, userID, source, reason, time.Time{})
+}
+
+func (s *Store) MarkObservedMemberDeleted(ctx context.Context, guildID, userID, source, reason string, observed time.Time) error {
 	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(source) == "" || strings.TrimSpace(reason) == "" {
 		return errors.New("member tombstone requires guild id, user id, source, and reason")
 	}
@@ -241,6 +246,16 @@ func (s *Store) MarkMemberDeleted(ctx context.Context, guildID, userID, source, 
 		return err
 	}
 	defer rollback(tx)
+	if !observed.IsZero() {
+		var updated string
+		err := tx.QueryRowContext(ctx, `select updated_at from members where guild_id=? and user_id=?`, guildID, userID).Scan(&updated)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && parseTime(updated).After(observed) {
+			return nil
+		}
+	}
 	now := time.Now().UTC().Format(timeLayout)
 	if err := s.q.WithTx(tx).MarkMemberDeleted(ctx, storedb.MarkMemberDeletedParams{
 		DeletedAt:      nullString(now),
@@ -259,11 +274,25 @@ func (s *Store) MarkMemberDeleted(ctx context.Context, guildID, userID, source, 
 }
 
 func (s *Store) UpsertMember(ctx context.Context, member MemberRecord) error {
+	return s.UpsertObservedMember(ctx, member, time.Time{})
+}
+
+func (s *Store) UpsertObservedMember(ctx context.Context, member MemberRecord, started time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
+	if !started.IsZero() {
+		var updated string
+		err := tx.QueryRowContext(ctx, `select updated_at from members where guild_id=? and user_id=?`, member.GuildID, member.UserID).Scan(&updated)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && parseTime(updated).After(started) {
+			return nil
+		}
+	}
 	qtx := s.q.WithTx(tx)
 	now := time.Now().UTC().Format(timeLayout)
 	if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
@@ -336,7 +365,7 @@ func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRec
 	}
 	defer rollback(tx)
 	if opts.PreserveNewer {
-		keep, err := keepStoredMessage(ctx, s.q.WithTx(tx), message)
+		keep, err := keepStoredMessage(ctx, s.q.WithTx(tx), message, opts.ObservationStartedAt)
 		if err != nil || keep {
 			return err
 		}
@@ -372,7 +401,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 			return err
 		}
 		if message.Options.PreserveNewer {
-			keep, err := keepStoredMessage(ctx, qtx, message.Record)
+			keep, err := keepStoredMessage(ctx, qtx, message.Record, message.Options.ObservationStartedAt)
 			if err != nil {
 				return err
 			}
@@ -421,7 +450,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	return nil
 }
 
-func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord) (bool, error) {
+func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord, started time.Time) (bool, error) {
 	stored, err := qtx.GetMessageRevision(ctx, message.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -431,7 +460,7 @@ func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message Messag
 	}
 	// Fixed UTC precision makes normalized edit timestamps sortable. Keep
 	// tombstones and all related rows intact when an older cache is replayed.
-	return stored.DeletedAt != "" || normalizeStoredTime(message.EditedAt) < normalizeStoredTime(stored.EditedAt), nil
+	return stored.DeletedAt != "" || (!started.IsZero() && parseTime(stored.UpdatedAt).After(started)) || normalizeStoredTime(message.EditedAt) < normalizeStoredTime(stored.EditedAt), nil
 }
 
 func (s *Store) upsertMessageTx(
@@ -451,21 +480,32 @@ func (s *Store) upsertMessageTx(
 	}
 	now := time.Now().UTC().Format(timeLayout)
 	var previousNormalized sql.NullString
-	previousErr := sql.ErrNoRows
 	jobExists := false
-	if opts.EnqueueEmbedding {
-		normalized, err := qtx.GetMessageNormalizedContent(ctx, message.ID)
-		previousErr = err
-		if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
-			return previousErr
-		}
-		if previousErr == nil {
-			previousNormalized = sql.NullString{String: normalized, Valid: true}
+	normalized, previousErr := qtx.GetMessageNormalizedContent(ctx, message.ID)
+	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+		return previousErr
+	}
+	if previousErr == nil {
+		previousNormalized = sql.NullString{String: normalized, Valid: true}
+		if opts.EnqueueEmbedding {
 			existingJobs, err := qtx.CountEmbeddingJobsByMessage(ctx, message.ID)
 			if err != nil {
 				return err
 			}
 			jobExists = existingJobs > 0
+		}
+	}
+	if previousNormalized.Valid && previousNormalized.String != message.NormalizedContent {
+		if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
+			return err
+		}
+		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
+			return err
+		}
+		if !opts.EnqueueEmbedding {
+			if _, err := tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',locked_at=null where message_id=?`, message.ID); err != nil {
+				return err
+			}
 		}
 	}
 	if err := qtx.UpsertMessage(ctx, upsertMessageParams(message, now)); err != nil {

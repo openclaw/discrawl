@@ -40,6 +40,8 @@ func TestScopeStorageRejectsStaleDecisionsAndRetainsDeletion(t *testing.T) {
 	require.Error(t, s.MarkChannelDeleted(ctx, "other", "c", "discord-gateway"))
 	require.Error(t, s.MarkChannelDeleted(ctx, "", "c", "discord-gateway"))
 	require.NoError(t, s.MarkChannelDeleted(ctx, "g", "c", "discord-gateway"))
+	m.Options.ScopePolicy = ""
+	require.ErrorIs(t, s.UpsertMessages(ctx, []MessageMutation{m}), ErrCollectionScope, "unconfigured collection still respects known channel tombstones")
 	require.NoError(t, s.MarkChannelDeleted(ctx, "g", "missing", "discord-gateway"))
 	require.NoError(t, s.Close())
 	s, err = Open(ctx, path)

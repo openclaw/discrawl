@@ -179,6 +179,16 @@ func (s *Store) ResolveFailureWithReason(ctx context.Context, ref FailureRef, re
 
 func requireMessageScope(ctx context.Context, tx *sql.Tx, message MessageRecord, policy string) error {
 	if policy == "" {
+		var tombstones int
+		if err := tx.QueryRowContext(ctx, `with recursive ancestry(id,parent_id,deleted_at) as (
+			select id,parent_id,deleted_at from channels where id=?
+			union select c.id,c.parent_id,c.deleted_at from channels c join ancestry a on c.id=a.parent_id
+		) select count(*) from ancestry where deleted_at is not null`, message.ChannelID).Scan(&tombstones); err != nil {
+			return err
+		}
+		if tombstones > 0 {
+			return ErrCollectionScope
+		}
 		return nil
 	}
 	var scope, storedPolicy, guild string

@@ -111,6 +111,10 @@ role permissions. Voice/stage text is included in REST repair when in scope.
 Ordinary startup/periodic repair performs bounded exact-message failure replay,
 metadata replay and attachment retry. A recovery fetch is a new `snapshot`
 observation at the time it was obtained, not an invented original create/edit.
+Attachment recovery also records deduplicated snapshot observations. REST
+recovery cannot overwrite a newer local observation, message deletion, member
+change or channel tombstone. Active-thread failures use the active-thread
+endpoint, not a guild fetch that does not contain authoritative thread metadata.
 Its raw payload retains the provider timestamp/edit timestamp. An exact repeat
 does not append a duplicate snapshot. Missing provider content is not fabricated
 and a 404 alone is not converted into a message deletion.
@@ -131,7 +135,9 @@ backfill. Concurrent newer writes win. Excluded/unknown records remain retained
 and are skipped; a completed scan reports skipped/rejected counts explicitly.
 
 Only changed eligible text needs new embedding work. Unchanged vectors are
-reused. Before replacement, vectors and their prior text are retained in
+reused. Changed vectors are retired even when embedding generation is disabled;
+stale in-flight leases cannot publish the old text's vector. Before replacement,
+vectors and their prior text are retained in
 `message_embedding_history`; previous successful extraction is retained in
 `attachment_text_history`. These are **internal evidence tables**, not public
 content projections. They include origin message/guild/channel identity for

@@ -32,6 +32,7 @@ func (s *Syncer) retryAttachmentText(ctx context.Context, guildIDs []string) err
 			continue
 		}
 		call, cancel := context.WithTimeout(ctx, 10*time.Second)
+		started := time.Now()
 		msg, fetchErr := s.client.ChannelMessage(call, m.ChannelID, m.ID)
 		if fetchErr == nil {
 			fetchErr = validateTailMessageReplay(store.Failure{GuildID: m.GuildID, ChannelID: m.ChannelID, MessageID: m.ID}, msg)
@@ -43,6 +44,11 @@ func (s *Syncer) retryAttachmentText(ctx context.Context, guildIDs []string) err
 			mutation, buildErr := buildMessageMutation(call, msg, "", m.GuildID, s.tailEmbeddings, true)
 			if buildErr == nil {
 				mutation.Options.ScopePolicy = resolver.scopePolicy()
+				mutation.Options.PreserveNewer = true
+				mutation.Options.ObservationStartedAt = started
+				mutation.Options.AppendEvent = true
+				mutation.Options.DeduplicateEvent = true
+				mutation.EventType = "snapshot"
 				buildErr = s.store.UpsertMessages(call, []store.MessageMutation{mutation})
 			}
 			fetchErr = buildErr
@@ -80,9 +86,10 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 			continue
 		}
 		call, cancel := context.WithTimeout(ctx, 10*time.Second)
+		started := time.Now()
 		switch {
 		case kind == "GUILD_MEMBER_REMOVE":
-			err = s.store.MarkMemberDeleted(call, f.GuildID, id, "discord-gateway", "member-remove-event-replay")
+			err = s.store.MarkObservedMemberDeleted(call, f.GuildID, id, "discord-gateway", "member-remove-event-replay", f.FirstSeenAt)
 		case strings.HasPrefix(kind, "GUILD_MEMBER_"):
 			getter, supported := s.client.(singleMemberClient)
 			if !supported {
@@ -95,11 +102,17 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 				if m == nil || m.User == nil || m.User.ID != id || (m.GuildID != "" && m.GuildID != f.GuildID) {
 					err = errors.New("member identity mismatch")
 				} else {
-					err = h.OnMemberUpsert(call, f.GuildID, m)
+					err = s.store.UpsertObservedMember(call, toMemberRecord(f.GuildID, m), started)
 				}
 			}
 		case kind == "CHANNEL_DELETE" || kind == "THREAD_DELETE":
 			err = h.OnChannelDelete(call, &discordgo.Channel{ID: f.ChannelID, GuildID: f.GuildID})
+		case kind == "THREAD_LIST_SYNC":
+			var channels []*discordgo.Channel
+			channels, err = s.client.GuildThreadsActive(call, f.GuildID)
+			if err == nil {
+				err = s.storeScopeMetadata(call, f.GuildID, channels, s.channelExclusions, started)
+			}
 		case f.ChannelID != "":
 			var c *discordgo.Channel
 			c, err = s.client.Channel(call, f.ChannelID)
@@ -107,7 +120,10 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 				if c == nil || c.ID != f.ChannelID || c.GuildID != f.GuildID {
 					err = errors.New("channel identity mismatch")
 				} else {
-					err = h.OnChannelUpsert(call, c)
+					err = s.store.UpsertObservedChannel(call, toChannelRecord(c, marshalJSONString(c, "{}")), started)
+					if err == nil {
+						err = h.refreshScope(call)
+					}
 				}
 			}
 		default:
@@ -117,7 +133,7 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 				if g == nil || g.ID != f.GuildID {
 					err = errors.New("guild identity mismatch")
 				} else {
-					err = h.OnGuildUpsert(call, g)
+					err = s.store.UpsertObservedGuild(call, store.GuildRecord{ID: g.ID, Name: g.Name, Icon: g.Icon, RawJSON: marshalJSONString(g, "{}")}, started)
 				}
 			}
 		}
