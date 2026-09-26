@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Distinguish cloud login and publisher authorization failures with bounded diagnostics that preserve private response details.
 - Select the actual latest metrics observation at nanosecond precision, including imported timestamps with different offsets, without rewriting retained history.
 - Stop cloud adoption when inventory pagination repeats a cursor, and release unread HTTP error responses before reporting publication failures.
 

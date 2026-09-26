@@ -95,10 +95,44 @@ async function gzipParts(snapshot, directory) {
   } finally { await handle.close(); }
 }
 
+async function authorizationHint(response) {
+  if (response.status !== 401 && response.status !== 403) return '';
+  if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) return '';
+  const reader = response.body.getReader();
+  let timer;
+  try {
+    // Read only a small, time-bounded error envelope; never log server text.
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('diagnostic timeout')), 1000); });
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), timeout]);
+      if (done) break;
+      size += value.byteLength;
+      if (size > 4096) return '';
+      chunks.push(value);
+    }
+    const code = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.error;
+    if (response.status === 403 && code === 'github_org_denied') return '; GitHub organization/team authorization denied: check the deployed cloud service team policy and token membership permissions';
+    if (response.status === 403 && code === 'github_user_failed') return '; GitHub identity lookup failed: check the publishing token and GitHub API availability';
+    if (response.status === 403 && code === 'forbidden') return '; cloud authorization denied: check the session publisher role';
+    if (response.status === 401 && code === 'missing_access_jwt') return '; Cloudflare Access authentication required: check the endpoint and Access service credentials';
+    return '';
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+    // Cancellation is best-effort and must not extend the diagnostic timeout.
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
   const base = new URL(endpoint.endsWith('/') ? endpoint : `${endpoint}/`);
   if (base.protocol !== 'https:' && base.hostname !== 'localhost') throw new PublishError('cloud endpoint must use HTTPS');
   return async (path, { method = 'GET', body, generation, binary = false } = {}) => {
+    const operation = path === 'v1/auth/github/token' ? 'cloud login' : 'cloud request';
     for (let attempt = 0; ; attempt++) {
       let response;
       try {
@@ -109,14 +143,15 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
           signal: AbortSignal.timeout(10 * 60_000) });
         if (response.ok) return await response.json();
       } catch {
-        if (attempt >= 3) throw new PublishError('cloud request failed; no private response was logged');
+        if (attempt >= 3) throw new PublishError(`${operation} failed; no private response was logged`);
         response = undefined;
       }
       const retryable = !response || response.status === 429 || response.status >= 500;
+      const hint = response ? await authorizationHint(response) : '';
       try { await response?.body?.cancel(); } catch {
         // Cleanup must preserve the HTTP status and retry policy, even for an errored stream.
       }
-      if (!retryable || attempt >= 3) throw new PublishError(`cloud request failed (HTTP ${response?.status ?? 'unavailable'})`);
+      if (!retryable || attempt >= 3) throw new PublishError(`${operation} failed (HTTP ${response?.status ?? 'unavailable'})${hint}`);
       await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
     }
   };

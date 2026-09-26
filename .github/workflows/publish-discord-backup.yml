@@ -160,7 +160,8 @@ jobs:
         run: |
           umask 077
           trap 'rm -f "$DISCRAWL_CLOUD_SNAPSHOT"' EXIT
-          export DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$RUNNER_TEMP/discord-backup" rev-parse HEAD)"
+          DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$RUNNER_TEMP/discord-backup" rev-parse HEAD)"
+          export DISCRAWL_CLOUD_SOURCE_COMMIT
           go run ./cmd/discrawl --config "$RUNNER_TEMP/discrawl/config.toml" cloud publish \
             --export-only "$DISCRAWL_CLOUD_SNAPSHOT" > /dev/null
           node scripts/publish-cloud.mjs

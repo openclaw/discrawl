@@ -44,6 +44,84 @@ test('HTTP failures never expose private server responses', async () => {
   await assert.rejects(request('current-state'),error=>error.message==='cloud request failed (HTTP 403)');
 });
 
+test('a denied publisher team identifies cloud login without retrying or leaking credentials', async () => {
+  let calls = 0;
+  const request = cloudRequest('https://fixture.invalid/private-endpoint/', {}, async () => {
+    calls++;
+    return Response.json({ error: 'github_org_denied', message: 'private membership detail', token: 'private-token' }, { status: 403 });
+  });
+  await assert.rejects(request('v1/auth/github/token', { method: 'POST', body: { token: 'private-token' } }), error =>
+    error.message === 'cloud login failed (HTTP 403); GitHub organization/team authorization denied: check the deployed cloud service team policy and token membership permissions');
+  assert.equal(calls, 1);
+});
+
+test('authorization diagnostics recognize only fixed codes with their expected status', async () => {
+  for (const [code, status, hint] of [
+    ['github_user_failed', 403, 'GitHub identity lookup failed: check the publishing token and GitHub API availability'],
+    ['forbidden', 403, 'cloud authorization denied: check the session publisher role'],
+    ['missing_access_jwt', 401, 'Cloudflare Access authentication required: check the endpoint and Access service credentials'],
+  ]) {
+    const request = cloudRequest('https://fixture.invalid/', {}, async () => Response.json({ error: code, message: 'private' }, { status }));
+    await assert.rejects(request('private-archive?private-query'), error => error.message === `cloud request failed (HTTP ${status}); ${hint}`);
+  }
+  for (const body of [{ error: 'private-backend-detail' }, { error: '__proto__' }, { error: { token: 'private' } }, { error: 'missing_access_jwt' }, null]) {
+    const request = cloudRequest('https://fixture.invalid/', {}, async () => Response.json(body, { status: 403 }));
+    await assert.rejects(request('current-state'), error => error.message === 'cloud request failed (HTTP 403)');
+  }
+});
+
+test('invalid, oversized, and non-JSON authorization bodies stay private and are released', async () => {
+  for (const [contentType, body] of [
+    ['application/json', '{private malformed response'],
+    ['application/json', JSON.stringify({ error: 'github_org_denied', private: 'x'.repeat(4096) })],
+    ['text/html', '<html>private Access rejection</html>'],
+  ]) {
+    let cancelled = false;
+    const request = cloudRequest('https://fixture.invalid/', {}, async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); },
+      cancel() { cancelled = true; },
+    }), { status: 403, headers: { 'content-type': contentType } }));
+    await assert.rejects(request('current-state'), error => error.message === 'cloud request failed (HTTP 403)');
+    if (contentType === 'text/html') assert.equal(cancelled, true);
+  }
+});
+
+test('a stalled authorization body cannot delay failure or trigger a retry', async () => {
+  let cancelled = false;
+  let calls = 0;
+  const request = cloudRequest('https://fixture.invalid/', {}, async () => {
+    calls++;
+    return new Response(new ReadableStream({
+      cancel() { cancelled = true; return new Promise(() => {}); },
+    }), { status: 403, headers: { 'content-type': 'application/json' } });
+  });
+  await assert.rejects(request('current-state'), error => error.message === 'cloud request failed (HTTP 403)');
+  assert.equal(cancelled, true);
+  assert.equal(calls, 1);
+});
+
+test('the diagnostic size bound cancels a streaming body before reading its remainder', async () => {
+  let cancelled = false;
+  let reads = 0;
+  const request = cloudRequest('https://fixture.invalid/', {}, async () => new Response(new ReadableStream({
+    pull(controller) {
+      reads++;
+      controller.enqueue(new TextEncoder().encode('x'.repeat(2048)));
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 }), { status: 403, headers: { 'content-type': 'application/json' } }));
+  await assert.rejects(request('current-state'), error => error.message === 'cloud request failed (HTTP 403)');
+  assert.equal(cancelled, true);
+  assert.equal(reads, 3);
+});
+
+test('authorization response stream errors preserve the terminal HTTP status', async () => {
+  const request = cloudRequest('https://fixture.invalid/', {}, async () => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error('private stream error')); },
+  }), { status: 403, headers: { 'content-type': 'application/json; charset=utf-8' } }));
+  await assert.rejects(request('v1/auth/github/token'), error => error.message === 'cloud login failed (HTTP 403)');
+});
+
 
 test('a connection drop after successful headers retries the identical mutation', async () => {
   const requests = [];
