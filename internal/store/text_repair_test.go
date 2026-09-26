@@ -74,3 +74,34 @@ func TestTextRepairResumesAndReusesUnchangedVectorsWithoutChangingEvidence(t *te
 	require.NoError(t, err)
 	require.Equal(t, p, p2)
 }
+
+func TestTextRepairWithoutEmbeddingWorkerRetiresStaleVectorsAndLeases(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c", GuildID: "g", Kind: "text", RawJSON: `{}`}))
+	_, err = s.DB().ExecContext(ctx, `update channels set collection_scope='allowed',scope_policy='p'`)
+	require.NoError(t, err)
+	raw, err := json.Marshal(&discordgo.Message{ID: "1", GuildID: "g", ChannelID: "c", Content: "alpha\nbeta"})
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{ID: "1", GuildID: "g", ChannelID: "c", Content: "alpha\nbeta", NormalizedContent: "alphabeta", RawJSON: string(raw)}))
+	_, err = s.DB().ExecContext(ctx, `insert into message_embeddings(message_id,provider,model,input_version,dimensions,embedding_blob,embedded_at)values('1','fixture','model','v1',1,x'0000803f','2026-01-01T00:00:00Z');insert into embedding_jobs(message_id,state,updated_at,revision,lease_token)values('1','pending','2026-01-01T00:00:00Z',7,'stale-token')`)
+	require.NoError(t, err)
+	p, err := s.RepairMessageTextBatch(ctx, "p", 10, false)
+	require.NoError(t, err)
+	require.True(t, p.Complete)
+	require.Equal(t, 1, p.Changed)
+	var count, revision int
+	var text, lease string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_embeddings`).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select normalized_content from message_embedding_history where message_id='1'`).Scan(&text))
+	require.Equal(t, "alphabeta", text)
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select revision,lease_token from embedding_jobs where message_id='1'`).Scan(&revision, &lease))
+	require.Greater(t, revision, 7)
+	require.Empty(t, lease)
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from embedding_jobs`).Scan(&count))
+	require.Equal(t, 1, count, "existing job retained without creating new work while disabled")
+}

@@ -384,7 +384,7 @@ from messages
 where id = ?;
 
 -- name: GetMessageRevision :one
-select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at
+select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at, updated_at
 from messages
 where id = ?;
 

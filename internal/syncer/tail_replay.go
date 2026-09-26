@@ -142,6 +142,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			continue
 		}
 		fetchCtx, cancel := context.WithTimeout(ctx, tailMessageReplayTimeout)
+		started := time.Now()
 		message, fetchErr := s.client.ChannelMessage(fetchCtx, failure.ChannelID, failure.MessageID)
 		cancel()
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -184,6 +185,8 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			continue
 		}
 		mutation.Options.ScopePolicy = resolver.scopePolicy()
+		mutation.Options.PreserveNewer = true
+		mutation.Options.ObservationStartedAt = started
 		mutation.Options.AppendEvent = true
 		mutation.Options.DeduplicateEvent = true
 		mutation.EventType = "snapshot"

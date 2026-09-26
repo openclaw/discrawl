@@ -368,7 +368,7 @@ func (q *Queries) GetMessageNormalizedContent(ctx context.Context, id string) (s
 }
 
 const getMessageRevision = `-- name: GetMessageRevision :one
-select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at
+select coalesce(edited_at, '') as edited_at, coalesce(deleted_at, '') as deleted_at, updated_at
 from messages
 where id = ?
 `
@@ -376,12 +376,13 @@ where id = ?
 type GetMessageRevisionRow struct {
 	EditedAt  string
 	DeletedAt string
+	UpdatedAt string
 }
 
 func (q *Queries) GetMessageRevision(ctx context.Context, id string) (GetMessageRevisionRow, error) {
 	row := q.db.QueryRowContext(ctx, getMessageRevision, id)
 	var i GetMessageRevisionRow
-	err := row.Scan(&i.EditedAt, &i.DeletedAt)
+	err := row.Scan(&i.EditedAt, &i.DeletedAt, &i.UpdatedAt)
 	return i, err
 }
 

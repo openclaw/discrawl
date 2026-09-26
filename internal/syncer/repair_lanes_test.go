@@ -90,6 +90,14 @@ func TestOrdinaryAttachmentRetryPersistsResultAndParentClock(t *testing.T) {
 	require.Equal(t, "succeeded", status)
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id='10'`).Scan(&clock))
 	require.NotEmpty(t, clock)
+	var snapshots int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where message_id='10' and event_type='snapshot'`).Scan(&snapshots))
+	require.Equal(t, 1, snapshots)
+	_, err = s.DB().ExecContext(ctx, `update message_attachments set text_status='failed' where attachment_id='a'`)
+	require.NoError(t, err)
+	require.NoError(t, svc.retryAttachmentText(ctx, []string{"g"}))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where message_id='10' and event_type='snapshot'`).Scan(&snapshots))
+	require.Equal(t, 1, snapshots, "exact repeated provider snapshots deduplicate")
 	_, err = s.DB().ExecContext(ctx, `update message_attachments set text_status='failed' where attachment_id='a'`)
 	require.NoError(t, err)
 	c.errors = map[string]error{"c/10": errors.New("must not persist untrusted provider body")}

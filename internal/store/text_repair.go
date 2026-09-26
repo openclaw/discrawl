@@ -156,19 +156,19 @@ func (s *Store) RepairMessageTextBatch(ctx context.Context, policy string, limit
 		if err = s.upsertLexicalMessageTx(ctx, tx, m, tokens); err != nil {
 			return p, err
 		}
+		if err = archiveMessageEmbeddings(ctx, tx, m.ID, c.record.NormalizedContent); err != nil {
+			return p, err
+		}
+		if err = qtx.DeleteMessageEmbeddingsByMessage(ctx, m.ID); err != nil {
+			return p, err
+		}
 		if embeddings {
-			if err = archiveMessageEmbeddings(ctx, tx, m.ID, c.record.NormalizedContent); err != nil {
-				return p, err
-			}
 			if err = qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: m.ID, UpdatedAt: now}); err != nil {
 				return p, err
 			}
-			if _, err = tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',available_at='',priority=0,enqueued_at=? where message_id=?`, now, m.ID); err != nil {
-				return p, err
-			}
-			if err = qtx.DeleteMessageEmbeddingsByMessage(ctx, m.ID); err != nil {
-				return p, err
-			}
+		}
+		if _, err = tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',locked_at=null,available_at='',priority=0,enqueued_at=? where message_id=?`, now, m.ID); err != nil {
+			return p, err
 		}
 	}
 	p.Complete = len(batch) < limit || p.LastID == p.HighWater

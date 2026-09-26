@@ -471,9 +471,9 @@ func printHuman(w io.Writer, value any) error {
 		}
 		return printCoverageHuman(w, v.Coverage)
 	case store.Status:
-		_, err := fmt.Fprintf(w, "db=%s\nguilds=%d\nchannels=%d\nthreads=%d\nmessages=%d\nmembers=%d\nembedding_backlog=%d\nlast_sync=%s\nlast_tail_event=%s\n",
+		_, err := fmt.Fprintf(w, "db=%s\nguilds=%d\nchannels=%d\nthreads=%d\nmessages=%d\nmembers=%d\nembedding_backlog=%d\nlast_sync=%s\nlast_tail_event=%s\nunresolved_failures=%d\noldest_failure_at=%s\nattachment_text_failures=%d\n",
 			v.DBPath, v.GuildCount, v.ChannelCount, v.ThreadCount, v.MessageCount, v.MemberCount, v.EmbeddingBacklog,
-			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt))
+			formatTime(v.LastSyncAt), formatTime(v.LastTailEventAt), v.UnresolvedFailures, formatTime(v.OldestFailureAt), v.AttachmentTextFailures)
 		return err
 	case diagnosticsReport:
 		_, err := fmt.Fprintf(w, "status=%s\ndb=%s\ndb_exists=%t\ndb_bytes=%d\njournal_mode=%s\nschema_version=%d\nwal=%s\nwal_exists=%t\nwal_bytes=%d\nintegrity=%s\nsync_lock=%s\nsync_lock_held=%t\nsync_lock_state=%s\ncatalog_state=%s\ncatalog_orphaned_messages=%d\ncatalog_orphaned_channel_ids=%d\nsafe_for_read_only_inspection=%t\n",
