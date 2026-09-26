@@ -14,14 +14,15 @@ import (
 )
 
 type TextRepairProgress struct {
-	LastID       string `json:"last_id"`
-	HighWater    string `json:"high_water"`
-	Scanned      int    `json:"scanned"`
-	Changed      int    `json:"changed"`
-	Reused       int    `json:"reused"`
-	SkippedScope int    `json:"skipped_scope"`
-	Rejected     int    `json:"rejected"`
-	Complete     bool   `json:"complete"`
+	LastID         string `json:"last_id"`
+	HighWater      string `json:"high_water"`
+	Scanned        int    `json:"scanned"`
+	Changed        int    `json:"changed"`
+	Reused         int    `json:"reused"`
+	SkippedScope   int    `json:"skipped_scope"`
+	SkippedReceipt int    `json:"skipped_non_provider_receipt"`
+	Rejected       int    `json:"rejected"`
+	Complete       bool   `json:"complete"`
 }
 
 // RepairMessageTextBatch is a local, resumable derived-data operation. Provider
@@ -96,6 +97,10 @@ func (s *Store) RepairMessageTextBatch(ctx context.Context, policy string, limit
 			continue
 		}
 		var msg discordgo.Message
+		if nonProviderTextReceipt(m) {
+			p.SkippedReceipt++
+			continue
+		}
 		if json.Unmarshal([]byte(m.RawJSON), &msg) != nil || msg.ID != m.ID || msg.ChannelID != m.ChannelID || (msg.GuildID != "" && msg.GuildID != m.GuildID) || msg.Content != m.Content {
 			p.Rejected++
 			if err := recordFailure(ctx, tx, FailureRef{Operation: "derive_text", Source: "local", GuildID: m.GuildID, ChannelID: m.ChannelID, MessageID: m.ID}, errors.New("stored provider identity/content mismatch"), time.Now().UTC()); err != nil {
