@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,7 +37,8 @@ func (f liveCLIProvider) Embed(ctx context.Context, v []string) (embed.Embedding
 }
 
 func TestTailLiveEmbeddingsKeepsCaptureAndWriterOwnership(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	// The timeout is only a hang guard.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -55,15 +57,24 @@ func TestTailLiveEmbeddingsKeepsCaptureAndWriterOwnership(t *testing.T) {
 	fake := &fakeSyncService{callTailReady: true}
 	rt := tailTestRuntime(ctx, p, fake)
 	var requests atomic.Int32
+	var oversized, canceled atomic.Bool
+	inFlight := make(chan struct{})
+	var inFlightOnce sync.Once
+	release := make(chan struct{})
+	releaseProvider := sync.OnceFunc(func() { close(release) })
+	defer releaseProvider()
 	rt.newEmbed = func(config.EmbeddingsConfig) (embed.Provider, error) {
 		return liveCLIProvider(func(ctx context.Context, texts []string) (embed.EmbeddingBatch, error) {
+			requests.Add(1)
 			if len(texts) > 2 {
+				oversized.Store(true)
 				return embed.EmbeddingBatch{}, errors.New("configured batch limit exceeded")
 			}
-			requests.Add(1)
+			inFlightOnce.Do(func() { close(inFlight) })
 			select {
-			case <-time.After(200 * time.Millisecond):
+			case <-release:
 			case <-ctx.Done():
+				canceled.Store(true)
 				return embed.EmbeddingBatch{}, ctx.Err()
 			}
 			v := make([][]float32, len(texts))
@@ -81,22 +92,42 @@ func TestTailLiveEmbeddingsKeepsCaptureAndWriterOwnership(t *testing.T) {
 			owner, ok := readSyncLockOwner(lockPath)
 			require.True(t, ok)
 			require.Equal(t, "tail", owner.Operation)
-			for i := range 10 {
-				start := time.Now()
-				require.NoError(t, s.UpsertMessageWithOptions(ctx, store.MessageRecord{ID: strconv.Itoa(100 + i), GuildID: "g", ChannelID: "c", Content: "live", NormalizedContent: "live"}, store.WriteOptions{EnqueueEmbedding: true}))
-				require.Less(t, time.Since(start), time.Second)
-				time.Sleep(100 * time.Millisecond)
+			require.NoError(t, s.UpsertMessageWithOptions(ctx, store.MessageRecord{ID: "100", GuildID: "g", ChannelID: "c", Content: "live", NormalizedContent: "live"}, store.WriteOptions{EnqueueEmbedding: true}))
+			select {
+			case <-inFlight:
+			case <-ctx.Done():
+				require.FailNow(t, "hang guard expired waiting for an embedding request in flight", "%v", ctx.Err())
 			}
-			require.Eventually(t, func() bool {
+			// Completing these writes while the provider is blocked proves capture can continue.
+			for i := 1; i < 10; i++ {
+				require.NoError(t, s.UpsertMessageWithOptions(ctx, store.MessageRecord{ID: strconv.Itoa(100 + i), GuildID: "g", ChannelID: "c", Content: "live", NormalizedContent: "live"}, store.WriteOptions{EnqueueEmbedding: true}))
+			}
+			require.True(t, rt.dbLockHeld)
+			owner, ok = readSyncLockOwner(lockPath)
+			require.True(t, ok)
+			require.Equal(t, "tail", owner.Operation)
+			require.False(t, canceled.Load(), "embedding request escaped the gate before the writes finished")
+			releaseProvider()
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for {
 				var n int
-				_ = s.DB().QueryRowContext(t.Context(), `select count(*) from message_embeddings`).Scan(&n)
-				return n == 10
-			}, 5*time.Second, 20*time.Millisecond)
+				require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_embeddings`).Scan(&n), "waiting for all 10 embeddings before hang guard expires")
+				if n == 10 {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					require.FailNow(t, "hang guard expired waiting for all 10 embeddings", "got %d: %v", n, ctx.Err())
+				case <-ticker.C:
+				}
+			}
 			require.True(t, rt.dbLockHeld)
 			return nil
 		}}
 	}
 	require.NoError(t, rt.dispatch([]string{"tail", "--embed-live", "--guild", "g"}))
+	require.False(t, oversized.Load())
 	require.Positive(t, requests.Load())
 	require.Equal(t, 1, fake.tailCalls)
 }
