@@ -1042,6 +1042,43 @@ func TestSearchMessagesSemanticErrors(t *testing.T) {
 	require.ErrorContains(t, err, "turbovec dimensions must be a positive multiple of 8")
 }
 
+func TestSearchMessagesSemanticZeroStoredVector(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"exact", "turbovec"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+			require.NoError(t, err)
+			defer func() { _ = s.Close() }()
+
+			require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
+				ID:                "zero-vector",
+				GuildID:           "g1",
+				ChannelID:         "c1",
+				CreatedAt:         "2026-09-27T12:00:00Z",
+				Content:           "corrupt embedding",
+				NormalizedContent: "corrupt embedding",
+				RawJSON:           `{}`,
+			}))
+			require.NoError(t, insertTestEmbedding(ctx, s, "zero-vector", "ollama", "nomic-embed-text", make([]float32, 8)))
+
+			_, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+				QueryVector:   []float32{1, 0, 0, 0, 0, 0, 0, 0},
+				Provider:      "ollama",
+				Model:         "nomic-embed-text",
+				InputVersion:  EmbeddingInputVersion,
+				Dimensions:    8,
+				VectorBackend: backend,
+				Limit:         20,
+			})
+			require.EqualError(t, err, "score embedding for message zero-vector: stored embedding vector is zero")
+		})
+	}
+}
+
 func TestSearchMessagesHybridFusesAndDeduplicates(t *testing.T) {
 	t.Parallel()
 

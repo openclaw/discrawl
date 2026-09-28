@@ -497,18 +497,21 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		if len(storedVector) != dimensions {
 			return nil, fmt.Errorf("stored embedding vector length mismatch for message %s: got %d want %d", messageID, len(storedVector), dimensions)
 		}
-		if vector.Norm(storedVector) == 0 {
-			return nil, fmt.Errorf("score embedding for message %s: stored embedding vector is zero", messageID)
-		}
 		candidate := semanticSearchCandidate{messageID: messageID, createdAt: parseTime(created)}
 		switch opts.VectorBackend {
 		case vector.BackendExact:
 			score, err := vector.CosineSimilarity(opts.QueryVector, queryNorm, storedVector)
 			if err != nil {
+				if vector.Norm(storedVector) == 0 {
+					return nil, fmt.Errorf("score embedding for message %s: stored embedding vector is zero", messageID)
+				}
 				return nil, fmt.Errorf("score embedding for message %s: %w", messageID, err)
 			}
 			ranked = insertSemanticRanked(ranked, semanticRankedResult{candidate: candidate, score: score}, opts.Limit)
 		case vector.BackendTurboVec:
+			if vector.Norm(storedVector) == 0 {
+				return nil, fmt.Errorf("score embedding for message %s: stored embedding vector is zero", messageID)
+			}
 			turboBatch = append(turboBatch, vector.SearchCandidate[semanticSearchCandidate]{
 				Item:   candidate,
 				Vector: storedVector,
