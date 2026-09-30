@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update the TruffleHog secret-scanning action to v3.97.8. Thanks @dependabot.
 - Speed up exact semantic search 3.7× (10,000 × 1,536-dimensional embeddings: 506 ms → 137 ms, allocations 15.5M → 140k) by updating Crawlkit to v0.16.6 and skipping a redundant norm pass per candidate.
 - Distinguish cloud login and publisher authorization failures with bounded diagnostics that preserve private response details.
 - Select the actual latest metrics observation at nanosecond precision, including imported timestamps with different offsets, without rewriting retained history.
