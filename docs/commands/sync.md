@@ -90,6 +90,60 @@ discrawl sync --with-media
 - Interrupted recovery resumes from its own saved page checkpoint on the next unwindowed sync, including after cancellation or process termination. Messages ingested in the meantime do not mark the older history complete.
 - Failed recovery leaves partial history resumable. After cancellation, restoring a still-empty channel's completion marker uses the existing five-second failure-cleanup budget.
 
+## Re-fetching Components V2 messages archived with empty text
+
+Discrawl versions before Components V2 support stored messages sent with the `IS_COMPONENTS_V2` flag (`32768`), such as app-posted GitHub cards, without their component tree or text. Those rows cannot be rebuilt locally. No sync mode re-fetches them either, because `sync`, `--all-channels`, `--full` and `--channels` only request messages after each channel's stored cursor. To repair them, rewind the cursor of each affected channel and run a targeted bot sync with the fixed binary:
+
+0. Back up the archive. `sqlite3 .backup` takes a consistent copy even while a writer is running:
+
+   ```bash
+   DB="$(discrawl status | sed -n 's/^db=//p')"
+   sqlite3 "$DB" ".backup '$DB.before-components-v2'"
+   ```
+
+   To roll back later, stop every `sync`/`tail`, then run `cp "$DB.before-components-v2" "$DB" && rm -f "$DB-wal" "$DB-shm"`.
+
+1. Stop every `sync`, `tail` and scheduled sync that writes to this archive.
+
+2. List the affected channels, their broken-row counts and oldest broken message ids, and save the channel ids:
+
+   ```bash
+   BROKEN="deleted_at is null and json_extract(raw_json, '\$.flags') & 32768 and json_type(raw_json, '\$.components') is null"
+   sqlite3 -header "$DB" "select channel_id, count(*) as broken, min(cast(id as integer)) as oldest_id from messages where $BROKEN group by channel_id"
+   CHANNELS="$(sqlite3 "$DB" "select group_concat(distinct channel_id) from messages where $BROKEN")"
+   ```
+
+3. Rewind each affected channel's `latest_message_id` cursor to just before its oldest broken message:
+
+   ```bash
+   sqlite3 "$DB" "
+     update sync_state
+        set cursor = (select cast(min(cast(id as integer)) - 1 as text) from messages
+                       where $BROKEN and sync_state.scope = 'channel:' || channel_id || ':latest_message_id')
+      where scope in (select distinct 'channel:' || channel_id || ':latest_message_id' from messages where $BROKEN)"
+   ```
+
+4. Re-fetch those channels. The crawl moves forward from the rewound cursor and rewrites every message it receives, including `raw_json`, `normalized_content` and the search indexes. When it finishes, the cursor is back at the channel head:
+
+   ```bash
+   discrawl sync --source discord --channels "$CHANNELS"
+   ```
+
+5. Verify. The broken-row count should be `0`, and a search for the text of a known card should find it:
+
+   ```bash
+   sqlite3 "$DB" "select count(*) from messages where $BROKEN"
+   discrawl search "<text from a known card>"
+   ```
+
+   Any rows that remain are messages Discord no longer returns, for example because they were deleted. List them with the step 2 query.
+
+6. Publish the repaired archive:
+
+   ```bash
+   discrawl publish --push
+   ```
+
 ## See also
 
 - [Sync sources](../guides/sync-sources.html)
