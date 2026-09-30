@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refresh SQLite to v1.60.1 with its required libc v1.77.1, go-strftime to v1.1.0, and golangci-lint to v2.14.0, retaining the Go 1.27.0 minimum.
 - Update the TruffleHog secret-scanning action to v3.97.8. Thanks @dependabot.
 - Speed up exact semantic search 3.7× (10,000 × 1,536-dimensional embeddings: 506 ms → 137 ms, allocations 15.5M → 140k) by updating Crawlkit to v0.16.6 and skipping a redundant norm pass per candidate.
 - Distinguish cloud login and publisher authorization failures with bounded diagnostics that preserve private response details.
