@@ -163,3 +163,35 @@ func TestDiscordMessagePayloadHelpers(t *testing.T) {
 	require.False(t, looksSnowflake("123"))
 	require.False(t, looksSnowflake("12345678901x"))
 }
+
+func TestParseMessageIndexesComponentsV2Text(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id": "333333333333333333",
+		"channel_id": "111111111111111111",
+		"guild_id": "999999999999999999",
+		"flags": 32768,
+		"content": "",
+		"timestamp": "2026-09-28T10:15:00Z",
+		"author": {"id": "444444444444444444", "username": "Hermit", "bot": true},
+		"components": [{"type": 17, "components": [
+			{"type": 10, "content": "### [OPEN] PR #160926 fix(secrets): redact gateway tokens"},
+			{"type": 14, "divider": true},
+			{"type": 9, "components": [{"type": 10, "content": "size: XL • P0"}],
+				"accessory": {"type": 11, "media": {"url": "https://avatars.example/1.png"}, "description": "avatar"}},
+			{"type": 12, "items": [{"media": {"url": "https://cdn.example/chart.png"}, "description": "chart"}]},
+			{"type": 1, "components": [{"type": 2, "style": 5, "label": "View on GitHub", "url": "https://github.com/openclaw/openclaw/pull/160926"}]}
+		]}]
+	}`), &raw))
+
+	message, ok := parseMessage(raw, time.Time{}, nil)
+	require.True(t, ok)
+	require.Empty(t, message.Record.Content)
+	require.Equal(t, "### [OPEN] PR #160926 fix(secrets): redact gateway tokens\nsize: XL • P0\navatar\nchart\nView on GitHub\nhttps://github.com/openclaw/openclaw/pull/160926", message.Record.NormalizedContent)
+	require.NotContains(t, message.Record.RawJSON, "components", "desktop raw payloads stay sanitized")
+
+	delete(raw, "flags")
+	message, ok = parseMessage(raw, time.Time{}, nil)
+	require.True(t, ok)
+	require.Empty(t, message.Record.NormalizedContent, "classic message components are not message bodies")
+}

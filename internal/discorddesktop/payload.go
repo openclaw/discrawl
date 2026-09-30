@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -172,7 +174,7 @@ func parseMessage(raw map[string]any, fallbackTime time.Time, channels map[strin
 	editedAt := parseDiscordTime(stringField(raw, "edited_timestamp"))
 	attachments := parseAttachments(raw, id, guildID, channelID, authorID)
 	mentions := parseMentions(raw, id, guildID, channelID, authorID, createdAt)
-	normalized := normalizeText(content, attachmentText(attachments), embedText(raw))
+	normalized := normalizeText(content, attachmentText(attachments), embedText(raw), componentText(raw))
 	return store.MessageMutation{
 		Record: store.MessageRecord{
 			ID:                id,
@@ -272,6 +274,44 @@ func embedText(raw map[string]any) []string {
 			if value := strings.TrimSpace(stringField(embed, key)); value != "" {
 				out = append(out, value)
 			}
+		}
+	}
+	return out
+}
+
+// componentText collects the visible text of a Components V2 message, whose
+// whole body is its component tree.
+func componentText(raw map[string]any) []string {
+	flags, _ := intField(raw, "flags")
+	if discordgo.MessageFlags(flags)&discordgo.MessageFlagsIsComponentsV2 == 0 {
+		return nil
+	}
+	return appendComponentText(nil, raw["components"])
+}
+
+func appendComponentText(out []string, value any) []string {
+	items, _ := value.([]any)
+	for _, item := range items {
+		component, _ := item.(map[string]any)
+		componentType, _ := intField(component, "type")
+		switch discordgo.ComponentType(componentType) {
+		case discordgo.TextDisplayComponent:
+			out = append(out, stringField(component, "content"))
+		case discordgo.ButtonComponent:
+			out = append(out, stringField(component, "label"), stringField(component, "url"))
+		case discordgo.ThumbnailComponent:
+			out = append(out, stringField(component, "description"))
+		case discordgo.MediaGalleryComponent:
+			galleryItems, _ := component["items"].([]any)
+			for _, galleryItem := range galleryItems {
+				media, _ := galleryItem.(map[string]any)
+				out = append(out, stringField(media, "description"))
+			}
+		case discordgo.SectionComponent:
+			out = appendComponentText(out, component["components"])
+			out = appendComponentText(out, []any{component["accessory"]})
+		case discordgo.ContainerComponent, discordgo.ActionsRowComponent:
+			out = appendComponentText(out, component["components"])
 		}
 	}
 	return out

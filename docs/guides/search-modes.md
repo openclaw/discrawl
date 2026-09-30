@@ -15,7 +15,7 @@
 - supported presets are Korean with native Kiwi through `kiwigo`, Japanese with Kagome Search, Chinese with GSE search mode, and Arabic with in-process light stemming
 - user query terms are parameterized and quoted before `MATCH`, so tokens like `AND`, `OR`, `NOT`, `NEAR`, and `*` are searched as input terms instead of FTS operators
 - punctuation still follows FTS5 tokenization rules
-- by default, `search` skips rows with no searchable content (attachment text, attachment filenames, embeds, and replies still count as content); use `--include-empty` to opt back in
+- by default, `search` skips rows with no searchable content (attachment text, attachment filenames, embeds, Components V2 text, and replies still count as content); use `--include-empty` to opt back in
 
 ### Optional multilingual lexical fields
 

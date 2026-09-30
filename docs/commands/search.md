@@ -32,7 +32,7 @@ Run [`discrawl lexical rebuild`](lexical.html) after enabling languages or repla
 - `--channel <id|name|#name>` - resolve and restrict to one channel (exact id, exact name, or unique partial name)
 - `--author <name>` - restrict to one author
 - `--limit <n>` - cap result count
-- `--include-empty` - include rows with no searchable content (attachment text/filenames, embeds, and replies still count as content)
+- `--include-empty` - include rows with no searchable content (attachment text/filenames, embeds, Components V2 text, and replies still count as content)
 
 ## FTS behavior
 

@@ -42,7 +42,7 @@ func effectiveMessageGuildID(message *discordgo.Message, fallbackGuildID string)
 }
 
 func toMessageRecord(message *discordgo.Message, channelName, guildID, normalizedContent string) store.MessageRecord {
-	raw := marshalJSONString(message, "{}")
+	raw := marshalMessageJSON(message)
 	authorID := ""
 	authorName := ""
 	if message.Author != nil {
@@ -87,6 +87,15 @@ func marshalJSONString(value any, fallback string) string {
 	return string(raw)
 }
 
+// marshalMessageJSON restores the components discordgo decodes but tags
+// `json:"-"` on Message, so raw_json keeps Components V2 bodies.
+func marshalMessageJSON(message *discordgo.Message) string {
+	return marshalJSONString(struct {
+		*discordgo.Message
+		Components []discordgo.MessageComponent `json:"components,omitempty"`
+	}{message, message.Components}, "{}")
+}
+
 func normalizeMessage(message *discordgo.Message) string {
 	return normalizeMessageParts(message, nil)
 }
@@ -113,6 +122,9 @@ func normalizeMessageParts(message *discordgo.Message, attachmentParts []string)
 			parts = append(parts, embed.Description)
 		}
 	}
+	if message.Flags&discordgo.MessageFlagsIsComponentsV2 != 0 {
+		parts = appendComponentText(parts, message.Components)
+	}
 	if message.ReferencedMessage != nil && message.ReferencedMessage.Content != "" {
 		parts = append(parts, "reply:"+message.ReferencedMessage.Content)
 	}
@@ -132,6 +144,37 @@ func normalizeMessageParts(message *discordgo.Message, attachmentParts []string)
 		}
 	}
 	return strings.Join(filtered, "\n")
+}
+
+// appendComponentText collects the visible text of a component tree, which is
+// the whole body of a Components V2 message.
+func appendComponentText(parts []string, components []discordgo.MessageComponent) []string {
+	for _, component := range components {
+		switch c := component.(type) {
+		case *discordgo.TextDisplay:
+			parts = append(parts, c.Content)
+		case *discordgo.Button:
+			parts = append(parts, c.Label, c.URL)
+		case *discordgo.Thumbnail:
+			if c.Description != nil {
+				parts = append(parts, *c.Description)
+			}
+		case *discordgo.MediaGallery:
+			for _, item := range c.Items {
+				if item.Description != nil {
+					parts = append(parts, *item.Description)
+				}
+			}
+		case *discordgo.Section:
+			parts = appendComponentText(parts, c.Components)
+			parts = appendComponentText(parts, []discordgo.MessageComponent{c.Accessory})
+		case *discordgo.Container:
+			parts = appendComponentText(parts, c.Components)
+		case *discordgo.ActionsRow:
+			parts = appendComponentText(parts, c.Components)
+		}
+	}
+	return parts
 }
 
 func sanitizeNormalizedPart(raw string) string {
