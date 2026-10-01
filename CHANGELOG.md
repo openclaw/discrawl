@@ -2,13 +2,17 @@
 
 ## Unreleased
 
+## 0.15.6 - 2026-09-30
+
+**Highlights:** Search Discord Components V2 cards and run exact semantic searches up to 3.7× faster.
+
 - Keep Discord Components V2 messages, such as app-posted GitHub cards, searchable: bot sync keeps their component tree in `raw_json` and indexes its text, link buttons and media descriptions for search and snapshots, and Desktop imports index the same text. Messages archived before this fix keep empty text until they are re-read; the `sync` command docs describe backup-first recovery for bot-synced and Desktop-imported rows.
-- Refresh SQLite to v1.60.1 with its required libc v1.77.1, go-strftime to v1.1.0, and golangci-lint to v2.14.0, retaining the Go 1.27.0 minimum.
-- Update the TruffleHog secret-scanning action to v3.97.8. Thanks @dependabot.
 - Speed up exact semantic search 3.7× (10,000 × 1,536-dimensional embeddings: 506 ms → 137 ms, allocations 15.5M → 140k) by updating Crawlkit to v0.16.6 and skipping a redundant norm pass per candidate.
-- Distinguish cloud login and publisher authorization failures with bounded diagnostics that preserve private response details.
 - Select the actual latest metrics observation at nanosecond precision, including imported timestamps with different offsets, without rewriting retained history.
 - Stop cloud adoption when inventory pagination repeats a cursor, and release unread HTTP error responses before reporting publication failures.
+- Distinguish cloud login and publisher authorization failures with bounded diagnostics that preserve private response details.
+- Refresh SQLite to v1.60.1 with its required libc v1.77.1, go-strftime to v1.1.0, and golangci-lint to v2.14.0, retaining the Go 1.27.0 minimum.
+- Update the TruffleHog secret-scanning action to v3.97.8. Thanks @dependabot.
 
 ## 0.15.5 - 2026-09-20
 
