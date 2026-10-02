@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
+
 ## 0.15.6 - 2026-09-30
 
 **Highlights:** Search Discord Components V2 cards and run exact semantic searches up to 3.7× faster.
