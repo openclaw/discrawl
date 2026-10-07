@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update CodeQL initialization and analysis together to v4.38.2 and group future updates to avoid incompatible action versions; refresh TruffleHog to v3.97.9. Thanks @dependabot.
 - Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
 
 ## 0.15.6 - 2026-09-30
