@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Build with Go 1.27.2 to fix nine reachable standard-library vulnerabilities, including in Docker and optional language helpers, while retaining the existing minimum Go versions; refresh Go system, text, cryptography, terminal ANSI, and character-width dependencies, and run analyzers with the compatible module-pinned export reader.
 - Update CodeQL initialization and analysis together to v4.38.2 and group future updates to avoid incompatible action versions; refresh TruffleHog to v3.97.9. Thanks @dependabot.
 - Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
 
