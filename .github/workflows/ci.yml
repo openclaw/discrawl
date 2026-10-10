@@ -51,21 +51,18 @@ jobs:
 
       - name: Install analyzers
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           go install mvdan.cc/gofumpt@v0.12.0
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
-          go install golang.org/x/tools/cmd/deadcode@v0.50.0
 
       - name: Vet
         run: go vet ./...
 
       - name: Staticcheck
-        run: '"$(go env GOPATH)/bin/staticcheck" ./...'
+        run: go tool staticcheck ./...
 
       - name: Deadcode
         run: |
           output_file=$(mktemp)
-          "$(go env GOPATH)/bin/deadcode" -test ./... > "$output_file"
+          go tool deadcode -test ./... > "$output_file"
           if [ -s "$output_file" ]; then
             cat "$output_file"
             exit 1
@@ -81,7 +78,7 @@ jobs:
 
       - name: Gosec
         run: |
-          "$(go env GOPATH)/bin/gosec" -exclude=G101,G115,G202,G301,G304 ./...
+          go tool gosec -exclude=G101,G115,G202,G301,G304 ./...
 
   test:
     runs-on: ubuntu-latest
@@ -186,11 +183,8 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-
       - name: Run govulncheck
-        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
+        run: go tool govulncheck ./...
 
   release-check:
     runs-on: ubuntu-latest
