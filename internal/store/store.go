@@ -11,6 +11,7 @@ import (
 	"time"
 
 	crawlstore "github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/discrawl/internal/sqlitedurable"
 	"github.com/openclaw/discrawl/internal/store/storedb"
 )
 
@@ -146,7 +147,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 }
 
 func openBaseStore(ctx context.Context, path string) (*crawlstore.Store, error) {
-	base, err := crawlstore.Open(ctx, crawlstore.Options{Path: path})
+	base, err := sqlitedurable.Open(ctx, crawlstore.Options{Path: path})
 	if err != nil {
 		return nil, err
 	}
