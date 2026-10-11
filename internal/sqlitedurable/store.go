@@ -77,7 +77,14 @@ func writerURI(path string) (string, string, error) {
 	} else {
 		// filepath.Abs/Join clean .. before the filesystem follows symlinks,
 		// which can select a different existing database. Preserve components.
-		if !filepath.IsAbs(path) {
+		if runtime.GOOS == "windows" {
+			// Windows also has drive-relative and current-drive-rooted paths;
+			// use its full-path resolver instead of treating them as relative.
+			path, err = filepath.Abs(path)
+			if err != nil {
+				return "", "", err
+			}
+		} else if !filepath.IsAbs(path) {
 			cwd, err := os.Getwd()
 			if err != nil {
 				return "", "", err

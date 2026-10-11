@@ -124,6 +124,9 @@ func TestMemoryAndUncreatableWriter(t *testing.T) {
 }
 
 func TestWriterPreservesSymlinkParentPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink traversal; Windows uses its full-path resolver")
+	}
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	require.NoError(t, os.MkdirAll(filepath.Join(target, "child"), 0o700))
