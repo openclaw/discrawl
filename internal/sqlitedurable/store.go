@@ -60,6 +60,7 @@ func Open(ctx context.Context, opts crawlstore.Options) (*crawlstore.Store, erro
 }
 
 func writerURI(path string) (string, string, error) {
+	// Match the pinned Crawlkit Open contract, including its whitespace trim.
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", "", errors.New("sqlite path is required")
@@ -74,9 +75,14 @@ func writerURI(path string) (string, string, error) {
 			return "", "", fmt.Errorf("parse sqlite writer path: %w", err)
 		}
 	} else {
-		path, err = filepath.Abs(path)
-		if err != nil {
-			return "", "", err
+		// filepath.Abs/Join clean .. before the filesystem follows symlinks,
+		// which can select a different existing database. Preserve components.
+		if !filepath.IsAbs(path) {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return "", "", err
+			}
+			path = cwd + string(filepath.Separator) + path
 		}
 		path = filepath.ToSlash(path)
 		if runtime.GOOS == "windows" && !strings.HasPrefix(path, "/") {

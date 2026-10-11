@@ -122,3 +122,27 @@ func TestMemoryAndUncreatableWriter(t *testing.T) {
 	_, err = Open(context.Background(), crawlstore.Options{Path: filepath.Join(file, "child")})
 	require.Error(t, err)
 }
+
+func TestWriterPreservesSymlinkParentPath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "child"), 0o700))
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(filepath.Join(target, "child"), alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Keep the .. component: the kernel follows alias before processing it.
+	path := alias + string(filepath.Separator) + ".." + string(filepath.Separator) + "retained.sqlite"
+	original, err := crawlstore.Open(t.Context(), crawlstore.Options{Path: path})
+	require.NoError(t, err)
+	_, err = original.DB().ExecContext(t.Context(), "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES('original')")
+	require.NoError(t, err)
+	require.NoError(t, original.Close())
+	upgraded, err := Open(t.Context(), crawlstore.Options{Path: path})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, upgraded.Close()) })
+	var value string
+	require.NoError(t, upgraded.DB().QueryRowContext(t.Context(), "SELECT value FROM evidence").Scan(&value))
+	require.Equal(t, "original", value)
+	require.NoFileExists(t, filepath.Join(root, "retained.sqlite"))
+}
