@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- Refresh setup-node to v7.1.0 and TruffleHog to v3.99.0 across CI and existing publication workflows. Thanks @dependabot.
-- Update transitive gRPC to v1.83.2 to fix the xDS server denial-of-service advisory (GHSA-2v4p-qf9q-27wj).
+## 0.15.7 - 2026-10-11
+
+**Highlights:** Fix nine reachable Go standard-library vulnerabilities and the gRPC xDS denial-of-service advisory.
+
 - Build with Go 1.27.2 to fix nine reachable standard-library vulnerabilities, including in Docker and optional language helpers, while retaining the existing minimum Go versions; refresh Go system, text, cryptography, terminal ANSI, and character-width dependencies, and run analyzers with the compatible module-pinned export reader.
+- Update transitive gRPC to v1.83.2 to fix the xDS server denial-of-service advisory (GHSA-2v4p-qf9q-27wj).
+- Refresh setup-node to v7.1.0 and TruffleHog to v3.99.0 across CI and existing publication workflows. Thanks @dependabot.
 - Update CodeQL initialization and analysis together to v4.38.2 and group future updates to avoid incompatible action versions; refresh TruffleHog to v3.97.9. Thanks @dependabot.
 - Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
 
