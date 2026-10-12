@@ -119,9 +119,11 @@ Usage may remain known when a decoded response fails vector validation.
 The standard `text-embedding-3-small` default tier is estimated at USD 0.02 per
 million input tokens (OpenAI pricing checked 2026-10-12), emitted as `cost_usd`
 and `cost_known`. A different returned model or explicit unpriced tier leaves
-cost unknown. An omitted tier defaults to `default` because the embeddings
-request does not select a service tier. These lossy measurements are estimates,
-not billing receipts or proof of collection coverage.
+cost unknown. An omitted tier defaults to `default` only for this public
+embeddings endpoint, whose request does not select a service tier. This fallback
+does not apply to custom endpoints or Responses/classifier requests. These lossy
+measurements are standard list-price estimates, not billing receipts or proof
+of collection coverage.
 
 The observer retains only bounded metadata while the existing decoder reads;
 it does not buffer vectors, read ahead, change response limits or log payloads,

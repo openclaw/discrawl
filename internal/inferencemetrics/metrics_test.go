@@ -271,6 +271,66 @@ func TestOptInScopeAndTags(t *testing.T) {
 	}
 }
 
+func TestPublicEmbeddingTierFallbackAndEndpointGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint, responseModel, responseTier string
+		measured, priced                            bool
+	}{
+		{"public-absent-tier", embed.DefaultOpenAIBaseURL, embed.DefaultOpenAIModel, "", true, true},
+		{"public-unrecognized-tier", embed.DefaultOpenAIBaseURL, embed.DefaultOpenAIModel, `,"service_tier":"future-tier"`, true, false},
+		{"public-model-mismatch", embed.DefaultOpenAIBaseURL, "text-embedding-3-large", "", true, false},
+		{"custom-absent-tier", "https://custom.invalid/v1", embed.DefaultOpenAIModel, "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			udp, addr := listener(t)
+			t.Setenv("CLAW_INFERENCE_STATSD", addr.String())
+			cfg := embed.Config{Provider: "openai", BaseURL: tc.endpoint, Model: embed.DefaultOpenAIModel, Dimensions: 2}
+			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				request, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				require.NotContains(t, string(request), "service_tier")
+				payload := fmt.Sprintf(`{"model":%q,"data":[{"index":0,"embedding":[1,2]}],"usage":{"prompt_tokens":100}%s}`, tc.responseModel, tc.responseTier)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload))}, nil
+			})
+			opts := []embed.Option{embed.WithAPIKey("synthetic-fixture"), embed.WithHTTPClient(&http.Client{Transport: transport})}
+			observer := FromEnvironment(cfg)
+			require.Equal(t, tc.measured, observer != nil)
+			if observer != nil {
+				observer.transport = transport
+				opts = append(opts, observer.Option())
+			}
+			p, err := embed.NewProvider(cfg, opts...)
+			require.NoError(t, err)
+			if observer != nil {
+				p = observer.Wrap(p)
+			}
+			result, err := p.Embed(t.Context(), []string{"synthetic input"})
+			require.NoError(t, err)
+			require.Equal(t, [][]float32{{1, 2}}, result.Vectors)
+			if !tc.measured {
+				require.NoError(t, udp.SetReadDeadline(time.Now().Add(20*time.Millisecond)))
+				_, err := udp.Read(make([]byte, 4096))
+				var timeout net.Error
+				require.ErrorAs(t, err, &timeout)
+				require.True(t, timeout.Timeout())
+				return
+			}
+			packet := readPacket(t, udp)
+			require.Contains(t, packet, "claw.inference.input_tokens:100|c")
+			if tc.responseTier == "" {
+				require.Contains(t, packet, "tier:default")
+			} else {
+				require.Contains(t, packet, "tier:other")
+			}
+			if tc.priced {
+				require.Contains(t, packet, "claw.inference.cost_usd:0.000002000000|c")
+			} else {
+				require.NotContains(t, packet, "claw.inference.cost_usd:")
+			}
+		})
+	}
+}
+
 func TestBodyReadErrorAndNoReadAhead(t *testing.T) {
 	udp, addr := listener(t)
 	readErr := errors.New("fixture read interruption")
