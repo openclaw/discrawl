@@ -94,6 +94,43 @@ The snapshot stores vectors under `embeddings/<provider>/<model>/<input_version>
 - [`embed`](../commands/embed.html)
 - [Configuration](../configuration.html)
 
+## Optional local inference measurement
+
+Set `CLAW_INFERENCE_STATSD=127.0.0.1:18125` in the embedding process environment
+to send best-effort DogStatsD metadata to a local collector. An unset, malformed,
+or non-loopback destination disables measurement. This applies only to direct
+OpenAI embeddings at the standard public endpoint; local and compatible
+providers keep their existing behavior. Collection, model settings, credentials,
+quotas and schedules are independent of measurement.
+
+Each actual HTTP attempt emits `claw.inference.requests`, `duration` (milliseconds)
+and `last_event` (Unix seconds). Tags are `service:discrawl`, `workload:discrawl`,
+`operation:embedding_document` or `embedding_query`, `provider:openai`, bounded
+returned `model` (configured model if absent), `tier`, and `outcome`. Outcomes distinguish success, HTTP
+error, transport/body-read error and invalid response. Duration covers transport
+through the existing body reads, excluding queue wait and database publication.
+Retries count separately; skipped inputs and vector reuse do not count.
+
+Known numeric `usage.prompt_tokens` emits `input_tokens` and `usage_known`;
+`usage.prompt_tokens_details.cached_tokens` emits `cached_tokens` when valid.
+Missing, malformed or out-of-range usage stays unknown; reported zero is retained.
+No output/reasoning/cache-write zeros are invented for embedding responses.
+Usage may remain known when a decoded response fails vector validation.
+The standard `text-embedding-3-small` default tier is estimated at USD 0.02 per
+million input tokens (OpenAI pricing checked 2026-10-12), emitted as `cost_usd`
+and `cost_known`. A different returned model or explicit unpriced tier leaves
+cost unknown. An omitted tier defaults to `default` because the embeddings
+request does not select a service tier. These lossy measurements are estimates,
+not billing receipts or proof of collection coverage.
+
+The observer retains only bounded metadata while the existing decoder reads;
+it does not buffer vectors, read ahead, change response limits or log payloads,
+identifiers, credentials or error bodies. It sends at most one 4096-byte local
+UDP datagram per attempt with a 2 ms write deadline and no retries, persistence,
+background tasks or shutdown flush. An unavailable receiver does not change the
+provider result. Native query embeddings are measured only when that command is
+explicitly used; ordinary shared archive research remains with Clawmmunity.
+
 ## Continuous embedding during capture
 
 `discrawl tail --embed-live` opts into crawlkit's background worker runtime and

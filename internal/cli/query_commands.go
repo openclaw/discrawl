@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/openclaw/discrawl/internal/inferencemetrics"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -189,7 +190,7 @@ func (r *runtime) semanticSearchOptions(opts store.SearchOptions) (store.Semanti
 	if err != nil {
 		return store.SemanticSearchOptions{}, fmt.Errorf("create embedding provider: %w", err)
 	}
-	batch, err := provider.Embed(r.ctx, []string{opts.Query})
+	batch, err := provider.Embed(inferencemetrics.Query(r.ctx), []string{opts.Query})
 	if err != nil {
 		return store.SemanticSearchOptions{}, fmt.Errorf("embedding query failed: %w", err)
 	}
