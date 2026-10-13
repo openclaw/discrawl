@@ -265,7 +265,7 @@ func TestTailRepairUsesIncrementalScope(t *testing.T) {
 	require.Equal(t, []string{"g1"}, opts.GuildIDs)
 	require.False(t, opts.Full)
 	require.True(t, opts.Embeddings)
-	require.True(t, opts.SkipMembers)
+	require.False(t, opts.SkipMembers)
 	require.True(t, opts.LatestOnly)
 	require.Equal(t, "tail_repair", opts.RepairReason)
 }

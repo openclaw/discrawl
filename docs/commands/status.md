@@ -22,6 +22,20 @@ discrawl status
 - remote endpoint/archive metadata when `remote.mode = "cloud"`
 - embeddings status if `[search.embeddings]` is enabled
 
+## macOS scheduled reporter
+
+A launchd `spawn failed` / `EX_CONFIG` result can occur before Discrawl runs.
+Use current launchd diagnostic timestamps to establish the cause; an old stderr
+file does not establish a new database failure. A `needs LWCR update` error means
+launchd could not refresh its managed lightweight code requirement.
+
+After an authorized signed-binary replacement, verify every job that invokes
+that executable, including idle status reporters. Preserve its plist and signing
+requirements, then use the job owner's supported unload/bootstrap registration
+path when a stale managed requirement needs refreshing. Verify a new successful
+JSON report and the original scheduling interval. Re-register only the affected
+job; preserve the running collector and existing identity/security policy.
+
 ## See also
 
 - [`coverage`](coverage.html) - per-guild/channel archive readiness and wiretap skip counts

@@ -163,8 +163,10 @@ func TestSyncerMemberRefreshAndCatalogDecisions(t *testing.T) {
 		RoleIDsJSON: `[]`,
 		RawJSON:     `{}`,
 	}))
-	require.False(t, svc.shouldRefreshMembers(ctx, "g1"))
-	require.False(t, svc.shouldRefreshMembers(ctx, "g1"))
+	require.True(t, svc.shouldRefreshMembers(ctx, "g1"))
+	receipt, err := s.GetSyncState(ctx, guildMemberSyncSuccessScope("g1"))
+	require.NoError(t, err)
+	require.Empty(t, receipt)
 
 	require.NoError(t, s.SetSyncState(ctx, guildMemberSyncSuccessScope("g1"), "bad-time"))
 	require.True(t, svc.shouldRefreshMembers(ctx, "g1"))

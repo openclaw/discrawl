@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,7 +45,7 @@ func TestClientRESTWrappers(t *testing.T) {
 	mux.HandleFunc("/api/v10/guilds/g1/members", writeJSON([]map[string]any{
 		{
 			"guild_id": "g1",
-			"user":     map[string]any{"id": "u1", "username": "peter"},
+			"user":     map[string]any{"id": "1", "username": "peter"},
 			"roles":    []string{},
 		},
 	}))
@@ -217,12 +218,12 @@ func archivedThreadJSON(id string, archiveAt time.Time) map[string]any {
 	}
 }
 
-func TestGuildMembersSkipsNilUser(t *testing.T) {
+func TestGuildMembersRejectsIncompleteUserIdentity(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v10/guilds/g1/members", writeJSON([]map[string]any{
 		{
 			"guild_id": "g1",
-			"user":     map[string]any{"id": "u1", "username": "peter"},
+			"user":     map[string]any{"id": "1", "username": "peter"},
 			"roles":    []string{},
 		},
 		{
@@ -244,23 +245,18 @@ func TestGuildMembersSkipsNilUser(t *testing.T) {
 	require.NotPanics(t, func() {
 		members, err = client.GuildMembers(context.Background(), "g1")
 	})
-	require.NoError(t, err)
-	require.Len(t, members, 1)
-	require.Equal(t, "u1", members[0].User.ID)
+	require.ErrorContains(t, err, "missing user id")
+	require.Nil(t, members)
 }
 
 func TestGuildMembersPaginatesFromLastValidUser(t *testing.T) {
 	firstPage := make([]map[string]any, 1000)
-	for i := range 999 {
+	for i := range 1000 {
 		firstPage[i] = map[string]any{
 			"guild_id": "g1",
-			"user":     map[string]any{"id": fmt.Sprintf("u%04d", i), "username": "user"},
+			"user":     map[string]any{"id": strconv.Itoa(i + 1), "username": "user"},
 			"roles":    []string{},
 		}
-	}
-	firstPage[999] = map[string]any{
-		"guild_id": "g1",
-		"roles":    []string{},
 	}
 
 	mux := http.NewServeMux()
@@ -269,11 +265,11 @@ func TestGuildMembersPaginatesFromLastValidUser(t *testing.T) {
 		switch after {
 		case "":
 			writeJSON(firstPage)(w, r)
-		case "u0998":
+		case "1000":
 			writeJSON([]map[string]any{
 				{
 					"guild_id": "g1",
-					"user":     map[string]any{"id": "u1000", "username": "tail"},
+					"user":     map[string]any{"id": "1001", "username": "tail"},
 					"roles":    []string{},
 				},
 			})(w, r)
@@ -297,10 +293,10 @@ func TestGuildMembersPaginatesFromLastValidUser(t *testing.T) {
 		members, err = client.GuildMembers(context.Background(), "g1")
 	})
 	require.NoError(t, err)
-	require.Len(t, members, 1000)
-	require.Equal(t, "u0000", members[0].User.ID)
-	require.Equal(t, "u0998", members[998].User.ID)
-	require.Equal(t, "u1000", members[999].User.ID)
+	require.Len(t, members, 1001)
+	require.Equal(t, "1", members[0].User.ID)
+	require.Equal(t, "999", members[998].User.ID)
+	require.Equal(t, "1001", members[1000].User.ID)
 }
 
 func TestGuildMembersErrorsWhenFullPageHasNoUser(t *testing.T) {
@@ -333,11 +329,11 @@ func TestGuildMembersErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 	page := make([]map[string]any, 1000)
 	page[0] = map[string]any{
 		"guild_id": "g1",
-		"user":     map[string]any{"id": "u1", "username": "peter"},
+		"user":     map[string]any{"id": "1", "username": "peter"},
 		"roles":    []string{},
 	}
 	for i := 1; i < len(page); i++ {
-		page[i] = map[string]any{"guild_id": "g1", "roles": []string{}}
+		page[i] = map[string]any{"guild_id": "g1", "user": map[string]any{"id": strconv.Itoa(i + 1)}, "roles": []string{}}
 	}
 
 	requests := 0

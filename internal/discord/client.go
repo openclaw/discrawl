@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -190,33 +191,64 @@ func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private 
 }
 
 func (c *Client) GuildMembers(ctx context.Context, guildID string) ([]*discordgo.Member, error) {
-	var out []*discordgo.Member
+	result, err := c.GuildMemberEnumeration(ctx, guildID)
+	return result.Members, err
+}
+
+type MemberEnumeration struct {
+	Members    []*discordgo.Member
+	Pages      int
+	LastUserID string
+	Complete   bool
+}
+
+// GuildMemberEnumeration exposes the actual terminal pagination boundary while
+// keeping incomplete member bodies out of callers' merge paths.
+func (c *Client) GuildMemberEnumeration(ctx context.Context, guildID string) (MemberEnumeration, error) {
+	var result MemberEnumeration
+	failure := func(err error) (MemberEnumeration, error) {
+		return MemberEnumeration{Pages: result.Pages, LastUserID: result.LastUserID}, err
+	}
 	after := ""
+	var previous uint64
 	for {
 		reqCtx, cancel := c.requestContext(ctx)
 		page, err := c.session.GuildMembers(guildID, after, 1000, discordgo.WithContext(reqCtx))
 		cancel()
 		if err != nil {
-			return nil, err
+			return failure(err)
 		}
+		result.Pages++
 		if len(page) == 0 {
-			return out, nil
+			result.Complete = true
+			return result, nil
 		}
 		for _, member := range page {
-			if memberUserID(member) == "" {
-				continue
+			id := memberUserID(member)
+			if id == "" {
+				return failure(errors.New("guild member page missing user id"))
 			}
-			out = append(out, member)
-		}
-		if len(page) < 1000 {
-			return out, nil
+			numeric, parseErr := strconv.ParseUint(id, 10, 64)
+			if parseErr != nil || numeric == 0 || strconv.FormatUint(numeric, 10) != id {
+				return failure(errors.New("guild member page has invalid user id"))
+			}
+			if numeric <= previous {
+				return failure(fmt.Errorf("guild %s member page cursor did not advance", guildID))
+			}
+			previous = numeric
+			result.Members = append(result.Members, member)
 		}
 		nextAfter := lastMemberUserID(page)
 		if nextAfter == "" {
-			return nil, fmt.Errorf("guild %s member page missing user id", guildID)
+			return failure(fmt.Errorf("guild %s member page missing user id", guildID))
 		}
 		if nextAfter == after {
-			return nil, fmt.Errorf("guild %s member page cursor did not advance", guildID)
+			return failure(fmt.Errorf("guild %s member page cursor did not advance", guildID))
+		}
+		result.LastUserID = nextAfter
+		if len(page) < 1000 {
+			result.Complete = true
+			return result, nil
 		}
 		after = nextAfter
 	}

@@ -120,7 +120,7 @@ func TestToMemberRecordSkipsNilUser(t *testing.T) {
 	require.Equal(t, "Pete", rec.DisplayName)
 }
 
-func TestRefreshGuildMembersSkipsNilUser(t *testing.T) {
+func TestRefreshGuildMembersRejectsIncompleteIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -143,15 +143,17 @@ func TestRefreshGuildMembersSkipsNilUser(t *testing.T) {
 	require.NotPanics(t, func() {
 		count, err = svc.refreshGuildMembers(ctx, "g1", true)
 	})
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
+	require.ErrorContains(t, err, "missing user identity")
+	require.Zero(t, count)
 
 	status, err := s.Status(ctx, "db", "")
 	require.NoError(t, err)
-	require.Equal(t, 1, status.MemberCount)
+	require.Zero(t, status.MemberCount)
 
 	rows, err := s.Members(ctx, "g1", "", 10)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	require.Equal(t, "u1", rows[0].UserID)
+	require.Empty(t, rows)
+	gate, err := s.GetSyncState(ctx, guildMemberSyncSuccessScope("g1"))
+	require.NoError(t, err)
+	require.Empty(t, gate)
 }

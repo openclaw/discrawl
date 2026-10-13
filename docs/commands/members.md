@@ -68,5 +68,6 @@ last_message=2026-03-08T15:59:58Z
 
 ## See also
 
+- [Full member refresh](../guides/member-refresh.html)
 - [`channels`](channels.html)
 - [Data layout](../guides/data-storage.html)

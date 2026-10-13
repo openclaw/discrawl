@@ -169,9 +169,11 @@ func (s *Syncer) startTailRepair(ctx context.Context, guildIDs []string) *tailRe
 
 func tailRepairSyncOptions(guildIDs []string, embeddings bool) SyncOptions {
 	return SyncOptions{
-		GuildIDs:     append([]string(nil), guildIDs...),
-		Embeddings:   embeddings,
-		SkipMembers:  true,
+		GuildIDs:   append([]string(nil), guildIDs...),
+		Embeddings: embeddings,
+		// The member lane has its own 24h successful-enumeration gate. Run it
+		// under this same writer owner rather than leaving it permanently idle.
+		SkipMembers:  false,
 		LatestOnly:   true,
 		RepairReason: "tail_repair",
 	}

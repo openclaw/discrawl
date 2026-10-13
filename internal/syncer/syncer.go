@@ -410,10 +410,18 @@ func (stats *SyncStats) addChannel(record store.ChannelRecord) {
 	}
 }
 
-func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force bool) (int, error) {
+func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force bool) (count int, resultErr error) {
 	if !force && !s.shouldRefreshMembers(ctx, guildID) {
 		return 0, nil
 	}
+	failureRef := store.FailureRef{Operation: "guild_members", Source: "discord", GuildID: guildID}
+	defer func() {
+		// An intentional owner shutdown leaves the old completion gate due.
+		// Other failures remain visible even when message repair can continue.
+		if resultErr != nil && ctx.Err() == nil {
+			resultErr = errors.Join(resultErr, s.store.RecordFailure(ctx, failureRef, resultErr))
+		}
+	}()
 	memberCtx := ctx
 	cancel := func() {}
 	if s.memberRefreshTimeout > 0 {
@@ -428,7 +436,22 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 		"guild_id", guildID,
 		"timeout", timeoutLabel(s.memberRefreshTimeout),
 	)
-	members, err := s.client.GuildMembers(memberCtx, guildID)
+	var members []*discordgo.Member
+	var err error
+	pages := 0
+	if enumerator, ok := s.client.(interface {
+		GuildMemberEnumeration(context.Context, string) (discordclient.MemberEnumeration, error)
+	}); ok {
+		var enumeration discordclient.MemberEnumeration
+		enumeration, err = enumerator.GuildMemberEnumeration(memberCtx, guildID)
+		pages = enumeration.Pages
+		if err == nil && !enumeration.Complete {
+			err = errors.New("member enumeration has no completed pagination boundary")
+		}
+		members = enumeration.Members
+	} else {
+		members, err = s.client.GuildMembers(memberCtx, guildID)
+	}
 	if err != nil {
 		s.logger.Warn(
 			"member crawl failed",
@@ -443,13 +466,21 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 	for _, member := range members {
 		rec := toMemberRecord(guildID, member)
 		if rec.UserID == "" {
-			continue
+			return 0, errors.New("member enumeration returned a missing user identity")
 		}
 		converted = append(converted, rec)
 	}
-	if err := s.store.MergeMembers(ctx, guildID, converted); err != nil {
+	merged, err := s.store.MergeObservedMembers(ctx, guildID, converted, startedAt)
+	if err != nil {
 		s.logger.Warn("member merge failed", "guild_id", guildID, "err", err)
 		return 0, fmt.Errorf("merge guild members: %w", err)
+	}
+	if err := s.store.ResolveFailureIdentity(ctx, failureRef); err != nil {
+		return 0, fmt.Errorf("resolve guild member refresh failure: %w", err)
+	}
+	lastUserID := ""
+	if len(converted) > 0 {
+		lastUserID = converted[len(converted)-1].UserID
 	}
 	if s.store != nil {
 		if err := s.store.SetSyncState(ctx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -461,6 +492,11 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 		"member sync completed",
 		"guild_id", guildID,
 		"members", len(converted),
+		"pages", pages,
+		"pagination_complete", true,
+		"applied", merged.Applied,
+		"newer_skipped", merged.NewerSkipped,
+		"last_user_id", lastUserID,
 		"elapsed", time.Since(startedAt).Round(time.Second).String(),
 	)
 	return len(converted), nil
@@ -489,25 +525,7 @@ func (s *Syncer) shouldRefreshMembers(ctx context.Context, guildID string) bool 
 		return true
 	}
 	if lastSuccess == "" {
-		count, err := s.store.GuildMemberCount(ctx, guildID)
-		if err != nil {
-			s.logger.Warn("member count lookup failed", "guild_id", guildID, "err", err)
-			return true
-		}
-		if count > 0 {
-			now := time.Now().UTC().Format(time.RFC3339Nano)
-			if err := s.store.SetSyncState(ctx, scope, now); err != nil {
-				s.logger.Warn("member sync state seed failed", "guild_id", guildID, "err", err)
-				return true
-			}
-			s.logger.Info(
-				"member sync skipped",
-				"guild_id", guildID,
-				"reason", "reused_existing_snapshot",
-				"members", count,
-			)
-			return false
-		}
+		// Message authors and Gateway deltas are not a completed enumeration.
 		return true
 	}
 	if s.memberRefreshInterval <= 0 {
