@@ -196,10 +196,13 @@ func (c *Client) GuildMembers(ctx context.Context, guildID string) ([]*discordgo
 }
 
 type MemberEnumeration struct {
-	Members    []*discordgo.Member
-	Pages      int
-	LastUserID string
-	Complete   bool
+	Members      []*discordgo.Member
+	Pages        int
+	LastUserID   string
+	Complete     bool
+	ProviderWait time.Duration
+	CallsElapsed time.Duration
+	RateLimits   int
 }
 
 // GuildMemberEnumeration exposes the actual terminal pagination boundary while
@@ -207,14 +210,12 @@ type MemberEnumeration struct {
 func (c *Client) GuildMemberEnumeration(ctx context.Context, guildID string) (MemberEnumeration, error) {
 	var result MemberEnumeration
 	failure := func(err error) (MemberEnumeration, error) {
-		return MemberEnumeration{Pages: result.Pages, LastUserID: result.LastUserID}, err
+		return MemberEnumeration{Pages: result.Pages, LastUserID: result.LastUserID, ProviderWait: result.ProviderWait, CallsElapsed: result.CallsElapsed, RateLimits: result.RateLimits}, err
 	}
 	after := ""
 	var previous uint64
 	for {
-		reqCtx, cancel := c.requestContext(ctx)
-		page, err := c.session.GuildMembers(guildID, after, 1000, discordgo.WithContext(reqCtx))
-		cancel()
+		page, err := c.memberPage(ctx, guildID, after, &result)
 		if err != nil {
 			return failure(err)
 		}
@@ -246,6 +247,12 @@ func (c *Client) GuildMemberEnumeration(ctx context.Context, guildID string) (Me
 			return failure(fmt.Errorf("guild %s member page cursor did not advance", guildID))
 		}
 		result.LastUserID = nextAfter
+		if progress, ok := ctx.Value(memberProgressKey{}).(func(MemberProgress)); ok && result.Pages%25 == 0 {
+			progress(MemberProgress{
+				Pages: result.Pages, Members: len(result.Members), LastUserID: result.LastUserID,
+				ProviderWait: result.ProviderWait, CallsElapsed: result.CallsElapsed, RateLimits: result.RateLimits,
+			})
+		}
 		if len(page) < 1000 {
 			result.Complete = true
 			return result, nil

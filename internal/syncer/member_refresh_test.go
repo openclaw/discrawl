@@ -154,3 +154,25 @@ func TestMemberRefreshRejectsInvalidCompleteRows(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, gate)
 }
+
+func TestMemberRefreshBudgetCapsLongerParentDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+	defer cancel()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	client := &memberEnumerationFixture{fakeClient: &fakeClient{}, enumerate: func(call context.Context) (discordclient.MemberEnumeration, error) {
+		deadline, ok := call.Deadline()
+		require.True(t, ok)
+		require.Less(t, time.Until(deadline), time.Second)
+		<-call.Done()
+		return discordclient.MemberEnumeration{Pages: 7, LastUserID: "123"}, call.Err()
+	}}
+	svc := New(client, s, nil)
+	svc.memberRefreshTimeout = 10 * time.Millisecond
+	_, err = svc.refreshGuildMembers(ctx, "g", false)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	gate, err := s.GetSyncState(ctx, guildMemberSyncSuccessScope("g"))
+	require.NoError(t, err)
+	require.Empty(t, gate)
+}

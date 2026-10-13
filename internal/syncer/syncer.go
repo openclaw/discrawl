@@ -132,7 +132,7 @@ type SyncStats struct {
 
 const (
 	fullSyncBatchSize            = 25
-	defaultMemberRefreshTimeout  = 5 * time.Minute
+	defaultMemberRefreshTimeout  = 15 * time.Minute
 	defaultMemberRefreshInterval = 24 * time.Hour
 	defaultMessageChannelTimeout = 5 * time.Minute
 	defaultMessageSyncLogEvery   = 15 * time.Second
@@ -425,9 +425,7 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 	memberCtx := ctx
 	cancel := func() {}
 	if s.memberRefreshTimeout > 0 {
-		if _, ok := ctx.Deadline(); !ok {
-			memberCtx, cancel = context.WithTimeout(ctx, s.memberRefreshTimeout)
-		}
+		memberCtx, cancel = context.WithTimeout(ctx, s.memberRefreshTimeout)
 	}
 	defer cancel()
 	startedAt := time.Now()
@@ -439,12 +437,22 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 	var members []*discordgo.Member
 	var err error
 	pages := 0
+	enumerationFrontier := ""
+	var providerWait, callsElapsed time.Duration
+	rateLimits := 0
+	memberCtx = discordclient.WithMemberProgress(memberCtx, func(p discordclient.MemberProgress) {
+		s.logger.Info("member sync progress", "guild_id", guildID, "pages", p.Pages, "members", p.Members,
+			"last_user_id", p.LastUserID, "provider_wait", p.ProviderWait.Round(time.Millisecond).String(),
+			"sdk_calls_elapsed", p.CallsElapsed.Round(time.Millisecond).String(), "rate_limits", p.RateLimits)
+	})
 	if enumerator, ok := s.client.(interface {
 		GuildMemberEnumeration(context.Context, string) (discordclient.MemberEnumeration, error)
 	}); ok {
 		var enumeration discordclient.MemberEnumeration
 		enumeration, err = enumerator.GuildMemberEnumeration(memberCtx, guildID)
 		pages = enumeration.Pages
+		enumerationFrontier = enumeration.LastUserID
+		providerWait, callsElapsed, rateLimits = enumeration.ProviderWait, enumeration.CallsElapsed, enumeration.RateLimits
 		if err == nil && !enumeration.Complete {
 			err = errors.New("member enumeration has no completed pagination boundary")
 		}
@@ -459,23 +467,32 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 			"err", err,
 			"elapsed", time.Since(startedAt).Round(time.Second).String(),
 			"timed_out", errors.Is(err, context.DeadlineExceeded),
+			"pages", pages,
+			"last_user_id", enumerationFrontier,
+			"provider_wait", providerWait.Round(time.Millisecond).String(),
+			"sdk_calls_elapsed", callsElapsed.Round(time.Millisecond).String(),
+			"rate_limits", rateLimits,
 		)
 		return 0, fmt.Errorf("crawl guild members: %w", err)
 	}
 	converted := make([]store.MemberRecord, 0, len(members))
 	for _, member := range members {
+		if err := memberCtx.Err(); err != nil {
+			return 0, err
+		}
 		rec := toMemberRecord(guildID, member)
 		if rec.UserID == "" {
 			return 0, errors.New("member enumeration returned a missing user identity")
 		}
 		converted = append(converted, rec)
 	}
-	merged, err := s.store.MergeObservedMembers(ctx, guildID, converted, startedAt)
+	mergeStarted := time.Now()
+	merged, err := s.store.MergeObservedMembers(memberCtx, guildID, converted, startedAt)
 	if err != nil {
 		s.logger.Warn("member merge failed", "guild_id", guildID, "err", err)
 		return 0, fmt.Errorf("merge guild members: %w", err)
 	}
-	if err := s.store.ResolveFailureIdentity(ctx, failureRef); err != nil {
+	if err := s.store.ResolveFailureIdentity(memberCtx, failureRef); err != nil {
 		return 0, fmt.Errorf("resolve guild member refresh failure: %w", err)
 	}
 	lastUserID := ""
@@ -483,7 +500,7 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 		lastUserID = converted[len(converted)-1].UserID
 	}
 	if s.store != nil {
-		if err := s.store.SetSyncState(ctx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if err := s.store.SetSyncState(memberCtx, guildMemberSyncSuccessScope(guildID), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			s.logger.Warn("member sync state update failed", "guild_id", guildID, "err", err)
 			return 0, fmt.Errorf("record guild member sync: %w", err)
 		}
@@ -497,6 +514,10 @@ func (s *Syncer) refreshGuildMembers(ctx context.Context, guildID string, force 
 		"applied", merged.Applied,
 		"newer_skipped", merged.NewerSkipped,
 		"last_user_id", lastUserID,
+		"provider_wait", providerWait.Round(time.Millisecond).String(),
+		"sdk_calls_elapsed", callsElapsed.Round(time.Millisecond).String(),
+		"merge_elapsed", time.Since(mergeStarted).Round(time.Millisecond).String(),
+		"rate_limits", rateLimits,
 		"elapsed", time.Since(startedAt).Round(time.Second).String(),
 	)
 	return len(converted), nil
