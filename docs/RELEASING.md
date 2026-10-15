@@ -16,6 +16,19 @@ The public compatibility contract remains:
 
 The shared pipeline also publishes verifier control assets (`ASSET-INVENTORY.json`, `SIGNING-MANIFEST.json`, and `RELEASE-NOTES.md`).
 
+## Dry run
+
+After landing dependency or toolchain updates, verify the protected `main` head
+with the current released version:
+
+```sh
+gh workflow run release-unified.yml --repo openclaw/discrawl --ref main -f version=X.Y.Z -f dry_run=true
+```
+
+This builds, signs, notarizes, and independently verifies the artifacts without
+creating a tag or GitHub Release or updating Homebrew. Omitting `dry_run` retains
+the normal publication behavior described below.
+
 ## Release
 
 When refreshing dependencies, keep `modernc.org/libc` at the exact version
