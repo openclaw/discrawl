@@ -102,7 +102,7 @@ func TestHistoryVerificationRetainsCheckpointWhenOlderRowsArrive(t *testing.T) {
 	delete(client.beforeErrors, "c1")
 
 	// Ordinary ingestion can add an isolated old row without filling the gap.
-	_, err = svc.persistMessagePage(ctx, []*discordgo.Message{storedMessage("1000")}, channel.Name, channel.GuildID, false)
+	_, err = svc.persistMessagePage(ctx, []*discordgo.Message{storedMessage("1000")}, channel.Name, channel.GuildID, false, time.Now())
 	require.NoError(t, err)
 	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
 	require.NoError(t, err)

@@ -1043,7 +1043,7 @@ func TestPersistMessagePageResolvesCreateButLeavesNewerUpdateFailure(t *testing.
 		Content:   "normal page recovery",
 		Timestamp: time.Now().UTC(),
 		Author:    &discordgo.User{ID: "u1", Username: "user"},
-	}}, "general", "g1", false)
+	}}, "general", "g1", false, time.Now())
 	require.NoError(t, err)
 	require.Equal(t, "40", newest)
 
