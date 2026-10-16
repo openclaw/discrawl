@@ -57,7 +57,7 @@ test('a denied publisher team identifies cloud login without retrying or leaking
 
 test('authorization diagnostics recognize only fixed codes with their expected status', async () => {
   for (const [code, status, hint] of [
-    ['github_user_failed', 403, 'GitHub identity lookup failed: check the publishing token and GitHub API availability'],
+    ['github_user_failed', 403, 'GitHub identity lookup failed without a confirmed rate-limit signal: check DISCORD_BACKUP_TOKEN validity and GitHub API availability'],
     ['forbidden', 403, 'cloud authorization denied: check the session publisher role'],
     ['missing_access_jwt', 401, 'Cloudflare Access authentication required: check the endpoint and Access service credentials'],
   ]) {
@@ -173,4 +173,65 @@ test('errored response bodies preserve HTTP failures and retries', async () => {
     ++calls === 1 ? response(503) : Response.json({ complete: true }));
   assert.deepEqual(await retry('current-state'), { complete: true });
   assert.equal(calls, 2);
+});
+
+
+test('cloud login waits for primary and secondary rate-limit headers before retrying', async () => {
+  const now = Date.parse('2026-10-15T23:00:00Z');
+  for (const [headers, delay] of [
+    [{ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 720) }, 720_000],
+    [{ 'retry-after': '600', 'x-ratelimit-remaining': '4999' }, 600_000],
+    [{ 'retry-after': new Date(now + 600_000).toUTCString() }, 600_000],
+    [{ 'x-ratelimit-remaining': '0' }, 600_000],
+  ]) {
+    const waits = [];
+    const requests = [];
+    const request = cloudRequest('https://fixture.invalid/', {}, async (_url, options) => {
+      requests.push(options.body);
+      if (requests.length > 1) {
+        return Response.json({ status: 'complete' });
+      }
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error":"github_rate_limited"}')); controller.close(); },
+      }), { status: 403, headers: { ...headers, 'content-type': 'application/json' } });
+    }, { now: () => now, sleep: async ms => waits.push(ms) });
+    assert.deepEqual(await request('v1/auth/github/token', { method: 'POST', body: { token: 'synthetic' } }), { status: 'complete' });
+    assert.deepEqual(waits, [delay]);
+    assert.deepEqual(requests, ['{"token":"synthetic"}', '{"token":"synthetic"}']);
+  }
+});
+
+test('rate limits stop after three retries or the wait budget without shortening a cooldown', async () => {
+  for (const [headers, expectedWaits, expectedCalls] of [
+    [{ 'retry-after': '600' }, [600_000, 600_000, 600_000], 4],
+    [{ 'retry-after': '1801' }, [], 1],
+    [{}, [600_000, 600_000, 600_000], 4],
+  ]) {
+    const waits = [];
+    let calls = 0;
+    const request = cloudRequest('https://fixture.invalid/', {}, async () => {
+      calls++;
+      return Response.json({ error: 'github_rate_limited', private: 'do-not-log' }, { status: 429, headers });
+    }, { sleep: async ms => waits.push(ms) });
+    await assert.rejects(request('v1/auth/github/token'), error => error.message.includes('retry budget exhausted') && !error.message.includes('do-not-log'));
+    assert.deepEqual(waits, expectedWaits);
+    assert.equal(calls, expectedCalls);
+  }
+});
+
+test('ambiguous identity failures, invalid rate headers, and credential denials remain terminal', async () => {
+  for (const [code, status, headers] of [
+    ['github_user_failed', 403, {}],
+    ['github_user_failed', 403, { 'retry-after': 'private-invalid-header' }],
+    ['github_org_denied', 403, { 'retry-after': '600' }],
+    ['github_token_rejected', 401, { 'retry-after': '600' }],
+  ]) {
+    let calls = 0;
+    const request = cloudRequest('https://fixture.invalid/', {}, async () => {
+      calls++;
+      return Response.json({ error: code }, { status, headers });
+    }, { sleep: async () => assert.fail('must not retry unconfirmed rate limit or authorization failure') });
+    await assert.rejects(request('v1/auth/github/token'), error => !error.message.includes('private-invalid-header'));
+    assert.equal(calls, 1);
+  }
 });

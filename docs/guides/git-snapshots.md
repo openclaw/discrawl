@@ -202,9 +202,23 @@ conclusion.
 The publisher distinguishes cloud login failures from later archive requests.
 For recognized authorization errors it reports a fixed diagnostic hint; response
 messages, tokens, archive paths, and unknown error codes stay private. Diagnostic
-reads are limited to 4 KiB and one second. HTTP 401/403 failures are terminal;
-only transport failures, HTTP 429, and HTTP 5xx responses receive up to three
-retries. Repeating a run cannot repair a persistent authorization policy error.
+reads are limited to 4 KiB and one second. HTTP 401 and authorization denials
+are terminal. GitHub login HTTP 403 responses are retried only when a recognized
+identity/rate-limit error includes `Retry-After` or `X-RateLimit-Remaining: 0`.
+The publisher honors the later of `Retry-After` and `X-RateLimit-Reset`, with a
+ten-minute fallback for exhausted quota without a reset time and HTTP 429
+without a cooldown. It never shortens that wait: at most three retries and
+30 minutes of total waiting are allowed. Transport failures and HTTP 5xx use
+short exponential backoff. Repeating a run cannot repair a persistent
+authorization policy error.
+
+The workflow supplies `DISCORD_BACKUP_TOKEN` as
+`DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN`; its GitHub owner shares an API quota across
+clients. A rejected-token diagnostic means to check that secret for expiry or
+revocation. An identity failure without a confirmed rate-limit signal remains
+terminal and does not establish that the token needs replacement. Older cloud
+service versions collapse upstream errors into `github_user_failed` and omit
+rate-limit headers, so those responses cannot safely be retried or classified.
 
 For a GitHub organization/team denial, check the cloud service's **deployed**
 team allowlist and the publishing token's ability to prove active membership.

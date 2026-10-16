@@ -96,8 +96,8 @@ async function gzipParts(snapshot, directory) {
 }
 
 async function authorizationHint(response) {
-  if (response.status !== 401 && response.status !== 403) return '';
-  if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) return '';
+  if (response.status !== 401 && response.status !== 403 && response.status !== 429) return {};
+  if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) return {};
   const reader = response.body.getReader();
   let timer;
   try {
@@ -109,17 +109,19 @@ async function authorizationHint(response) {
       const { done, value } = await Promise.race([reader.read(), timeout]);
       if (done) break;
       size += value.byteLength;
-      if (size > 4096) return '';
+      if (size > 4096) return {};
       chunks.push(value);
     }
     const code = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.error;
-    if (response.status === 403 && code === 'github_org_denied') return '; GitHub organization/team authorization denied: check the deployed cloud service team policy and token membership permissions';
-    if (response.status === 403 && code === 'github_user_failed') return '; GitHub identity lookup failed: check the publishing token and GitHub API availability';
-    if (response.status === 403 && code === 'forbidden') return '; cloud authorization denied: check the session publisher role';
-    if (response.status === 401 && code === 'missing_access_jwt') return '; Cloudflare Access authentication required: check the endpoint and Access service credentials';
-    return '';
+    if (response.status === 403 && code === 'github_org_denied') return { hint: '; GitHub organization/team authorization denied: check the deployed cloud service team policy and token membership permissions' };
+    if (response.status === 403 && code === 'github_user_failed') return { code, hint: '; GitHub identity lookup failed without a confirmed rate-limit signal: check DISCORD_BACKUP_TOKEN validity and GitHub API availability' };
+    if ((response.status === 403 || response.status === 429) && code === 'github_rate_limited') return { code, hint: '; GitHub API rate limit: wait for the retry/reset time before retrying; DISCORD_BACKUP_TOKEN shares its owner\'s API quota' };
+    if (response.status === 403 && code === 'forbidden') return { hint: '; cloud authorization denied: check the session publisher role' };
+    if (response.status === 401 && code === 'github_token_rejected') return { hint: '; GitHub rejected DISCORD_BACKUP_TOKEN: check whether it expired or was revoked' };
+    if (response.status === 401 && code === 'missing_access_jwt') return { hint: '; Cloudflare Access authentication required: check the endpoint and Access service credentials' };
+    return {};
   } catch {
-    return '';
+    return {};
   } finally {
     clearTimeout(timer);
     // Cancellation is best-effort and must not extend the diagnostic timeout.
@@ -128,11 +130,26 @@ async function authorizationHint(response) {
   }
 }
 
-export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
+function rateLimitDelay(response, attempt, now) {
+  const retryAfter = response.headers.get('retry-after');
+  let delay = null;
+  if (retryAfter && /^\d+$/.test(retryAfter)) delay = Number(retryAfter) * 1000;
+  else if (retryAfter && Number.isFinite(Date.parse(retryAfter))) delay = Math.max(0, Date.parse(retryAfter) - now());
+  if (response.headers.get('x-ratelimit-remaining') === '0') {
+    const reset = response.headers.get('x-ratelimit-reset');
+    const resetDelay = reset && /^\d+$/.test(reset) ? Math.max(0, Number(reset) * 1000 - now()) : 10 * 60_000;
+    delay = Math.max(delay ?? 0, resetDelay);
+  }
+  if (delay === null && response.status !== 429) return null;
+  return Math.max(delay ?? 10 * 60_000, 1000 * 2 ** attempt);
+}
+
+export function cloudRequest(endpoint, headers, fetchImpl = fetch, { sleep = ms => new Promise(r => setTimeout(r, ms)), now = Date.now } = {}) {
   const base = new URL(endpoint.endsWith('/') ? endpoint : `${endpoint}/`);
   if (base.protocol !== 'https:' && base.hostname !== 'localhost') throw new PublishError('cloud endpoint must use HTTPS');
   return async (path, { method = 'GET', body, generation, binary = false } = {}) => {
     const operation = path === 'v1/auth/github/token' ? 'cloud login' : 'cloud request';
+    let waited = 0;
     for (let attempt = 0; ; attempt++) {
       let response;
       try {
@@ -146,13 +163,18 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch) {
         if (attempt >= 3) throw new PublishError(`${operation} failed; no private response was logged`);
         response = undefined;
       }
-      const retryable = !response || response.status === 429 || response.status >= 500;
-      const hint = response ? await authorizationHint(response) : '';
+      const { code, hint = '' } = response ? await authorizationHint(response) : {};
+      const rateLimited = response && (response.status === 429 || (response.status === 403 && operation === 'cloud login' && ['github_user_failed', 'github_rate_limited'].includes(code)));
+      const rateDelay = rateLimited ? rateLimitDelay(response, attempt, now) : null;
+      const retryable = !response || response.status >= 500 || rateDelay !== null;
+      const delay = rateDelay ?? 1000 * 2 ** attempt;
       try { await response?.body?.cancel(); } catch {
         // Cleanup must preserve the HTTP status and retry policy, even for an errored stream.
       }
-      if (!retryable || attempt >= 3) throw new PublishError(`${operation} failed (HTTP ${response?.status ?? 'unavailable'})${hint}`);
-      await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
+      // Leave room for publication in the workflow's 40-minute step; never shorten a server cooldown.
+      if (!retryable || attempt >= 3 || waited + delay > 30 * 60_000) throw new PublishError(`${operation} failed (HTTP ${response?.status ?? 'unavailable'})${hint}${rateDelay !== null ? '; retry budget exhausted (maximum three retries / 30 minutes waiting)' : ''}`);
+      await sleep(delay);
+      waited += delay;
     }
   };
 }

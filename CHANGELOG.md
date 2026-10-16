@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retry confirmed GitHub cloud-login rate limits after their cooldown, with bounded waits and distinct credential diagnostics.
+
 - Update Crawlkit to v0.17.0 and refresh provider, network, telemetry, and Go analysis dependencies while retaining Go 1.27.0 and the matching SQLite/libc runtime; expose an explicit release-pipeline dry run for build verification without publishing.
 
 ## 0.15.7 - 2026-10-11
