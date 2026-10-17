@@ -54,8 +54,8 @@ func TestActiveThreadCatalogEdges(t *testing.T) {
 	require.Equal(t, []string{"b", "a"}, uniqueIDs([]string{"", "b", "a", "b"}))
 	require.False(t, isThreadChannel(nil))
 	require.False(t, isThreadParent(nil))
-	require.False(t, isMessageChannel(nil))
-	require.False(t, isMessageChannel(&discordgo.Channel{Type: discordgo.ChannelTypeGuildCategory}))
+	require.False(t, IsMessageChannel(nil))
+	require.False(t, IsMessageChannel(&discordgo.Channel{Type: discordgo.ChannelTypeGuildCategory}))
 }
 
 func TestSyncChannelSubsetExpandsRequestedForumThreads(t *testing.T) {

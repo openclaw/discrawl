@@ -617,7 +617,7 @@ func (q *Queries) InsertMissingEmbeddingJobs(ctx context.Context, arg InsertMiss
 const listAllIncompleteMessageChannelIDs = `-- name: ListAllIncompleteMessageChannelIDs :many
 select c.id
 from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+where c.kind in ('text', 'news', 'announcement', 'voice', 'type_13', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
   and not exists (
 	select 1
 	from sync_state s
@@ -655,7 +655,7 @@ func (q *Queries) ListAllIncompleteMessageChannelIDs(ctx context.Context) ([]str
 const listAllIncompleteMessageChannelIDsByGuild = `-- name: ListAllIncompleteMessageChannelIDsByGuild :many
 select c.id
 from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+where c.kind in ('text', 'news', 'announcement', 'voice', 'type_13', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
   and c.guild_id = ?
   and not exists (
 	select 1

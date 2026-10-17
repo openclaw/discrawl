@@ -50,7 +50,7 @@ func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, generatedAt, report.GeneratedAt)
 	require.Equal(t, CoverageTotals{
-		GuildCount: 2, MessageCount: 3, ChannelCount: 4, MessageChannelCount: 3,
+		GuildCount: 2, MessageCount: 3, ChannelCount: 4, MessageChannelCount: 4,
 		NamedChannelCount: 3, SyntheticChannelCount: 1, HistoryCompleteChannelCount: 1,
 		KnownFailureCount: 2, UnscopedKnownFailureCount: 1,
 	}, report.Totals)
@@ -71,6 +71,7 @@ func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 	require.True(t, report.Guilds[0].Channels[1].Synthetic)
 	require.Equal(t, "v1", report.Guilds[0].Channels[2].ID)
 	require.Equal(t, 0, report.Guilds[0].Channels[2].MessageCount)
+	require.True(t, report.Guilds[0].Channels[2].MessageCapable)
 
 	filtered, err := s.Coverage(ctx, "g1", generatedAt)
 	require.NoError(t, err)

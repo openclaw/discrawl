@@ -581,7 +581,7 @@ func TestSyncFullSinceStopsBackfillAtCutoff(t *testing.T) {
 
 	backfill, err := s.GetSyncState(ctx, channelBackfillScope("c1"))
 	require.NoError(t, err)
-	require.Equal(t, "150", backfill)
+	require.Empty(t, backfill, "bounded window scans preserve the independent historical backfill cursor")
 
 	complete, err := s.GetSyncState(ctx, channelHistoryCompleteScope("c1"))
 	require.NoError(t, err)

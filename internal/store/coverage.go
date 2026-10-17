@@ -58,6 +58,7 @@ const globalCoverageChannelQuery = `
 
 var messageChannelKinds = map[string]struct{}{
 	"text": {}, "news": {}, "announcement": {}, "dm": {}, "group_dm": {},
+	"voice": {}, "type_13": {},
 	"thread_public": {}, "thread_private": {}, "thread_news": {}, "thread_announcement": {},
 }
 

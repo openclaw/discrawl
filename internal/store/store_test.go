@@ -2151,11 +2151,11 @@ func TestIncompleteMessageChannelIDs(t *testing.T) {
 
 	ids, err := s.IncompleteMessageChannelIDs(ctx, "g1")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c1"}, ids)
+	require.Equal(t, []string{"c1", "v1"}, ids)
 
 	ids, err = s.IncompleteMessageChannelIDs(ctx, "")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c1", "c4"}, ids)
+	require.Equal(t, []string{"c1", "c4", "v1"}, ids)
 }
 
 func TestListMessagesFiltersAndLimit(t *testing.T) {

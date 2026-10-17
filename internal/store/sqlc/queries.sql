@@ -231,7 +231,7 @@ order by guild_id, position, name;
 -- restored is visited without waiting out its marker's retry window.
 select c.id
 from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+where c.kind in ('text', 'news', 'announcement', 'voice', 'type_13', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
   and not exists (
 	select 1
 	from sync_state s
@@ -242,7 +242,7 @@ order by c.id;
 -- name: ListAllIncompleteMessageChannelIDsByGuild :many
 select c.id
 from channels c
-where c.kind in ('text', 'news', 'announcement', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
+where c.kind in ('text', 'news', 'announcement', 'voice', 'type_13', 'thread_public', 'thread_private', 'thread_news', 'thread_announcement')
   and c.guild_id = ?
   and not exists (
 	select 1

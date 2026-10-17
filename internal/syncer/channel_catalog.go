@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -629,13 +630,17 @@ func isThreadParent(channel *discordgo.Channel) bool {
 	}
 }
 
-func isMessageChannel(channel *discordgo.Channel) bool {
+// IsMessageChannel is the shared REST-history capability check used by sync
+// and operator preflight; channel presence alone does not imply readable chat.
+func IsMessageChannel(channel *discordgo.Channel) bool {
 	if channel == nil {
 		return false
 	}
 	switch channel.Type {
 	case discordgo.ChannelTypeGuildText,
 		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildVoice,
+		discordgo.ChannelTypeGuildStageVoice,
 		discordgo.ChannelTypeGuildPublicThread,
 		discordgo.ChannelTypeGuildPrivateThread,
 		discordgo.ChannelTypeGuildNewsThread:
@@ -711,6 +716,13 @@ func channelTypeFromKind(kind string) discordgo.ChannelType {
 	case "voice":
 		return discordgo.ChannelTypeGuildVoice
 	default:
-		return discordgo.ChannelTypeGuildText
+		// Preserve native numeric kinds without turning unknown channel types
+		// into text channels that become eligible for message ingestion.
+		if raw, ok := strings.CutPrefix(kind, "type_"); ok {
+			if value, err := strconv.Atoi(raw); err == nil && value >= 0 && strconv.Itoa(value) == raw {
+				return discordgo.ChannelType(value)
+			}
+		}
+		return discordgo.ChannelType(-1)
 	}
 }
