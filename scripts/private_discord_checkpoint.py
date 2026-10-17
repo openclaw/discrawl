@@ -679,7 +679,8 @@ def acquire(native, config, policy_path, expected_sha256, guild, completion, tim
     # bounded scan. Native forum expansion and report privacy keep their owners.
     # Required member refresh belongs to the guild pass; targeted sync rejects it.
     commands = [[*base, "--latest-only", "--with-members" if with_members else "--skip-members"],
-                [*base, "--skip-members", "--full", "--since", since, "--channels", ",".join(targets), "--with-media=false"]]
+                [*base, "--skip-members", "--full", "--since", since, "--channels", ",".join(targets),
+                 "--include-stored-threads", "--with-media=false"]]
     return run_writers(commands, timeout, completion)
 
 

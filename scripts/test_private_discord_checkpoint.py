@@ -563,9 +563,11 @@ class AcquisitionPolicyTests(unittest.TestCase):
         self.assertEqual((timeout, receipt), (1200, Path("/receipt")))
         self.assertIn("--latest-only", commands[0])
         self.assertNotIn("--channels", commands[0])
+        self.assertNotIn("--include-stored-threads", commands[0])
         self.assertEqual(commands[1][commands[1].index("--since")+1], "2026-01-02T00:00:00Z")
         self.assertEqual(commands[1][commands[1].index("--channels")+1], "11,12,13")
         self.assertIn("--full", commands[1])
+        self.assertIn("--include-stored-threads", commands[1])
         for command in commands:
             self.assertIn("--no-update", command)
             self.assertIn("--skip-members", command)
@@ -589,7 +591,9 @@ class AcquisitionPolicyTests(unittest.TestCase):
         self.assertIn("--with-members", commands[0])
         self.assertNotIn("--skip-members", commands[0])
         self.assertNotIn("--channels", commands[0])
+        self.assertNotIn("--include-stored-threads", commands[0])
         self.assertIn("--full", commands[1])
+        self.assertIn("--include-stored-threads", commands[1])
         self.assertIn("--skip-members", commands[1])
         self.assertNotIn("--with-members", commands[1])
 

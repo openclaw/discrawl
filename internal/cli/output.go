@@ -129,9 +129,11 @@ Print the archive control manifest.
 
 Discover accessible guilds and initialize configuration.
 `,
-	"sync": `Usage: discrawl sync [--full] [--all] [--all-channels] [--since RFC3339] [--channels IDS] [--concurrency N] [--source SOURCE] [--with-embeddings] [--with-media] [--skip-members|--with-members] [--latest-only] [--guild ID|--guilds IDS] [--update MODE|--no-update]
+	"sync": `Usage: discrawl sync [--full] [--all] [--all-channels] [--since RFC3339] [--channels IDS] [--include-stored-threads] [--concurrency N] [--source SOURCE] [--with-embeddings] [--with-media] [--skip-members|--with-members] [--latest-only] [--guild ID|--guilds IDS] [--update MODE|--no-update]
 
 Sync Discord or desktop-cache data into the local archive.
+With --source discord --channels, --include-stored-threads also selects stored
+direct threads of selected text and announcement roots.
 Configure Discord collection scope with sync.include_category_ids,
 sync.exclude_channel_ids, and sync.exclude_channel_kinds; exclusions win.
 `,

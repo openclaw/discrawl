@@ -113,6 +113,7 @@ func (r *runtime) runSync(args []string) error {
 	allChannels := fs.Bool("all-channels", false, "")
 	since := fs.String("since", "", "")
 	channels := fs.String("channels", "", "")
+	includeStoredThreads := fs.Bool("include-stored-threads", false, "")
 	concurrency := fs.Int("concurrency", r.cfg.Sync.Concurrency, "")
 	source := fs.String("source", r.cfg.Sync.Source, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
@@ -142,6 +143,9 @@ func (r *runtime) runSync(args []string) error {
 	if err != nil {
 		return usageErr(err)
 	}
+	if *includeStoredThreads && (len(csvList(*channels)) == 0 || !sources.discord || sources.wiretap) {
+		return usageErr(errors.New("--include-stored-threads requires --source discord and explicit --channels"))
+	}
 	var sinceTime time.Time
 	if *since != "" {
 		parsed, err := time.Parse(time.RFC3339, *since)
@@ -156,15 +160,16 @@ func (r *runtime) runSync(args []string) error {
 	}
 	defaultLatest := defaultLatestSyncMode(*full, *allChannels, *since, *channels)
 	opts := syncer.SyncOptions{
-		Full:           *full,
-		GuildIDs:       guildIDs,
-		ChannelIDs:     csvList(*channels),
-		Concurrency:    *concurrency,
-		Since:          sinceTime,
-		Embeddings:     *withEmbeddings,
-		SkipMembers:    syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
-		RequireMembers: *withMembers,
-		LatestOnly:     syncLatestOnly(*latestOnly, defaultLatest),
+		Full:                 *full,
+		GuildIDs:             guildIDs,
+		ChannelIDs:           csvList(*channels),
+		IncludeStoredThreads: *includeStoredThreads,
+		Concurrency:          *concurrency,
+		Since:                sinceTime,
+		Embeddings:           *withEmbeddings,
+		SkipMembers:          syncSkipsMembers(*skipMembers, *withMembers, defaultLatest),
+		RequireMembers:       *withMembers,
+		LatestOnly:           syncLatestOnly(*latestOnly, defaultLatest),
 	}
 	return r.withSyncLock(func() error {
 		return r.runSyncLocked(sources, opts, *withMedia)

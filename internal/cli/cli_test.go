@@ -3875,6 +3875,23 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 	require.True(t, fakeSync.lastSync.RequireMembers)
 
 	rt = newRuntime()
+	require.NoError(t, rt.withServices(true, func() error {
+		return rt.runSync([]string{"--source", "discord", "--channels", "root", "--include-stored-threads"})
+	}))
+	require.True(t, fakeSync.lastSync.IncludeStoredThreads)
+	require.Equal(t, []string{"root"}, fakeSync.lastSync.ChannelIDs)
+	for _, args := range [][]string{
+		{"--source", "discord", "--include-stored-threads"},
+		{"--source", "both", "--channels", "root", "--include-stored-threads"},
+		{"--source", "wiretap", "--channels", "root", "--include-stored-threads"},
+	} {
+		rt = newRuntime()
+		err := rt.runSync(args)
+		require.Equal(t, 2, ExitCode(err))
+		require.ErrorContains(t, err, "requires --source discord and explicit --channels")
+	}
+
+	rt = newRuntime()
 	require.NoError(t, rt.withServices(true, func() error { return rt.runSync([]string{"--all"}) }))
 	require.Nil(t, fakeSync.lastSync.GuildIDs)
 	require.True(t, fakeSync.lastSync.LatestOnly)

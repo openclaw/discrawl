@@ -60,6 +60,7 @@ type SyncOptions struct {
 	Full                 bool
 	GuildIDs             []string
 	ChannelIDs           []string
+	IncludeStoredThreads bool
 	Concurrency          int
 	Since                time.Time
 	Embeddings           bool
@@ -164,6 +165,9 @@ func (s *Syncer) DiscoverGuilds(ctx context.Context) ([]*discordgo.UserGuild, er
 }
 
 func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) {
+	if opts.IncludeStoredThreads && len(makeGuildSet(opts.ChannelIDs)) == 0 {
+		return SyncStats{}, errors.New("including stored threads requires explicit channel targets")
+	}
 	guilds, err := s.client.Guilds(ctx)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("list guilds: %w", err)
@@ -196,6 +200,15 @@ func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) 
 }
 
 func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions) (SyncStats, error) {
+	if opts.IncludeStoredThreads {
+		rows, err := s.store.Channels(ctx, guildID)
+		if err != nil {
+			return SyncStats{}, err
+		}
+		// Keep expansion invocation-local and feed the same targets through both
+		// catalog selection and message filtering; ordinary --channels keeps its scope.
+		opts.ChannelIDs = includeStoredThreadTargets(rows, guildID, opts.ChannelIDs)
+	}
 	if err := s.syncGuildRecord(ctx, guildID); err != nil {
 		return SyncStats{}, err
 	}

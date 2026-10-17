@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Pin the reviewed private acquisition policy for scheduled and manual runs, and restore daily member refresh within the existing shared acquisition deadline.
+- Let targeted Discord syncs opt into stored direct threads of selected text and announcement roots, so recurring bounded acquisition covers newly discovered threads without changing ordinary channel selection.
 
 - Finalize an interrupted initial checkpoint from its existing private assets after two complete verified restores, preserving original provenance and holding uncertain publication outcomes for inspection.
 
