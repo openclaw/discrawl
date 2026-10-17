@@ -2,7 +2,9 @@
 """Private, complete native SQLite checkpoints. Never use the filtered share export."""
 
 import argparse
+import base64
 import contextlib
+from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import json
@@ -29,6 +31,10 @@ MAX_PARTS = 64
 BLOCK = 1024 * 1024
 REQUIRED_TABLES = {"guilds", "channels", "members", "messages", "sync_state", "failure_ledger"}
 WORKFLOWS = {"publish-discord-backup.yml", "migrate-discord-checkpoint.yml"}
+POLICY_REF = "refs/heads/maintainer-report-policy"
+POLICY_PATH = "policy/report-selectors.json"
+MAX_POLICY = 64 * 1024
+MAX_TARGETS = 4096
 
 
 class CheckpointError(Exception):
@@ -468,8 +474,94 @@ def report_ready(receipt, archive):
     return manifest["source"]["outcome"] == "success" and producer["producer"] == expected
 
 
+def validate_policy(raw, expected_sha256, guild):
+    require(len(raw) <= MAX_POLICY and hash_value(expected_sha256)
+            and digest(raw) == expected_sha256, "policy_checksum")
+    policy = strict_json(raw)
+    keys(policy, "schema policy catalog guild_id message_root_ids forum_root_ids retained_threads")
+    require(type(policy["schema"]) is int and policy["schema"] == 1, "policy_schema")
+    source, catalog = policy["policy"], policy["catalog"]
+    keys(source, "repository revision path sha256")
+    keys(catalog, "archive_commit manifest_sha256")
+    commit = lambda value: isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+    require(isinstance(source["repository"], str)
+            and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source["repository"])
+            and commit(source["revision"]) and hash_value(source["sha256"])
+            and isinstance(source["path"], str) and len(source["path"]) <= 512
+            and re.fullmatch(r"[A-Za-z0-9_./-]+", source["path"])
+            and all(part not in {"", ".", ".."} for part in source["path"].split("/"))
+            and commit(catalog["archive_commit"]) and hash_value(catalog["manifest_sha256"]), "policy_provenance")
+    native_id = lambda value: (isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,19}", value)
+                               and int(value) < 2 ** 64)
+    require(native_id(guild) and policy["guild_id"] == guild, "policy_guild")
+    targets = []
+    for name in ("message_root_ids", "forum_root_ids"):
+        values = policy[name]
+        require(isinstance(values, list) and len(values) <= MAX_TARGETS
+                and all(native_id(value) for value in values), "policy_targets")
+        targets.extend(values)
+    threads = policy["retained_threads"]
+    require(isinstance(threads, list) and len(threads) <= MAX_TARGETS, "policy_targets")
+    for thread in threads:
+        keys(thread, "id parent_id")
+        require(native_id(thread["id"]) and thread["parent_id"] in policy["forum_root_ids"], "policy_thread_parent")
+        targets.append(thread["id"])
+    require(0 < len(targets) <= MAX_TARGETS and len(set(targets)) == len(targets), "policy_targets")
+    return policy, sorted(targets, key=int)
+
+
+def load_policy(github, revision, expected_sha256, guild, destination):
+    require(isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision)
+            and hash_value(expected_sha256) and not destination.exists(), "policy_pin")
+    ref = github.api("/git/ref/heads/maintainer-report-policy")
+    require(isinstance(ref, dict) and ref.get("ref") == POLICY_REF
+            and isinstance(ref.get("object"), dict) and ref["object"].get("type") == "commit"
+            and ref["object"].get("sha") == revision, "policy_ref")
+    blob = github.api("/contents/" + POLICY_PATH + "?ref=" + revision)
+    require(isinstance(blob, dict) and blob.get("type") == "file" and blob.get("path") == POLICY_PATH
+            and integer(blob.get("size"), MAX_POLICY) and blob.get("encoding") == "base64"
+            and isinstance(blob.get("content"), str), "policy_file")
+    raw = base64.b64decode(blob["content"].replace("\n", ""), validate=True)
+    require(len(raw) == blob["size"], "policy_size")
+    validate_policy(raw, expected_sha256, guild)
+    # This private input stays outside the archive, SQLite, and upload inventory.
+    with destination.open("xb") as file:
+        file.write(raw)
+    destination.chmod(0o600)
+
+
+def acquisition_since(value=None):
+    now = datetime.now(timezone.utc)
+    if not value:
+        value = (now.replace(hour=0, minute=0, second=0, microsecond=0)
+                 - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", value), "acquisition_window")
+    since = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    require(timedelta() < now - since <= timedelta(hours=48), "acquisition_window")
+    return value
+
+
+def acquire(native, config, policy_path, expected_sha256, guild, completion, timeout=1200, since=None):
+    require(policy_path.is_file() and not policy_path.is_symlink()
+            and policy_path.stat().st_size <= MAX_POLICY, "policy_file")
+    _, targets = validate_policy(policy_path.read_bytes(), expected_sha256, guild)
+    require(0 < timeout <= 1200, "writer_arguments")
+    since = acquisition_since(since)
+    base = [str(native), "--config", str(config), "sync", "--source", "discord", "--guild", guild,
+            "--skip-members", "--no-update"]
+    # General archive refresh remains first; report roots only scope the extra
+    # bounded scan. Native forum expansion and report privacy keep their owners.
+    commands = [[*base, "--latest-only"],
+                [*base, "--full", "--since", since, "--channels", ",".join(targets), "--with-media=false"]]
+    return run_writers(commands, timeout, completion)
+
+
 def run_writer(command, timeout, completion=None):
-    require(command and timeout > 0, "writer_arguments")
+    return run_writers([command], timeout, completion)
+
+
+def run_writers(commands, timeout, completion=None):
+    require(commands and all(commands) and timeout > 0, "writer_arguments")
     require(completion is None or not completion.exists(), "writer_receipt_exists")
     child = None
     cancelled = False
@@ -484,36 +576,48 @@ def run_writer(command, timeout, completion=None):
     try:
         with open(os.devnull, "wb") as output:
             env = {key: value for key, value in os.environ.items() if key not in {"GH_TOKEN", "DISCORD_BACKUP_TOKEN"}}
-            child = subprocess.Popen(command, stdout=output, stderr=output, env=env, start_new_session=True)
             deadline = time.monotonic() + timeout
-            while child.poll() is None and not cancelled and time.monotonic() < deadline:
-                try:
-                    child.wait(timeout=0.2)
-                except subprocess.TimeoutExpired:
-                    pass
-            if child.poll() is None:
-                cancelled = True
-                os.killpg(child.pid, signal.SIGTERM)
-                try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    child.wait(timeout=5)
-            # A leader can exit while descendants still write. A completion
-            # receipt exists only after the whole task-owned group is gone.
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(child.pid, signal.SIGKILL)
-            deadline = time.monotonic() + 5
-            while True:
-                try:
-                    os.killpg(child.pid, 0)
-                except ProcessLookupError:
+            result = 1
+            for command in commands:
+                if cancelled or time.monotonic() >= deadline:
+                    cancelled = True
                     break
-                except PermissionError as error:
-                    raise CheckpointError("writer_reap") from error
-                require(time.monotonic() < deadline, "writer_reap")
-                time.sleep(0.05)
-            result = 1 if cancelled else child.returncode
+                try:
+                    child = subprocess.Popen(command, stdout=output, stderr=output, env=env, start_new_session=True)
+                except OSError:
+                    # Prior phases are reaped; preserve their committed progress.
+                    result = 1
+                    break
+                while child.poll() is None and not cancelled and time.monotonic() < deadline:
+                    try:
+                        child.wait(timeout=0.2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if child.poll() is None:
+                    cancelled = True
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait(timeout=5)
+                # No next phase or checkpoint may run while descendants write.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(child.pid, signal.SIGKILL)
+                reap_deadline = time.monotonic() + 5
+                while True:
+                    try:
+                        os.killpg(child.pid, 0)
+                    except ProcessLookupError:
+                        break
+                    except PermissionError as error:
+                        raise CheckpointError("writer_reap") from error
+                    require(time.monotonic() < reap_deadline, "writer_reap")
+                    time.sleep(0.05)
+                result = 1 if cancelled else child.returncode
+                if result != 0:
+                    break
+            result = 1 if cancelled else result
             if completion is not None:
                 completion.write_bytes(canonical({"reaped": True, "outcome": "cancelled" if cancelled else
                                                    "success" if result == 0 else "failure"}))
@@ -526,7 +630,7 @@ def run_writer(command, timeout, completion=None):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("restore", "save", "migrate", "run", "report-check"))
+    parser.add_argument("operation", choices=("restore", "save", "migrate", "run", "report-check", "policy", "acquire"))
     parser.add_argument("--db", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--writer-receipt", type=Path)
@@ -534,10 +638,27 @@ def main():
     parser.add_argument("--timeout", type=int, default=2700)
     parser.add_argument("--prune", action="store_true")
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--policy-commit")
+    parser.add_argument("--policy-sha256")
+    parser.add_argument("--native", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--since")
     args, command = parser.parse_known_args()
     if args.operation == "run":
         return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout, args.writer_receipt)
     require(not command, "arguments")
+    if args.operation in {"policy", "acquire"}:
+        execution_context()
+        require(args.policy is not None, "arguments")
+        guild = os.environ.get("DISCRAWL_GUILD_ID", "")
+        if args.operation == "policy":
+            since = acquisition_since(args.since)
+            load_policy(GitHub(), args.policy_commit, args.policy_sha256, guild, args.policy)
+            print("since=" + since)
+            return 0
+        require(args.native is not None and args.config is not None and args.writer_receipt is not None, "arguments")
+        return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt, args.timeout, args.since)
     if args.operation == "report-check":
         require(args.receipt is not None and args.archive is not None, "arguments")
         return 0 if report_ready(args.receipt, args.archive) else 3
