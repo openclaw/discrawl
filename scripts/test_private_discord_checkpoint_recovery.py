@@ -47,6 +47,9 @@ class RecoveryTests(unittest.TestCase):
         self.writes, self.rounds, self.directories, self.pushed = [], 0, [], False
         self.preparation_error = None
         self.promotion_error = None
+        self.client_calls = 0
+        self.post_patch_client_error = False
+        self.prepush_error = False
         self.after_round = lambda: None
         self.baseline = b'{"tables":[],"files":{}}'
         self.policy = "e" * 40
@@ -100,6 +103,8 @@ class RecoveryTests(unittest.TestCase):
             raise checkpoint.CheckpointError(self.preparation_error)
         def publish(_deadline):
             self.assertFalse(self.release["draft"])
+            if self.prepush_error:
+                raise checkpoint.CheckpointError("checkpoint_api phase=archive_ref_read exit=1")
             self.pushed = True
         yield publish
 
@@ -114,7 +119,12 @@ class RecoveryTests(unittest.TestCase):
             receipt = download(*args, **kwargs)
             self.after_round()
             return receipt
-        with patch.object(admission, "GitHub", return_value=self.github), patch.object(admission, "api", self.public_api), \
+        def client(**_options):
+            self.client_calls += 1
+            if self.post_patch_client_error and self.client_calls == 3:
+                raise checkpoint.CheckpointError("checkpoint_api phase=repository_read exit=1")
+            return self.github
+        with patch.object(admission, "GitHub", side_effect=client), patch.object(admission, "api", self.public_api), \
                 patch.object(admission, "successful_probe", return_value=30), \
                 patch.object(admission, "prepare_publication", self.preparation), \
                 patch.object(admission, "download_database", restore), contextlib.redirect_stdout(io.StringIO()):
@@ -192,6 +202,22 @@ class RecoveryTests(unittest.TestCase):
                 self.recover()
         self.assertEqual(self.rounds, 2)
         self.assertEqual(self.writes, [])
+        self.assertFalse(self.pushed)
+
+    def test_post_patch_client_admission_failure_is_retained_state_hold(self):
+        self.post_patch_client_error = True
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "^recovery_hold state=unknown$"):
+            self.recover()
+        self.assertEqual(len(self.writes), 1)
+        self.assertFalse(self.release["draft"])
+        self.assertFalse(self.pushed)
+
+    def test_post_promotion_push_preflight_failure_is_retained_state_hold(self):
+        self.prepush_error = True
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "^recovery_hold state=unknown$"):
+            self.recover()
+        self.assertEqual(len(self.writes), 1)
+        self.assertFalse(self.release["draft"])
         self.assertFalse(self.pushed)
 
 

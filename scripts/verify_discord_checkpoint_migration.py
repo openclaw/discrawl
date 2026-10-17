@@ -517,35 +517,44 @@ def recover_publisher(expected, run_id, manifest_sha, inventory_sha, probe_run, 
             print(f"checkpoint recovery: round={number} verified elapsed_seconds={time.monotonic() - started:.3f}", flush=True)
         DEADLINE = final_deadline - 180
         reader.deadline = DEADLINE
-        with prepare_publication(reader, before, scratch / "restored.sqlite", directory, policy_revision, DEADLINE) as publish:
-            require(admission() == revision, "recovery_source_changed")
-            writer = GitHub(deadline=final_deadline - 60)
-            require(writer.identity == reader.identity, "private_repository")
-            recheck = directory / "recheck"
-            recheck.mkdir()
-            require(inspect_checkpoint(writer, run_id, revision, manifest_sha, inventory_sha, recheck, publisher=True) == before
-                    and archive_file(writer, baseline, "manifest.json") == baseline_body
-                    and writer.api("/git/ref/" + POLICY_REF.removeprefix("refs/"))["object"]["sha"] == policy_revision,
-                    "recovery_evidence_changed")
-            check_deadline(DEADLINE)
-            error = None
-            try:
-                published = writer.api('/releases/' + str(before[2]["release_id"]), {"draft": False, "make_latest": "true"})
-                require(published.get("id") == before[2]["release_id"] and published.get("draft") is False, "promotion_unverified")
-            except (CheckpointError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                error = "promotion_response"
-            DEADLINE = final_deadline
-            reader = GitHub(deadline=DEADLINE, read_only=True)
-            after = directory / "after"
-            after.mkdir()
-            try:
-                require(reader.identity == writer.identity and inspect_checkpoint(reader, run_id, revision, manifest_sha,
-                        inventory_sha, after, draft=False, publisher=True) == before, "recovery_evidence_changed")
-            except (CheckpointError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                error = error or "promotion_readback"
-            require(error is None, "recovery_hold state=unknown")
-            print("checkpoint recovery: retained state verified and promoted; archive pending", flush=True)
-            publish(final_deadline)
+        attempted = False
+        try:
+            with prepare_publication(reader, before, scratch / "restored.sqlite", directory, policy_revision, DEADLINE) as publish:
+                require(admission() == revision, "recovery_source_changed")
+                writer = GitHub(deadline=final_deadline - 60)
+                require(writer.identity == reader.identity, "private_repository")
+                recheck = directory / "recheck"
+                recheck.mkdir()
+                require(inspect_checkpoint(writer, run_id, revision, manifest_sha, inventory_sha, recheck, publisher=True) == before
+                        and archive_file(writer, baseline, "manifest.json") == baseline_body
+                        and writer.api("/git/ref/" + POLICY_REF.removeprefix("refs/"))["object"]["sha"] == policy_revision,
+                        "recovery_evidence_changed")
+                check_deadline(DEADLINE)
+                error = None
+                try:
+                    attempted = True
+                    published = writer.api('/releases/' + str(before[2]["release_id"]), {"draft": False, "make_latest": "true"})
+                    require(published.get("id") == before[2]["release_id"] and published.get("draft") is False, "promotion_unverified")
+                except (CheckpointError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    error = "promotion_response"
+                DEADLINE = final_deadline
+                reader = GitHub(deadline=DEADLINE, read_only=True)
+                after = directory / "after"
+                after.mkdir()
+                try:
+                    require(reader.identity == writer.identity and inspect_checkpoint(reader, run_id, revision, manifest_sha,
+                            inventory_sha, after, draft=False, publisher=True) == before, "recovery_evidence_changed")
+                except (CheckpointError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    error = error or "promotion_readback"
+                require(error is None, "recovery_hold state=unknown")
+                print("checkpoint recovery: retained state verified and promoted; archive pending", flush=True)
+                publish(final_deadline)
+        except (CheckpointError, OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
+            # After PATCH starts, even constructor/preflight/cleanup failures
+            # must report retained-state uncertainty rather than a clean stop.
+            if attempted:
+                raise CheckpointError("recovery_hold state=unknown") from error
+            raise
     print("checkpoint recovery: private archive verified; original native provenance preserved", flush=True)
 
 
