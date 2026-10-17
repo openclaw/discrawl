@@ -500,11 +500,12 @@ def validate_policy(raw, expected_sha256, guild):
         require(isinstance(values, list) and len(values) <= MAX_TARGETS
                 and all(native_id(value) for value in values), "policy_targets")
         targets.extend(values)
+    parents = set(targets)
     threads = policy["retained_threads"]
     require(isinstance(threads, list) and len(threads) <= MAX_TARGETS, "policy_targets")
     for thread in threads:
         keys(thread, "id parent_id")
-        require(native_id(thread["id"]) and thread["parent_id"] in policy["forum_root_ids"], "policy_thread_parent")
+        require(native_id(thread["id"]) and thread["parent_id"] in parents, "policy_thread_parent")
         targets.append(thread["id"])
     require(0 < len(targets) <= MAX_TARGETS and len(set(targets)) == len(targets), "policy_targets")
     return policy, sorted(targets, key=int)

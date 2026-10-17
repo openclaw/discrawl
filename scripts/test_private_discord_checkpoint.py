@@ -487,6 +487,20 @@ class AcquisitionPolicyTests(unittest.TestCase):
             checkpoint.load_policy(github, "e" * 40, "f" * 64, "100", self.path)
         self.assertFalse(self.path.exists())
 
+    def test_retained_text_children_are_explicit_targets_with_root_only_parents(self):
+        self.policy["retained_threads"].append({"id": "14", "parent_id": "11"})
+        raw = checkpoint.canonical(self.policy)
+        self.path.write_bytes(raw)
+        with patch.object(checkpoint, "run_writers", return_value=0) as run:
+            self.assertEqual(checkpoint.acquire(Path("/native"), Path("/config"), self.path,
+                                               checkpoint.digest(raw), "100", Path("/receipt")), 0)
+        full = run.call_args.args[0][1]
+        self.assertEqual(full[full.index("--channels")+1], "11,12,13,14")
+        for parent in ["13", "15"]:
+            self.policy["retained_threads"][-1]["parent_id"] = parent
+            with self.subTest(parent=parent), self.assertRaisesRegex(checkpoint.CheckpointError, "policy_thread_parent"):
+                self.validate(self.policy)
+
     def test_acquisition_window_is_frozen_and_bounded(self):
         class FrozenDatetime(checkpoint.datetime):
             @classmethod
