@@ -145,3 +145,35 @@ old caches. Keep schedules disabled until source restore/publication, ongoing
 acquisition coverage and measured end-to-end cadence are qualified. Source merge
 or a small fixture alone does not establish production credential access,
 full-state migration, or report completeness.
+
+## Diagnose a retained migration draft
+
+If migration fails, preserve its draft and recovery cache. Do not rerun the
+migration to diagnose an unknown API error. The same manual workflow offers
+`mode: diagnose`, with acknowledgement `DIAGNOSE_EXISTING_CHECKPOINT`, the
+reviewed current `expected_sha`, `original_run`, `manifest_sha256`, and
+`inventory_sha256`. The inventory hash covers canonical JSON of assets sorted
+by name, each containing `id`, `name`, `size`, and `digest`. Review these pins
+through authenticated metadata before dispatch; private repository and asset
+IDs are not workflow inputs.
+
+This mode requires the original manual migration's first attempt to have
+completed with failure, the current diagnostic to be a reviewed first attempt
+on main, and all archive writers to remain disabled and idle. It checks the
+existing draft, manifest, asset identities, private archive main, and absence
+of latest, downloads only the first manifest part, verifies its bytes, then
+rechecks those bindings. It never decompresses or restores a database, reads a
+cache, uploads, promotes, or deletes a release. Temporary downloads are removed.
+
+The diagnostic has one 15-minute deadline inside a 20-minute job. Metadata calls
+allow at most 60 seconds; the part download allows at most 600 seconds, always
+limited by the remaining deadline. API errors expose only a fixed operation,
+numeric exit or timeout, and an HTTP status when available. Private command
+output is drained with a bounded retained prefix and never logged. Public
+admission and private reads share this process boundary while retaining their
+separate tokens. The helper terminates its command group and allows up to five
+seconds to verify it has disappeared before inspecting output; unknown cleanup
+state stops the diagnostic. A successful
+probe proves the current credential and first-part read path; it does not locate
+an earlier unrecorded failure or verify the other parts. Full recovery still
+requires a separately reviewed complete restore and parity check.

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add manual, privately scoped report-history acquisition after the normal guild refresh, sharing one time budget and preserving failed progress in private checkpoints; hold recurring and cloud publication until separately qualified.
+- Identify private checkpoint API failures without exposing private output, and inspect a retained failed migration through a bounded read-only diagnostic.
 
 - Preserve complete native Discord crawl state in verified private checkpoints, with atomic restore, bounded retention, and an explicit migration from the retired workflow cache transport.
 

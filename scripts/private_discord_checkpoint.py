@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import resource
+import selectors
 import shutil
 import signal
 import sqlite3
@@ -35,6 +36,10 @@ POLICY_REF = "refs/heads/maintainer-report-policy"
 POLICY_PATH = "policy/report-selectors.json"
 MAX_POLICY = 64 * 1024
 MAX_TARGETS = 4096
+API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
+              "asset_list", "manifest_download", "part_download", "release_create", "asset_upload",
+              "release_promote", "release_delete", "source_ref_read", "source_run_read",
+              "source_workflow_read", "source_active_runs", "source_cache_read"}
 
 
 class CheckpointError(Exception):
@@ -214,8 +219,94 @@ def unpack(manifest, directory, destination):
         require(database_facts(db) == {k: expected[k] for k in ("user_version", "schema_sha256", "tables")}, "restore_parity")
 
 
+def reap_command(child, phase):
+    # A reaped leader and closed stderr do not prove stdout is stable: a
+    # descendant can still own it. Unknown group state must not yield bytes.
+    deadline = time.monotonic() + 5
+    code = "checkpoint_api phase=" + phase + " exit=reap"
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        raise CheckpointError(code) from error
+    try:
+        child.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        raise CheckpointError(code) from error
+    while True:
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise CheckpointError(code) from error
+        require(time.monotonic() < deadline, code)
+        time.sleep(0.05)
+
+
+def github_command(arguments, env, phase, destination=None, timeout=600, missing=False,
+                   limit=MAX_MANIFEST, deadline=None):
+    require(phase in API_PHASES, "api_phase")
+    command_deadline = time.monotonic() + timeout
+    if deadline is not None:
+        command_deadline = min(command_deadline, deadline)
+    require(time.monotonic() < command_deadline, "checkpoint_api phase=" + phase + " exit=timeout")
+
+    def bound_output():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    with (destination.open("xb") if destination is not None else tempfile.TemporaryFile()) as output:
+        child = subprocess.Popen(["gh", *arguments], stdout=output, stderr=subprocess.PIPE,
+                                 env=env, preexec_fn=bound_output, start_new_session=True)
+        captured = bytearray()
+        failure = None
+        try:
+            # Drain even after the retained prefix fills: waiting on a full
+            # stderr pipe deadlocks, and inherited pipes need the same deadline.
+            with selectors.DefaultSelector() as selector:
+                os.set_blocking(child.stderr.fileno(), False)
+                selector.register(child.stderr, selectors.EVENT_READ)
+                while selector.get_map() or child.poll() is None:
+                    require(time.monotonic() < command_deadline, "checkpoint_api phase=" + phase + " exit=timeout")
+                    for key, _ in selector.select(min(0.1, max(0, command_deadline - time.monotonic()))):
+                        try:
+                            chunk = os.read(key.fd, 16384)
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        captured.extend(chunk[:max(0, 65536 - len(captured))])
+        except BaseException as error:
+            failure = error
+        finally:
+            try:
+                reap_command(child, phase)
+            finally:
+                child.stderr.close()
+        if failure is not None:
+            raise failure
+        size = output.tell()
+        output.seek(0)
+        raw = output.read(min(size, limit)) if destination is None else b""
+        if missing and child.returncode != 0:
+            if re.match(rb"HTTP/\S+ 404\b", raw):
+                return None
+        if child.returncode != 0:
+            status = re.search(rb"(?:^HTTP/\S+ |\(HTTP )([1-5][0-9]{2})(?:\b|\))", raw[:4096] + bytes(captured))
+            raise CheckpointError(f"checkpoint_api phase={phase} exit={child.returncode}"
+                                  + (" http=" + status[1].decode("ascii") if status else ""))
+        if destination is not None:
+            require(size <= limit, "asset_size")
+            return None
+        require(size <= limit, "checkpoint_api_size")
+        return raw
+
+
 class GitHub:
-    def __init__(self):
+    def __init__(self, deadline=None, read_only=False):
+        self.deadline = deadline
+        self.read_only = read_only
         self.repository = os.environ.get("DISCRAWL_BACKUP_REPOSITORY", "")
         require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository), "checkpoint_repository")
         self.base = "repos/" + self.repository
@@ -224,58 +315,63 @@ class GitHub:
                 and repo.get("archived") is False and integer(repo.get("id")), "private_repository")
         self.identity = {"name": self.repository, "id": repo["id"]}
 
-    def command(self, arguments, destination=None, timeout=600, missing=False):
-        # The official CLI owns authentication/redirects. Neither its error body
-        # nor private asset paths are allowed into this public workflow's logs.
+    def command(self, arguments, destination=None, timeout=600, missing=False, phase="repository_read", limit=None):
+        # Private custody uses only its existing token. Public admission passes
+        # its own workflow token to the same bounded process owner.
         env = {**os.environ, "GH_TOKEN": os.environ.get("DISCORD_BACKUP_TOKEN", ""),
                "GH_PROMPT_DISABLED": "1", "GH_DEBUG": "", "GH_HOST": "github.com"}
         require(env["GH_TOKEN"], "checkpoint_credential")
-        limit = MAX_PART if destination is not None else MAX_MANIFEST
-
-        def bound_output():
-            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
-
-        with (destination.open("xb") if destination is not None else tempfile.TemporaryFile()) as output:
-            result = subprocess.run(["gh", *arguments], stdout=output, stderr=subprocess.DEVNULL,
-                                    env=env, timeout=timeout, check=False, preexec_fn=bound_output)
-            size = output.tell()
-            output.seek(0)
-            if missing and result.returncode != 0:
-                raw = output.read()
-                if re.match(rb"HTTP/\S+ 404\b", raw):
-                    return None
-            require(result.returncode == 0, "checkpoint_api")
-            if destination is not None:
-                require(size <= MAX_PART, "asset_size")
-                return None
-            require(size <= MAX_MANIFEST, "checkpoint_api_size")
-            return output.read()
+        require(not self.read_only or (arguments[0] == "api" and "--method" not in arguments
+                                      and "--input" not in arguments), "diagnostic_read_only")
+        if self.read_only:
+            arguments = [*arguments, "--method", "GET"]
+        limit = limit if limit is not None else MAX_PART if destination is not None else MAX_MANIFEST
+        return github_command(arguments, env, phase, destination, timeout, missing, limit, self.deadline)
 
     def api(self, suffix, data=None, missing=False):
+        if suffix == "":
+            phase = "repository_read"
+        elif suffix == "/git/ref/heads/main":
+            phase = "archive_ref_read"
+        elif suffix.startswith("/releases?"):
+            phase = "release_list"
+        elif suffix == "/releases/latest":
+            phase = "latest_read"
+        elif re.fullmatch(r"/releases/[1-9][0-9]*/assets\?per_page=100", suffix):
+            phase = "asset_list"
+        elif re.fullmatch(r"/releases/[1-9][0-9]*", suffix):
+            phase = "release_promote" if data is not None else "release_read"
+        else:
+            phase = "api_write" if data is not None else "api_read"
         args = ["api", self.base + suffix, "--include", "-H", "X-GitHub-Api-Version: 2022-11-28"]
         def parse(raw):
             if raw is None:
                 return None
             parts = re.split(rb"\r?\n\r?\n", raw, maxsplit=1)
-            require(len(parts) == 2 and re.match(rb"HTTP/\S+ 2[0-9][0-9]\b", parts[0]), "checkpoint_api_status")
+            require(len(parts) == 2 and re.match(rb"HTTP/\S+ 2[0-9][0-9]\b", parts[0]), "checkpoint_api_status phase=" + phase)
             return strict_json(parts[1])
         if data is None:
-            return parse(self.command(args, missing=missing))
+            return parse(self.command(args, missing=missing, phase=phase, timeout=60 if self.read_only else 600))
         with tempfile.NamedTemporaryFile(mode="wb") as body:
             body.write(canonical(data))
             body.flush()
-            return parse(self.command([*args, "--method", "PATCH", "--input", body.name]))
+            return parse(self.command([*args, "--method", "PATCH", "--input", body.name], phase=phase))
 
     def create(self, tag, target):
         with tempfile.NamedTemporaryFile(mode="wb") as body:
             body.write(canonical({"tag_name": tag, "target_commitish": target, "name": tag,
                                   "draft": True, "prerelease": False, "make_latest": "false"}))
             body.flush()
-            return strict_json(self.command(["api", self.base + "/releases", "--method", "POST", "--input", body.name]))
+            return strict_json(self.command(["api", self.base + "/releases", "--method", "POST", "--input", body.name],
+                                            phase="release_create"))
 
     def download(self, asset, destination):
+        manifest = asset["name"] == MANIFEST
         self.command(["api", self.base + "/releases/assets/" + str(asset["id"]),
-                      "-H", "Accept: application/octet-stream"], destination)
+                      "-H", "Accept: application/octet-stream"], destination,
+                     timeout=60 if self.read_only and manifest else 600,
+                     phase="manifest_download" if manifest else "part_download",
+                     limit=MAX_MANIFEST if manifest else MAX_PART)
 
 
 def release_manifest(github, release, directory, draft=False):
@@ -392,7 +488,7 @@ def retire_grandparent(github, current, directory):
             _, _, actual = release_manifest(github, candidate, Path(temp))
         require(actual == grandparent, "retention_lineage")
         require(github.api("/releases/latest")["id"] == current["reference"]["release_id"], "parent_changed")
-        github.command(["api", github.base + '/releases/' + str(grandparent["release_id"]), "--method", "DELETE"])
+        github.command(["api", github.base + '/releases/' + str(grandparent["release_id"]), "--method", "DELETE"], phase="release_delete")
         require(github.api('/releases/' + str(grandparent["release_id"]), missing=True) is None, "retirement_unverified")
 
 
@@ -431,7 +527,7 @@ def save(github, database, receipt, outcome, migration=None):
         draft = github.create(tag, archive_commit)
         require(draft.get("draft") is True and draft.get("tag_name") == tag and integer(draft.get("id")), "draft_identity")
         github.command(["release", "upload", tag, "--repo", github.repository,
-                        str(directory / MANIFEST), *(str(directory / part["name"]) for part in manifest["parts"])])
+                        str(directory / MANIFEST), *(str(directory / part["name"]) for part in manifest["parts"])], phase="asset_upload")
         standalone.unlink()
         for part in manifest["parts"]:
             (directory / part["name"]).unlink()
