@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Migrate once, diagnose a retained draft, or finalize verified retained state
+        description: Migrate, diagnose, finalize initial state, or recover an unpublished publisher checkpoint
         type: choice
-        options: [migrate, diagnose, finalize]
+        options: [migrate, diagnose, finalize, recover-publisher]
         default: migrate
         required: true
       expected_sha:
@@ -22,7 +22,7 @@ on:
         type: string
         required: false
       original_run:
-        description: Diagnose/finalize - exact failed migration run
+        description: Exact failed migration or publisher run
         type: string
         required: false
       manifest_sha256:
@@ -34,15 +34,15 @@ on:
         type: string
         required: false
       probe_run:
-        description: Finalize only - reviewed successful diagnostic run
+        description: Finalize/recover - reviewed successful diagnostic run
         type: string
         required: false
       probe_revision:
-        description: Finalize only - exact reviewed diagnostic source revision
+        description: Finalize/recover - exact reviewed diagnostic source revision
         type: string
         required: false
       acknowledgement:
-        description: Type MIGRATE_FULL_NATIVE_STATE, DIAGNOSE_EXISTING_CHECKPOINT, or FINALIZE_EXISTING_CHECKPOINT
+        description: Type MIGRATE_FULL_NATIVE_STATE, DIAGNOSE_EXISTING_CHECKPOINT, FINALIZE_EXISTING_CHECKPOINT, or RECOVER_RETAINED_PUBLISHER
         type: string
         required: true
 
@@ -157,6 +157,46 @@ jobs:
 
       - name: Verify retained full state twice and finalize once
         timeout-minutes: 42
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_discord_checkpoint_migration.py
+
+  recover-publisher:
+    if: inputs.mode == 'recover-publisher'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DISCRAWL_NO_AUTO_UPDATE: "1"
+      CHECKPOINT_MODE: recover-publisher
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      ORIGINAL_RUN: ${{ inputs.original_run }}
+      MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      INVENTORY_SHA256: ${{ inputs.inventory_sha256 }}
+      PROBE_RUN: ${{ inputs.probe_run }}
+      PROBE_REVISION: ${{ inputs.probe_revision }}
+      MIGRATION_ACK: ${{ inputs.acknowledgement }}
+    steps:
+      - name: Checkout reviewed recovery
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        timeout-minutes: 3
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build offline native publisher
+        timeout-minutes: 5
+        run: go build -o "$RUNNER_TEMP/discrawl-recovery-native" ./cmd/discrawl
+
+      - name: Verify retained publisher state and publish its private archive once
+        timeout-minutes: 34
         env:
           GH_TOKEN: ${{ github.token }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}

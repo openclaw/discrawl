@@ -169,9 +169,9 @@ class CheckpointTests(unittest.TestCase):
     def test_backup_metadata_and_pages_use_same_pinned_read_snapshot(self):
         original = checkpoint.database_facts
         changed = False
-        def facts(db):
+        def facts(db, deadline=None):
             nonlocal changed
-            result = original(db)
+            result = original(db, deadline)
             if not changed:
                 changed = True
                 self.db.execute("INSERT INTO messages VALUES('later','after snapshot')")
@@ -183,8 +183,8 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result["tables"]["messages"], 1)
         self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone(), (2,))
 
-    def test_backup_deadline_aborts_progress(self):
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "backup_timeout"):
+    def test_backup_deadline_aborts_before_source_scan(self):
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_timeout"):
             checkpoint.snapshot(self.path, self.root / "copy.sqlite", timeout=-1)
 
     def test_busy_backup_has_a_deadline(self):

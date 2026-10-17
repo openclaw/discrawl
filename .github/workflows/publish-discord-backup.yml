@@ -1,8 +1,7 @@
 name: publish-discord-backup
 
 on:
-  schedule:
-    - cron: "17 6 * * *"
+  # Admit a measured manual run before choosing a recurring cadence.
   workflow_dispatch:
     inputs:
       since:
@@ -110,7 +109,7 @@ jobs:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
-          python3 scripts/private_discord_checkpoint.py save --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
+          python3 scripts/private_discord_checkpoint.py save --timeout 840 --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
             --writer-receipt "$RUNNER_TEMP/discrawl/sync.json"
 
       - name: Require successful native ingestion

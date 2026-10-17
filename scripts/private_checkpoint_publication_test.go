@@ -79,6 +79,12 @@ func TestPrivateCheckpointReplaysNativePublication(t *testing.T) {
 		require.NoError(t, err)
 		_, err = share.Commit(ctx, opts, "fixture publication")
 		require.NoError(t, err)
+		// Recovery uses this exact export/commit boundary without native push:
+		// no import bookkeeping or new collection may precede its guarded push.
+		require.Equal(t, before, nativeCheckpointFacts(t, db))
+		var afterExportSyncRows int
+		require.NoError(t, db.DB().QueryRowContext(ctx, "SELECT count(*) FROM sync_state").Scan(&afterExportSyncRows))
+		require.Equal(t, nativeSyncRows, afterExportSyncRows)
 		hook := filepath.Join(remote, "hooks", "pre-receive")
 		if failedPush {
 			require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700))
