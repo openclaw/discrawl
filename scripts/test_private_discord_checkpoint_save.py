@@ -116,7 +116,7 @@ class SaveDeadlineTests(CheckpointTests):
             with checkpoint.checkpoint_phase("private-secret"):
                 pass
 
-    def test_pack_carries_exact_disk_hashes_and_unchanged_gzip_bytes_without_rereads(self):
+    def test_fast_pack_carries_exact_disk_hashes_and_chunk_bytes_without_rereads(self):
         for size in (0, 1, 17, 18, 34, 39):
             with self.subTest(size=size):
                 directory = self.root / str(size)
@@ -132,7 +132,7 @@ class SaveDeadlineTests(CheckpointTests):
                 for index, part in enumerate(parts):
                     expected = io.BytesIO()
                     chunk = data[index * 17:(index + 1) * 17]
-                    with gzip.GzipFile(filename="", mode="wb", fileobj=expected, mtime=0) as compressed:
+                    with gzip.GzipFile(filename="", mode="wb", fileobj=expected, mtime=0, compresslevel=1) as compressed:
                         for start in range(0, len(chunk), 5):
                             compressed.write(chunk[start:start + 5])
                     actual = (directory / part["name"]).read_bytes()
@@ -140,6 +140,35 @@ class SaveDeadlineTests(CheckpointTests):
                     self.assertEqual(gzip.decompress(actual), chunk)
                     self.assertEqual(part, {"name": f"state-{index:03d}.sqlite.gz", "bytes": len(actual),
                                             "raw_bytes": len(chunk), "sha256": checkpoint.digest(actual)})
+
+    def test_authenticated_restore_accepts_old_and_fast_gzip_with_identical_native_state(self):
+        self.seed()
+        release = self.github.releases[self.github.latest]
+        assets = {asset["name"]: asset for asset in release["assets"]}
+        manifest = checkpoint.strict_json(self.github.payloads[assets[checkpoint.MANIFEST]["id"]])
+        expected = manifest["database"].copy()
+        for level in (9, 1):
+            with self.subTest(level=level):
+                for part in manifest["parts"]:
+                    asset = assets[part["name"]]
+                    raw = gzip.decompress(self.github.payloads[asset["id"]])
+                    output = io.BytesIO()
+                    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0, compresslevel=level) as compressed:
+                        compressed.write(raw)
+                    body = output.getvalue()
+                    self.github.payloads[asset["id"]] = body
+                    part.update(bytes=len(body), sha256=checkpoint.digest(body))
+                    asset.update(size=len(body), digest="sha256:" + part["sha256"])
+                body = checkpoint.canonical(manifest)
+                asset = assets[checkpoint.MANIFEST]
+                self.github.payloads[asset["id"]] = body
+                asset.update(size=len(body), digest="sha256:" + checkpoint.digest(body))
+                target = self.root / f"level-{level}.sqlite"
+                checkpoint.restore(self.github, target, self.receipt)
+                self.assertEqual(checkpoint.file_digest(target), expected["sha256"])
+                with contextlib.closing(checkpoint.readonly(target)) as db:
+                    self.assertEqual(checkpoint.database_facts(db),
+                                     {key: expected[key] for key in ("user_version", "schema_sha256", "tables")})
 
     def test_short_writes_include_header_flush_and_trailer_in_carried_hash(self):
         class ShortWriter(io.BytesIO):

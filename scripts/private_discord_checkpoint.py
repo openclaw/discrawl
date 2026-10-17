@@ -216,7 +216,7 @@ def pack(database, directory, deadline=None):
             raw_bytes = 0
             with target.open("xb") as raw:
                 sink = HashingWriter(raw, deadline)
-                with gzip.GzipFile(filename="", mode="wb", fileobj=sink, mtime=0) as compressed:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=sink, mtime=0, compresslevel=1) as compressed:
                     while raw_bytes < RAW_PART:
                         check_deadline(deadline)
                         chunk = source.read(min(BLOCK, RAW_PART - raw_bytes))

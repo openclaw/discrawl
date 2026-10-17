@@ -41,9 +41,11 @@ readback use that deadline. The intermediate backup is not scanned again: its
 hash and pinned source facts are both checked against the downloaded image.
 Packing carries the database hash from its raw input traversal and compressed
 part hashes from successful output writes, including the gzip trailer. It does
-not reread those local files only to hash them. The authenticated restored image
-still receives an independent disk hash and full SQLite checks. Fixed phase
-names and elapsed times separate download, reconstruction, disk verification
+not reread those local files only to hash them. Gzip level 1 favors compression
+speed over payload size; existing higher-compression checkpoints remain readable.
+The authenticated restored image still receives an independent disk hash and
+full SQLite checks. Fixed phase names and elapsed times separate download,
+reconstruction, disk verification
 and SQLite verification without exposing data. These reductions do not establish
 publication headroom until a complete run is measured.
 Promotion requires at least one minute remaining. Deadline checks are cooperative

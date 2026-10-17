@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use faster gzip compression for private checkpoints, trading larger transfers for less packing CPU while preserving full authenticated database validation.
+
 - Avoid redundant checkpoint packing reads by hashing the existing byte streams, and separate transfer and restore verification timings while retaining full authenticated disk and SQLite checks.
 
 - Pin the reviewed private acquisition policy for manual runs and prepare member refresh within the existing shared acquisition deadline; automatic cadence remains disabled pending measured publication qualification.
