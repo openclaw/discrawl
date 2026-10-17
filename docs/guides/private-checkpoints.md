@@ -101,8 +101,8 @@ workflow keeps its temporary copy private and outside all export paths.
 
 The supervisor first runs the existing guild-wide latest-only refresh. It then
 runs native `sync --full --since` on the policy targets, starting at the previous
-UTC midnight by default. An optional `since` input may pin a UTC midnight within
-the last 48 hours. It is fixed before restore and revalidated before acquisition;
+UTC midnight by default. An optional `since` input may pin a UTC midnight less
+than 48 hours ago. It is fixed before restore and revalidated before acquisition;
 a stale or future value stops rather than silently selecting a different day.
 The second phase uses `--skip-members`, `--with-media=false` and `--no-update`.
 Both phases share the same 1,200-second deadline, and the second

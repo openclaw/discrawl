@@ -491,11 +491,11 @@ class AcquisitionPolicyTests(unittest.TestCase):
         class FrozenDatetime(checkpoint.datetime):
             @classmethod
             def now(cls, tz=None):
-                return cls(2026, 1, 3, 0, 1, tzinfo=checkpoint.timezone.utc)
+                return cls(2026, 1, 3, tzinfo=checkpoint.timezone.utc)
         with patch.object(checkpoint, "datetime", FrozenDatetime):
             self.assertEqual(checkpoint.acquisition_since(), "2026-01-02T00:00:00Z")
-            self.assertEqual(checkpoint.acquisition_since("2026-01-03T00:00:00Z"), "2026-01-03T00:00:00Z")
-            for value in ["2026-01-01T00:00:00Z", "2026-01-04T00:00:00Z",
+            self.assertEqual(checkpoint.acquisition_since("2026-01-02T00:00:00Z"), "2026-01-02T00:00:00Z")
+            for value in ["2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z", "2026-01-04T00:00:00Z",
                           "2026-01-02T01:00:00Z", "2026-01-02T00:00:00+00:00", "yesterday"]:
                 with self.subTest(value=value), self.assertRaises(checkpoint.CheckpointError):
                     checkpoint.acquisition_since(value)

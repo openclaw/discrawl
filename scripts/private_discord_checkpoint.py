@@ -537,7 +537,7 @@ def acquisition_since(value=None):
                  - timedelta(days=1)).isoformat().replace("+00:00", "Z")
     require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", value), "acquisition_window")
     since = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    require(timedelta() < now - since <= timedelta(hours=48), "acquisition_window")
+    require(timedelta() < now - since < timedelta(hours=48), "acquisition_window")
     return value
 
 

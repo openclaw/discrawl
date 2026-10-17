@@ -13,7 +13,7 @@ on:
         type: string
         required: true
       since:
-        description: Optional UTC midnight within 48 hours; defaults to previous UTC midnight
+        description: Optional UTC midnight less than 48 hours ago; defaults to previous UTC midnight
         type: string
         required: false
 
