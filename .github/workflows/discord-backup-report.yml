@@ -12,6 +12,9 @@ concurrency:
   group: discord-backup-repo
   cancel-in-progress: false
 
+env:
+  DISCRAWL_NO_AUTO_UPDATE: "1"
+
 jobs:
   report:
     runs-on: ubuntu-latest
@@ -26,23 +29,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Restore Discord DB cache
-        id: restore-discord-db
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .discrawl-ci/discrawl.db
-            .discrawl-ci/discrawl.db-shm
-            .discrawl-ci/discrawl.db-wal
-          key: discrawl-discord-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            discrawl-discord-db-${{ runner.os }}-${{ github.ref_name }}-
-            discrawl-discord-db-${{ runner.os }}-
-
-      - name: Configure Git identity
-        run: |
-          git config --global user.name "discrawl reporter"
-          git config --global user.email "discrawl-reporter@users.noreply.github.com"
+      - name: Build native reporter
+        run: go build -o "$RUNNER_TEMP/discrawl-native" ./cmd/discrawl
 
       - name: Generate daily Discord report
         env:
@@ -51,44 +39,40 @@ jobs:
           CONFIG: ${{ runner.temp }}/discrawl/config.toml
           DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
           BACKUP_REPO: ${{ runner.temp }}/discord-backup
+          CHECKPOINT_RECEIPT: ${{ runner.temp }}/discrawl/checkpoint.json
         run: |
-          if [ -z "${DISCRAWL_BACKUP_REPOSITORY:-}" ]; then
-            echo "::notice title=Backup report skipped::Configure DISCRAWL_BACKUP_REPOSITORY as owner/repo to enable archive reports."
-            exit 0
-          fi
-          if [ -z "${DISCORD_BACKUP_TOKEN:-}" ]; then
-            echo "::error title=Missing secret::Configure DISCORD_BACKUP_TOKEN with write access to the backup repository."
-            exit 1
-          fi
-          GIT_CREDENTIALS="${RUNNER_TEMP}/discord-backup-git-credentials"
-          printf 'https://x-access-token:%s@github.com\n' "$DISCORD_BACKUP_TOKEN" > "$GIT_CREDENTIALS"
-          chmod 0600 "$GIT_CREDENTIALS"
-          git config --global credential.helper "store --file=${GIT_CREDENTIALS}"
-          trap 'rm -f "$GIT_CREDENTIALS"' EXIT
-          BACKUP_REMOTE="https://github.com/${DISCRAWL_BACKUP_REPOSITORY}.git"
+          umask 077
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           mkdir -p "$(dirname "$CONFIG")"
-          mkdir -p "$(dirname "$DB")"
-          git clone --depth=1 --single-branch --branch main --no-tags \
-            -- "$BACKUP_REMOTE" "$BACKUP_REPO"
-          git -C "$BACKUP_REPO" config --add remote.origin.fetch '^refs/tags/*'
+          python3 scripts/private_discord_checkpoint.py restore --db "$DB" --receipt "$CHECKPOINT_RECEIPT"
+          GIT_CREDENTIALS="$RUNNER_TEMP/discord-backup-git-credentials"
+          printf 'https://x-access-token:%s@github.com\n' "$DISCORD_BACKUP_TOKEN" > "$GIT_CREDENTIALS"
+          git config --global credential.helper "store --file=$GIT_CREDENTIALS"
+          git config --global user.name "discrawl reporter"
+          git config --global user.email "discrawl-reporter@users.noreply.github.com"
+          trap 'rm -f "$GIT_CREDENTIALS"' EXIT
+          trap 'echo "::error::Private archive report failed."; exit 1' ERR
+          BACKUP_REMOTE="https://github.com/${DISCRAWL_BACKUP_REPOSITORY}.git"
+          git clone --depth=1 --single-branch --branch main --no-tags -- "$BACKUP_REMOTE" "$BACKUP_REPO" >/dev/null 2>&1
+          git -C "$BACKUP_REPO" config --add remote.origin.fetch '^refs/tags/*' >/dev/null 2>&1
+          if python3 scripts/private_discord_checkpoint.py report-check --receipt "$CHECKPOINT_RECEIPT" --archive "$BACKUP_REPO"; then
+            :
+          else
+            result=$?
+            if [ "$result" = "3" ]; then
+              echo "::notice::Report skipped: current checkpoint has not been published to the archive."
+              exit 0
+            fi
+            exit "$result"
+          fi
           printf 'db_path = "%s"\n' "$DB" > "$CONFIG"
-          go run ./cmd/discrawl --config "$CONFIG" subscribe --repo "$BACKUP_REPO" "$BACKUP_REMOTE"
-          git -C "$BACKUP_REPO" pull --ff-only origin main
-          go run ./cmd/discrawl --config "$CONFIG" report --published --field-notes --readme "$BACKUP_REPO/README.md"
+          "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" report --published --field-notes --readme "$BACKUP_REPO/README.md" >/dev/null 2>&1
           report_paths=(README.md reports/latest-field-notes.md reports/latest-field-notes.json)
-          git -C "$BACKUP_REPO" add -- "${report_paths[@]}"
-          if git -C "$BACKUP_REPO" diff --cached --quiet -- "${report_paths[@]}"; then
+          git -C "$BACKUP_REPO" add -- "${report_paths[@]}" >/dev/null 2>&1
+          if git -C "$BACKUP_REPO" diff --cached --quiet -- "${report_paths[@]}" >/dev/null 2>&1; then
             echo "Report and field notes already up to date"
             exit 0
           fi
-          git -C "$BACKUP_REPO" commit --only -m "docs: update discord activity report and field notes" -- "${report_paths[@]}"
-          git -C "$BACKUP_REPO" push
-
-      - name: Save Discord DB cache
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .discrawl-ci/discrawl.db
-            .discrawl-ci/discrawl.db-shm
-            .discrawl-ci/discrawl.db-wal
-          key: ${{ steps.restore-discord-db.outputs.cache-primary-key }}
+          git -C "$BACKUP_REPO" commit --only -m "docs: update discord activity report and field notes" -- "${report_paths[@]}" >/dev/null 2>&1
+          git -C "$BACKUP_REPO" push >/dev/null 2>&1
+          echo "Archive report completed."

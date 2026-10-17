@@ -93,6 +93,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test private checkpoint transport
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_private_discord_checkpoint*.py'
+          go test -count=1 scripts/private_checkpoint_publication_test.go scripts/private_checkpoint_workflow_test.go scripts/discord_report_workflow_test.go
+
       - name: Test source reconciliation entry point
         run: go test -count=1 scripts/reconcile_cloud_source.go scripts/reconcile_cloud_source_test.go
 

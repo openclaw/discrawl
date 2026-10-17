@@ -208,6 +208,7 @@ retries the channel.
 - [Desktop wiretap](wiretap.html)
 - [Git-backed snapshots](git-snapshots.html)
 - [Data layout](data-storage.html)
+- [Private workflow checkpoints](private-checkpoints.html)
 - [`status`](../commands/status.html)
 - [`diagnostics`](../commands/diagnostics.html)
 - [`coverage`](../commands/coverage.html)

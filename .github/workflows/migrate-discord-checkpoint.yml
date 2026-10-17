@@ -1,0 +1,85 @@
+name: migrate-discord-checkpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Reviewed main commit containing this migration
+        type: string
+        required: true
+      producer_revision:
+        description: Exact source revision of the successful cache producer
+        type: string
+        required: true
+      cache_identity:
+        description: Exact reviewed cache id, key, ref, version, created_at and size_in_bytes JSON
+        type: string
+        required: true
+      acknowledgement:
+        description: Type MIGRATE_FULL_NATIVE_STATE
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: discord-backup-repo
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DISCRAWL_NO_AUTO_UPDATE: "1"
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      PRODUCER_REVISION: ${{ inputs.producer_revision }}
+      CACHE_IDENTITY: ${{ inputs.cache_identity }}
+      MIGRATION_ACK: ${{ inputs.acknowledgement }}
+    steps:
+      - name: Checkout reviewed migration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify exact source and disabled writers
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_IDENTITY_FILE: ${{ runner.temp }}/checkpoint-cache.json
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_discord_checkpoint_migration.py
+
+      - name: Restore exact reviewed cache once
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .discrawl-ci/discrawl.db
+            .discrawl-ci/discrawl.db-shm
+            .discrawl-ci/discrawl.db-wal
+          key: ${{ steps.gate.outputs.cache_key }}
+          fail-on-cache-miss: true
+
+      - name: Recheck cache custody before private migration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_IDENTITY_FILE: ${{ runner.temp }}/checkpoint-cache.json
+          MATCHED_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+          EXPECTED_KEY: ${{ steps.gate.outputs.cache_key }}
+        run: |
+          test "$MATCHED_KEY" = "$EXPECTED_KEY"
+          python3 scripts/verify_discord_checkpoint_migration.py
+
+      - name: Save and independently restore full private checkpoint
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          umask 077
+          python3 scripts/private_discord_checkpoint.py migrate --db .discrawl-ci/discrawl.db \
+            --receipt "$RUNNER_TEMP/migration.json" --cache-identity "$RUNNER_TEMP/checkpoint-cache.json"
+          python3 scripts/private_discord_checkpoint.py restore --db "$RUNNER_TEMP/independent-restore.sqlite" \
+            --receipt "$RUNNER_TEMP/independent-restore.json"
+          echo "Private full-state migration and independent restore verified; schedules remain unchanged."

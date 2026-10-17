@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve complete native Discord crawl state in verified private checkpoints, with atomic restore, bounded retention, and an explicit migration from the retired workflow cache transport.
+
 ## 0.15.8 - 2026-10-16
 
 **Highlights:** Recover cloud logins automatically after confirmed GitHub rate limits.
