@@ -248,22 +248,42 @@ func (c *Client) ChannelMessages(ctx context.Context, channelID string, limit in
 func (c *Client) CanReadHistory(ctx context.Context, channel *discordgo.Channel) (bool, error) {
 	reqCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	self, err := c.session.User("@me", discordgo.WithContext(reqCtx))
+	// discordgo's permission helper prefers gateway State. A new REST session
+	// avoids certifying an empty history response with stale cached permissions.
+	rest, err := discordgo.New(c.session.Token)
 	if err != nil {
 		return false, err
 	}
-	permissionChannel := channel.ID
-	if channel.IsThread() {
-		if channel.ParentID == "" {
+	rest.Client, rest.Ratelimiter = c.session.Client, c.session.Ratelimiter
+	rest.UserAgent, rest.MaxRestRetries = c.session.UserAgent, c.session.MaxRestRetries
+	rest.ShouldRetryOnRateLimit, rest.LogLevel = c.session.ShouldRetryOnRateLimit, -1
+	fresh, err := rest.Channel(channel.ID, discordgo.WithContext(reqCtx))
+	if err != nil {
+		return false, err
+	}
+	if fresh.ID != channel.ID || fresh.GuildID != channel.GuildID || fresh.Type != channel.Type {
+		return false, errors.New("channel identity changed before history permission check")
+	}
+	self, err := rest.User("@me", discordgo.WithContext(reqCtx))
+	if err != nil {
+		return false, err
+	}
+	permissionChannel := fresh.ID
+	if fresh.IsThread() {
+		if fresh.ParentID == "" {
 			return false, errors.New("thread parent is unavailable")
 		}
-		permissionChannel = channel.ParentID
+		permissionChannel = fresh.ParentID
 	}
-	permissions, err := c.session.UserChannelPermissions(self.ID, permissionChannel, discordgo.WithContext(reqCtx))
+	permissions, err := rest.UserChannelPermissions(self.ID, permissionChannel, discordgo.WithContext(reqCtx))
 	if err != nil {
 		return false, err
 	}
 	required := int64(discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory)
+	if channel.Type == discordgo.ChannelTypeGuildVoice || channel.Type == discordgo.ChannelTypeGuildStageVoice {
+		// Discord requires CONNECT to read a voice channel's text history.
+		required |= discordgo.PermissionVoiceConnect
+	}
 	return permissions&required == required, nil
 }
 

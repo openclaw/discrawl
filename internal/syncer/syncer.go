@@ -348,7 +348,7 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 			return result, err
 		}
 		for _, channel := range channels {
-			if _, marked := unavailable[channelMessageUnavailableScope(channel.ID)]; marked && isMessageChannel(channelFromRow(channel)) {
+			if _, marked := unavailable[channelMessageUnavailableScope(channel.ID)]; marked && IsMessageChannel(channelFromRow(channel)) {
 				candidates[channel.ID] = struct{}{}
 			}
 		}

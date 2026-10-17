@@ -4,6 +4,11 @@
 
 - Preserve complete native Discord crawl state in verified private checkpoints, with atomic restore, bounded retention, and an explicit migration from the retired workflow cache transport.
 
+- Export current history-permission denials alongside retained window receipts, fail the sync if that status cannot be saved, and clear the unavailable marker after a successful full or targeted retry.
+
+- Include voice and stage text chats in message sync, history backfills, and coverage reports; preserve stage channel types when resuming and require CONNECT when verifying their history access.
+- Record permission-verified coverage for explicit bounded full-history scans, including empty windows, without completing older history or extending coverage from routine refreshes.
+
 ## 0.15.8 - 2026-10-16
 
 **Highlights:** Recover cloud logins automatically after confirmed GitHub rate limits.

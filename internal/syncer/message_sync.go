@@ -87,7 +87,7 @@ func filterMessageChannels(channels []*discordgo.Channel, requested []string) []
 	}
 	out := make([]*discordgo.Channel, 0, len(channels))
 	for _, channel := range channels {
-		if !isMessageChannel(channel) {
+		if !IsMessageChannel(channel) {
 			continue
 		}
 		if len(requestedSet) > 0 && !requestedMessageTarget(channel, channelByID, requestedSet) {
@@ -262,6 +262,9 @@ func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channe
 	state, err := s.loadChannelSyncState(ctx, channel.ID)
 	if err != nil {
 		return 0, err
+	}
+	if full && !since.IsZero() {
+		return s.syncWindowChannelHistory(ctx, channel, state, embeddings, since, progress)
 	}
 	if state.HasMessages && state.VerifiedEmpty {
 		// The channel holds rows, so the marker describes a state that has
@@ -581,7 +584,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 		if before == "" && state.Latest != "" {
 			before = state.Latest
 		}
-		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, 0, verification, progress)
+		count, latest, err := s.syncBackfillPages(ctx, channel, before, newest, channel.Name, embeddings, since, 0, verification, progress, nil)
 		messageCount += count
 		newest = maxSnowflake(newest, latest)
 		if err != nil {
@@ -603,7 +606,7 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, channel *discordgo.
 }
 
 func (s *Syncer) syncLatestChannelHistory(ctx context.Context, channel *discordgo.Channel, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
-	count, newest, err := s.syncBackfillPages(ctx, channel, "", "", channel.Name, embeddings, since, 1, nil, progress)
+	count, newest, err := s.syncBackfillPages(ctx, channel, "", "", channel.Name, embeddings, since, 1, nil, progress, nil)
 	if err != nil || newest == "" {
 		return count, err
 	}
@@ -720,7 +723,7 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 	return messageCount, newest, nil
 }
 
-func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, pageLimit int, verification *historyVerificationCheckpoint, progress *messageSyncProgress) (int, string, error) {
+func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Channel, before, latestFloor, channelName string, embeddings bool, since time.Time, pageLimit int, verification *historyVerificationCheckpoint, progress *messageSyncProgress, window *HistoryWindow) (int, string, error) {
 	messageCount := 0
 	newest := ""
 	pages := 0
@@ -730,7 +733,9 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			return messageCount, newest, err
 		}
 		if len(page) == 0 {
-			if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
+			if window != nil {
+				window.Boundary = "end"
+			} else if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
 				return messageCount, newest, err
 			}
 			break
@@ -755,7 +760,10 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			}
 		}
 		if reachedSince {
-			if len(eligible) > 0 {
+			if window != nil {
+				window.Boundary, window.BoundaryMessageID = "since", page[len(page)-1].ID
+			}
+			if window == nil && len(eligible) > 0 {
 				before = eligible[len(eligible)-1].ID
 				if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), before); err != nil {
 					return messageCount, newest, err
@@ -773,8 +781,10 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 				return messageCount, newest, fmt.Errorf("channel %s message page cursor did not advance", channel.ID)
 			}
 		}
-		if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), nextBefore); err != nil {
-			return messageCount, newest, err
+		if window == nil {
+			if err := s.store.SetSyncState(ctx, channelBackfillScope(channel.ID), nextBefore); err != nil {
+				return messageCount, newest, err
+			}
 		}
 		if verification != nil {
 			checkpoint := historyVerificationCheckpoint{Latest: maxSnowflake(latestFloor, newest), Before: nextBefore}
@@ -783,7 +793,12 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 			}
 		}
 		if len(page) < 100 {
-			if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
+			if window != nil {
+				if nextBefore == "" {
+					return messageCount, newest, errors.New("history boundary message is missing")
+				}
+				window.Boundary, window.BoundaryMessageID = "end", nextBefore
+			} else if err := s.store.SetSyncState(ctx, channelHistoryCompleteScope(channel.ID), "1"); err != nil {
 				return messageCount, newest, err
 			}
 			break

@@ -64,6 +64,10 @@ func (f *fakeClient) Self(context.Context) (*discordgo.User, error) {
 	return &discordgo.User{ID: "bot"}, nil
 }
 
+func (f *fakeClient) CanReadHistory(context.Context, *discordgo.Channel) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeClient) Guilds(context.Context) ([]*discordgo.UserGuild, error) {
 	return f.guilds, nil
 }

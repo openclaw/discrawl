@@ -141,6 +141,7 @@ func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 	}
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-other", GuildID: "g2", Kind: "text", Name: "other", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-voice", GuildID: "g1", Kind: "voice", Name: "voice", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-stage", GuildID: "g1", Kind: "type_13", Name: "stage", RawJSON: `{}`}))
 
 	require.NoError(t, s.SetSyncState(ctx, "channel:c-done:history_complete", "1"))
 	ageSyncStateMarker(ctx, t, s, "channel:c-stale:unavailable", "missing_access", 30*24*time.Hour)
@@ -148,11 +149,11 @@ func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 
 	byGuild, err := s.AllIncompleteMessageChannelIDs(ctx, "g1")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c-clean", "c-fresh", "c-stale"}, byGuild)
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-stage", "c-stale", "c-voice"}, byGuild)
 
 	all, err := s.AllIncompleteMessageChannelIDs(ctx, "")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c-clean", "c-fresh", "c-other", "c-stale"}, all)
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-other", "c-stage", "c-stale", "c-voice"}, all)
 
 	// The narrower listing still holds the fresh marker back, which is what the
 	// routine path relies on.
