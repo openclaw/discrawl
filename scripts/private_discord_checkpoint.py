@@ -37,7 +37,8 @@ POLICY_PATH = "policy/report-selectors.json"
 MAX_POLICY = 64 * 1024
 MAX_TARGETS = 4096
 SAVE_TIMEOUT = 840
-SAVE_PHASES = {"source_facts", "backup", "pack", "upload", "restore_verify", "promote"}
+CHECKPOINT_PHASES = {"source_facts", "backup", "pack", "upload", "restore_verify", "promote",
+                     "download", "reconstruct", "disk_verify", "sqlite_verify"}
 API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
               "asset_list", "manifest_download", "part_download", "release_create", "asset_upload",
               "release_promote", "release_delete", "source_ref_read", "source_run_read",
@@ -67,15 +68,15 @@ def check_deadline(deadline):
 
 
 @contextlib.contextmanager
-def save_phase(name):
-    require(name in SAVE_PHASES, "checkpoint_phase")
+def checkpoint_phase(name):
+    require(name in CHECKPOINT_PHASES, "checkpoint_phase")
     started, state = time.monotonic(), "failed"
-    print(f"checkpoint save: phase={name} state=begin", flush=True)
+    print(f"checkpoint: phase={name} state=begin", flush=True)
     try:
         yield
         state = "complete"
     finally:
-        print(f"checkpoint save: phase={name} state={state} elapsed_seconds={time.monotonic() - started:.3f}", flush=True)
+        print(f"checkpoint: phase={name} state={state} elapsed_seconds={time.monotonic() - started:.3f}", flush=True)
 
 
 def file_digest(path, deadline=None):
@@ -167,9 +168,9 @@ def snapshot(source, destination, timeout=600, deadline=None):
         # The main file can be tiny while committed pages are still in WAL.
         # Reserve the standalone image and worst-case compressed parts together.
         require(shutil.disk_usage(destination.parent).free > logical_bytes * 2 + BLOCK * MAX_PARTS, "checkpoint_capacity")
-        with save_phase("source_facts"):
+        with checkpoint_phase("source_facts"):
             facts = database_facts(src, deadline)
-        with save_phase("backup"):
+        with checkpoint_phase("backup"):
             with contextlib.closing(sqlite3.connect(destination)) as out:
                 src.backup(out, pages=256, progress=progress, sleep=0.05)
                 out.execute("PRAGMA journal_mode=DELETE")
@@ -180,8 +181,32 @@ def snapshot(source, destination, timeout=600, deadline=None):
     return facts
 
 
+class HashingWriter:
+    # gzip writes its header and closing trailer through the same sink. Hash
+    # only accepted bytes; a short or failed write must never mint a descriptor.
+    def __init__(self, output, deadline):
+        self.output, self.deadline = output, deadline
+        self.sha256, self.size = hashlib.sha256(), 0
+
+    def write(self, data):
+        remaining = memoryview(data)
+        require(self.size + len(remaining) <= MAX_PART, "part_size")
+        while remaining:
+            check_deadline(self.deadline)
+            written = self.output.write(remaining)
+            require(type(written) is int and 0 < written <= len(remaining), "part_write")
+            self.sha256.update(remaining[:written])
+            self.size += written
+            remaining = remaining[written:]
+        return len(data)
+
+    def flush(self):
+        check_deadline(self.deadline)
+        self.output.flush()
+
+
 def pack(database, directory, deadline=None):
-    parts = []
+    parts, database_hash, database_bytes = [], hashlib.sha256(), 0
     with open(database, "rb") as source:
         while source.tell() < database.stat().st_size:
             check_deadline(deadline)
@@ -189,19 +214,22 @@ def pack(database, directory, deadline=None):
             name = f"state-{len(parts):03d}.sqlite.gz"
             target = directory / name
             raw_bytes = 0
-            with target.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-                while raw_bytes < RAW_PART:
-                    check_deadline(deadline)
-                    chunk = source.read(min(BLOCK, RAW_PART - raw_bytes))
-                    if not chunk:
-                        break
-                    compressed.write(chunk)
-                    raw_bytes += len(chunk)
-            size = target.stat().st_size
-            require(0 < size <= MAX_PART, "part_size")
-            parts.append({"name": name, "bytes": size, "raw_bytes": raw_bytes, "sha256": file_digest(target, deadline)})
+            with target.open("xb") as raw:
+                sink = HashingWriter(raw, deadline)
+                with gzip.GzipFile(filename="", mode="wb", fileobj=sink, mtime=0) as compressed:
+                    while raw_bytes < RAW_PART:
+                        check_deadline(deadline)
+                        chunk = source.read(min(BLOCK, RAW_PART - raw_bytes))
+                        if not chunk:
+                            break
+                        compressed.write(chunk)
+                        database_hash.update(chunk)
+                        raw_bytes += len(chunk)
+            require(0 < sink.size == target.stat().st_size <= MAX_PART, "part_size")
+            database_bytes += raw_bytes
+            parts.append({"name": name, "bytes": sink.size, "raw_bytes": raw_bytes, "sha256": sink.sha256.hexdigest()})
     check_deadline(deadline)
-    return parts
+    return {"bytes": database_bytes, "sha256": database_hash.hexdigest()}, parts
 
 
 def validate_manifest(value):
@@ -248,7 +276,7 @@ def validate_manifest(value):
 
 def unpack(manifest, directory, destination, deadline=None):
     check_deadline(deadline)
-    with destination.open("xb") as output:
+    with checkpoint_phase("reconstruct"), destination.open("xb") as output:
         for part in manifest["parts"]:
             file = directory / part["name"]
             require(file.stat().st_size == part["bytes"] and file_digest(file, deadline) == part["sha256"], "part_checksum")
@@ -263,8 +291,9 @@ def unpack(manifest, directory, destination, deadline=None):
         output.flush()
         os.fsync(output.fileno())
     expected = manifest["database"]
-    require(destination.stat().st_size == expected["bytes"] and file_digest(destination, deadline) == expected["sha256"], "database_checksum")
-    with contextlib.closing(readonly(destination)) as db:
+    with checkpoint_phase("disk_verify"):
+        require(destination.stat().st_size == expected["bytes"] and file_digest(destination, deadline) == expected["sha256"], "database_checksum")
+    with checkpoint_phase("sqlite_verify"), contextlib.closing(readonly(destination)) as db:
         require(database_facts(db, deadline) == {k: expected[k] for k in ("user_version", "schema_sha256", "tables")}, "restore_parity")
 
 
@@ -468,9 +497,10 @@ def download_database(github, release, directory, draft=False, deadline=None):
     manifest, assets, ref = release_manifest(github, release, directory, draft)
     require(shutil.disk_usage(directory).free > manifest["database"]["bytes"]
             + sum(p["bytes"] for p in manifest["parts"]), "checkpoint_capacity")
-    for part in manifest["parts"]:
-        check_deadline(deadline)
-        github.download(assets[part["name"]], directory / part["name"])
+    with checkpoint_phase("download"):
+        for part in manifest["parts"]:
+            check_deadline(deadline)
+            github.download(assets[part["name"]], directory / part["name"])
     unpack(manifest, directory, directory / "restored.sqlite", deadline)
     inventory = [{"name": name, "id": asset["id"], "bytes": asset["size"], "digest": asset["digest"]}
                  for name, asset in sorted(assets.items())]
@@ -587,17 +617,17 @@ def save(github, database, receipt, outcome, migration=None, deadline=None):
         source = source_identity(outcome, archive_commit)
         standalone = directory / "checkpoint.sqlite"
         facts = snapshot(database, standalone, deadline=deadline)
-        with save_phase("pack"):
+        with checkpoint_phase("pack"):
+            packed_database, parts = pack(standalone, directory, deadline)
             manifest = {"schema": SCHEMA, "boundary": "native-ingestion-before-publication",
                         "repository": github.identity, "source": source,
                         "parent": parent["reference"] if parent else None, "migration": migration,
-                        "database": {**facts, "bytes": standalone.stat().st_size, "sha256": file_digest(standalone, deadline)},
-                        "parts": pack(standalone, directory, deadline)}
+                        "database": {**facts, **packed_database}, "parts": parts}
         validate_manifest(manifest)
         (directory / MANIFEST).write_bytes(canonical(manifest))
         tag = f'discrawl-state-{source["run_id"]}-{source["run_attempt"]}'
         try:
-            with save_phase("upload"):
+            with checkpoint_phase("upload"):
                 check_deadline(deadline)
                 attempted = True
                 draft = github.create(tag, archive_commit)
@@ -609,7 +639,7 @@ def save(github, database, receipt, outcome, migration=None, deadline=None):
                 (directory / part["name"]).unlink()
             verification = directory / "verification"
             verification.mkdir()
-            with save_phase("restore_verify"):
+            with checkpoint_phase("restore_verify"):
                 current = download_database(github, github.api('/releases/' + str(draft["id"])), verification,
                                             draft=True, deadline=deadline)
                 require(current["manifest"] == manifest, "uploaded_manifest")
@@ -619,7 +649,7 @@ def save(github, database, receipt, outcome, migration=None, deadline=None):
                 require(read_parent(github, receipt, recheck) == parent, "parent_changed")
             else:
                 require(github.api("/releases/latest", missing=True) is None, "parent_changed")
-            with save_phase("promote"):
+            with checkpoint_phase("promote"):
                 require(deadline - time.monotonic() >= 60, "checkpoint_publication_budget")
                 published = github.api('/releases/' + str(draft["id"]), {"draft": False, "make_latest": "true"})
                 require(published.get("id") == draft["id"] and published.get("draft") is False
