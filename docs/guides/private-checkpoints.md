@@ -90,8 +90,9 @@ The policy is a JSON object with these exact fields:
 - `guild_id`: the exact configured Discord guild ID.
 - `message_root_ids` and `forum_root_ids`: arrays of native decimal IDs.
 - `retained_threads`: objects with `id` and `parent_id`; each parent must be one
-  of the declared message or forum roots. Retained children of text roots must
-  be explicit targets: native targeted discovery expands forum children only.
+  of the declared message or forum roots. These pin existing leaves. Ordinary
+  `--channels` selection expands forum children; acquisition also includes stored
+  direct text and announcement-root children discovered by its first pass.
 
 The approved policy digest binds that provenance and scope together. The file
 is limited to 64 KiB and 4,096 distinct targets in total. It cannot contain
