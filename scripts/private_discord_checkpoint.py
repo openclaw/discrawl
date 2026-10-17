@@ -32,7 +32,8 @@ REQUIRED_TABLES = {"guilds", "channels", "members", "messages", "sync_state", "f
 WORKFLOWS = {"publish-discord-backup.yml", "migrate-discord-checkpoint.yml"}
 API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
               "asset_list", "manifest_download", "part_download", "release_create", "asset_upload",
-              "release_promote", "release_delete"}
+              "release_promote", "release_delete", "source_ref_read", "source_run_read",
+              "source_workflow_read", "source_active_runs", "source_cache_read"}
 
 
 class CheckpointError(Exception):
@@ -212,6 +213,90 @@ def unpack(manifest, directory, destination):
         require(database_facts(db) == {k: expected[k] for k in ("user_version", "schema_sha256", "tables")}, "restore_parity")
 
 
+def reap_command(child, phase):
+    # A reaped leader and closed stderr do not prove stdout is stable: a
+    # descendant can still own it. Unknown group state must not yield bytes.
+    deadline = time.monotonic() + 5
+    code = "checkpoint_api phase=" + phase + " exit=reap"
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        raise CheckpointError(code) from error
+    try:
+        child.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        raise CheckpointError(code) from error
+    while True:
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise CheckpointError(code) from error
+        require(time.monotonic() < deadline, code)
+        time.sleep(0.05)
+
+
+def github_command(arguments, env, phase, destination=None, timeout=600, missing=False,
+                   limit=MAX_MANIFEST, deadline=None):
+    require(phase in API_PHASES, "api_phase")
+    command_deadline = time.monotonic() + timeout
+    if deadline is not None:
+        command_deadline = min(command_deadline, deadline)
+    require(time.monotonic() < command_deadline, "checkpoint_api phase=" + phase + " exit=timeout")
+
+    def bound_output():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    with (destination.open("xb") if destination is not None else tempfile.TemporaryFile()) as output:
+        child = subprocess.Popen(["gh", *arguments], stdout=output, stderr=subprocess.PIPE,
+                                 env=env, preexec_fn=bound_output, start_new_session=True)
+        captured = bytearray()
+        failure = None
+        try:
+            # Drain even after the retained prefix fills: waiting on a full
+            # stderr pipe deadlocks, and inherited pipes need the same deadline.
+            with selectors.DefaultSelector() as selector:
+                os.set_blocking(child.stderr.fileno(), False)
+                selector.register(child.stderr, selectors.EVENT_READ)
+                while selector.get_map() or child.poll() is None:
+                    require(time.monotonic() < command_deadline, "checkpoint_api phase=" + phase + " exit=timeout")
+                    for key, _ in selector.select(min(0.1, max(0, command_deadline - time.monotonic()))):
+                        try:
+                            chunk = os.read(key.fd, 16384)
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        captured.extend(chunk[:max(0, 65536 - len(captured))])
+        except BaseException as error:
+            failure = error
+        finally:
+            try:
+                reap_command(child, phase)
+            finally:
+                child.stderr.close()
+        if failure is not None:
+            raise failure
+        size = output.tell()
+        output.seek(0)
+        raw = output.read(min(size, limit)) if destination is None else b""
+        if missing and child.returncode != 0:
+            if re.match(rb"HTTP/\S+ 404\b", raw):
+                return None
+        if child.returncode != 0:
+            status = re.search(rb"(?:^HTTP/\S+ |\(HTTP )([1-5][0-9]{2})(?:\b|\))", raw[:4096] + bytes(captured))
+            raise CheckpointError(f"checkpoint_api phase={phase} exit={child.returncode}"
+                                  + (" http=" + status[1].decode("ascii") if status else ""))
+        if destination is not None:
+            require(size <= limit, "asset_size")
+            return None
+        require(size <= limit, "checkpoint_api_size")
+        return raw
+
+
 class GitHub:
     def __init__(self, deadline=None, read_only=False):
         self.deadline = deadline
@@ -225,68 +310,17 @@ class GitHub:
         self.identity = {"name": self.repository, "id": repo["id"]}
 
     def command(self, arguments, destination=None, timeout=600, missing=False, phase="repository_read", limit=None):
-        # The official CLI owns authentication/redirects. Neither its error body
-        # nor private asset paths are allowed into this public workflow's logs.
+        # Private custody uses only its existing token. Public admission passes
+        # its own workflow token to the same bounded process owner.
         env = {**os.environ, "GH_TOKEN": os.environ.get("DISCORD_BACKUP_TOKEN", ""),
                "GH_PROMPT_DISABLED": "1", "GH_DEBUG": "", "GH_HOST": "github.com"}
         require(env["GH_TOKEN"], "checkpoint_credential")
-        require(phase in API_PHASES, "api_phase")
         require(not self.read_only or (arguments[0] == "api" and "--method" not in arguments
                                       and "--input" not in arguments), "diagnostic_read_only")
         if self.read_only:
             arguments = [*arguments, "--method", "GET"]
         limit = limit if limit is not None else MAX_PART if destination is not None else MAX_MANIFEST
-        deadline = time.monotonic() + timeout
-        if self.deadline is not None:
-            deadline = min(deadline, self.deadline)
-        require(time.monotonic() < deadline, "checkpoint_api phase=" + phase + " exit=timeout")
-
-        def bound_output():
-            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
-
-        with (destination.open("xb") if destination is not None else tempfile.TemporaryFile()) as output:
-            child = subprocess.Popen(["gh", *arguments], stdout=output, stderr=subprocess.PIPE,
-                                     env=env, preexec_fn=bound_output, start_new_session=True)
-            captured = bytearray()
-            try:
-                # Drain even after the retained prefix fills: waiting on a full
-                # stderr pipe deadlocks, and inherited pipes need the same deadline.
-                with selectors.DefaultSelector() as selector:
-                    os.set_blocking(child.stderr.fileno(), False)
-                    selector.register(child.stderr, selectors.EVENT_READ)
-                    while selector.get_map() or child.poll() is None:
-                        require(time.monotonic() < deadline, "checkpoint_api phase=" + phase + " exit=timeout")
-                        for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
-                            try:
-                                chunk = os.read(key.fd, 16384)
-                            except BlockingIOError:
-                                continue
-                            if not chunk:
-                                selector.unregister(key.fileobj)
-                            captured.extend(chunk[:max(0, 65536 - len(captured))])
-                child.wait(timeout=5)
-            except BaseException:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(child.pid, signal.SIGKILL)
-                child.wait(timeout=5)
-                raise
-            finally:
-                child.stderr.close()
-            size = output.tell()
-            output.seek(0)
-            raw = output.read(min(size, MAX_MANIFEST)) if destination is None else b""
-            if missing and child.returncode != 0:
-                if re.match(rb"HTTP/\S+ 404\b", raw):
-                    return None
-            if child.returncode != 0:
-                status = re.search(rb"(?:^HTTP/\S+ |\(HTTP )([1-5][0-9]{2})(?:\b|\))", raw[:4096] + bytes(captured))
-                raise CheckpointError(f"checkpoint_api phase={phase} exit={child.returncode}"
-                                      + (" http=" + status[1].decode("ascii") if status else ""))
-            if destination is not None:
-                require(size <= MAX_PART, "asset_size")
-                return None
-            require(size <= MAX_MANIFEST, "checkpoint_api_size")
-            return raw
+        return github_command(arguments, env, phase, destination, timeout, missing, limit, self.deadline)
 
     def api(self, suffix, data=None, missing=False):
         if suffix == "":

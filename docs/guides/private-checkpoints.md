@@ -110,7 +110,11 @@ The diagnostic has one 15-minute deadline inside a 20-minute job. Metadata calls
 allow at most 60 seconds; the part download allows at most 600 seconds, always
 limited by the remaining deadline. API errors expose only a fixed operation,
 numeric exit or timeout, and an HTTP status when available. Private command
-output is drained with a bounded retained prefix and never logged. A successful
+output is drained with a bounded retained prefix and never logged. Public
+admission and private reads share this process boundary while retaining their
+separate tokens. The helper terminates its command group and allows up to five
+seconds to verify it has disappeared before inspecting output; unknown cleanup
+state stops the diagnostic. A successful
 probe proves the current credential and first-part read path; it does not locate
 an earlier unrecorded failure or verify the other parts. Full recovery still
 requires a separately reviewed complete restore and parity check.

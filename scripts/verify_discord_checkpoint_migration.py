@@ -11,19 +11,28 @@ import tempfile
 import time
 
 from private_discord_checkpoint import (CheckpointError, GitHub, canonical, digest, execution_context,
-                                        file_digest, hash_value, integer, keys, release_manifest, require, strict_json)
+                                        file_digest, github_command, hash_value, integer, keys,
+                                        release_manifest, require, strict_json)
 
 
 DEADLINE = None
 
 
 def api(path):
-    remaining = 60 if DEADLINE is None else min(60, DEADLINE - time.monotonic())
-    require(remaining > 0, "diagnostic_timeout")
-    result = subprocess.run(["gh", "api", "repos/openclaw/discrawl/" + path],
-                            capture_output=True, timeout=remaining, check=False)
-    require(result.returncode == 0 and len(result.stdout) <= 1024 * 1024, "migration_api")
-    return json.loads(result.stdout)
+    phase = ("source_ref_read" if path.startswith("git/") else
+             "source_cache_read" if path.startswith("actions/caches") else
+             "source_run_read" if path.startswith("actions/runs/") else
+             "source_active_runs" if "?status=" in path else "source_workflow_read")
+    # Public admission uses the job token, never the private checkpoint token.
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"DISCORD_BACKUP_TOKEN", "DISCRAWL_BACKUP_REPOSITORY"}}
+    env.update(GH_PROMPT_DISABLED="1", GH_DEBUG="", GH_HOST="github.com")
+    require(env.get("GH_TOKEN"), "migration_credential")
+    raw = github_command(["api", "repos/openclaw/discrawl/" + path, "--method", "GET", "--include"],
+                         env, phase, timeout=60, limit=1024 * 1024, deadline=DEADLINE)
+    parts = re.split(rb"\r?\n\r?\n", raw, maxsplit=1)
+    require(len(parts) == 2 and re.match(rb"HTTP/\S+ 2[0-9][0-9]\b", parts[0]), "migration_api_status phase=" + phase)
+    return json.loads(parts[1])
 
 
 def verify_context(expected):

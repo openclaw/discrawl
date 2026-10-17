@@ -58,16 +58,67 @@ class CommandTests(unittest.TestCase):
         def after_ready():
             nonlocal ready
             # Isolate inherited-pipe cleanup from interpreter startup latency.
-            self.assertLess(clock() - start, 5, "fixture failed to start")
+            if ready is None:
+                self.assertLess(clock() - start, 5, "fixture failed to start")
             if ready is None and marker.exists():
                 ready = clock()
             return 0 if ready is None else clock() - ready
         with patch.object(checkpoint.time, "monotonic", after_ready):
-            with self.assertRaisesRegex(checkpoint.CheckpointError, "phase=part_download exit=timeout"):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "phase=part_download exit=(timeout|reap)"):
                 self.github.command(["api", "fixture"], timeout=.2, phase="part_download")
         value = marker.read_bytes()
         time.sleep(.05)
         self.assertEqual(marker.read_bytes(), value)
+
+    def test_closed_stderr_descendant_cannot_keep_writing_successful_output(self):
+        marker, group = self.root / "ready", self.root / "group"
+        self.shim("import os,time\nfrom pathlib import Path\nPath(%r).write_text(str(os.getpgrp()))\n"
+                  "if os.fork()==0:\n os.close(2);Path(%r).touch()\n while True:\n  os.write(1,b'x');time.sleep(.01)\n"
+                  "else:\n while not Path(%r).exists(): time.sleep(.01)\n" % (str(group), str(marker), str(marker)))
+        target = self.root / "download"
+        try:
+            try:
+                self.github.command(["api", "fixture"], destination=target, phase="part_download")
+            except checkpoint.CheckpointError as error:
+                self.assertEqual(str(error), "checkpoint_api phase=part_download exit=reap")
+            size = target.stat().st_size
+            time.sleep(.05)
+            self.assertEqual(target.stat().st_size, size)
+        finally:
+            if group.exists():
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(int(group.read_text()), 9)
+
+    def test_unknown_group_state_never_returns_output(self):
+        self.shim("print('unverified output')\n")
+        real_kill = os.killpg
+        def kill(pid, sig):
+            if sig == 0:
+                raise PermissionError("fixture")
+            return real_kill(pid, sig)
+        with patch.object(checkpoint.os, "killpg", kill):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "exit=reap"):
+                self.github.command(["api", "fixture"])
+
+    def test_public_admission_uses_bounded_owner_and_distinct_token(self):
+        self.shim("import os\nassert os.environ['GH_TOKEN']=='public-fixture'\n"
+                  "assert 'DISCORD_BACKUP_TOKEN' not in os.environ\n"
+                  "assert 'DISCRAWL_BACKUP_REPOSITORY' not in os.environ\n"
+                  "os.write(2,b'private sentinel (HTTP 403)\\n')\n"
+                  "for _ in range(16): os.write(2,b'x'*65536)\nraise SystemExit(9)\n")
+        with patch.dict(os.environ, {"GH_TOKEN": "public-fixture", "DISCRAWL_BACKUP_REPOSITORY": "example/private"}), \
+                patch.object(admission, "DEADLINE", time.monotonic() + 5):
+            with self.assertRaises(checkpoint.CheckpointError) as failure:
+                admission.api("actions/runs/1")
+        self.assertEqual(str(failure.exception), "checkpoint_api phase=source_run_read exit=9 http=403")
+
+    def test_public_admission_shared_deadline_prevents_launch(self):
+        with patch.dict(os.environ, {"GH_TOKEN": "public-fixture"}), \
+                patch.object(admission, "DEADLINE", time.monotonic() - 1), \
+                patch.object(checkpoint.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "phase=source_run_read exit=timeout"):
+                admission.api("actions/runs/1")
+            popen.assert_not_called()
 
     def test_shared_deadline_stops_before_launch_and_read_only_blocks_mutation(self):
         self.github.deadline = time.monotonic() - 1
