@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -21,7 +21,7 @@ func TestFullSinceRecordsEmptyWindowWithoutCompletingOlderHistory(t *testing.T) 
 			ctx := context.Background()
 			db, err := store.Open(ctx, filepath.Join(t.TempDir(), "fixture.db"))
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			since := time.Now().UTC().Add(-24 * time.Hour)
 			channel := &discordgo.Channel{ID: "c1", GuildID: "g1", Name: "fixture", Type: discordgo.ChannelTypeGuildText}
 			client := &fakeClient{
@@ -56,7 +56,7 @@ func TestFullSinceRecordsEmptyWindowWithoutCompletingOlderHistory(t *testing.T) 
 			require.NoError(t, err)
 			imported, err := store.Open(ctx, filepath.Join(t.TempDir(), "imported.db"))
 			require.NoError(t, err)
-			defer imported.Close()
+			defer func() { _ = imported.Close() }()
 			_, err = share.Import(ctx, imported, share.Options{RepoPath: repo})
 			require.NoError(t, err)
 			roundTrip, err := imported.GetSyncState(ctx, channelHistoryWindowScope("c1", since))
@@ -83,7 +83,7 @@ func TestHistoryWindowFailurePreservesPreviousProof(t *testing.T) {
 			ctx := context.Background()
 			db, err := store.Open(ctx, filepath.Join(t.TempDir(), "fixture.db"))
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "fixture", RawJSON: `{}`}))
 			require.NoError(t, db.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "fixture", RawJSON: `{}`}))
 			since := time.Now().UTC().Add(-time.Hour)
@@ -122,7 +122,7 @@ func TestHistoryWindowsRetainDistinctBoundsAndIgnoreLatestOnly(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "fixture.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	channel := &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	client := &windowPermissionClient{fakeClient: &fakeClient{messages: map[string][]*discordgo.Message{}}}
 	svc := New(client, db, nil)
@@ -161,7 +161,7 @@ func TestHistoryWindowFillsSparseRowsWithoutResettingHistoricalCursor(t *testing
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "fixture.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", RawJSON: `{}`}))
 	require.NoError(t, db.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", RawJSON: `{}`}))
 	require.NoError(t, db.UpsertMessage(ctx, store.MessageRecord{ID: "100", GuildID: "g1", ChannelID: "c1", CreatedAt: time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano), RawJSON: `{}`}))
@@ -183,14 +183,14 @@ func TestHistoryWindowFillsSparseRowsWithoutResettingHistoricalCursor(t *testing
 	var count int
 	require.NoError(t, db.DB().QueryRowContext(ctx, "select count(*) from messages where channel_id='c1'").Scan(&count))
 	require.Equal(t, 3, count)
-	require.Equal(t, "", client.messageRequests[0].beforeID, "a new window starts at the live head, not the retained cursor")
+	require.Empty(t, client.messageRequests[0].beforeID, "a new window starts at the live head, not the retained cursor")
 }
 
 func TestHistoryWindowSecondPageFailureKeepsPriorProofAndCursor(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "fixture.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", RawJSON: `{}`}))
 	require.NoError(t, db.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", RawJSON: `{}`}))
 	since := time.Now().UTC().Add(-time.Hour)
@@ -198,7 +198,7 @@ func TestHistoryWindowSecondPageFailureKeepsPriorProofAndCursor(t *testing.T) {
 	require.NoError(t, db.SetSyncState(ctx, channelBackfillScope("c1"), "50"))
 	var messages []*discordgo.Message
 	for id := 200; id >= 101; id-- {
-		messages = append(messages, &discordgo.Message{ID: fmt.Sprint(id), GuildID: "g1", ChannelID: "c1", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1"}})
+		messages = append(messages, &discordgo.Message{ID: strconv.Itoa(id), GuildID: "g1", ChannelID: "c1", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1"}})
 	}
 	client := &windowPermissionClient{fakeClient: &fakeClient{messages: map[string][]*discordgo.Message{"c1": messages}, beforeErrors: map[string]map[string]error{"c1": {"101": context.DeadlineExceeded}}}}
 	_, err = New(client, db, nil).syncWindowChannelHistory(ctx, &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}, channelSyncState{}, false, since, nil)
