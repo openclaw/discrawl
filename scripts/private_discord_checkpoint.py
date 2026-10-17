@@ -36,10 +36,13 @@ POLICY_REF = "refs/heads/maintainer-report-policy"
 POLICY_PATH = "policy/report-selectors.json"
 MAX_POLICY = 64 * 1024
 MAX_TARGETS = 4096
+SAVE_TIMEOUT = 840
+SAVE_PHASES = {"source_facts", "backup", "pack", "upload", "restore_verify", "promote"}
 API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
               "asset_list", "manifest_download", "part_download", "release_create", "asset_upload",
               "release_promote", "release_delete", "source_ref_read", "source_run_read",
-              "source_workflow_read", "source_active_runs", "source_cache_read", "source_log_read"}
+              "source_workflow_read", "source_active_runs", "source_cache_read", "source_log_read",
+              "archive_git", "archive_export", "archive_push"}
 
 
 class CheckpointError(Exception):
@@ -61,6 +64,18 @@ def digest(data):
 
 def check_deadline(deadline):
     require(deadline is None or time.monotonic() < deadline, "checkpoint_timeout")
+
+
+@contextlib.contextmanager
+def save_phase(name):
+    require(name in SAVE_PHASES, "checkpoint_phase")
+    started, state = time.monotonic(), "failed"
+    print(f"checkpoint save: phase={name} state=begin", flush=True)
+    try:
+        yield
+        state = "complete"
+    finally:
+        print(f"checkpoint save: phase={name} state={state} elapsed_seconds={time.monotonic() - started:.3f}", flush=True)
 
 
 def file_digest(path, deadline=None):
@@ -136,8 +151,8 @@ def readonly(path):
     return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
 
 
-def snapshot(source, destination, timeout=600):
-    deadline = time.monotonic() + timeout
+def snapshot(source, destination, timeout=600, deadline=None):
+    deadline = min(time.monotonic() + timeout, deadline if deadline is not None else float("inf"))
 
     def progress(_status, _remaining, _total):
         require(time.monotonic() < deadline, "backup_timeout")
@@ -152,26 +167,31 @@ def snapshot(source, destination, timeout=600):
         # The main file can be tiny while committed pages are still in WAL.
         # Reserve the standalone image and worst-case compressed parts together.
         require(shutil.disk_usage(destination.parent).free > logical_bytes * 2 + BLOCK * MAX_PARTS, "checkpoint_capacity")
-        facts = database_facts(src)
-        with contextlib.closing(sqlite3.connect(destination)) as out:
-            src.backup(out, pages=256, progress=progress, sleep=0.05)
-            out.execute("PRAGMA journal_mode=DELETE")
+        with save_phase("source_facts"):
+            facts = database_facts(src, deadline)
+        with save_phase("backup"):
+            with contextlib.closing(sqlite3.connect(destination)) as out:
+                src.backup(out, pages=256, progress=progress, sleep=0.05)
+                out.execute("PRAGMA journal_mode=DELETE")
+            check_deadline(deadline)
         src.rollback()
-    with contextlib.closing(readonly(destination)) as restored:
-        require(database_facts(restored) == facts, "backup_parity")
+    # save binds this copy's hash to the pinned source facts. Its authenticated
+    # readback checks both, so scanning the intermediate copy adds no proof.
     return facts
 
 
-def pack(database, directory):
+def pack(database, directory, deadline=None):
     parts = []
     with open(database, "rb") as source:
         while source.tell() < database.stat().st_size:
+            check_deadline(deadline)
             require(len(parts) < MAX_PARTS, "checkpoint_capacity")
             name = f"state-{len(parts):03d}.sqlite.gz"
             target = directory / name
             raw_bytes = 0
             with target.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
                 while raw_bytes < RAW_PART:
+                    check_deadline(deadline)
                     chunk = source.read(min(BLOCK, RAW_PART - raw_bytes))
                     if not chunk:
                         break
@@ -179,7 +199,8 @@ def pack(database, directory):
                     raw_bytes += len(chunk)
             size = target.stat().st_size
             require(0 < size <= MAX_PART, "part_size")
-            parts.append({"name": name, "bytes": size, "raw_bytes": raw_bytes, "sha256": file_digest(target)})
+            parts.append({"name": name, "bytes": size, "raw_bytes": raw_bytes, "sha256": file_digest(target, deadline)})
+    check_deadline(deadline)
     return parts
 
 
@@ -274,7 +295,7 @@ def reap_command(child, phase):
 
 
 def github_command(arguments, env, phase, destination=None, timeout=600, missing=False,
-                   limit=MAX_MANIFEST, deadline=None):
+                   limit=MAX_MANIFEST, deadline=None, executable="gh"):
     require(phase in API_PHASES, "api_phase")
     command_deadline = time.monotonic() + timeout
     if deadline is not None:
@@ -284,9 +305,14 @@ def github_command(arguments, env, phase, destination=None, timeout=600, missing
     def bound_output():
         resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
 
+    capture = executable != "gh"
+    require(not capture or destination is None, "api_destination")
     with (destination.open("xb") if destination is not None else tempfile.TemporaryFile()) as output:
-        child = subprocess.Popen(["gh", *arguments], stdout=output, stderr=subprocess.PIPE,
-                                 env=env, preexec_fn=bound_output, start_new_session=True)
+        # Native Git/export writes large files itself. Bound its captured pipe,
+        # not RLIMIT_FSIZE, which would also truncate the archive/database.
+        child = subprocess.Popen([executable, *arguments], stdout=subprocess.PIPE if capture else output,
+                                 stderr=subprocess.PIPE, env=env,
+                                 preexec_fn=None if capture else bound_output, start_new_session=True)
         captured = bytearray()
         failure = None
         try:
@@ -295,6 +321,9 @@ def github_command(arguments, env, phase, destination=None, timeout=600, missing
             with selectors.DefaultSelector() as selector:
                 os.set_blocking(child.stderr.fileno(), False)
                 selector.register(child.stderr, selectors.EVENT_READ)
+                if capture:
+                    os.set_blocking(child.stdout.fileno(), False)
+                    selector.register(child.stdout, selectors.EVENT_READ)
                 while selector.get_map() or child.poll() is None:
                     require(time.monotonic() < command_deadline, "checkpoint_api phase=" + phase + " exit=timeout")
                     for key, _ in selector.select(min(0.1, max(0, command_deadline - time.monotonic()))):
@@ -304,7 +333,11 @@ def github_command(arguments, env, phase, destination=None, timeout=600, missing
                             continue
                         if not chunk:
                             selector.unregister(key.fileobj)
-                        captured.extend(chunk[:max(0, 65536 - len(captured))])
+                        elif key.fileobj is child.stdout:
+                            require(output.tell() + len(chunk) <= limit, "checkpoint_api_size")
+                            output.write(chunk)
+                        else:
+                            captured.extend(chunk[:max(0, 65536 - len(captured))])
         except BaseException as error:
             failure = error
         finally:
@@ -312,6 +345,8 @@ def github_command(arguments, env, phase, destination=None, timeout=600, missing
                 reap_command(child, phase)
             finally:
                 child.stderr.close()
+                if capture:
+                    child.stdout.close()
         if failure is not None:
             raise failure
         size = output.tell()
@@ -518,6 +553,7 @@ def retire_grandparent(github, current, directory):
             _, _, actual = release_manifest(github, candidate, Path(temp))
         require(actual == grandparent, "retention_lineage")
         require(github.api("/releases/latest")["id"] == current["reference"]["release_id"], "parent_changed")
+        check_deadline(getattr(github, "deadline", None))
         github.command(["api", github.base + '/releases/' + str(grandparent["release_id"]), "--method", "DELETE"], phase="release_delete")
         require(github.api('/releases/' + str(grandparent["release_id"]), missing=True) is None, "retirement_unverified")
 
@@ -531,7 +567,12 @@ def require_no_drafts(github):
     return releases
 
 
-def save(github, database, receipt, outcome, migration=None):
+def save(github, database, receipt, outcome, migration=None, deadline=None):
+    deadline = deadline if deadline is not None else time.monotonic() + SAVE_TIMEOUT
+    github.deadline = min(deadline, getattr(github, "deadline", None) or deadline)
+    deadline = github.deadline
+    check_deadline(deadline)
+    attempted = False
     with tempfile.TemporaryDirectory(dir=database.parent) as temp:
         directory = Path(temp)
         releases = require_no_drafts(github)
@@ -545,39 +586,57 @@ def save(github, database, receipt, outcome, migration=None):
         archive_commit = github.api("/git/ref/heads/main")["object"]["sha"]
         source = source_identity(outcome, archive_commit)
         standalone = directory / "checkpoint.sqlite"
-        facts = snapshot(database, standalone)
-        manifest = {"schema": SCHEMA, "boundary": "native-ingestion-before-publication",
-                    "repository": github.identity, "source": source,
-                    "parent": parent["reference"] if parent else None, "migration": migration,
-                    "database": {**facts, "bytes": standalone.stat().st_size, "sha256": file_digest(standalone)},
-                    "parts": pack(standalone, directory)}
+        facts = snapshot(database, standalone, deadline=deadline)
+        with save_phase("pack"):
+            manifest = {"schema": SCHEMA, "boundary": "native-ingestion-before-publication",
+                        "repository": github.identity, "source": source,
+                        "parent": parent["reference"] if parent else None, "migration": migration,
+                        "database": {**facts, "bytes": standalone.stat().st_size, "sha256": file_digest(standalone, deadline)},
+                        "parts": pack(standalone, directory, deadline)}
         validate_manifest(manifest)
         (directory / MANIFEST).write_bytes(canonical(manifest))
         tag = f'discrawl-state-{source["run_id"]}-{source["run_attempt"]}'
-        draft = github.create(tag, archive_commit)
-        require(draft.get("draft") is True and draft.get("tag_name") == tag and integer(draft.get("id")), "draft_identity")
-        github.command(["release", "upload", tag, "--repo", github.repository,
-                        str(directory / MANIFEST), *(str(directory / part["name"]) for part in manifest["parts"])], phase="asset_upload")
-        standalone.unlink()
-        for part in manifest["parts"]:
-            (directory / part["name"]).unlink()
-        verification = directory / "verification"
-        verification.mkdir()
-        current = download_database(github, github.api('/releases/' + str(draft["id"])), verification, draft=True)
-        require(current["manifest"] == manifest, "uploaded_manifest")
-        if parent:
-            recheck = directory / "recheck"
-            recheck.mkdir()
-            require(read_parent(github, receipt, recheck) == parent, "parent_changed")
-        else:
-            require(github.api("/releases/latest", missing=True) is None, "parent_changed")
-        published = github.api('/releases/' + str(draft["id"]), {"draft": False, "make_latest": "true"})
-        require(published.get("id") == draft["id"] and published.get("draft") is False
-                and github.api("/releases/latest")["id"] == draft["id"], "promotion_unverified")
-        retention = directory / "retention"
-        retention.mkdir()
-        retire_grandparent(github, current, retention)
-        return current["reference"]
+        try:
+            with save_phase("upload"):
+                check_deadline(deadline)
+                attempted = True
+                draft = github.create(tag, archive_commit)
+                require(draft.get("draft") is True and draft.get("tag_name") == tag and integer(draft.get("id")), "draft_identity")
+                github.command(["release", "upload", tag, "--repo", github.repository,
+                                str(directory / MANIFEST), *(str(directory / part["name"]) for part in manifest["parts"])], phase="asset_upload")
+            standalone.unlink()
+            for part in manifest["parts"]:
+                (directory / part["name"]).unlink()
+            verification = directory / "verification"
+            verification.mkdir()
+            with save_phase("restore_verify"):
+                current = download_database(github, github.api('/releases/' + str(draft["id"])), verification,
+                                            draft=True, deadline=deadline)
+                require(current["manifest"] == manifest, "uploaded_manifest")
+            if parent:
+                recheck = directory / "recheck"
+                recheck.mkdir()
+                require(read_parent(github, receipt, recheck) == parent, "parent_changed")
+            else:
+                require(github.api("/releases/latest", missing=True) is None, "parent_changed")
+            with save_phase("promote"):
+                require(deadline - time.monotonic() >= 60, "checkpoint_publication_budget")
+                published = github.api('/releases/' + str(draft["id"]), {"draft": False, "make_latest": "true"})
+                require(published.get("id") == draft["id"] and published.get("draft") is False
+                        and github.api("/releases/latest")["id"] == draft["id"], "promotion_unverified")
+                retention = directory / "retention"
+                retention.mkdir()
+                check_deadline(deadline)
+                retire_grandparent(github, current, retention)
+                check_deadline(deadline)
+            return current["reference"]
+        except (CheckpointError, OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
+            # A timed-out mutation may have committed. Preserve its draft or
+            # published state for reconciliation; never retry or roll it back.
+            if attempted:
+                reason = str(error) if isinstance(error, CheckpointError) else "internal"
+                raise CheckpointError("checkpoint_save_hold reason=" + reason) from error
+            raise
 
 
 def report_ready(receipt, archive):
@@ -762,7 +821,7 @@ def main():
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--writer-receipt", type=Path)
     parser.add_argument("--cache-identity", type=Path)
-    parser.add_argument("--timeout", type=int, default=2700)
+    parser.add_argument("--timeout", type=int)
     parser.add_argument("--prune", action="store_true")
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--policy", type=Path)
@@ -773,7 +832,7 @@ def main():
     parser.add_argument("--since")
     args, command = parser.parse_known_args()
     if args.operation == "run":
-        return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout, args.writer_receipt)
+        return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout if args.timeout is not None else 2700, args.writer_receipt)
     require(not command, "arguments")
     if args.operation in {"policy", "acquire"}:
         execution_context()
@@ -785,13 +844,19 @@ def main():
             print("since=" + since)
             return 0
         require(args.native is not None and args.config is not None and args.writer_receipt is not None, "arguments")
-        return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt, args.timeout, args.since)
+        return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt,
+                       args.timeout if args.timeout is not None else 2700, args.since)
     if args.operation == "report-check":
         require(args.receipt is not None and args.archive is not None, "arguments")
         return 0 if report_ready(args.receipt, args.archive) else 3
     require(args.db is not None and args.receipt is not None, "arguments")
     execution_context()
-    github = GitHub()
+    deadline = None
+    if args.operation in {"save", "migrate"}:
+        timeout = args.timeout if args.timeout is not None else SAVE_TIMEOUT if args.operation == "save" else 2700
+        require(60 < timeout <= (SAVE_TIMEOUT if args.operation == "save" else 2700), "checkpoint_timeout_argument")
+        deadline = time.monotonic() + timeout
+    github = GitHub(deadline=deadline)
     if args.operation == "restore":
         ref = restore(github, args.db, args.receipt, args.prune)
     else:
@@ -803,7 +868,7 @@ def main():
             keys(completed, "reaped outcome")
             require(completed["reaped"] is True and completed["outcome"] in {"success", "failure", "cancelled"}, "writer_receipt")
             outcome = completed["outcome"]
-        ref = save(github, args.db, args.receipt, outcome, migration)
+        ref = save(github, args.db, args.receipt, outcome, migration, deadline)
     print("private checkpoint verified")
     return 0
 

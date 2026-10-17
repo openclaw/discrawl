@@ -1,0 +1,143 @@
+import contextlib
+import io
+import sqlite3
+import sys
+import unittest
+from unittest.mock import patch
+
+from test_private_discord_checkpoint import CheckpointTests, checkpoint
+
+
+class SaveDeadlineTests(CheckpointTests):
+    # Reuse the native fixture, not the inherited suite's test collection.
+    def test_save_checks_source_and_authenticated_restore_only(self):
+        self.seed()
+        with patch.object(checkpoint, "database_facts", wraps=checkpoint.database_facts) as facts:
+            checkpoint.save(self.github, self.path, self.receipt, "success")
+        self.assertEqual(facts.call_count, 2)
+        self.assertTrue(all(call.args[1] == self.github.deadline for call in facts.call_args_list[1:]))
+
+    def test_corrupted_snapshot_is_rejected_after_authentication_without_promotion(self):
+        parent = self.seed()
+        original = checkpoint.snapshot
+        def corrupt(*args, **kwargs):
+            facts = original(*args, **kwargs)
+            with sqlite3.connect(args[1]) as db:
+                db.execute("UPDATE messages SET value='different retained bytes'")
+                db.execute("INSERT INTO messages VALUES('extra','unexpected row')")
+            return facts
+        with patch.object(checkpoint, "snapshot", corrupt):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*restore_parity"):
+                checkpoint.save(self.github, self.path, self.receipt, "success")
+        self.assertEqual(self.github.latest, parent["release_id"])
+        self.assertEqual(len(self.github.releases), 2)
+
+    def test_pack_expiry_never_creates_a_draft(self):
+        self.seed()
+        with patch.object(checkpoint.time, "monotonic", return_value=101):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_timeout"):
+                checkpoint.pack(self.path, self.root, deadline=100)
+        self.assertEqual(len(self.github.releases), 1)
+        self.assertEqual(list(self.root.glob("state-*.sqlite.gz")), [])
+
+    def test_gzip_checks_shared_deadline_between_blocks(self):
+        self.db.execute("INSERT INTO future_native_state VALUES(2,zeroblob(2000000))")
+        self.db.commit()
+        copy = self.root / "copy.sqlite"
+        checkpoint.snapshot(self.path, copy)
+        clock = [0]
+        original = checkpoint.gzip.GzipFile.write
+        def write(file, data):
+            result = original(file, data)
+            clock[0] = 101
+            return result
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(checkpoint.gzip.GzipFile, "write", write):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_timeout"):
+                checkpoint.pack(copy, self.root, deadline=100)
+
+    def test_deadline_leaves_one_minute_before_promotion(self):
+        parent = self.seed()
+        clock = [0]
+        original = checkpoint.download_database
+        def restored(*args, **kwargs):
+            result = original(*args, **kwargs)
+            clock[0] = 41
+            return result
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(checkpoint, "download_database", restored):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*publication_budget"):
+                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+        self.assertEqual(self.github.latest, parent["release_id"])
+
+    def test_expiry_after_promotion_holds_without_deleting_or_retrying(self):
+        self.seed()
+        checkpoint.save(self.github, self.path, self.receipt, "success")
+        self.restore_parent()
+        clock = [0]
+        self.github.before_promote = lambda: clock.__setitem__(0, 101)
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(self.github, "api", wraps=self.github.api) as api:
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*checkpoint_timeout"):
+                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+        self.assertEqual(len([call for call in api.call_args_list if len(call.args) > 1]), 1)
+        self.assertEqual(len(self.github.releases), 3)
+        self.assertEqual(self.github.deleted, [])
+
+    def test_expiry_after_retirement_reports_hold_without_second_delete(self):
+        oldest = self.seed()
+        checkpoint.save(self.github, self.path, self.receipt, "success")
+        self.restore_parent()
+        clock = [0]
+        original = self.github.command
+        def command(args, **options):
+            result = original(args, **options)
+            if args[-1] == "DELETE":
+                clock[0] = 101
+            return result
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(self.github, "command", command):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*checkpoint_timeout"):
+                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+        self.assertEqual(self.github.deleted, [oldest["release_id"]])
+        self.assertEqual(len(self.github.releases), 2)
+
+    def test_phase_output_contains_only_fixed_labels_and_elapsed_time(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.seed()
+        for line in output.getvalue().splitlines():
+            self.assertRegex(line, r"^checkpoint save: phase=(source_facts|backup|pack|upload|restore_verify|promote) state=(begin|complete)( elapsed_seconds=[0-9.]+)?$")
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_phase"):
+            with checkpoint.save_phase("private-secret"):
+                pass
+
+    def test_cli_deadline_starts_before_private_admission(self):
+        self.seed()
+        completion = self.root / "writer.json"
+        completion.write_bytes(checkpoint.canonical({"reaped": True, "outcome": "success"}))
+        observed = []
+        def client(*, deadline):
+            observed.append(deadline)
+            return self.github
+        with patch.object(sys, "argv", ["checkpoint", "save", "--timeout", "840", "--db", str(self.path),
+                                        "--receipt", str(self.receipt), "--writer-receipt", str(completion)]), \
+             patch.object(checkpoint, "execution_context"), patch.object(checkpoint, "GitHub", client), \
+             patch.object(checkpoint.time, "monotonic", return_value=10), \
+             patch.object(checkpoint, "save") as save:
+            checkpoint.main()
+        self.assertEqual(observed, [850])
+        self.assertEqual(save.call_args.args[-1], 850)
+
+
+# The fixture class supplies setup/teardown helpers only in this module.
+def load_tests(loader, _tests, _pattern):
+    suite = unittest.TestSuite()
+    for name in SaveDeadlineTests.__dict__:
+        if name.startswith("test_"):
+            suite.addTest(SaveDeadlineTests(name))
+    return suite
+
+
+if __name__ == "__main__":
+    unittest.main()

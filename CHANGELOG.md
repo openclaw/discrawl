@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound checkpoint saves by one shared deadline, report safe phase timings, and remove a redundant integrity scan while preserving authenticated full-state verification.
+- Recover an unpublished publisher checkpoint from retained verified state, preserving native provenance and publishing its private archive once through a guarded parent-bound update without collecting again.
+
 - Finalize an interrupted initial checkpoint from its existing private assets after two complete verified restores, preserving original provenance and holding uncertain publication outcomes for inspection.
 
 - Add manual, privately scoped report-history acquisition after the normal guild refresh, sharing one time budget and preserving failed progress in private checkpoints; hold recurring and cloud publication until separately qualified.

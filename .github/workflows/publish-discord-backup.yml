@@ -113,7 +113,7 @@ jobs:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
-          python3 scripts/private_discord_checkpoint.py save --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
+          python3 scripts/private_discord_checkpoint.py save --timeout 840 --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
             --writer-receipt "$RUNNER_TEMP/discrawl/sync.json"
 
       - name: Require successful native ingestion

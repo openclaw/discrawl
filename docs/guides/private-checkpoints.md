@@ -35,6 +35,16 @@ after that readback and a fresh check of its parent release and asset identities
 Workflow concurrency provides serialization; GitHub's latest update is not a
 server-side compare-and-swap operation.
 
+Ordinary saves share one 840-second deadline inside the unchanged 15-minute
+step. Source integrity, backup, compression, hashing, transfer and authenticated
+readback use that deadline. The intermediate backup is not scanned again: its
+hash and pinned source facts are both checked against the downloaded image.
+Fixed phase names and elapsed times identify a slow phase without exposing data.
+Promotion requires at least one minute remaining. Deadline checks are cooperative
+for filesystem and library calls; the outer minute is cleanup margin, not a hard
+completion guarantee. Any error after an attempted mutation holds the retained
+draft or published state for inspection, without a retry or rollback.
+
 Normal ingestion failure or the supervisor's time limit can still save committed
 partial progress, but the job fails and skips Git publication. A forced
 runner cancellation or loss cannot guarantee a new upload. The previously
@@ -213,3 +223,45 @@ back or deletes the release. Inspect the recorded `unchanged_draft`,
 `published_latest` or `unknown` outcome before any further action. A successful
 finalization establishes complete private custody; cache retirement and enabling
 writers remain separate reviewed operations.
+
+## Recover an unpublished publisher checkpoint
+
+Use `diagnose` for the exact failed publisher run before requesting
+`recover-publisher` with acknowledgement `RECOVER_RETAINED_PUBLISHER`. The same
+manifest, inventory, original-run and successful-probe pins apply. Admission
+requires successful native ingestion, failed checkpoint verification, and a
+skipped archive publication step on the original first attempt. The overall
+original run remains a failure; it is never relabeled as a successful workflow.
+
+The candidate must name the current published parent. Recheck that parent's
+authenticated manifest and asset identities against its previously qualified
+custody receipt; do not download its database again. The recovery restores the
+candidate twice, removing the first image before the second and retaining only
+the second verified database for offline publication. The private archive main
+and policy ref stay pinned. Baseline and exported manifests must have no media
+or embedding payloads; recovery holds rather than dropping unavailable files.
+
+The native publisher exports and commits once, without `--push`, Discord
+credentials, source import, or collection. Native source-table counts and exact
+progress/failure rows must remain unchanged. Derived SQLite maintenance may
+change database bytes, so the immutable checkpoint remains the custody artifact.
+The new archive commit must have exactly the pinned main as its sole parent.
+Its producer receipt retains the original native source/run tuple; its commit
+message separately records recovery provenance and checkpoint hashes. Export
+time does not extend any native history-window interval.
+
+All admission and custody gates run again before promoting the existing draft
+once. After authenticated readback, one explicit Git lease for the pinned old
+main publishes the verified direct child. This update is a fast-forward and
+rejects both advances and rewinds of main. There is no native push retry, rebase
+retry, tag push, or import bookkeeping. Exact remote commit, manifest and
+producer bytes must match afterward. Unknown promotion or push outcomes hold
+without retry, rollback, or deletion; a promoted checkpoint with no verified
+archive requires operator reconciliation.
+
+Recovery has a shared 33-minute ceiling inside its 34-minute step and 45-minute
+job. The two restores have at most 20 minutes; offline export must finish with
+three minutes still available for final gates, promotion and push/readback.
+Actual space is checked for restore and Git export; no cadence or completion
+time is inferred from source tests. No cache, new checkpoint upload, retention
+deletion, cloud publication, or scheduler activation is part of this route.
