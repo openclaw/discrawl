@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Identify private checkpoint API failures without exposing private output, and inspect a retained failed migration through a bounded read-only diagnostic.
+
 - Preserve complete native Discord crawl state in verified private checkpoints, with atomic restore, bounded retention, and an explicit migration from the retired workflow cache transport.
 
 - Export current history-permission denials alongside retained window receipts, fail the sync if that status cannot be saved, and clear the unavailable marker after a successful full or targeted retry.

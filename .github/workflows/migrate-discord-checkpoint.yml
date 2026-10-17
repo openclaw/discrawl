@@ -3,6 +3,12 @@ name: migrate-discord-checkpoint
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Migrate once or inspect one retained failed migration without changes
+        type: choice
+        options: [migrate, diagnose]
+        default: migrate
+        required: true
       expected_sha:
         description: Reviewed main commit containing this migration
         type: string
@@ -10,13 +16,25 @@ on:
       producer_revision:
         description: Exact source revision of the successful cache producer
         type: string
-        required: true
+        required: false
       cache_identity:
         description: Exact reviewed cache id, key, ref, version, created_at and size_in_bytes JSON
         type: string
-        required: true
+        required: false
+      original_run:
+        description: Diagnose only - exact failed migration run
+        type: string
+        required: false
+      manifest_sha256:
+        description: Diagnose only - reviewed private manifest SHA-256
+        type: string
+        required: false
+      inventory_sha256:
+        description: Diagnose only - reviewed asset inventory SHA-256
+        type: string
+        required: false
       acknowledgement:
-        description: Type MIGRATE_FULL_NATIVE_STATE
+        description: Type MIGRATE_FULL_NATIVE_STATE or DIAGNOSE_EXISTING_CHECKPOINT for the selected mode
         type: string
         required: true
 
@@ -30,6 +48,7 @@ concurrency:
 
 jobs:
   migrate:
+    if: inputs.mode == 'migrate'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -83,3 +102,29 @@ jobs:
           python3 scripts/private_discord_checkpoint.py restore --db "$RUNNER_TEMP/independent-restore.sqlite" \
             --receipt "$RUNNER_TEMP/independent-restore.json"
           echo "Private full-state migration and independent restore verified; schedules remain unchanged."
+
+  diagnose:
+    if: inputs.mode == 'diagnose'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DISCRAWL_NO_AUTO_UPDATE: "1"
+      CHECKPOINT_MODE: diagnose
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      ORIGINAL_RUN: ${{ inputs.original_run }}
+      MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      INVENTORY_SHA256: ${{ inputs.inventory_sha256 }}
+      MIGRATION_ACK: ${{ inputs.acknowledgement }}
+    steps:
+      - name: Checkout reviewed diagnostic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Inspect retained draft and one existing part without changes
+        timeout-minutes: 16
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_discord_checkpoint_migration.py

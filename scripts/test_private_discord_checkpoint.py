@@ -92,7 +92,7 @@ class FakeGitHub:
         self.releases[release["id"]] = release
         return copy.deepcopy(release)
 
-    def command(self, args):
+    def command(self, args, **_options):
         if args[:2] == ["release", "upload"]:
             if self.fail_upload:
                 raise checkpoint.CheckpointError("checkpoint_api")
@@ -389,7 +389,7 @@ class AdmissionTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(SCRIPT), "restore", "--db", temp + "/state.sqlite",
                                      "--receipt", temp + "/receipt.json"], capture_output=True, env=env)
             self.assertEqual(result.returncode, 1)
-            self.assertEqual(result.stderr, b"checkpoint failed: checkpoint_api\n")
+            self.assertEqual(result.stderr, b"checkpoint failed: checkpoint_api phase=repository_read exit=1\n")
             self.assertNotIn(b"private API sentinel", result.stdout + result.stderr)
 
 
