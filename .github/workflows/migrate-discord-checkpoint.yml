@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Migrate once or inspect one retained failed migration without changes
+        description: Migrate once, diagnose a retained draft, or finalize verified retained state
         type: choice
-        options: [migrate, diagnose]
+        options: [migrate, diagnose, finalize]
         default: migrate
         required: true
       expected_sha:
@@ -22,19 +22,27 @@ on:
         type: string
         required: false
       original_run:
-        description: Diagnose only - exact failed migration run
+        description: Diagnose/finalize - exact failed migration run
         type: string
         required: false
       manifest_sha256:
-        description: Diagnose only - reviewed private manifest SHA-256
+        description: Diagnose/finalize - reviewed private manifest SHA-256
         type: string
         required: false
       inventory_sha256:
-        description: Diagnose only - reviewed asset inventory SHA-256
+        description: Diagnose/finalize - reviewed asset inventory SHA-256
+        type: string
+        required: false
+      probe_run:
+        description: Finalize only - reviewed successful diagnostic run
+        type: string
+        required: false
+      probe_revision:
+        description: Finalize only - exact reviewed diagnostic source revision
         type: string
         required: false
       acknowledgement:
-        description: Type MIGRATE_FULL_NATIVE_STATE or DIAGNOSE_EXISTING_CHECKPOINT for the selected mode
+        description: Type MIGRATE_FULL_NATIVE_STATE, DIAGNOSE_EXISTING_CHECKPOINT, or FINALIZE_EXISTING_CHECKPOINT
         type: string
         required: true
 
@@ -121,6 +129,34 @@ jobs:
 
       - name: Inspect retained draft and one existing part without changes
         timeout-minutes: 16
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_discord_checkpoint_migration.py
+
+  finalize:
+    if: inputs.mode == 'finalize'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DISCRAWL_NO_AUTO_UPDATE: "1"
+      CHECKPOINT_MODE: finalize
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      ORIGINAL_RUN: ${{ inputs.original_run }}
+      MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      INVENTORY_SHA256: ${{ inputs.inventory_sha256 }}
+      PROBE_RUN: ${{ inputs.probe_run }}
+      PROBE_REVISION: ${{ inputs.probe_revision }}
+      MIGRATION_ACK: ${{ inputs.acknowledgement }}
+    steps:
+      - name: Checkout reviewed finalization
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify retained full state twice and finalize once
+        timeout-minutes: 42
         env:
           GH_TOKEN: ${{ github.token }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}

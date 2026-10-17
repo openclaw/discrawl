@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Finalize an interrupted initial checkpoint from its existing private assets after two complete verified restores, preserving original provenance and holding uncertain publication outcomes for inspection.
+
 - Identify private checkpoint API failures without exposing private output, and inspect a retained failed migration through a bounded read-only diagnostic.
 
 - Preserve complete native Discord crawl state in verified private checkpoints, with atomic restore, bounded retention, and an explicit migration from the retired workflow cache transport.

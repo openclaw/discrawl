@@ -68,14 +68,21 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 		case "migrate-discord-checkpoint":
 			require.NotContains(t, text, "schedule:")
 			require.Contains(t, text, "fail-on-cache-miss: true")
-			require.Equal(t, 3, strings.Count(text, "verify_discord_checkpoint_migration.py"))
+			require.Equal(t, 4, strings.Count(text, "verify_discord_checkpoint_migration.py"))
 			require.Contains(t, text, "if: inputs.mode == 'migrate'")
 			require.Contains(t, text, "if: inputs.mode == 'diagnose'")
-			diagnostic := text[strings.Index(text, "  diagnose:"):]
+			diagnostic := text[strings.Index(text, "  diagnose:"):strings.Index(text, "  finalize:")]
 			require.Contains(t, diagnostic, "timeout-minutes: 20")
 			require.Contains(t, diagnostic, "CHECKPOINT_MODE: diagnose")
 			require.NotContains(t, diagnostic, "actions/cache")
 			require.NotContains(t, diagnostic, "private_discord_checkpoint.py")
+			finalize := text[strings.Index(text, "  finalize:"):]
+			require.Contains(t, finalize, "if: inputs.mode == 'finalize'")
+			require.Contains(t, finalize, "CHECKPOINT_MODE: finalize")
+			require.Contains(t, finalize, "timeout-minutes: 45")
+			require.Contains(t, finalize, "PROBE_RUN:")
+			require.NotContains(t, finalize, "actions/cache")
+			require.NotContains(t, finalize, "private_discord_checkpoint.py")
 			require.Contains(t, text, "independent-restore.sqlite")
 			require.NotContains(t, text, " sync ")
 			require.NotContains(t, text, "cloud publish")

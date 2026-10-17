@@ -118,3 +118,39 @@ state stops the diagnostic. A successful
 probe proves the current credential and first-part read path; it does not locate
 an earlier unrecorded failure or verify the other parts. Full recovery still
 requires a separately reviewed complete restore and parity check.
+
+## Finalize a retained initial checkpoint
+
+After a successful diagnostic, the same manual workflow offers `mode: finalize`
+with acknowledgement `FINALIZE_EXISTING_CHECKPOINT`. Keep the original-run,
+manifest and inventory pins; supply the reviewed current `expected_sha` plus
+`probe_run` and `probe_revision` from that successful diagnostic. Runtime checks
+the exact first attempt, actors, source, jobs, successful diagnostic step, its
+six public input values and all three executed log markers. The operator's
+original dispatch receipt binds the submitted payload bytes separately; runtime
+does not reconstruct an unexposed API payload from run status.
+
+Finalization accepts only the initial migration's sole retained draft with no
+latest checkpoint and all writers disabled and idle. It downloads every part
+twice through the canonical restore path. Each round verifies part and full
+database hashes, SQLite integrity and foreign keys, schema, version and every
+table count against the original manifest. The first scratch image and parts
+are removed before the second round. Safe phase output reports free and required
+bytes and each round's duration; it contains no table counts or private IDs.
+
+The 45-minute job gives verification and publication a shared 40-minute ceiling,
+including hashing, decompression and SQLite checks. Three minutes are reserved
+for the final publication phase, including one minute for read-only outcome
+classification. Insufficient space, time, changed evidence or unknown process
+cleanup stops before publication. No source cache, Discord collection, new
+snapshot, upload, asset deletion or retention operation runs.
+
+After both rounds, all source, probe, quiescence and private custody checks run
+again. One PATCH publishes the exact existing draft as latest; authenticated
+metadata and manifest readback must then agree. The original manifest, producer
+revision and run identity remain unchanged. A lost or invalid PATCH response
+always holds, even if readback observes publication. It never retries, rolls
+back or deletes the release. Inspect the recorded `unchanged_draft`,
+`published_latest` or `unknown` outcome before any further action. A successful
+finalization establishes complete private custody; cache retirement and enabling
+writers remain separate reviewed operations.

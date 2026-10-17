@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Read-only admission for the one-time full-state transport migration."""
+"""Admission and recovery for the one-time full-state transport migration."""
 
 import json
+from datetime import datetime
 import os
 from pathlib import Path
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 
-from private_discord_checkpoint import (CheckpointError, GitHub, canonical, digest, execution_context,
+from private_discord_checkpoint import (CheckpointError, GitHub, canonical, check_deadline, digest,
+                                        download_database, execution_context,
                                         file_digest, github_command, hash_value, integer, keys,
                                         release_manifest, require, strict_json)
 
@@ -18,8 +22,9 @@ from private_discord_checkpoint import (CheckpointError, GitHub, canonical, dige
 DEADLINE = None
 
 
-def api(path):
-    phase = ("source_ref_read" if path.startswith("git/") else
+def public_read(path, limit=1024 * 1024):
+    phase = ("source_log_read" if path.endswith("/logs") else
+             "source_ref_read" if path.startswith("git/") else
              "source_cache_read" if path.startswith("actions/caches") else
              "source_run_read" if path.startswith("actions/runs/") else
              "source_active_runs" if "?status=" in path else "source_workflow_read")
@@ -29,10 +34,14 @@ def api(path):
     env.update(GH_PROMPT_DISABLED="1", GH_DEBUG="", GH_HOST="github.com")
     require(env.get("GH_TOKEN"), "migration_credential")
     raw = github_command(["api", "repos/openclaw/discrawl/" + path, "--method", "GET", "--include"],
-                         env, phase, timeout=60, limit=1024 * 1024, deadline=DEADLINE)
+                         env, phase, timeout=60, limit=limit, deadline=DEADLINE)
     parts = re.split(rb"\r?\n\r?\n", raw, maxsplit=1)
     require(len(parts) == 2 and re.match(rb"HTTP/\S+ 2[0-9][0-9]\b", parts[0]), "migration_api_status phase=" + phase)
-    return json.loads(parts[1])
+    return parts[1]
+
+
+def api(path):
+    return json.loads(public_read(path))
 
 
 def verify_context(expected):
@@ -76,12 +85,12 @@ def verify(cache, expected, producer_revision):
     return cache
 
 
-def failed_migration(run_id):
+def migration_run(run_id, conclusion):
     run = api(f"actions/runs/{run_id}/attempts/1")
     current = api(f"actions/runs/{run_id}")
     workflow = api("actions/workflows/migrate-discord-checkpoint.yml")
     require(run["id"] == run_id and run["run_attempt"] == 1 and run["status"] == "completed"
-            and run["conclusion"] == "failure" and run["event"] == "workflow_dispatch"
+            and run["conclusion"] == conclusion and run["event"] == "workflow_dispatch"
             and run["head_branch"] == "main" and run["workflow_id"] == workflow["id"]
             and run["path"] == ".github/workflows/migrate-discord-checkpoint.yml"
             and run["actor"]["login"] == "vincentkoc" and run["triggering_actor"]["login"] == "vincentkoc"
@@ -89,15 +98,19 @@ def failed_migration(run_id):
             and all(current.get(key) == run.get(key) for key in
                     ("id", "run_attempt", "status", "conclusion", "head_sha", "workflow_id", "event", "head_branch",
                      "path", "actor", "triggering_actor")), "diagnostic_original_run")
-    return run["head_sha"]
+    return run
 
 
-def inspect_draft(github, run_id, revision, manifest_sha, inventory_sha, directory):
+def failed_migration(run_id):
+    return migration_run(run_id, "failure")["head_sha"]
+
+
+def inspect_checkpoint(github, run_id, revision, manifest_sha, inventory_sha, directory, draft=True):
     releases = github.api("/releases?per_page=100")
     require(isinstance(releases, list) and len(releases) == 1
             and releases[0].get("tag_name") == f"discrawl-state-{run_id}-1", "diagnostic_release")
     release = github.api('/releases/' + str(releases[0]["id"]))
-    manifest, assets, ref = release_manifest(github, release, directory, draft=True)
+    manifest, assets, ref = release_manifest(github, release, directory, draft=draft)
     inventory = [{key: asset[key] for key in ("id", "name", "size", "digest")}
                  for _, asset in sorted(assets.items())]
     source = manifest["source"]
@@ -105,10 +118,13 @@ def inspect_draft(github, run_id, revision, manifest_sha, inventory_sha, directo
             "diagnostic_evidence_changed")
     require(manifest["parent"] is None and source["run_id"] == run_id and source["run_attempt"] == 1
             and source["revision"] == revision and source["workflow"] == "migrate-discord-checkpoint.yml"
-            and source["outcome"] == "migration" and release.get("published_at") is None
+            and source["outcome"] == "migration"
+            and (release.get("published_at") is None if draft else isinstance(release.get("published_at"), str))
             and release.get("target_commitish") == source["archive_commit"], "diagnostic_source")
+    latest = github.api("/releases/latest", missing=True)
     require(github.api("/git/ref/heads/main")["object"]["sha"] == source["archive_commit"]
-            and github.api("/releases/latest", missing=True) is None, "diagnostic_publication_changed")
+            and (latest is None if draft else latest is not None and latest.get("id") == release["id"]
+                 and latest.get("draft") is False), "diagnostic_publication_changed")
     # Download counts change during this probe; asset identity and bytes cannot.
     bound_assets = {name: {key: asset[key] for key in ("id", "name", "size", "digest", "state")}
                     for name, asset in assets.items()}
@@ -125,7 +141,7 @@ def diagnose(expected, run_id, manifest_sha, inventory_sha):
     github = GitHub(deadline=DEADLINE, read_only=True)
     with tempfile.TemporaryDirectory() as temp:
         directory = Path(temp)
-        before = inspect_draft(github, run_id, revision, manifest_sha, inventory_sha, directory)
+        before = inspect_checkpoint(github, run_id, revision, manifest_sha, inventory_sha, directory)
         print("checkpoint diagnostic: metadata verified", flush=True)
         # Probe only the first authenticated part. No decompression, database
         # restore, cache read, release mutation, or success inference for other parts.
@@ -138,7 +154,7 @@ def diagnose(expected, run_id, manifest_sha, inventory_sha):
         print("checkpoint diagnostic: first part verified", flush=True)
         after = directory / "after"
         after.mkdir()
-        require(inspect_draft(github, run_id, revision, manifest_sha, inventory_sha, after) == before,
+        require(inspect_checkpoint(github, run_id, revision, manifest_sha, inventory_sha, after) == before,
                 "diagnostic_evidence_changed")
         repo = github.api("")
         require(repo.get("id") == github.identity["id"] and repo.get("full_name") == github.repository
@@ -150,9 +166,141 @@ def diagnose(expected, run_id, manifest_sha, inventory_sha):
     print("checkpoint diagnostic verified: read-only path; historical failure remains unclassified")
 
 
+def successful_probe(probe_run, probe_revision, original_run, manifest_sha, inventory_sha):
+    run = migration_run(probe_run, "success")
+    require(run["head_sha"] == probe_revision, "finalize_probe_source")
+    result = api(f"actions/runs/{probe_run}/attempts/1/jobs?per_page=100")
+    jobs = result["jobs"]
+    require(result["total_count"] == len(jobs) and len(jobs) in {2, 3}
+            and {job["name"] for job in jobs} in ({"diagnose", "migrate"}, {"diagnose", "migrate", "finalize"}),
+            "finalize_probe_jobs")
+    for job in jobs:
+        require(job["status"] == "completed" and job["run_id"] == probe_run
+                and job["head_sha"] == probe_revision, "finalize_probe_jobs")
+        if job["name"] != "diagnose":
+            require(job["conclusion"] == "skipped" and not job.get("runner_id")
+                    and not job.get("runner_name") and job["steps"] == [], "finalize_probe_jobs")
+    job = next(job for job in jobs if job["name"] == "diagnose")
+    require(job["conclusion"] == "success" and integer(job["id"]) and integer(job.get("runner_id")),
+            "finalize_probe_jobs")
+    steps = [step for step in job["steps"]
+             if step["name"] == "Inspect retained draft and one existing part without changes"]
+    require(len(steps) == 1 and steps[0]["status"] == "completed" and steps[0]["conclusion"] == "success",
+            "finalize_probe_step")
+    step = steps[0]
+    start = datetime.fromisoformat(step["started_at"]).timestamp()
+    # Actions step metadata has second precision; log lines retain fractions.
+    end = datetime.fromisoformat(step["completed_at"]).timestamp() + 1
+    pins = {"CHECKPOINT_MODE": "diagnose", "EXPECTED_SHA": probe_revision, "ORIGINAL_RUN": str(original_run),
+            "MANIFEST_SHA256": manifest_sha, "INVENTORY_SHA256": inventory_sha,
+            "MIGRATION_ACK": "DIAGNOSE_EXISTING_CHECKPOINT"}
+    markers = ["checkpoint diagnostic: metadata verified", "checkpoint diagnostic: first part verified",
+               "checkpoint diagnostic verified: read-only path; historical failure remains unclassified"]
+    seen, executed = set(), []
+    body = public_read(f'actions/jobs/{job["id"]}/logs', limit=256 * 1024)
+    for line in body.decode("utf-8-sig").splitlines():
+        match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) (.*)", line)
+        if not match:
+            continue
+        at, text = datetime.fromisoformat(match[1]).timestamp(), match[2]
+        key, separator, value = text.strip().partition(": ")
+        if key in pins:
+            require(separator and value == pins[key], "finalize_probe_inputs")
+            if start <= at < end:
+                require(not executed, "finalize_probe_order")
+                seen.add(key)
+        if text in markers:
+            require(start <= at < end and len(seen) == len(pins)
+                    and len(executed) < len(markers) and text == markers[len(executed)]
+                    and (not executed or at >= executed[-1]), "finalize_probe_markers")
+            executed.append(at)
+    require(len(seen) == len(pins) and len(executed) == len(markers), "finalize_probe_markers")
+    return job["id"]
+
+
+def finalize(expected, run_id, manifest_sha, inventory_sha, probe_run, probe_revision):
+    global DEADLINE
+    final_deadline = time.monotonic() + 2400
+    # Reserve three minutes for the single write and bounded readback. The
+    # last minute is read-only classification if that write loses its response.
+    DEADLINE = final_deadline - 180
+    require(integer(run_id) and integer(probe_run) and run_id != probe_run
+            and hash_value(manifest_sha) and hash_value(inventory_sha)
+            and re.fullmatch(r"[0-9a-f]{40}", probe_revision or ""), "finalize_arguments")
+
+    def admission():
+        verify_context(expected)
+        revision = failed_migration(run_id)
+        successful_probe(probe_run, probe_revision, run_id, manifest_sha, inventory_sha)
+        verify_quiescence()
+        return revision
+
+    revision = admission()
+    github = GitHub(deadline=DEADLINE, read_only=True)
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        initial = directory / "initial"
+        initial.mkdir()
+        before = inspect_checkpoint(github, run_id, revision, manifest_sha, inventory_sha, initial)
+        expected_receipt = {"manifest": before[0], "reference": before[2],
+                            "assets": [{"name": name, "id": asset["id"], "bytes": asset["size"], "digest": asset["digest"]}
+                                       for name, asset in sorted(before[1].items())]}
+        required = before[0]["database"]["bytes"] + sum(part["bytes"] for part in before[0]["parts"])
+        for number in (1, 2):
+            started = time.monotonic()
+            # Each independent restore owns one scratch image; it is gone
+            # before the next begins, so capacity never assumes two full DBs.
+            with tempfile.TemporaryDirectory(dir=directory) as scratch:
+                print(f"checkpoint finalize: round={number} free_bytes={shutil.disk_usage(scratch).free} required_bytes={required}", flush=True)
+                release = github.api('/releases/' + str(before[2]["release_id"]))
+                receipt = download_database(github, release, Path(scratch), draft=True, deadline=DEADLINE)
+                require(receipt == expected_receipt, "finalize_restore_changed")
+            print(f"checkpoint finalize: round={number} verified elapsed_seconds={time.monotonic() - started:.3f}", flush=True)
+        require(admission() == revision, "finalize_source_changed")
+        writer = GitHub(deadline=final_deadline - 60)
+        require(writer.identity == github.identity, "private_repository")
+        recheck = directory / "recheck"
+        recheck.mkdir()
+        require(inspect_checkpoint(writer, run_id, revision, manifest_sha, inventory_sha, recheck) == before,
+                "finalize_evidence_changed")
+        check_deadline(DEADLINE)
+        error = None
+        try:
+            published = writer.api('/releases/' + str(before[2]["release_id"]), {"draft": False, "make_latest": "true"})
+            require(published.get("id") == before[2]["release_id"] and published.get("draft") is False,
+                    "promotion_unverified")
+        except (CheckpointError, OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
+            error = str(failure) if isinstance(failure, CheckpointError) else "internal"
+        state = "unknown"
+        try:
+            reader = GitHub(deadline=final_deadline, read_only=True)
+            require(reader.identity == github.identity, "private_repository")
+            observed = reader.api('/releases/' + str(before[2]["release_id"]))
+            require(type(observed.get("draft")) is bool, "release_identity")
+            after = directory / "after"
+            after.mkdir()
+            require(inspect_checkpoint(reader, run_id, revision, manifest_sha, inventory_sha, after,
+                                       draft=observed["draft"]) == before, "finalize_evidence_changed")
+            state = "unchanged_draft" if observed["draft"] else "published_latest"
+        except (CheckpointError, OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
+            if error is None:
+                error = str(failure) if isinstance(failure, CheckpointError) else "internal"
+        # A lost response remains a hold even if one read observes publication.
+        # Never repeat or undo the PATCH, or infer that an uncertain child ended.
+        require(error is None and state == "published_latest", "finalize_hold state=" + state
+                + (" reason=" + error if error else ""))
+    print("checkpoint finalized: full state verified twice; original provenance preserved")
+
+
 def main():
     os.umask(0o077)
     mode = os.environ.get("CHECKPOINT_MODE", "migrate")
+    if mode == "finalize":
+        require(os.environ.get("MIGRATION_ACK") == "FINALIZE_EXISTING_CHECKPOINT", "migration_ack")
+        finalize(os.environ.get("EXPECTED_SHA", ""), int(os.environ.get("ORIGINAL_RUN", "")),
+                 os.environ.get("MANIFEST_SHA256", ""), os.environ.get("INVENTORY_SHA256", ""),
+                 int(os.environ.get("PROBE_RUN", "")), os.environ.get("PROBE_REVISION", ""))
+        return
     if mode == "diagnose":
         require(os.environ.get("MIGRATION_ACK") == "DIAGNOSE_EXISTING_CHECKPOINT", "migration_ack")
         diagnose(os.environ.get("EXPECTED_SHA", ""), int(os.environ.get("ORIGINAL_RUN", "")),
@@ -171,6 +319,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (CheckpointError, OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+    except (CheckpointError, OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
         print("migration blocked: " + (str(error) if isinstance(error, CheckpointError) else "internal"), file=sys.stderr)
         sys.exit(1)

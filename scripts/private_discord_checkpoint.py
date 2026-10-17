@@ -33,7 +33,7 @@ WORKFLOWS = {"publish-discord-backup.yml", "migrate-discord-checkpoint.yml"}
 API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
               "asset_list", "manifest_download", "part_download", "release_create", "asset_upload",
               "release_promote", "release_delete", "source_ref_read", "source_run_read",
-              "source_workflow_read", "source_active_runs", "source_cache_read"}
+              "source_workflow_read", "source_active_runs", "source_cache_read", "source_log_read"}
 
 
 class CheckpointError(Exception):
@@ -53,9 +53,20 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def file_digest(path):
+def check_deadline(deadline):
+    require(deadline is None or time.monotonic() < deadline, "checkpoint_timeout")
+
+
+def file_digest(path, deadline=None):
     with open(path, "rb") as file:
-        return hashlib.file_digest(file, "sha256").hexdigest()
+        if deadline is None:
+            return hashlib.file_digest(file, "sha256").hexdigest()
+        result = hashlib.sha256()
+        while chunk := file.read(BLOCK):
+            check_deadline(deadline)
+            result.update(chunk)
+        check_deadline(deadline)
+        return result.hexdigest()
 
 
 def strict_json(data):
@@ -87,7 +98,22 @@ def reference(value):
             and hash_value(value["database_sha256"]), "parent_identity")
 
 
-def database_facts(db):
+def database_facts(db, deadline=None):
+    check_deadline(deadline)
+    if deadline is not None:
+        db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
+    try:
+        return _database_facts(db)
+    except sqlite3.OperationalError:
+        check_deadline(deadline)
+        raise
+    finally:
+        if deadline is not None:
+            db.set_progress_handler(None, 0)
+        check_deadline(deadline)
+
+
+def _database_facts(db):
     require(db.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "sqlite_integrity")
     require(not db.execute("PRAGMA foreign_key_check").fetchall(), "sqlite_foreign_keys")
     schema = db.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name").fetchall()
@@ -193,14 +219,16 @@ def validate_manifest(value):
     return value
 
 
-def unpack(manifest, directory, destination):
+def unpack(manifest, directory, destination, deadline=None):
+    check_deadline(deadline)
     with destination.open("xb") as output:
         for part in manifest["parts"]:
             file = directory / part["name"]
-            require(file.stat().st_size == part["bytes"] and file_digest(file) == part["sha256"], "part_checksum")
+            require(file.stat().st_size == part["bytes"] and file_digest(file, deadline) == part["sha256"], "part_checksum")
             written = 0
             with gzip.open(file, "rb") as compressed:
                 while chunk := compressed.read(min(BLOCK, part["raw_bytes"] - written + 1)):
+                    check_deadline(deadline)
                     written += len(chunk)
                     require(written <= part["raw_bytes"], "expanded_size")
                     output.write(chunk)
@@ -208,9 +236,9 @@ def unpack(manifest, directory, destination):
         output.flush()
         os.fsync(output.fileno())
     expected = manifest["database"]
-    require(destination.stat().st_size == expected["bytes"] and file_digest(destination) == expected["sha256"], "database_checksum")
+    require(destination.stat().st_size == expected["bytes"] and file_digest(destination, deadline) == expected["sha256"], "database_checksum")
     with contextlib.closing(readonly(destination)) as db:
-        require(database_facts(db) == {k: expected[k] for k in ("user_version", "schema_sha256", "tables")}, "restore_parity")
+        require(database_facts(db, deadline) == {k: expected[k] for k in ("user_version", "schema_sha256", "tables")}, "restore_parity")
 
 
 def reap_command(child, phase):
@@ -394,13 +422,15 @@ def release_manifest(github, release, directory, draft=False):
                                "database_sha256": manifest["database"]["sha256"]}
 
 
-def download_database(github, release, directory, draft=False):
+def download_database(github, release, directory, draft=False, deadline=None):
+    check_deadline(deadline)
     manifest, assets, ref = release_manifest(github, release, directory, draft)
     require(shutil.disk_usage(directory).free > manifest["database"]["bytes"]
             + sum(p["bytes"] for p in manifest["parts"]), "checkpoint_capacity")
     for part in manifest["parts"]:
+        check_deadline(deadline)
         github.download(assets[part["name"]], directory / part["name"])
-    unpack(manifest, directory, directory / "restored.sqlite")
+    unpack(manifest, directory, directory / "restored.sqlite", deadline)
     inventory = [{"name": name, "id": asset["id"], "bytes": asset["size"], "digest": asset["digest"]}
                  for name, asset in sorted(assets.items())]
     return {"reference": ref, "manifest": manifest, "assets": inventory}
