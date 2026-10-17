@@ -756,7 +756,7 @@ def run_writers(commands, timeout, completion=None):
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog="acquire also accepts --with-members for its guild refresh.")
     parser.add_argument("operation", choices=("restore", "save", "migrate", "run", "report-check", "policy", "acquire"))
     parser.add_argument("--db", type=Path)
     parser.add_argument("--receipt", type=Path)
@@ -771,11 +771,13 @@ def main():
     parser.add_argument("--native", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--since")
-    parser.add_argument("--with-members", action="store_true")
     args, command = parser.parse_known_args()
     if args.operation == "run":
         return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout, args.writer_receipt)
-    require(not command, "arguments")
+    # Keep this acquisition-only flag out of the common parser: run forwards
+    # the same native flag, including commands without a -- separator.
+    with_members = args.operation == "acquire" and command == ["--with-members"]
+    require(not command or with_members, "arguments")
     if args.operation in {"policy", "acquire"}:
         execution_context()
         require(args.policy is not None, "arguments")
@@ -787,7 +789,7 @@ def main():
             return 0
         require(args.native is not None and args.config is not None and args.writer_receipt is not None, "arguments")
         return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt,
-                       args.timeout, args.since, args.with_members)
+                       args.timeout, args.since, with_members)
     if args.operation == "report-check":
         require(args.receipt is not None and args.archive is not None, "arguments")
         return 0 if report_ready(args.receipt, args.archive) else 3

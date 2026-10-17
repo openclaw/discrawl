@@ -321,6 +321,22 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 9)
         self.assertNotIn(b"private data", result.stdout + result.stderr)
 
+    def test_run_forwards_member_flags_unchanged_with_or_without_separator(self):
+        native = self.root / "native"
+        observed = self.root / "native-arguments.json"
+        native.write_text("#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
+                          "Path(%r).write_text(json.dumps(sys.argv[1:]))\n"
+                          "raise SystemExit(9 if '--with-members' in sys.argv and '--skip-members' in sys.argv else 0)\n"
+                          % str(observed))
+        native.chmod(0o700)
+        for separator in [[], ["--"]]:
+            for flags in [["--with-members"], ["--skip-members", "--with-members"]]:
+                with self.subTest(separator=separator, flags=flags):
+                    result = subprocess.run([sys.executable, str(SCRIPT), "run", "--timeout", "2",
+                                             *separator, str(native), "sync", *flags], capture_output=True)
+                    self.assertEqual(json.loads(observed.read_bytes()), ["sync", *flags])
+                    self.assertEqual(result.returncode, 9 if len(flags) == 2 else 0)
+
     def test_unknown_descendant_reap_never_authorizes_snapshot(self):
         completion = self.root / "writer.json"
         real_kill = os.killpg
