@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -105,7 +106,7 @@ func TestHistoryPermissionCheckErrorIsNotDenial(t *testing.T) {
 
 func TestHistoryPermissionMarkerWriteFailureIsFatal(t *testing.T) {
 	for _, concurrency := range []int{1, 2} {
-		t.Run(fmt.Sprint(concurrency), func(t *testing.T) {
+		t.Run(strconv.Itoa(concurrency), func(t *testing.T) {
 			ctx := t.Context()
 			db, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
 			require.NoError(t, err)
