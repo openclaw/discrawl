@@ -33,8 +33,12 @@ def public_read(path, limit=1024 * 1024):
            if key not in {"DISCORD_BACKUP_TOKEN", "DISCRAWL_BACKUP_REPOSITORY"}}
     env.update(GH_PROMPT_DISABLED="1", GH_DEBUG="", GH_HOST="github.com")
     require(env.get("GH_TOKEN"), "migration_credential")
-    raw = github_command(["api", "repos/openclaw/discrawl/" + path, "--method", "GET", "--include"],
-                         env, phase, timeout=60, limit=limit, deadline=DEADLINE)
+    arguments = ["api", "repos/openclaw/discrawl/" + path, "--method", "GET", "--include"]
+    if phase == "source_log_read":
+        # Actions script echoes contain ANSI bytes. Capture them unchanged for
+        # validation; this bounded response is never rendered to a terminal.
+        arguments.append("--allow-escape-sequences")
+    raw = github_command(arguments, env, phase, timeout=60, limit=limit, deadline=DEADLINE)
     parts = re.split(rb"\r?\n\r?\n", raw, maxsplit=1)
     require(len(parts) == 2 and re.match(rb"HTTP/\S+ 2[0-9][0-9]\b", parts[0]), "migration_api_status phase=" + phase)
     return parts[1]

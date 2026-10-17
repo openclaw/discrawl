@@ -120,6 +120,19 @@ class CommandTests(unittest.TestCase):
                 admission.api("actions/runs/1")
             popen.assert_not_called()
 
+    def test_public_job_log_preserves_ansi_only_in_captured_log_request(self):
+        body = b"2026-01-01T00:00:00.0000000Z \x1b[36;1mecho fixture\x1b[0m\n"
+        self.shim("import os,sys\n"
+                  "is_log=sys.argv[2].endswith('/logs')\n"
+                  "if ('--allow-escape-sequences' in sys.argv) != is_log: raise SystemExit(2)\n"
+                  "os.write(1,b'HTTP/2.0 200 OK\\n\\n'+(%r if is_log else b'{}'))\n" % body)
+        with patch.dict(os.environ, {"GH_TOKEN": "public-fixture"}), \
+                patch.object(admission, "DEADLINE", time.monotonic() + 5), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(admission.public_read("actions/jobs/1/logs", limit=256 * 1024), body)
+            self.assertEqual(admission.api("actions/runs/1"), {})
+        self.assertEqual(out.getvalue() + err.getvalue(), "")
+
     def test_shared_deadline_stops_before_launch_and_read_only_blocks_mutation(self):
         self.github.deadline = time.monotonic() - 1
         with patch.object(checkpoint.subprocess, "Popen") as popen:

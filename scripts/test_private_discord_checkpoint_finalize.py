@@ -2,8 +2,10 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -105,6 +107,26 @@ class FinalizeTests(unittest.TestCase):
         self.assertIn("round=1 verified", output)
         self.assertIn("round=2 verified", output)
         self.assertNotIn(self.github.repository, output)
+
+    def test_captured_ansi_log_reaches_exact_probe_input_and_marker_validation(self):
+        prefix = b"2026-01-01T00:00:00.0000000Z \x1b[36;1mecho fixture\x1b[0m\n"
+        executable = self.root / "gh"
+        for body, accepted in ((prefix + self.probe_log(), True),
+                               (prefix + self.probe_log().replace(b"ORIGINAL_RUN: 1", b"ORIGINAL_RUN: 3"), False)):
+            executable.write_text("#!" + sys.executable + "\nimport os,sys\n"
+                                  "assert sys.argv[1:]==['api','repos/openclaw/discrawl/actions/jobs/20/logs',"
+                                  "'--method','GET','--include','--allow-escape-sequences']\n"
+                                  "os.write(1,b'HTTP/2.0 200 OK\\n\\n'+%r)\n" % body)
+            executable.chmod(0o700)
+            with patch.dict(os.environ, {"PATH": str(self.root), "GH_TOKEN": "public-fixture"}), \
+                    patch.object(admission, "api", self.api), patch.object(admission, "DEADLINE", time.monotonic() + 5), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                if accepted:
+                    self.assertEqual(admission.successful_probe(2, "c" * 40, 1, self.manifest_sha, self.inventory_sha), 20)
+                else:
+                    with self.assertRaisesRegex(checkpoint.CheckpointError, "finalize_probe_inputs"):
+                        admission.successful_probe(2, "c" * 40, 1, self.manifest_sha, self.inventory_sha)
+            self.assertEqual(out.getvalue() + err.getvalue(), "")
 
     def test_each_corrupt_round_holds_draft_without_write(self):
         download = self.github.download
