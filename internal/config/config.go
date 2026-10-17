@@ -42,6 +42,7 @@ type Config struct {
 type DiscordConfig struct {
 	TokenSource         string `toml:"token_source"`
 	TokenEnv            string `toml:"token_env"`
+	TokenFile           string `toml:"token_file,omitempty"`
 	TokenKeyringService string `toml:"token_keyring_service"`
 	TokenKeyringAccount string `toml:"token_keyring_account"`
 }
@@ -104,6 +105,7 @@ type EmbeddingsConfig struct {
 	BaseURL              string `toml:"base_url"`
 	APIKeyEnv            string `toml:"api_key_env"`
 	APIKeySource         string `toml:"api_key_source,omitempty"`
+	APIKeyFile           string `toml:"api_key_file,omitempty"`
 	APIKeyKeyringService string `toml:"api_key_keyring_service,omitempty"`
 	APIKeyKeyringAccount string `toml:"api_key_keyring_account,omitempty"`
 	Dimensions           int    `toml:"dimensions"`
@@ -265,6 +267,7 @@ func (c *Config) Normalize() error {
 	}
 	c.Discord.TokenSource = strings.ToLower(strings.TrimSpace(c.Discord.TokenSource))
 	c.Discord.TokenEnv = strings.TrimSpace(c.Discord.TokenEnv)
+	c.Discord.TokenFile = strings.TrimSpace(c.Discord.TokenFile)
 	c.Discord.TokenKeyringService = strings.TrimSpace(c.Discord.TokenKeyringService)
 	c.Discord.TokenKeyringAccount = strings.TrimSpace(c.Discord.TokenKeyringAccount)
 	if c.Discord.TokenSource == "" {
@@ -353,6 +356,7 @@ func (c *Config) Normalize() error {
 	c.Search.Embeddings.BaseURL = strings.TrimRight(strings.TrimSpace(c.Search.Embeddings.BaseURL), "/")
 	c.Search.Embeddings.APIKeyEnv = strings.TrimSpace(c.Search.Embeddings.APIKeyEnv)
 	c.Search.Embeddings.APIKeySource = strings.ToLower(strings.TrimSpace(c.Search.Embeddings.APIKeySource))
+	c.Search.Embeddings.APIKeyFile = strings.TrimSpace(c.Search.Embeddings.APIKeyFile)
 	c.Search.Embeddings.APIKeyKeyringService = strings.TrimSpace(c.Search.Embeddings.APIKeyKeyringService)
 	c.Search.Embeddings.APIKeyKeyringAccount = strings.TrimSpace(c.Search.Embeddings.APIKeyKeyringAccount)
 	c.Search.Embeddings.RequestTimeout = strings.TrimSpace(c.Search.Embeddings.RequestTimeout)

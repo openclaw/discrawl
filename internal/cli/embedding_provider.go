@@ -28,8 +28,14 @@ func newEmbeddingProvider(cfg config.EmbeddingsConfig) (embed.Provider, error) {
 			return nil, err
 		}
 		opts = append(opts, embed.WithAPIKey(key))
+	case "file":
+		key, err := config.ResolveEmbeddingFileAPIKey(cfg)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, embed.WithAPIKey(key))
 	default:
-		return nil, errors.New("unsupported embedding api_key_source; use env or keyring")
+		return nil, errors.New("unsupported embedding api_key_source; use env, keyring or file")
 	}
 	provider, err := embed.NewProvider(providerConfig, opts...)
 	if err != nil || observer == nil {

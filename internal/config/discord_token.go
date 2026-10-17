@@ -36,6 +36,16 @@ func ResolveDiscordToken(cfg Config) (TokenResolution, error) {
 		)
 	case "keyring":
 		return resolveDiscordTokenFromKeyring(cfg)
+	case "file":
+		raw, err := readProtectedCredential(cfg.Discord.TokenFile)
+		if err != nil {
+			return TokenResolution{}, err
+		}
+		token := NormalizeBotToken(raw)
+		if token == "" {
+			return TokenResolution{}, errors.New("discord credential file is empty")
+		}
+		return TokenResolution{Token: token, Source: "file", Path: cfg.Discord.TokenFile}, nil
 	default:
 		return TokenResolution{}, fmt.Errorf("unsupported discord token_source %q", cfg.Discord.TokenSource)
 	}

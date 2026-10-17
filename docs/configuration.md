@@ -55,6 +55,9 @@ token_source = "env" # use "none" for Git-only read access
 token_env = "DISCORD_BOT_TOKEN"
 token_keyring_service = "discrawl"
 token_keyring_account = "discord_bot_token"
+# Optional unattended macOS/Linux service credential:
+# token_source = "file"
+# token_file = "/absolute/private/directory/discord-bot-token"
 
 [sync]
 source = "both" # "discord" for bot-only sync, "wiretap" for desktop-cache-only import
@@ -93,6 +96,9 @@ api_key_env = "OPENAI_API_KEY"
 # api_key_source = "keyring"
 # api_key_keyring_service = "discrawl/embeddings"
 # api_key_keyring_account = "api-key"
+# Optional unattended macOS/Linux service credential:
+# api_key_source = "file"
+# api_key_file = "/absolute/private/directory/openai-embeddings.key"
 dimensions = 512 # optional OpenAI projection; omit for provider default
 batch_size = 64
 max_input_chars = 12000
@@ -175,3 +181,41 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - filtered publishes cannot write generated README reports, and remove older
   generated Discrawl share READMEs and the producer-owned
   `reports/latest-field-notes.md` / `.json` artifacts before committing
+
+## Unattended service credentials
+
+On macOS and Linux, select `discord.token_source = "file"` with an absolute
+`discord.token_file`, and `search.embeddings.api_key_source = "file"` with an
+absolute `search.embeddings.api_key_file`. This supports ordinary service
+startup after login without an interactive Keychain unlock. Environment and
+Keychain modes keep their existing behavior.
+
+Place each credential in a regular, singly linked file owned by the service
+user with mode `0600`, inside an owned `0700` directory. Ancestors must be
+owned by that user or root and have no group/world write permission. Use a
+canonical absolute path with no symlink components. Discrawl opens each
+component relative to a verified directory descriptor and validates the
+opened file before reading at most 16 KiB. Missing, unsafe, empty, or oversized
+files fail with redacted diagnostics. Explicit file mode selects only that
+file; it never tries another credential source.
+
+On macOS, extended ACLs are checked through each opened descriptor; only
+absent or deny-only ACLs are accepted. On Linux, the POSIX ACL mask reflected
+in the mode bits constrains named-user/group access. Safe execute-only
+ancestors can be traversed without requiring directory-listing permission.
+
+File bytes receive the same normalization as existing Keychain values:
+Discord trims whitespace and an optional `Bot ` prefix; embedding keys trim
+surrounding whitespace and otherwise remain unchanged. Document and query
+embeddings use the same resolver, without exporting the key to the process
+environment.
+
+For a service migration, transfer the existing resolved Keychain value directly
+in memory into the protected file, verify byte equality privately, and retain
+the original Keychain item and private config/binary backup for rollback. Keep
+the collector running during preparation. Validate file selection with a
+failing mock Keychain and local provider fixtures, then gracefully replace the
+installed binary/config at an idle boundary and verify ordinary collection
+and embedding success. Retain the service's existing identity, schedule and
+archive state. Protected files remove the Keychain-unlock dependency; they
+remain readable by their owning user and privileged local administrators.

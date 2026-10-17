@@ -9,6 +9,22 @@ import (
 
 var embeddingKeyringGet = keyring.Get
 
+// ResolveEmbeddingFileAPIKey never falls back to a keyring or environment.
+func ResolveEmbeddingFileAPIKey(cfg EmbeddingsConfig) (string, error) {
+	if strings.ToLower(strings.TrimSpace(cfg.APIKeySource)) != "file" {
+		return "", errors.New("embedding file source is not selected")
+	}
+	raw, err := readProtectedCredential(cfg.APIKeyFile)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errors.New("embedding credential file is empty")
+	}
+	return value, nil
+}
+
 // ResolveEmbeddingKeyringAPIKey reads only the explicitly selected keyring item.
 // Do not normalize this as a Discord bot token or return keyring diagnostics:
 // providers need the original API key, and OS errors can contain secret data.
