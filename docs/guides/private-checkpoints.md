@@ -68,18 +68,20 @@ the next ingestion until that same deletion succeeds. An interrupted draft also
 blocks new ingestion; an operator must reconcile that exact attempt. Do not
 bulk-delete releases by age or prefix.
 
-The publisher has a 125-minute job ceiling. Phase caps total at most 79 minutes:
+The publisher has a 125-minute job ceiling. Phase caps total at most 78 minutes:
 checkout/setup/build/configuration 18, policy validation 2, restore 10,
-ingestion/reap 23, checkpoint 15, outcome gate 1 and Git publication 10.
+ingestion/reap 22, checkpoint 15, outcome gate 1 and Git publication 10.
 The two acquisition phases share one 20-minute deadline. This ceiling does not
 promise a fifteen-minute completion time or durable FIFO scheduling.
 
 ## Private bounded acquisition
 
-The publisher is manual-only while full-state custody and measured restore,
-acquisition, checkpoint and publication behavior are qualified. Automatic cadence,
-including the daily member refresh, requires a separate reviewed activation.
-Its frequency must fit those measured durations; concurrency does not provide durable FIFO.
+The publisher runs at 43 minutes past each even UTC hour. The daily 06:17 UTC
+member refresh replaces the ordinary 06:43 run. The shortest scheduled gap is
+94 minutes, above the 78-minute sum of phase caps. GitHub can delay scheduled
+jobs; concurrency does not provide durable FIFO or a completion guarantee.
+Enable this cadence only after a manual run qualifies full-state custody and
+measured restore, acquisition, checkpoint and publication behavior.
 
 The workflow pins `POLICY_COMMIT` and `POLICY_SHA256` once for acquisition.
 Changing acquisition scope requires a reviewed source change. The existing
@@ -120,8 +122,8 @@ The scan starts at the previous
 UTC midnight by default. An optional `since` input may pin a UTC midnight less
 than 48 hours ago. It is fixed before restore and revalidated before acquisition;
 a stale or future value stops rather than silently selecting a different day.
-The prepared daily 06:17 UTC route requires a member refresh in the first guild-wide
-phase; its cron is not enabled. Manual runs skip members. A required member-refresh failure stops before
+The daily 06:17 UTC route requires a member refresh in the first guild-wide
+phase; ordinary scheduled and manual runs skip members. A required member-refresh failure stops before
 the targeted phase. The second phase always uses `--skip-members`,
 `--with-media=false` and `--no-update`.
 Both phases share the same 1,200-second deadline, and the second

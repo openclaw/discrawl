@@ -1,7 +1,10 @@
 name: publish-discord-backup
 
 on:
-  # Admit a measured manual run before choosing a recurring cadence.
+  schedule:
+    # The daily member refresh replaces the ordinary 06:43 run.
+    - cron: "43 0,2,4,8,10,12,14,16,18,20,22 * * *"
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       since:

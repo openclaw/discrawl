@@ -42,9 +42,10 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			Jobs map[string]struct {
 				Env   map[string]string `yaml:"env"`
 				Steps []struct {
-					Name string            `yaml:"name"`
-					Run  string            `yaml:"run"`
-					Env  map[string]string `yaml:"env"`
+					Name           string            `yaml:"name"`
+					Run            string            `yaml:"run"`
+					Env            map[string]string `yaml:"env"`
+					TimeoutMinutes int               `yaml:"timeout-minutes"`
 				} `yaml:"steps"`
 			} `yaml:"jobs"`
 		}
@@ -72,7 +73,16 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.Contains(t, text[publish:], "success() && steps.checkpoint.outcome == 'success'")
 			require.Contains(t, text, "private_discord_checkpoint.py acquire --timeout 1200")
 			require.Contains(t, text, "private_discord_checkpoint.py policy")
-			require.Empty(t, workflow.On.Schedule)
+			require.Len(t, workflow.On.Schedule, 2)
+			require.Equal(t, "43 0,2,4,8,10,12,14,16,18,20,22 * * *", workflow.On.Schedule[0].Cron)
+			require.Equal(t, "17 6 * * *", workflow.On.Schedule[1].Cron)
+			phaseMinutes := 0
+			for _, step := range workflow.Jobs["publish"].Steps {
+				require.Positive(t, step.TimeoutMinutes)
+				phaseMinutes += step.TimeoutMinutes
+			}
+			// The shortest gap is 04:43 to 06:17; leave room for every phase cap.
+			require.Less(t, phaseMinutes, 94)
 			require.Len(t, workflow.On.Dispatch.Inputs, 1)
 			require.Contains(t, workflow.On.Dispatch.Inputs, "since")
 			require.False(t, workflow.On.Dispatch.Inputs["since"].Required)

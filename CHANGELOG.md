@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Pin the reviewed private acquisition policy for manual runs and prepare member refresh within the existing shared acquisition deadline; automatic cadence remains disabled pending measured publication qualification.
+- Schedule private acquisition every two hours outside the daily member-refresh slot, preserving one serialized publisher and the existing phase budgets.
+- Pin the reviewed private acquisition policy and keep member refresh within the existing shared acquisition deadline.
 - Let targeted Discord syncs opt into stored direct threads of selected text and announcement roots, so recurring bounded acquisition covers newly discovered threads without changing ordinary channel selection.
 - Bound checkpoint saves by one shared deadline, report safe phase timings, and remove a redundant integrity scan while preserving authenticated full-state verification.
 - Recover an unpublished publisher checkpoint from retained verified state, preserving native provenance and publishing its private archive once through a guarded parent-bound update without collecting again.
