@@ -22,6 +22,9 @@ type HistoryWindow struct {
 	BoundaryMessageID string    `json:"boundary_message_id,omitempty"`
 }
 
+// A denied permission result is distinct from a check that could not complete.
+var errHistoryPermissionDenied = errors.New("required history permissions are denied")
+
 type historyPermissionReader interface {
 	CanReadHistory(context.Context, *discordgo.Channel) (bool, error)
 }
@@ -32,8 +35,11 @@ func (s *Syncer) syncWindowChannelHistory(ctx context.Context, channel *discordg
 		return 0, errors.New("current history permission check is unavailable")
 	}
 	allowed, err := reader.CanReadHistory(ctx, channel)
-	if err != nil || !allowed {
+	if err != nil {
 		return 0, errors.Join(errors.New("history permission not proven"), err)
+	}
+	if !allowed {
+		return 0, errHistoryPermissionDenied
 	}
 	window := HistoryWindow{GuildID: channel.GuildID, ChannelID: channel.ID, ChannelType: int(channel.Type), Since: since.UTC(), Until: time.Now().UTC()}
 	if window.Since.After(window.Until) {
@@ -46,8 +52,11 @@ func (s *Syncer) syncWindowChannelHistory(ctx context.Context, channel *discordg
 		return count, err
 	}
 	allowed, err = reader.CanReadHistory(ctx, channel)
-	if err != nil || !allowed {
+	if err != nil {
 		return count, errors.Join(errors.New("history permission changed during traversal"), err)
+	}
+	if !allowed {
+		return count, errHistoryPermissionDenied
 	}
 	if err := ctx.Err(); err != nil {
 		return count, err

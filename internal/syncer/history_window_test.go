@@ -68,12 +68,16 @@ func TestFullSinceRecordsEmptyWindowWithoutCompletingOlderHistory(t *testing.T) 
 
 type windowPermissionClient struct {
 	*fakeClient
-	calls  int
-	denyAt int
+	calls         int
+	denyAt        int
+	permissionErr error
 }
 
 func (f *windowPermissionClient) CanReadHistory(context.Context, *discordgo.Channel) (bool, error) {
 	f.calls++
+	if f.permissionErr != nil {
+		return false, f.permissionErr
+	}
 	return f.calls != f.denyAt, nil
 }
 

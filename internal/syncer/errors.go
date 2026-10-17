@@ -42,7 +42,11 @@ func (s *Syncer) skipUnavailableChannelByID(ctx context.Context, channelID strin
 		if previous, stateErr := s.store.GetSyncState(ctx, scope); stateErr == nil && previous == reason {
 			alreadyKnown = true
 		}
-		_ = s.store.SetSyncState(ctx, scope, reason)
+		// A skipped channel must leave exportable evidence; otherwise fail the sync.
+		if stateErr := s.store.SetSyncState(ctx, scope, reason); stateErr != nil {
+			s.logger.Warn("record channel unavailable", "channel_id", channelID, "err", stateErr)
+			return false
+		}
 	}
 	if alreadyKnown {
 		s.logger.Debug(logMsg, "channel_id", channelID, "reason", reason)
@@ -90,6 +94,8 @@ func isRetryableSyncError(ctx context.Context, err error) bool {
 
 func unavailableReason(err error) string {
 	switch {
+	case errors.Is(err, errHistoryPermissionDenied):
+		return "missing_history_permissions"
 	case isMissingAccess(err):
 		return "missing_access"
 	case isUnknownChannel(err):
