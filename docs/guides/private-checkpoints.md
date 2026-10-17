@@ -22,7 +22,7 @@ process group to disappear before issuing its completion receipt. Only then can
 the checkpoint helper open a read transaction and copy SQLite through its backup
 API. The pinned image supplies schema, table counts and integrity results.
 
-The checkpoint is the **native ingestion boundary before Git/cloud publication**.
+The checkpoint is the **native ingestion boundary before Git publication**.
 It deliberately precedes the publisher's later `share:*` bookkeeping. Replaying
 that boundary preserves messages, native cursors and failure history. Every
 workflow sets `DISCRAWL_NO_AUTO_UPDATE=1`; sync also uses `--no-update`. The daily
@@ -36,7 +36,7 @@ Workflow concurrency provides serialization; GitHub's latest update is not a
 server-side compare-and-swap operation.
 
 Normal ingestion failure or the supervisor's time limit can still save committed
-partial progress, but the job fails and skips Git/cloud publication. A forced
+partial progress, but the job fails and skips Git publication. A forced
 runner cancellation or loss cannot guarantee a new upload. The previously
 verified checkpoint remains the recovery point until a new one is promoted.
 The reporter visibly skips a checkpoint unless its successful producer tuple
@@ -58,12 +58,71 @@ the next ingestion until that same deletion succeeds. An interrupted draft also
 blocks new ingestion; an operator must reconcile that exact attempt. Do not
 bulk-delete releases by age or prefix.
 
-The publisher has a 125-minute job ceiling. Phase caps total at most 120 minutes:
-checkout/setup/build/configuration 18, restore 10, ingestion/reap 23, checkpoint
-15, outcome gate 1, Git publication 10, Node setup 3 and cloud publication 40.
-Normal sync gets 20 minutes; optional reconciliation shares that allowance with
-a five-minute sync and a fifteen-minute reconciliation. This ceiling does not
+The publisher has a 125-minute job ceiling. Phase caps total at most 79 minutes:
+checkout/setup/build/configuration 18, policy validation 2, restore 10,
+ingestion/reap 23, checkpoint 15, outcome gate 1 and Git publication 10.
+The two acquisition phases share one 20-minute deadline. This ceiling does not
 promise a fifteen-minute completion time or durable FIFO scheduling.
+
+## Private bounded acquisition
+
+The publisher currently has **only a manual trigger**. Keep it disabled until
+the full-state migration is verified. Enabling it later permits a measured
+manual run without also starting a cron schedule. Recurring acquisition and the
+daily member refresh need a later reviewed cadence change, based on measured
+restore, acquisition, checkpoint and publication durations.
+
+Each manual run requires `policy_commit` and `policy_sha256`. The existing
+backup credential reads `policy/report-selectors.json` from the private backup
+repository. Its `refs/heads/maintainer-report-policy` must point to exactly the
+requested commit; the file is then fetched by that commit and its bytes must
+match the requested SHA-256. A missing, changed or invalid policy stops before
+native state is restored. No policy branch, repository variable or credential
+is created by the workflow.
+
+The policy is a JSON object with these exact fields:
+
+- `schema`: integer `1`.
+- `policy`: `repository`, full `revision`, repository-relative `path` and
+  `sha256` identifying the reviewed canonical report selector source.
+- `catalog`: `archive_commit` and `manifest_sha256` identifying the catalog used
+  to select the roots and retained children.
+- `guild_id`: the exact configured Discord guild ID.
+- `message_root_ids` and `forum_root_ids`: arrays of native decimal IDs.
+- `retained_threads`: objects with `id` and `parent_id`; each parent must be one
+  of the declared message or forum roots. Retained children of text roots must
+  be explicit targets: native targeted discovery expands forum children only.
+
+The approved policy digest binds that provenance and scope together. The file
+is limited to 64 KiB and 4,096 distinct targets in total. It cannot contain
+commands, arbitrary flags, wildcards, names or additional fields. Creation and
+review of this private policy are separate operator actions. Do not store it on
+archive `main`, in SQLite, or in public workflow inputs, logs or artifacts. The
+workflow keeps its temporary copy private and outside all export paths.
+
+The supervisor first runs the existing guild-wide latest-only refresh. It then
+runs native `sync --full --since` on the policy targets, starting at the previous
+UTC midnight by default. An optional `since` input may pin a UTC midnight less
+than 48 hours ago. It is fixed before restore and revalidated before acquisition;
+a stale or future value stops rather than silently selecting a different day.
+The second phase uses `--skip-members`, `--with-media=false` and `--no-update`.
+Both phases share the same 1,200-second deadline, and the second
+starts only after the first process group has exited. Any failure prevents Git
+publication; committed partial work can still enter a verified private
+checkpoint after all owned processes are reaped.
+
+This policy limits **acquisition cost and scope**, not archive privacy. Native
+forum selection includes all bot-visible children of the selected forums,
+including newly discovered children. Full forum discovery traverses archived
+thread metadata even though message acquisition is date-bounded. The normal
+Discord permissions and native unavailable markers still apply. A successful
+process does not mean every channel is available or complete; report projection
+must inspect each channel's bounded receipts and preserve its privacy rules.
+
+This publisher does not export or upload to cloud storage. Existing cloud data
+is unchanged and is not made current by this private-only run. Restoring cloud
+publication requires separate verification of its configured destination and
+access policy.
 
 ## One-time migration
 

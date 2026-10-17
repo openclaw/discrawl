@@ -1,4 +1,5 @@
 import copy
+import base64
 import contextlib
 import importlib.util
 import json
@@ -327,7 +328,7 @@ class CheckpointTests(unittest.TestCase):
             if sig == 0:
                 return None
             return real_kill(pid, sig)
-        with patch.object(checkpoint.os, "killpg", group), patch.object(checkpoint.time, "monotonic", side_effect=[0, 0, 10, 20]):
+        with patch.object(checkpoint.os, "killpg", group), patch.object(checkpoint.time, "monotonic", side_effect=[0, 0, 0, 10, 20]):
             with self.assertRaisesRegex(checkpoint.CheckpointError, "writer_reap"):
                 checkpoint.run_writer([sys.executable, "-c", "pass"], 1, completion)
         self.assertFalse(completion.exists())
@@ -352,6 +353,43 @@ else:
         value = marker.read_bytes()
         time.sleep(0.1)
         self.assertEqual(marker.read_bytes(), value)
+
+    def test_two_phase_failure_saves_progress_with_verified_parent(self):
+        parent = self.seed()
+        completion = self.root / "writer.json"
+        code = ("import sqlite3; d=sqlite3.connect(%r); "
+                "d.execute(\"INSERT INTO messages VALUES('phase-one','retained')\"); d.commit()") % str(self.path)
+        result = checkpoint.run_writers([[sys.executable, "-c", code],
+                                         [sys.executable, "-c", "raise SystemExit(9)"]], 3, completion)
+        self.assertEqual(result, 9)
+        self.assertEqual(json.loads(completion.read_bytes()), {"reaped": True, "outcome": "failure"})
+        saved = checkpoint.save(self.github, self.path, self.receipt, "failure")
+        restored = self.root / "failed-acquisition.sqlite"
+        checkpoint.restore(self.github, restored, self.receipt)
+        with contextlib.closing(checkpoint.readonly(restored)) as db:
+            self.assertEqual(db.execute("SELECT value FROM messages WHERE id='phase-one'").fetchone(), ("retained",))
+        self.assertEqual(set(self.github.releases), {parent["release_id"], saved["release_id"]})
+
+    def test_first_phase_failure_never_starts_second(self):
+        marker = self.root / "unexpected"
+        result = checkpoint.run_writers([[sys.executable, "-c", "raise SystemExit(7)"],
+                                         [sys.executable, "-c", "from pathlib import Path;Path(%r).touch()" % str(marker)]], 3)
+        self.assertEqual(result, 7)
+        self.assertFalse(marker.exists())
+
+    def test_two_phases_share_one_deadline(self):
+        completion = self.root / "writer.json"
+        result = checkpoint.run_writers([[sys.executable, "-c", "import time;time.sleep(.3)"],
+                                         [sys.executable, "-c", "import time;time.sleep(.4)"]], .5, completion)
+        self.assertNotEqual(result, 0)
+        self.assertEqual(json.loads(completion.read_bytes()), {"reaped": True, "outcome": "cancelled"})
+
+    def test_second_phase_spawn_failure_still_authorizes_retaining_first_phase(self):
+        completion = self.root / "writer.json"
+        result = checkpoint.run_writers([[sys.executable, "-c", "pass"],
+                                         [str(self.root / "missing-executable")]], 3, completion)
+        self.assertEqual(result, 1)
+        self.assertEqual(json.loads(completion.read_bytes()), {"reaped": True, "outcome": "failure"})
 
 
 class AdmissionTests(unittest.TestCase):
@@ -391,6 +429,131 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual(result.stderr, b"checkpoint failed: checkpoint_api phase=repository_read exit=1\n")
             self.assertNotIn(b"private API sentinel", result.stdout + result.stderr)
+
+
+class AcquisitionPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "policy.json"
+        self.policy = {"schema": 1, "policy": {"repository": "example/reports", "revision": "a" * 40,
+                                               "path": "policy/channels.mjs", "sha256": "b" * 64},
+                       "catalog": {"archive_commit": "c" * 40, "manifest_sha256": "d" * 64},
+                       "guild_id": "100", "message_root_ids": ["11"], "forum_root_ids": ["12"],
+                       "retained_threads": [{"id": "13", "parent_id": "12"}]}
+
+    def validate(self, policy):
+        raw = checkpoint.canonical(policy)
+        return checkpoint.validate_policy(raw, checkpoint.digest(raw), "100")
+
+    def test_policy_retains_provenance_and_builds_only_distinct_bounded_native_ids(self):
+        result, targets = self.validate(self.policy)
+        self.assertEqual(result, self.policy)
+        self.assertEqual(targets, ["11", "12", "13"])
+        for mutate in [lambda p: p.update(commands=["untrusted"]),
+                       lambda p: p.update(guild_id="101"),
+                       lambda p: p["message_root_ids"].append("--all"),
+                       lambda p: p["message_root_ids"].append(str(2 ** 64)),
+                       lambda p: p["message_root_ids"].append("12"),
+                       lambda p: p["message_root_ids"].extend(str(1000+i) for i in range(checkpoint.MAX_TARGETS)),
+                       lambda p: p["retained_threads"][0].update(parent_id="14"),
+                       lambda p: p["policy"].update(path="../private"),
+                       lambda p: p["policy"].update(revision="main"),
+                       lambda p: p["catalog"].update(manifest_sha256="wrong")]:
+            candidate = copy.deepcopy(self.policy)
+            mutate(candidate)
+            with self.subTest(candidate=candidate["guild_id"]), self.assertRaises(checkpoint.CheckpointError):
+                self.validate(candidate)
+
+    def test_policy_fetch_pins_isolated_ref_exact_bytes_and_private_output(self):
+        raw = checkpoint.canonical(self.policy)
+        calls = []
+        def api(suffix):
+            calls.append(suffix)
+            if suffix.startswith("/git/ref/"):
+                return {"ref": checkpoint.POLICY_REF, "object": {"type": "commit", "sha": "e" * 40}}
+            return {"type": "file", "path": checkpoint.POLICY_PATH, "encoding": "base64",
+                    "size": len(raw), "content": base64.b64encode(raw).decode()}
+        github = SimpleNamespace(api=api)
+        checkpoint.load_policy(github, "e" * 40, checkpoint.digest(raw), "100", self.path)
+        self.assertEqual(self.path.read_bytes(), raw)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(calls, ["/git/ref/heads/maintainer-report-policy",
+                                 "/contents/policy/report-selectors.json?ref=" + "e" * 40])
+        self.path.unlink()
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "policy_ref"):
+            checkpoint.load_policy(github, "f" * 40, checkpoint.digest(raw), "100", self.path)
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "policy_checksum"):
+            checkpoint.load_policy(github, "e" * 40, "f" * 64, "100", self.path)
+        self.assertFalse(self.path.exists())
+
+    def test_retained_text_children_are_explicit_targets_with_root_only_parents(self):
+        self.policy["retained_threads"].append({"id": "14", "parent_id": "11"})
+        raw = checkpoint.canonical(self.policy)
+        self.path.write_bytes(raw)
+        with patch.object(checkpoint, "run_writers", return_value=0) as run:
+            self.assertEqual(checkpoint.acquire(Path("/native"), Path("/config"), self.path,
+                                               checkpoint.digest(raw), "100", Path("/receipt")), 0)
+        full = run.call_args.args[0][1]
+        self.assertEqual(full[full.index("--channels")+1], "11,12,13,14")
+        for parent in ["13", "15"]:
+            self.policy["retained_threads"][-1]["parent_id"] = parent
+            with self.subTest(parent=parent), self.assertRaisesRegex(checkpoint.CheckpointError, "policy_thread_parent"):
+                self.validate(self.policy)
+
+    def test_acquisition_window_is_frozen_and_bounded(self):
+        class FrozenDatetime(checkpoint.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 1, 3, tzinfo=checkpoint.timezone.utc)
+        with patch.object(checkpoint, "datetime", FrozenDatetime):
+            self.assertEqual(checkpoint.acquisition_since(), "2026-01-02T00:00:00Z")
+            self.assertEqual(checkpoint.acquisition_since("2026-01-02T00:00:00Z"), "2026-01-02T00:00:00Z")
+            for value in ["2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z", "2026-01-04T00:00:00Z",
+                          "2026-01-02T01:00:00Z", "2026-01-02T00:00:00+00:00", "yesterday"]:
+                with self.subTest(value=value), self.assertRaises(checkpoint.CheckpointError):
+                    checkpoint.acquisition_since(value)
+
+    def test_policy_cli_returns_only_frozen_date_and_acquire_reuses_it(self):
+        import io
+        frozen = "2026-01-02T00:00:00Z"
+        with patch.object(sys, "argv", ["checkpoint", "policy", "--policy", str(self.path),
+                                       "--policy-commit", "e" * 40, "--policy-sha256", "f" * 64]), \
+             patch.object(checkpoint, "execution_context"), patch.object(checkpoint, "GitHub"), \
+             patch.object(checkpoint, "acquisition_since", return_value=frozen), \
+             patch.object(checkpoint, "load_policy"), patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(checkpoint.main(), 0)
+            self.assertEqual(out.getvalue(), "since=" + frozen + "\n")
+        with patch.object(sys, "argv", ["checkpoint", "acquire", "--policy", str(self.path),
+                                       "--policy-sha256", "f" * 64, "--native", "/native", "--config", "/config",
+                                       "--writer-receipt", "/receipt", "--timeout", "1200", "--since", frozen]), \
+             patch.object(checkpoint, "execution_context"), patch.object(checkpoint, "acquire", return_value=0) as run:
+            self.assertEqual(checkpoint.main(), 0)
+            self.assertEqual(run.call_args.args[-2:], (1200, frozen))
+
+    def test_acquisition_keeps_general_refresh_and_uses_previous_utc_midnight(self):
+        raw = checkpoint.canonical(self.policy)
+        self.path.write_bytes(raw)
+        class FrozenDatetime(checkpoint.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 1, 3, 0, 1, tzinfo=checkpoint.timezone.utc)
+        with patch.object(checkpoint, "datetime", FrozenDatetime), patch.object(checkpoint, "run_writers", return_value=0) as run:
+            result = checkpoint.acquire(Path("/native"), Path("/config"), self.path, checkpoint.digest(raw), "100", Path("/receipt"))
+        self.assertEqual(result, 0)
+        commands, timeout, receipt = run.call_args.args
+        self.assertEqual((timeout, receipt), (1200, Path("/receipt")))
+        self.assertIn("--latest-only", commands[0])
+        self.assertNotIn("--channels", commands[0])
+        self.assertEqual(commands[1][commands[1].index("--since")+1], "2026-01-02T00:00:00Z")
+        self.assertEqual(commands[1][commands[1].index("--channels")+1], "11,12,13")
+        self.assertIn("--full", commands[1])
+        for command in commands:
+            self.assertIn("--no-update", command)
+            self.assertNotIn("--all", command)
+            self.assertNotIn("cloud", command)
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "policy_checksum"):
+            checkpoint.acquire(Path("/native"), Path("/config"), self.path, "f" * 64, "100", Path("/receipt"))
 
 
 if __name__ == "__main__":

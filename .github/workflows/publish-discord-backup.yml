@@ -1,15 +1,21 @@
 name: publish-discord-backup
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
-    - cron: "17 6 * * *"
+  # Admit a measured manual run before choosing a recurring cadence.
   workflow_dispatch:
     inputs:
-      reconcile_cloud:
-        description: Reconcile the configured private identity plan against Discord before publication
-        type: boolean
-        default: false
+      policy_commit:
+        description: Exact commit on the private maintainer-report-policy branch
+        type: string
+        required: true
+      policy_sha256:
+        description: SHA-256 of the reviewed private selector policy
+        type: string
+        required: true
+      since:
+        description: Optional UTC midnight less than 48 hours ago; defaults to previous UTC midnight
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -37,11 +43,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build native entry points
+      - name: Build native entry point
         timeout-minutes: 10
         run: |
           go build -o "$RUNNER_TEMP/discrawl-native" ./cmd/discrawl
-          go build -o "$RUNNER_TEMP/discrawl-reconcile" scripts/reconcile_cloud_source.go
 
       - name: Configure runtime paths
         timeout-minutes: 1
@@ -52,6 +57,22 @@ jobs:
           echo "DB=$GITHUB_WORKSPACE/.discrawl-ci/discrawl.db" >> "$GITHUB_ENV"
           echo "BACKUP_REPO=$RUNNER_TEMP/discord-backup" >> "$GITHUB_ENV"
           echo "CHECKPOINT_RECEIPT=$RUNNER_TEMP/discrawl/checkpoint.json" >> "$GITHUB_ENV"
+          echo "ACQUISITION_POLICY=$RUNNER_TEMP/discrawl/report-selectors.json" >> "$GITHUB_ENV"
+
+      - name: Verify pinned private acquisition policy
+        timeout-minutes: 2
+        id: policy
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+          DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
+          POLICY_COMMIT: ${{ inputs.policy_commit }}
+          POLICY_SHA256: ${{ inputs.policy_sha256 }}
+          HISTORY_SINCE: ${{ inputs.since }}
+        run: |
+          python3 scripts/private_discord_checkpoint.py policy --policy "$ACQUISITION_POLICY" \
+            --policy-commit "$POLICY_COMMIT" --policy-sha256 "$POLICY_SHA256" \
+            --since "$HISTORY_SINCE" >> "$GITHUB_OUTPUT"
 
       - name: Restore verified private checkpoint
         timeout-minutes: 10
@@ -66,42 +87,23 @@ jobs:
           python3 scripts/private_discord_checkpoint.py restore --prune --db "$DB" --receipt "$CHECKPOINT_RECEIPT"
 
       - name: Sync native Discord state
-        timeout-minutes: ${{ inputs.reconcile_cloud && 7 || 22 }}
+        timeout-minutes: 22
         id: sync
         continue-on-error: true
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
-          RECONCILE_CLOUD: ${{ inputs.reconcile_cloud && '1' || '0' }}
-          MEMBER_REFRESH: ${{ github.event.schedule == '17 6 * * *' && '1' || '0' }}
+          POLICY_SHA256: ${{ inputs.policy_sha256 }}
+          HISTORY_SINCE: ${{ steps.policy.outputs.since }}
         run: |
           umask 077
           test -n "$DISCORD_BOT_TOKEN" && test -n "$DISCRAWL_GUILD_ID"
           python3 scripts/private_discord_checkpoint.py run --timeout 60 -- \
             "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" init --db "$DB" --guild "$DISCRAWL_GUILD_ID"
-          sync_timeout=1200
-          if [ "$RECONCILE_CLOUD" = "1" ]; then sync_timeout=300; fi
-          sync_args=(--guild "$DISCRAWL_GUILD_ID" --skip-members --latest-only --no-update)
-          if [ "$MEMBER_REFRESH" = "1" ]; then
-            sync_args=(--guild "$DISCRAWL_GUILD_ID" --with-members --latest-only --no-update)
-          fi
-          python3 scripts/private_discord_checkpoint.py run --timeout "$sync_timeout" \
-            --writer-receipt "$RUNNER_TEMP/discrawl/sync.json" -- \
-            "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" sync "${sync_args[@]}"
-
-      - name: Reconcile requested native source
-        timeout-minutes: 16
-        id: reconcile
-        if: ${{ steps.sync.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.reconcile_cloud }}
-        continue-on-error: true
-        env:
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
-          DISCRAWL_CLOUD_RECONCILE_PLAN: ${{ secrets.DISCRAWL_CLOUD_RECONCILE_PLAN }}
-          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
-        run: |
-          python3 scripts/private_discord_checkpoint.py run --timeout 900 \
-            --writer-receipt "$RUNNER_TEMP/discrawl/reconcile.json" -- "$RUNNER_TEMP/discrawl-reconcile"
+          python3 scripts/private_discord_checkpoint.py acquire --timeout 1200 \
+            --writer-receipt "$RUNNER_TEMP/discrawl/sync.json" \
+            --native "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" \
+            --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE"
 
       - name: Verify private ingestion checkpoint
         timeout-minutes: 15
@@ -110,14 +112,13 @@ jobs:
         env:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
-          WRITER_RECEIPT: ${{ steps.reconcile.outcome != 'skipped' && 'reconcile.json' || 'sync.json' }}
         run: |
           python3 scripts/private_discord_checkpoint.py save --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
-            --writer-receipt "$RUNNER_TEMP/discrawl/$WRITER_RECEIPT"
+            --writer-receipt "$RUNNER_TEMP/discrawl/sync.json"
 
       - name: Require successful native ingestion
         timeout-minutes: 1
-        if: ${{ always() && !cancelled() && (steps.sync.outcome != 'success' || steps.reconcile.outcome == 'failure') }}
+        if: ${{ always() && !cancelled() && steps.sync.outcome != 'success' }}
         run: |
           echo "::error::Native ingestion did not complete. Publication was not requested; check the private checkpoint step for retained progress."
           exit 1
@@ -150,31 +151,3 @@ jobs:
             --message "sync: discord archive" --push >/dev/null 2>&1
           echo "published=true" >> "$GITHUB_OUTPUT"
           echo "Archive publication completed."
-
-      - name: Setup Node for cloud publication
-        timeout-minutes: 3
-        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-
-      - name: Publish the same current state to D1 and R2
-        if: ${{ vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
-        timeout-minutes: 40
-        env:
-          DISCRAWL_CLOUD_ENDPOINT: ${{ secrets.DISCRAWL_CLOUD_ENDPOINT }}
-          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
-          DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
-          DISCRAWL_CLOUD_ACCESS_CLIENT_ID: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_ID }}
-          DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET }}
-          DISCRAWL_CLOUD_SNAPSHOT: ${{ runner.temp }}/discrawl/cloud.db
-          DISCRAWL_CLOUD_SOURCE_DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
-        run: |
-          umask 077
-          trap 'rm -f "$DISCRAWL_CLOUD_SNAPSHOT"' EXIT
-          trap 'echo "::error::Cloud publication failed after archive publication."; exit 1' ERR
-          DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$BACKUP_REPO" rev-parse HEAD 2>/dev/null)"
-          export DISCRAWL_CLOUD_SOURCE_COMMIT
-          "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" cloud publish --export-only "$DISCRAWL_CLOUD_SNAPSHOT" >/dev/null 2>&1
-          node scripts/publish-cloud.mjs >/dev/null 2>&1
-          echo "Cloud publication completed."
