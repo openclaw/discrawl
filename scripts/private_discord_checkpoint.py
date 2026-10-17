@@ -217,7 +217,6 @@ class GitHub:
         require(repo.get("full_name") == self.repository and repo.get("private") is True
                 and repo.get("archived") is False and integer(repo.get("id")), "private_repository")
         self.identity = {"name": self.repository, "id": repo["id"]}
-        require(self.api("/immutable-releases").get("enabled") is False, "immutable_checkpoints")
 
     def command(self, arguments, destination=None, timeout=600, missing=False):
         # The official CLI owns authentication/redirects. Neither its error body

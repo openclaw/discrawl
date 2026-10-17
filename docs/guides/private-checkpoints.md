@@ -3,8 +3,11 @@
 The archive publisher restores complete native SQLite state from private GitHub
 Releases in the repository configured by `DISCRAWL_BACKUP_REPOSITORY`. It uses
 the existing `DISCORD_BACKUP_TOKEN`; no additional credential is required.
-The destination must remain private, keep the same repository ID, and permit
-mutable releases so bounded checkpoint retention can complete.
+The destination must remain private and keep the same repository ID. Assets are
+uploaded only to drafts. Published assets are never changed; retention deletes
+the exact whole release and preserves tags. This also supports
+[immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+without requesting repository administration permissions.
 
 ## Boundary and recovery
 

@@ -355,16 +355,16 @@ else:
 
 
 class AdmissionTests(unittest.TestCase):
-    def test_private_repository_identity_and_immutability_are_required(self):
+    def test_private_repository_identity_requires_no_admin_permission(self):
         expected = {"full_name": "example/private-archive", "private": True, "archived": False, "id": 123}
         with patch.dict(os.environ, {"DISCRAWL_BACKUP_REPOSITORY": expected["full_name"]}):
             for changed in ({"private": False}, {"full_name": "example/reassigned"}, {"archived": True}):
                 with patch.object(checkpoint.GitHub, "api", return_value={**expected, **changed}):
                     with self.assertRaisesRegex(checkpoint.CheckpointError, "private_repository"):
                         checkpoint.GitHub()
-            with patch.object(checkpoint.GitHub, "api", side_effect=[expected, {"enabled": True}]):
-                with self.assertRaisesRegex(checkpoint.CheckpointError, "immutable_checkpoints"):
-                    checkpoint.GitHub()
+            with patch.object(checkpoint.GitHub, "api", return_value=expected) as api:
+                self.assertEqual(checkpoint.GitHub().identity, {"name": expected["full_name"], "id": 123})
+                api.assert_called_once_with("")
 
     def test_execution_context_rejects_forks_refs_debug_and_source_drift(self):
         env = {"GITHUB_REPOSITORY": checkpoint.PRODUCER, "GITHUB_REF": "refs/heads/main",
