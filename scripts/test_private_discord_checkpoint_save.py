@@ -1,5 +1,7 @@
 import contextlib
+import gzip
 import io
+from pathlib import Path
 import sqlite3
 import sys
 import unittest
@@ -22,7 +24,7 @@ class SaveDeadlineTests(CheckpointTests):
         original = checkpoint.snapshot
         def corrupt(*args, **kwargs):
             facts = original(*args, **kwargs)
-            with sqlite3.connect(args[1]) as db:
+            with contextlib.closing(sqlite3.connect(args[1])) as db, db:
                 db.execute("UPDATE messages SET value='different retained bytes'")
                 db.execute("INSERT INTO messages VALUES('extra','unexpected row')")
             return facts
@@ -107,10 +109,136 @@ class SaveDeadlineTests(CheckpointTests):
         with contextlib.redirect_stdout(output):
             self.seed()
         for line in output.getvalue().splitlines():
-            self.assertRegex(line, r"^checkpoint save: phase=(source_facts|backup|pack|upload|restore_verify|promote) state=(begin|complete)( elapsed_seconds=[0-9.]+)?$")
+            self.assertRegex(line, r"^checkpoint: phase=(source_facts|backup|pack|upload|restore_verify|promote|download|reconstruct|disk_verify|sqlite_verify) state=(begin|complete)( elapsed_seconds=[0-9.]+)?$")
+        for phase in ("download", "reconstruct", "disk_verify", "sqlite_verify"):
+            self.assertIn(f"phase={phase} state=complete", output.getvalue())
         with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_phase"):
-            with checkpoint.save_phase("private-secret"):
+            with checkpoint.checkpoint_phase("private-secret"):
                 pass
+
+    def test_pack_carries_exact_disk_hashes_and_unchanged_gzip_bytes_without_rereads(self):
+        for size in (0, 1, 17, 18, 34, 39):
+            with self.subTest(size=size):
+                directory = self.root / str(size)
+                directory.mkdir()
+                source = directory / "input"
+                data = bytes(range(size))
+                source.write_bytes(data)
+                with patch.object(checkpoint, "RAW_PART", 17), patch.object(checkpoint, "BLOCK", 5), \
+                     patch.object(checkpoint, "file_digest", side_effect=AssertionError("redundant hash read")):
+                    database, parts = checkpoint.pack(source, directory)
+                self.assertEqual(database, {"bytes": size, "sha256": checkpoint.digest(data)})
+                self.assertEqual(len(parts), (size + 16) // 17)
+                for index, part in enumerate(parts):
+                    expected = io.BytesIO()
+                    chunk = data[index * 17:(index + 1) * 17]
+                    with gzip.GzipFile(filename="", mode="wb", fileobj=expected, mtime=0) as compressed:
+                        for start in range(0, len(chunk), 5):
+                            compressed.write(chunk[start:start + 5])
+                    actual = (directory / part["name"]).read_bytes()
+                    self.assertEqual(actual, expected.getvalue())
+                    self.assertEqual(gzip.decompress(actual), chunk)
+                    self.assertEqual(part, {"name": f"state-{index:03d}.sqlite.gz", "bytes": len(actual),
+                                            "raw_bytes": len(chunk), "sha256": checkpoint.digest(actual)})
+
+    def test_short_writes_include_header_flush_and_trailer_in_carried_hash(self):
+        class ShortWriter(io.BytesIO):
+            def write(self, data):
+                return super().write(data[:3])
+        raw = ShortWriter()
+        sink = checkpoint.HashingWriter(raw, None)
+        with gzip.GzipFile(filename="", mode="wb", fileobj=sink, mtime=0) as compressed:
+            compressed.write(b"first native bytes")
+            compressed.flush()
+            compressed.write(b"second native bytes")
+        actual = raw.getvalue()
+        self.assertEqual(gzip.decompress(actual), b"first native bytessecond native bytes")
+        self.assertEqual(sink.size, len(actual))
+        self.assertEqual(sink.sha256.hexdigest(), checkpoint.digest(actual))
+
+    def test_invalid_write_counts_never_hash_unaccepted_bytes(self):
+        for count in (0, None, -1, 5, True, 1.5):
+            with self.subTest(count=count):
+                class InvalidWriter:
+                    def write(self, _data):
+                        return count
+                sink = checkpoint.HashingWriter(InvalidWriter(), None)
+                with self.assertRaisesRegex(checkpoint.CheckpointError, "part_write"):
+                    sink.write(b"data")
+                self.assertEqual(sink.size, 0)
+                self.assertEqual(sink.sha256.hexdigest(), checkpoint.digest(b""))
+
+    def test_partial_write_failure_hashes_only_the_accepted_prefix(self):
+        class FailedWriter(io.BytesIO):
+            def write(self, data):
+                if self.tell():
+                    raise OSError("write failed")
+                return super().write(data[:2])
+        raw = FailedWriter()
+        sink = checkpoint.HashingWriter(raw, None)
+        self.assertEqual(sink.write(b""), 0)
+        self.assertEqual(raw.getvalue(), b"")
+        with self.assertRaisesRegex(OSError, "write failed"):
+            sink.write(b"data")
+        self.assertEqual(raw.getvalue(), b"da")
+        self.assertEqual(sink.size, 2)
+        self.assertEqual(sink.sha256.hexdigest(), checkpoint.digest(b"da"))
+
+    def test_sink_deadline_and_capacity_refuse_before_write(self):
+        raw = io.BytesIO()
+        sink = checkpoint.HashingWriter(raw, 100)
+        with patch.object(checkpoint.time, "monotonic", return_value=101):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_timeout"):
+                sink.write(b"data")
+        with patch.object(checkpoint, "MAX_PART", 3):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "part_size"):
+                sink.write(b"data")
+        self.assertEqual(raw.getvalue(), b"")
+
+    def test_pack_hash_failure_never_creates_a_draft(self):
+        parent = self.seed()
+        class FailedHash:
+            def update(self, _data):
+                raise OSError("hash failed")
+        original_pack, original_hash = checkpoint.pack, checkpoint.hashlib.sha256
+        for failed in (0, 1):
+            def broken_pack(*args, **kwargs):
+                hashes = [original_hash(), original_hash()]
+                hashes[failed] = FailedHash()
+                with patch.object(checkpoint.hashlib, "sha256", side_effect=hashes):
+                    return original_pack(*args, **kwargs)
+            with self.subTest(hash=failed), patch.object(checkpoint, "pack", broken_pack):
+                with self.assertRaisesRegex(OSError, "hash failed"):
+                    checkpoint.save(self.github, self.path, self.receipt, "success")
+            self.assertEqual(self.github.latest, parent["release_id"])
+            self.assertEqual(len(self.github.releases), 1)
+
+    def test_gzip_or_file_close_failure_never_creates_a_draft(self):
+        parent = self.seed()
+        gzip_close, path_open = checkpoint.gzip.GzipFile.close, Path.open
+        def failed_gzip_close(compressed):
+            opened = compressed.fileobj is not None
+            gzip_close(compressed)
+            if opened:
+                raise OSError("gzip close failed")
+        class FailedClose:
+            def __init__(self, output):
+                self.output = output
+            def __enter__(self):
+                return self.output
+            def __exit__(self, *args):
+                self.output.__exit__(*args)
+                raise OSError("file close failed")
+        def failed_file_close(path, *args, **kwargs):
+            output = path_open(path, *args, **kwargs)
+            return FailedClose(output) if path.name.startswith("state-") and args == ("xb",) else output
+        for owner, name, replacement in ((checkpoint.gzip.GzipFile, "close", failed_gzip_close),
+                                          (Path, "open", failed_file_close)):
+            with self.subTest(close=name), patch.object(owner, name, replacement):
+                with self.assertRaisesRegex(OSError, "close failed"):
+                    checkpoint.save(self.github, self.path, self.receipt, "success")
+            self.assertEqual(self.github.latest, parent["release_id"])
+            self.assertEqual(len(self.github.releases), 1)
 
     def test_cli_deadline_starts_before_private_admission(self):
         self.seed()

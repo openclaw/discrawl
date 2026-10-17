@@ -39,7 +39,13 @@ Ordinary saves share one 840-second deadline inside the unchanged 15-minute
 step. Source integrity, backup, compression, hashing, transfer and authenticated
 readback use that deadline. The intermediate backup is not scanned again: its
 hash and pinned source facts are both checked against the downloaded image.
-Fixed phase names and elapsed times identify a slow phase without exposing data.
+Packing carries the database hash from its raw input traversal and compressed
+part hashes from successful output writes, including the gzip trailer. It does
+not reread those local files only to hash them. The authenticated restored image
+still receives an independent disk hash and full SQLite checks. Fixed phase
+names and elapsed times separate download, reconstruction, disk verification
+and SQLite verification without exposing data. These reductions do not establish
+publication headroom until a complete run is measured.
 Promotion requires at least one minute remaining. Deadline checks are cooperative
 for filesystem and library calls; the outer minute is cleanup margin, not a hard
 completion guarantee. Any error after an attempted mutation holds the retained
