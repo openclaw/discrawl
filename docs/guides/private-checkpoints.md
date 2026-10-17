@@ -66,17 +66,17 @@ promise a fifteen-minute completion time or durable FIFO scheduling.
 
 ## Private bounded acquisition
 
-The publisher currently has **only a manual trigger**. Keep it disabled until
-the full-state migration is verified. Enabling it later permits a measured
-manual run without also starting a cron schedule. Recurring acquisition and the
-daily member refresh need a later reviewed cadence change, based on measured
-restore, acquisition, checkpoint and publication durations.
+The publisher supports manual runs and a daily member refresh at 06:17 UTC.
+Keep it disabled until full-state custody and measured restore, acquisition,
+checkpoint and publication behavior are qualified. The ordinary refresh cadence
+must also fit those measured durations; concurrency does not provide durable FIFO.
 
-Each manual run requires `policy_commit` and `policy_sha256`. The existing
+The workflow pins `POLICY_COMMIT` and `POLICY_SHA256` once for both scheduled and
+manual runs. Changing acquisition scope requires a reviewed source change. The existing
 backup credential reads `policy/report-selectors.json` from the private backup
 repository. Its `refs/heads/maintainer-report-policy` must point to exactly the
-requested commit; the file is then fetched by that commit and its bytes must
-match the requested SHA-256. A missing, changed or invalid policy stops before
+pinned commit; the file is then fetched by that commit and its bytes must
+match the pinned SHA-256. A missing, changed or invalid policy stops before
 native state is restored. No policy branch, repository variable or credential
 is created by the workflow.
 
@@ -105,7 +105,10 @@ runs native `sync --full --since` on the policy targets, starting at the previou
 UTC midnight by default. An optional `since` input may pin a UTC midnight less
 than 48 hours ago. It is fixed before restore and revalidated before acquisition;
 a stale or future value stops rather than silently selecting a different day.
-The second phase uses `--skip-members`, `--with-media=false` and `--no-update`.
+The daily 06:17 UTC trigger requires a member refresh in the first guild-wide
+phase; other runs skip members. A required member-refresh failure stops before
+the targeted phase. The second phase always uses `--skip-members`,
+`--with-media=false` and `--no-update`.
 Both phases share the same 1,200-second deadline, and the second
 starts only after the first process group has exited. Any failure prevents Git
 publication; committed partial work can still enter a verified private

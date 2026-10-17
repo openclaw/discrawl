@@ -28,9 +28,23 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 		require.Contains(t, text, "cancel-in-progress: false")
 		require.Contains(t, text, `DISCRAWL_NO_AUTO_UPDATE: "1"`)
 		var workflow struct {
+			On struct {
+				Schedule []struct {
+					Cron string `yaml:"cron"`
+				} `yaml:"schedule"`
+				Dispatch struct {
+					Inputs map[string]struct {
+						Required bool `yaml:"required"`
+					} `yaml:"inputs"`
+				} `yaml:"workflow_dispatch"`
+			} `yaml:"on"`
+			Env  map[string]string `yaml:"env"`
 			Jobs map[string]struct {
+				Env   map[string]string `yaml:"env"`
 				Steps []struct {
-					Run string `yaml:"run"`
+					Name string            `yaml:"name"`
+					Run  string            `yaml:"run"`
+					Env  map[string]string `yaml:"env"`
 				} `yaml:"steps"`
 			} `yaml:"jobs"`
 		}
@@ -58,7 +72,43 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.Contains(t, text[publish:], "success() && steps.checkpoint.outcome == 'success'")
 			require.Contains(t, text, "private_discord_checkpoint.py acquire --timeout 1200")
 			require.Contains(t, text, "private_discord_checkpoint.py policy")
-			require.NotContains(t, text, "schedule:")
+			require.Equal(t, "17 6 * * *", workflow.On.Schedule[0].Cron)
+			require.Len(t, workflow.On.Dispatch.Inputs, 1)
+			require.Contains(t, workflow.On.Dispatch.Inputs, "since")
+			require.False(t, workflow.On.Dispatch.Inputs["since"].Required)
+			require.Equal(t, "246adcd42b9a18d0f574daeda38a9a599fecd747", workflow.Env["POLICY_COMMIT"])
+			require.Equal(t, "1906b49215932b465986e5aa35bc1eeec3a2f5efbd6f63fcd930832cd30fc81f", workflow.Env["POLICY_SHA256"])
+			for _, key := range []string{"POLICY_COMMIT", "POLICY_SHA256"} {
+				require.Equal(t, 1, strings.Count(text, key+":"))
+				require.NotContains(t, workflow.Jobs["publish"].Env, key)
+			}
+			for _, step := range workflow.Jobs["publish"].Steps {
+				require.NotContains(t, step.Env, "POLICY_COMMIT")
+				require.NotContains(t, step.Env, "POLICY_SHA256")
+				if step.Name == "Verify pinned private acquisition policy" {
+					require.Equal(t, "${{ inputs.since }}", step.Env["HISTORY_SINCE"])
+					require.Contains(t, step.Run, `--since "$HISTORY_SINCE"`)
+				}
+				if step.Name == "Sync native Discord state" {
+					require.Equal(t, "${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}", step.Env["WITH_MEMBERS"])
+					require.Equal(t, "${{ steps.policy.outputs.since }}", step.Env["HISTORY_SINCE"])
+					for _, members := range []string{"true", "false", ""} {
+						dir := t.TempDir()
+						calls := filepath.Join(dir, "calls")
+						require.NoError(t, os.WriteFile(filepath.Join(dir, "python3"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CALLS\"\n"), 0o700))
+						cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
+						cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "CALLS="+calls,
+							"RUNNER_TEMP="+dir, "DISCORD_BOT_TOKEN=fixture", "DISCRAWL_GUILD_ID=100", "WITH_MEMBERS="+members,
+							"HISTORY_SINCE=2026-01-02T00:00:00Z", "POLICY_SHA256="+workflow.Env["POLICY_SHA256"])
+						out, err := cmd.CombinedOutput()
+						require.NoError(t, err, "%s", out)
+						args, err := os.ReadFile(calls)
+						require.NoError(t, err)
+						require.Equal(t, members == "true", strings.Contains(string(args), "--with-members\n"))
+						require.Contains(t, string(args), "acquire\n--timeout\n1200\n")
+					}
+				}
+			}
 			require.NotContains(t, text, "cloud publish")
 			require.NotContains(t, text, "publish-cloud.mjs")
 			require.NotContains(t, text, "DISCRAWL_CLOUD_")

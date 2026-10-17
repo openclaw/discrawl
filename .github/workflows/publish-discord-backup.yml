@@ -1,17 +1,10 @@
 name: publish-discord-backup
 
 on:
-  # Admit a measured manual run before choosing a recurring cadence.
+  schedule:
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
-      policy_commit:
-        description: Exact commit on the private maintainer-report-policy branch
-        type: string
-        required: true
-      policy_sha256:
-        description: SHA-256 of the reviewed private selector policy
-        type: string
-        required: true
       since:
         description: Optional UTC midnight less than 48 hours ago; defaults to previous UTC midnight
         type: string
@@ -26,6 +19,8 @@ concurrency:
 
 env:
   DISCRAWL_NO_AUTO_UPDATE: "1"
+  POLICY_COMMIT: "246adcd42b9a18d0f574daeda38a9a599fecd747"
+  POLICY_SHA256: "1906b49215932b465986e5aa35bc1eeec3a2f5efbd6f63fcd930832cd30fc81f"
 
 jobs:
   publish:
@@ -66,8 +61,6 @@ jobs:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
-          POLICY_COMMIT: ${{ inputs.policy_commit }}
-          POLICY_SHA256: ${{ inputs.policy_sha256 }}
           HISTORY_SINCE: ${{ inputs.since }}
         run: |
           python3 scripts/private_discord_checkpoint.py policy --policy "$ACQUISITION_POLICY" \
@@ -93,17 +86,21 @@ jobs:
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
-          POLICY_SHA256: ${{ inputs.policy_sha256 }}
           HISTORY_SINCE: ${{ steps.policy.outputs.since }}
+          WITH_MEMBERS: ${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}
         run: |
           umask 077
           test -n "$DISCORD_BOT_TOKEN" && test -n "$DISCRAWL_GUILD_ID"
           python3 scripts/private_discord_checkpoint.py run --timeout 60 -- \
             "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" init --db "$DB" --guild "$DISCRAWL_GUILD_ID"
+          member_flags=()
+          if [ "$WITH_MEMBERS" = "true" ]; then
+            member_flags+=(--with-members)
+          fi
           python3 scripts/private_discord_checkpoint.py acquire --timeout 1200 \
             --writer-receipt "$RUNNER_TEMP/discrawl/sync.json" \
             --native "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" \
-            --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE"
+            --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE" "${member_flags[@]}"
 
       - name: Verify private ingestion checkpoint
         timeout-minutes: 15

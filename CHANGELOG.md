@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin the reviewed private acquisition policy for scheduled and manual runs, and restore daily member refresh within the existing shared acquisition deadline.
+
 - Finalize an interrupted initial checkpoint from its existing private assets after two complete verified restores, preserving original provenance and holding uncertain publication outcomes for inspection.
 
 - Add manual, privately scoped report-history acquisition after the normal guild refresh, sharing one time budget and preserving failed progress in private checkpoints; hold recurring and cloud publication until separately qualified.
