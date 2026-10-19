@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the OpenAI SDK, YAML parser, and Go telemetry dependencies while preserving the Go minimum and SQLite/libc compatibility pins.
+
 - Move native and Kiwi macOS CI to Xcode 27, preserve the macOS 13 deployment target, and verify Intel release binaries explicitly through Rosetta.
 
 - Include bounded numeric rate-limit response headers in checkpoint API errors without exposing private output or retrying failed requests.
