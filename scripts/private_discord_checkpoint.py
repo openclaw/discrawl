@@ -323,6 +323,29 @@ def reap_command(child, phase):
         time.sleep(0.05)
 
 
+def _rate_headers(raw):
+    # gh api --include writes headers before an error body. Only that complete
+    # block owns rate metadata; body/stderr text must never become diagnostics.
+    block = re.split(rb"\r?\n\r?\n", raw[:65536], maxsplit=1)
+    if len(block) != 2:
+        return ""
+    lines = re.split(rb"\r?\n", block[0])
+    if not re.fullmatch(rb"HTTP/[0-9.]+ [1-5][0-9]{2}(?: [\x20-\x7e]*)?", lines[0]):
+        return ""
+    fields = {b"x-ratelimit-remaining": "rate_remaining", b"x-ratelimit-reset": "rate_reset",
+              b"retry-after": "retry_after"}
+    values = {name: [] for name in fields}
+    for line in lines[1:]:
+        header = re.fullmatch(rb"([!#$%&'*+.^_`|~0-9A-Za-z-]+):([\t\x20-\x7e]*)", line)
+        if header is None:
+            return ""
+        name = header[1].lower()
+        if name in values:
+            values[name].append(header[2].strip(b" \t"))
+    return "".join(" " + label + "=" + str(int(values[name][0])) for name, label in fields.items()
+                   if len(values[name]) == 1 and re.fullmatch(rb"[0-9]{1,10}", values[name][0]))
+
+
 def github_command(arguments, env, phase, destination=None, timeout=600, missing=False,
                    limit=MAX_MANIFEST, deadline=None, executable="gh"):
     require(phase in API_PHASES, "api_phase")
@@ -386,8 +409,10 @@ def github_command(arguments, env, phase, destination=None, timeout=600, missing
                 return None
         if child.returncode != 0:
             status = re.search(rb"(?:^HTTP/\S+ |\(HTTP )([1-5][0-9]{2})(?:\b|\))", raw[:4096] + bytes(captured))
+            rate = _rate_headers(raw) if executable == "gh" and arguments[:1] == ["api"] \
+                and ("--include" in arguments or "-i" in arguments) else ""
             raise CheckpointError(f"checkpoint_api phase={phase} exit={child.returncode}"
-                                  + (" http=" + status[1].decode("ascii") if status else ""))
+                                  + (" http=" + status[1].decode("ascii") if status else "") + rate)
         if destination is not None:
             require(size <= limit, "asset_size")
             return None

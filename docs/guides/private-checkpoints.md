@@ -196,7 +196,19 @@ cache, uploads, promotes, or deletes a release. Temporary downloads are removed.
 The diagnostic has one 15-minute deadline inside a 20-minute job. Metadata calls
 allow at most 60 seconds; the part download allows at most 600 seconds, always
 limited by the remaining deadline. API errors expose only a fixed operation,
-numeric exit or timeout, and an HTTP status when available. Private command
+numeric exit or timeout, and an HTTP status when available. Failed `gh api`
+requests that already include response headers can also report `rate_remaining`,
+`rate_reset` (UTC epoch seconds), and `retry_after` (seconds). Only single numeric
+values of at most ten digits from the first complete response header block are
+reported; duplicate, malformed, or missing fields are omitted. No response body
+or private stderr text is included. A 403 or 429 with `rate_remaining=0` indicates
+the primary rate limit; wait until the reported reset before an operator-approved
+retry. Honor `retry_after` when present. Missing fields or a 403 with remaining
+quota do not establish its cause. Inspect the existing credential's permissions
+and GitHub's rate-limit guidance without substituting credentials or blindly
+retrying. The helper does not retry automatically. See
+[GitHub's rate-limit documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit).
+Private command
 output is drained with a bounded retained prefix and never logged. Public
 admission and private reads share this process boundary while retaining their
 separate tokens. The helper terminates its command group and allows up to five

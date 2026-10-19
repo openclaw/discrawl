@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include bounded numeric rate-limit response headers in checkpoint API errors without exposing private output or retrying failed requests.
+
 - Use faster gzip compression for private checkpoints, trading larger transfers for less packing CPU while preserving full authenticated database validation.
 
 - Avoid redundant checkpoint packing reads by hashing the existing byte streams, and separate transfer and restore verification timings while retaining full authenticated disk and SQLite checks.

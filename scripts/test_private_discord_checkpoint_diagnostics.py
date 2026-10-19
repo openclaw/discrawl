@@ -48,6 +48,67 @@ class CommandTests(unittest.TestCase):
         self.shim("import os\nos.write(1,b'HTTP/2.0 404 Not Found\\n\\n{}')\nraise SystemExit(1)\n")
         self.assertIsNone(self.github.command(["api", "fixture"], missing=True, phase="latest_read"))
 
+    def test_rate_headers_are_numeric_only_and_private_output_is_suppressed(self):
+        for status, newline, include in ((403, b"\r\n", "--include"), (429, b"\n", "-i")):
+            with self.subTest(status=status):
+                raw = newline.join([f"HTTP/2.0 {status} Forbidden".encode(),
+                    b"X-RateLimit-Remaining: 0", b"x-RATELIMIT-reset: 1800000000",
+                    b"Retry-After: \t60 ", b"X-Private: private-header-token", b"",
+                    b"private-body https://private.invalid/secret\nRetry-After: 999"])
+                self.shim("import os\nos.write(1,%r)\nos.write(2,b'private-stderr-token')\nraise SystemExit(1)\n" % raw)
+                with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                    with self.assertRaises(checkpoint.CheckpointError) as failure:
+                        self.github.command(["api", "fixture", include])
+                self.assertEqual(str(failure.exception), f"checkpoint_api phase=repository_read exit=1 http={status}"
+                                 " rate_remaining=0 rate_reset=1800000000 retry_after=60")
+                self.assertEqual(out.getvalue() + err.getvalue(), "")
+
+    def test_invalid_or_duplicate_rate_values_are_omitted(self):
+        for value in (b"", b"-1", b"+1", b"1.0", b"1, 2", b"12345678901", b"1 secret", b"\xc2\xb2"):
+            with self.subTest(value=value):
+                raw = b"HTTP/2.0 403 Forbidden\nX-RateLimit-Remaining: " + value + b"\n\n{}"
+                self.shim("import os\nos.write(1,%r)\nraise SystemExit(1)\n" % raw)
+                with self.assertRaises(checkpoint.CheckpointError) as failure:
+                    self.github.command(["api", "fixture", "--include"])
+                self.assertEqual(str(failure.exception), "checkpoint_api phase=repository_read exit=1 http=403")
+        for duplicate in (b"0", b"1"):
+            raw = (b"HTTP/2.0 403 Forbidden\nX-RateLimit-Remaining: 0\n"
+                   b"x-ratelimit-remaining: " + duplicate + b"\nRetry-After: 0\n\n{}")
+            self.shim("import os\nos.write(1,%r)\nraise SystemExit(1)\n" % raw)
+            with self.assertRaises(checkpoint.CheckpointError) as failure:
+                self.github.command(["api", "fixture", "--include"])
+            self.assertEqual(str(failure.exception), "checkpoint_api phase=repository_read exit=1 http=403 retry_after=0")
+
+    def test_rate_headers_require_a_complete_bounded_header_block(self):
+        for raw in (b"HTTP/2.0 403 Forbidden\nX-RateLimit-Remaining: 0\n",
+                    b"HTTP/2.0 403 Forbidden\nmalformed\nX-RateLimit-Remaining: 0\n\n{}",
+                    b"HTTP/2.0 403 Forbidden\nX-Padding: " + b"x" * 65536 + b"\nRetry-After: 1\n\n{}",
+                    b"HTTP/2.0 403 Forbidden\n\nRetry-After: 1\n\n",
+                    b"private prefix\nHTTP/2.0 403 Forbidden\nRetry-After: 1\n\n"):
+            with self.subTest(size=len(raw)):
+                self.shim("import os\nos.write(1,%r)\nos.write(2,b'gh: private (HTTP 403)\\nRetry-After: 9')\nraise SystemExit(1)\n" % raw)
+                with self.assertRaises(checkpoint.CheckpointError) as failure:
+                    self.github.command(["api", "fixture", "--include"])
+                self.assertEqual(str(failure.exception), "checkpoint_api phase=repository_read exit=1 http=403")
+
+    def test_only_gh_api_include_errors_expose_rate_headers(self):
+        raw = b"HTTP/2.0 403 Forbidden\nRetry-After: 60\n\n{}"
+        self.shim("import os\nos.write(1,%r)\nraise SystemExit(1)\n" % raw)
+        for args, executable in ((["api", "fixture"], "gh"), (["release", "--include"], "gh"),
+                                 (["api", "fixture", "-i"], str(self.root / "gh"))):
+            with self.subTest(args=args, executable=executable):
+                with self.assertRaises(checkpoint.CheckpointError) as failure:
+                    checkpoint.github_command(args, os.environ, "repository_read", executable=executable)
+                self.assertEqual(str(failure.exception), "checkpoint_api phase=repository_read exit=1 http=403")
+
+    def test_rate_headers_do_not_change_success_or_expected_missing(self):
+        raw = b"HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 0\r\n\r\nprivate body"
+        self.shim("import os\nos.write(1,%r)\n" % raw)
+        self.assertEqual(self.github.command(["api", "fixture", "--include"]), raw)
+        raw = raw.replace(b"200 OK", b"404 Not Found")
+        self.shim("import os\nos.write(1,%r)\nraise SystemExit(1)\n" % raw)
+        self.assertIsNone(self.github.command(["api", "fixture", "--include"], missing=True))
+
     def test_timeout_kills_owned_descendant_with_inherited_stderr(self):
         marker = self.root / "heartbeat"
         self.shim("import os,time\nfrom pathlib import Path\np=Path(%r)\n"
