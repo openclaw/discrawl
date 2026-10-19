@@ -11,6 +11,7 @@ builds:
     binary: discrawl
     env:
       - CGO_ENABLED=0
+      - MACOSX_DEPLOYMENT_TARGET=13.0
     ldflags:
       - -s -w -X github.com/openclaw/discrawl/internal/cli.version={{ .Version }}
     targets:

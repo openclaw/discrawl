@@ -3,3 +3,4 @@ self-hosted-runner:
     - crabbox
     - openclaw
     - discrawl
+    - xcode-27

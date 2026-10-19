@@ -233,6 +233,18 @@ func TestReleaseSignedRedirectsToUnifiedWorkflow(t *testing.T) {
 }
 
 func TestVerifyMacOSReleaseAcceptsUnifiedWorkflowArchive(t *testing.T) {
+	for _, arch := range []struct{ goarch, macho string }{{"arm64", "arm64"}, {"amd64", "x86_64"}} {
+		t.Run(arch.goarch, func(t *testing.T) {
+			testVerifyMacOSRelease(t, arch.goarch, arch.macho, "13.0", true)
+		})
+		t.Run(arch.goarch+"-raised-floor", func(t *testing.T) {
+			testVerifyMacOSRelease(t, arch.goarch, arch.macho, "14.0", false)
+		})
+	}
+}
+
+func testVerifyMacOSRelease(t *testing.T, goarch, macho, minimum string, succeeds bool) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("verify-macos-release.sh is a POSIX shell script")
 	}
@@ -261,7 +273,7 @@ func TestVerifyMacOSReleaseAcceptsUnifiedWorkflowArchive(t *testing.T) {
 	}
 	writeExecutable(t, filepath.Join(payloadDir, "discrawl"), "#!/bin/sh\n[ \"$1\" = --version ]\nprintf '0.11.5\\n'\n")
 
-	archive := filepath.Join(tempDir, "discrawl_0.11.5_darwin_arm64.tar.gz")
+	archive := filepath.Join(tempDir, "discrawl_0.11.5_darwin_"+goarch+".tar.gz")
 	tarCmd := exec.CommandContext(t.Context(), tar, "-czf", archive, "-C", payloadDir, ".")
 	if output, err := tarCmd.CombinedOutput(); err != nil {
 		t.Fatalf("create archive: %v\n%s", err, output)
@@ -283,7 +295,9 @@ func TestVerifyMacOSReleaseAcceptsUnifiedWorkflowArchive(t *testing.T) {
 	writeExecutable(t, filepath.Join(stubDir, "uname"), "#!/bin/sh\nprintf 'Darwin\\n'\n")
 	logPath := filepath.Join(tempDir, "codesign.log")
 	writeExecutable(t, filepath.Join(stubDir, "codesign"), "#!/bin/sh\nprintf 'codesign %s\\n' \"$*\" >> \"$SIGNING_TEST_LOG\"\nprintf 'Identifier=org.openclaw.discrawl\\nCodeDirectory v=20500 size=100 flags=0x10000(runtime) hashes=1+0 location=embedded\\nTeamIdentifier=FWJYW4S8P8\\nAuthority=Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)\\n' >&2\n")
-	writeExecutable(t, filepath.Join(stubDir, "lipo"), "#!/bin/sh\nprintf 'arm64\\n'\n")
+	writeExecutable(t, filepath.Join(stubDir, "lipo"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n'\n", macho))
+	writeExecutable(t, filepath.Join(stubDir, "xcrun"), fmt.Sprintf("#!/bin/sh\nprintf 'cmd LC_BUILD_VERSION\\nminos %s\\n'\n", minimum))
+	writeExecutable(t, filepath.Join(stubDir, "arch"), "#!/bin/sh\nprintf 'arch %s\\n' \"$*\" >> \"$SIGNING_TEST_LOG\"\nshift\nexec \"$@\"\n")
 
 	scriptDir := signingScriptDir(t)
 	cmd := exec.CommandContext(t.Context(), bash, "./verify-macos-release.sh", "v0.11.5", archive, checksums)
@@ -293,12 +307,22 @@ func TestVerifyMacOSReleaseAcceptsUnifiedWorkflowArchive(t *testing.T) {
 		"SIGNING_TEST_LOG="+logPath,
 		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if !succeeds {
+		if err == nil || !strings.Contains(string(output), "unexpected macOS minimum") {
+			t.Fatalf("raised deployment floor was not rejected: %v\n%s", err, output)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatalf("verify GoReleaser archive: %v\n%s", err, output)
 	}
 	logBytes, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "arch -"+macho+" ") {
+		t.Fatalf("release verifier did not explicitly execute %s: %s", macho, logBytes)
 	}
 	if !strings.Contains(string(logBytes), "--verify --strict --check-notarization -R=notarized --verbose=2") {
 		t.Fatalf("release verifier skipped notarization ticket check:\n%s", logBytes)

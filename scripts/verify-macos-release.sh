@@ -63,4 +63,13 @@ grep -Fx "TeamIdentifier=$EXPECTED_TEAM_ID" <<<"$signature" >/dev/null
 grep -F "Authority=Developer ID Application:" <<<"$signature" >/dev/null
 grep -F '(runtime)' <<<"$signature" >/dev/null
 lipo -archs "$binary" | tr ' ' '\n' | grep -Fx "$expected_arch" >/dev/null
-[[ "$("$binary" --version)" == "$release_version" ]]
+minos=$(xcrun vtool -show-build "$binary" | awk '$1 == "minos" { print $2 }')
+[[ "$minos" == 13.0 ]] || { echo "unexpected macOS minimum: $minos" >&2; exit 1; }
+if [[ "$expected_arch" == x86_64 ]]; then
+  arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+  arch -x86_64 /usr/bin/true
+  actual_version=$(arch -x86_64 "$binary" --version)
+else
+  actual_version=$(arch -arm64 "$binary" --version)
+fi
+[[ "$actual_version" == "$release_version" ]]

@@ -138,10 +138,12 @@ jobs:
           ./bin/discrawl tui --json | grep -q '^\['
 
   native-smoke:
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [xcode-27, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -166,6 +168,10 @@ jobs:
           grep -q '"schema_version"' metadata.json
           "$BINARY" help tui > tui-help.txt
           grep -q 'Usage: discrawl tui' tui-help.txt
+      - name: Verify macOS deployment target
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          test "$(xcrun vtool -show-build bin/discrawl | awk '$1 == "minos" { print $2 }')" = 13.0
 
   deps:
     runs-on: ubuntu-latest
@@ -214,12 +220,14 @@ jobs:
           args: release --snapshot --clean --skip=publish
 
   kiwi-helper:
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     strategy:
       fail-fast: false
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - xcode-27
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:

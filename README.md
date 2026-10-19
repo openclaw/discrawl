@@ -22,6 +22,8 @@ discrawl --version
 
 Windows binaries and signed archives for all supported platforms are available from [GitHub Releases](https://github.com/openclaw/discrawl/releases/latest).
 
+The published macOS CLI targets macOS 13.0; CI checks this minimum explicitly.
+
 To build from source, install Go 1.27.0 or newer. The module selects Go 1.27.2 as its preferred toolchain:
 
 ```bash
