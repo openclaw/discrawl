@@ -79,7 +79,7 @@ bulk-delete releases by age or prefix.
 The publisher has a 125-minute job ceiling. Phase caps total at most 78 minutes:
 checkout/setup/build/configuration 18, policy validation 2, restore 10,
 ingestion/reap 22, checkpoint 15, outcome gate 1 and Git publication 10.
-The two acquisition phases share one 20-minute deadline. This ceiling does not
+Acquisition shares one 20-minute deadline across its phases. This ceiling does not
 promise a fifteen-minute completion time or durable FIFO scheduling.
 
 ## Private bounded acquisition
@@ -121,7 +121,7 @@ review of this private policy are separate operator actions. Do not store it on
 archive `main`, in SQLite, or in public workflow inputs, logs or artifacts. The
 workflow keeps its temporary copy private and outside all export paths.
 
-The supervisor first runs the existing guild-wide latest-only refresh. It then
+In `mode: current` (the default), the supervisor first runs the existing guild-wide latest-only refresh. It then
 runs native `sync --full --since --include-stored-threads` on the policy targets,
 including stored direct threads of selected text and announcement roots. This
 keeps threads discovered by the first pass in the bounded coverage scan without
@@ -138,6 +138,23 @@ Both phases share the same 1,200-second deadline, and the second
 starts only after the first process group has exited. Any failure prevents Git
 publication; committed partial work can still enter a verified private
 checkpoint after all owned processes are reaped.
+
+For a separately reviewed historical backfill, manually dispatch the same
+workflow with `mode: historical` and an explicit `since` UTC midnight less than
+31 days ago. Scheduled runs always use `current`; historical mode cannot request
+members. It runs only the selected native full-history scan, using the same pinned
+policy, stored-thread selection and 1,200-second supervisor. The 5-minute native
+channel deadline remains in effect. Restore, checkpoint verification, failure
+handling and publication use the same serialized owner as current acquisition.
+
+The native scan deliberately traverses from the live head through `since`, so it
+also collects newer messages. There is no `until` input. A completed native
+history-window receipt ends at that channel's scan-start time; export or workflow
+completion cannot extend it. Different `since` values retain distinct receipts.
+Consumers must keep their original reporting cutoff and verify every required
+channel's receipt; this mode does not declare a report complete. If the budget
+expires, retain the partial checkpoint and inspect the missing coverage before
+approving another run. Source merge alone does not authorize a live backfill.
 
 This policy limits **acquisition cost and scope**, not archive privacy. Native
 forum selection includes all bot-visible children of the selected forums,

@@ -771,30 +771,34 @@ def load_policy(github, revision, expected_sha256, guild, destination):
     destination.chmod(0o600)
 
 
-def acquisition_since(value=None):
+def acquisition_since(value=None, mode="current"):
+    require(mode in {"current", "historical"}, "acquisition_mode")
+    require(mode != "historical" or bool(value), "acquisition_window")
     now = datetime.now(timezone.utc)
     if not value:
         value = (now.replace(hour=0, minute=0, second=0, microsecond=0)
                  - timedelta(days=1)).isoformat().replace("+00:00", "Z")
     require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", value), "acquisition_window")
     since = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    require(timedelta() < now - since < timedelta(hours=48), "acquisition_window")
+    limit = timedelta(days=31) if mode == "historical" else timedelta(hours=48)
+    require(timedelta() < now - since < limit, "acquisition_window")
     return value
 
 
-def acquire(native, config, policy_path, expected_sha256, guild, completion, timeout=1200, since=None, with_members=False):
+def acquire(native, config, policy_path, expected_sha256, guild, completion, timeout=1200, since=None, with_members=False, mode="current"):
     require(policy_path.is_file() and not policy_path.is_symlink()
             and policy_path.stat().st_size <= MAX_POLICY, "policy_file")
     _, targets = validate_policy(policy_path.read_bytes(), expected_sha256, guild)
     require(0 < timeout <= 1200, "writer_arguments")
-    since = acquisition_since(since)
+    since = acquisition_since(since, mode)
+    require(mode != "historical" or not with_members, "historical_members")
     base = [str(native), "--config", str(config), "sync", "--source", "discord", "--guild", guild, "--no-update"]
-    # General archive refresh remains first; report roots only scope the extra
-    # bounded scan. Native forum expansion and report privacy keep their owners.
-    # Required member refresh belongs to the guild pass; targeted sync rejects it.
-    commands = [[*base, "--latest-only", "--with-members" if with_members else "--skip-members"],
-                [*base, "--skip-members", "--full", "--since", since, "--channels", ",".join(targets),
+    commands = [[*base, "--skip-members", "--full", "--since", since, "--channels", ",".join(targets),
                  "--include-stored-threads", "--with-media=false"]]
+    # Historical work spends its bounded budget only on selected streams.
+    # Ordinary acquisition retains its guild refresh and daily member phase.
+    if mode == "current":
+        commands.insert(0, [*base, "--latest-only", "--with-members" if with_members else "--skip-members"])
     return run_writers(commands, timeout, completion)
 
 
@@ -886,6 +890,7 @@ def main():
     parser.add_argument("--native", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--since")
+    parser.add_argument("--acquisition-mode", choices=("current", "historical"), default="current")
     args, command = parser.parse_known_args()
     if args.operation == "run":
         return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout if args.timeout is not None else 2700, args.writer_receipt)
@@ -895,16 +900,18 @@ def main():
     require(not command or with_members, "arguments")
     if args.operation in {"policy", "acquire"}:
         execution_context()
+        require(args.acquisition_mode != "historical" or os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
+                "historical_dispatch")
         require(args.policy is not None, "arguments")
         guild = os.environ.get("DISCRAWL_GUILD_ID", "")
         if args.operation == "policy":
-            since = acquisition_since(args.since)
+            since = acquisition_since(args.since, args.acquisition_mode)
             load_policy(GitHub(), args.policy_commit, args.policy_sha256, guild, args.policy)
             print("since=" + since)
             return 0
         require(args.native is not None and args.config is not None and args.writer_receipt is not None, "arguments")
         return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt,
-                       args.timeout if args.timeout is not None else 2700, args.since, with_members)
+                       args.timeout if args.timeout is not None else 2700, args.since, with_members, args.acquisition_mode)
     if args.operation == "report-check":
         require(args.receipt is not None and args.archive is not None, "arguments")
         return 0 if report_ready(args.receipt, args.archive) else 3

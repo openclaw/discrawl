@@ -34,7 +34,10 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 				} `yaml:"schedule"`
 				Dispatch struct {
 					Inputs map[string]struct {
-						Required bool `yaml:"required"`
+						Required bool     `yaml:"required"`
+						Type     string   `yaml:"type"`
+						Default  string   `yaml:"default"`
+						Options  []string `yaml:"options"`
 					} `yaml:"inputs"`
 				} `yaml:"workflow_dispatch"`
 			} `yaml:"on"`
@@ -83,9 +86,12 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			}
 			// The shortest gap is 04:43 to 06:17; leave room for every phase cap.
 			require.Less(t, phaseMinutes, 94)
-			require.Len(t, workflow.On.Dispatch.Inputs, 1)
+			require.Len(t, workflow.On.Dispatch.Inputs, 2)
 			require.Contains(t, workflow.On.Dispatch.Inputs, "since")
 			require.False(t, workflow.On.Dispatch.Inputs["since"].Required)
+			require.Equal(t, "choice", workflow.On.Dispatch.Inputs["mode"].Type)
+			require.Equal(t, "current", workflow.On.Dispatch.Inputs["mode"].Default)
+			require.Equal(t, []string{"current", "historical"}, workflow.On.Dispatch.Inputs["mode"].Options)
 			require.Equal(t, "246adcd42b9a18d0f574daeda38a9a599fecd747", workflow.Env["POLICY_COMMIT"])
 			require.Equal(t, "1906b49215932b465986e5aa35bc1eeec3a2f5efbd6f63fcd930832cd30fc81f", workflow.Env["POLICY_SHA256"])
 			for _, key := range []string{"POLICY_COMMIT", "POLICY_SHA256"} {
@@ -98,10 +104,13 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 				if step.Name == "Verify pinned private acquisition policy" {
 					require.Equal(t, "${{ inputs.since }}", step.Env["HISTORY_SINCE"])
 					require.Contains(t, step.Run, `--since "$HISTORY_SINCE"`)
+					require.Equal(t, "${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])
+					require.Contains(t, step.Run, `--acquisition-mode "$HISTORY_MODE"`)
 				}
 				if step.Name == "Sync native Discord state" {
 					require.Equal(t, "${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}", step.Env["WITH_MEMBERS"])
 					require.Equal(t, "${{ steps.policy.outputs.since }}", step.Env["HISTORY_SINCE"])
+					require.Equal(t, "${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])
 					for _, members := range []string{"true", "false", ""} {
 						dir := t.TempDir()
 						calls := filepath.Join(dir, "calls")
@@ -109,13 +118,14 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 						cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
 						cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "CALLS="+calls,
 							"RUNNER_TEMP="+dir, "DISCORD_BOT_TOKEN=fixture", "DISCRAWL_GUILD_ID=100", "WITH_MEMBERS="+members,
-							"HISTORY_SINCE=2026-01-02T00:00:00Z", "POLICY_SHA256="+workflow.Env["POLICY_SHA256"])
+							"HISTORY_SINCE=2026-01-02T00:00:00Z", "HISTORY_MODE=historical", "POLICY_SHA256="+workflow.Env["POLICY_SHA256"])
 						out, err := cmd.CombinedOutput()
 						require.NoError(t, err, "%s", out)
 						args, err := os.ReadFile(calls)
 						require.NoError(t, err)
 						require.Equal(t, members == "true", strings.Contains(string(args), "--with-members\n"))
 						require.Contains(t, string(args), "acquire\n--timeout\n1200\n")
+						require.Contains(t, string(args), "--acquisition-mode\nhistorical\n")
 					}
 				}
 			}
