@@ -530,6 +530,65 @@ class AcquisitionPolicyTests(unittest.TestCase):
                 with self.subTest(value=value), self.assertRaises(checkpoint.CheckpointError):
                     checkpoint.acquisition_since(value)
 
+    def test_historical_window_requires_explicit_recent_midnight(self):
+        class FrozenDatetime(checkpoint.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 2, 1, tzinfo=checkpoint.timezone.utc)
+        with patch.object(checkpoint, "datetime", FrozenDatetime):
+            self.assertEqual(checkpoint.acquisition_since("2026-01-05T00:00:00Z", "historical"),
+                             "2026-01-05T00:00:00Z")
+            for value in [None, "", "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z",
+                          "2026-02-02T00:00:00Z", "2026-01-05T01:00:00Z", "yesterday"]:
+                with self.subTest(value=value), self.assertRaises(checkpoint.CheckpointError):
+                    checkpoint.acquisition_since(value, "historical")
+            with self.assertRaises(checkpoint.CheckpointError):
+                checkpoint.acquisition_since("2026-01-05T00:00:00Z")
+
+    def test_historical_acquisition_only_runs_selected_native_scan(self):
+        raw = checkpoint.canonical(self.policy)
+        self.path.write_bytes(raw)
+        since = (checkpoint.datetime.now(checkpoint.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                 - checkpoint.timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        with patch.object(checkpoint, "run_writers", return_value=0) as run:
+            self.assertEqual(checkpoint.acquire(Path("/native"), Path("/config"), self.path,
+                                               checkpoint.digest(raw), "100", Path("/receipt"),
+                                               since=since, mode="historical"), 0)
+        commands, timeout, receipt = run.call_args.args
+        self.assertEqual((len(commands), timeout, receipt), (1, 1200, Path("/receipt")))
+        self.assertEqual(commands[0], ["/native", "--config", "/config", "sync", "--source", "discord",
+                                      "--guild", "100", "--no-update", "--skip-members", "--full",
+                                      "--since", since, "--channels", "11,12,13",
+                                      "--include-stored-threads", "--with-media=false"])
+        for options in [{"with_members": True}, {"timeout": 1201}]:
+            with self.subTest(options=options), patch.object(checkpoint, "run_writers") as run:
+                with self.assertRaises(checkpoint.CheckpointError):
+                    checkpoint.acquire(Path("/native"), Path("/config"), self.path, checkpoint.digest(raw),
+                                       "100", Path("/receipt"), since=since, mode="historical", **options)
+                run.assert_not_called()
+
+    def test_historical_cli_requires_manual_dispatch(self):
+        import io
+        for operation in ["policy", "acquire"]:
+            with self.subTest(operation=operation), \
+                 patch.object(sys, "argv", ["checkpoint", operation, "--acquisition-mode", "historical",
+                                           "--policy", str(self.path), "--since", "2026-01-05T00:00:00Z"]), \
+                 patch.object(checkpoint, "execution_context"), \
+                 patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule"}), \
+                 patch.object(checkpoint, "load_policy") as load, patch.object(checkpoint, "acquire") as acquire:
+                with self.assertRaisesRegex(checkpoint.CheckpointError, "historical_dispatch"):
+                    checkpoint.main()
+                load.assert_not_called()
+                acquire.assert_not_called()
+        with patch.object(sys, "argv", ["checkpoint", "policy", "--acquisition-mode", "historical",
+                                       "--policy", str(self.path), "--since", "2026-01-05T00:00:00Z"]), \
+             patch.object(checkpoint, "execution_context"), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}), \
+             patch.object(checkpoint, "acquisition_since", return_value="2026-01-05T00:00:00Z") as window, \
+             patch.object(checkpoint, "load_policy"), patch.object(checkpoint, "GitHub"), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(checkpoint.main(), 0)
+            window.assert_called_once_with("2026-01-05T00:00:00Z", "historical")
+
     def test_policy_cli_returns_only_frozen_date_and_acquire_reuses_it(self):
         import io
         frozen = "2026-01-02T00:00:00Z"
@@ -540,14 +599,16 @@ class AcquisitionPolicyTests(unittest.TestCase):
              patch.object(checkpoint, "load_policy"), patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(checkpoint.main(), 0)
             self.assertEqual(out.getvalue(), "since=" + frozen + "\n")
-        for flags in [[], ["--with-members"]]:
-            with self.subTest(flags=flags), \
+        for mode, flags in [("current", []), ("current", ["--with-members"]), ("historical", [])]:
+            with self.subTest(mode=mode, flags=flags), \
                  patch.object(sys, "argv", ["checkpoint", "acquire", "--policy", str(self.path),
                                            "--policy-sha256", "f" * 64, "--native", "/native", "--config", "/config",
-                                           "--writer-receipt", "/receipt", "--timeout", "1200", "--since", frozen, *flags]), \
+                                           "--writer-receipt", "/receipt", "--timeout", "1200", "--since", frozen,
+                                           "--acquisition-mode", mode, *flags]), \
+                 patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}), \
                  patch.object(checkpoint, "execution_context"), patch.object(checkpoint, "acquire", return_value=0) as run:
                 self.assertEqual(checkpoint.main(), 0)
-                self.assertEqual(run.call_args.args[-3:], (1200, frozen, bool(flags)))
+                self.assertEqual(run.call_args.args[-4:], (1200, frozen, bool(flags), mode))
 
     def test_acquisition_keeps_general_refresh_and_uses_previous_utc_midnight(self):
         raw = checkpoint.canonical(self.policy)

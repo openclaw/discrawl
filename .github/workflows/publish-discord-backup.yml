@@ -7,8 +7,16 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: Current refresh or selected historical backfill
+        type: choice
+        options:
+          - current
+          - historical
+        default: current
+        required: true
       since:
-        description: Optional UTC midnight less than 48 hours ago; defaults to previous UTC midnight
+        description: UTC midnight; current defaults to yesterday (<48h), historical requires explicit date (<31 days)
         type: string
         required: false
 
@@ -64,10 +72,11 @@ jobs:
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
           HISTORY_SINCE: ${{ inputs.since }}
+          HISTORY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}
         run: |
           python3 scripts/private_discord_checkpoint.py policy --policy "$ACQUISITION_POLICY" \
             --policy-commit "$POLICY_COMMIT" --policy-sha256 "$POLICY_SHA256" \
-            --since "$HISTORY_SINCE" >> "$GITHUB_OUTPUT"
+            --since "$HISTORY_SINCE" --acquisition-mode "$HISTORY_MODE" >> "$GITHUB_OUTPUT"
 
       - name: Restore verified private checkpoint
         timeout-minutes: 10
@@ -89,6 +98,7 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
           HISTORY_SINCE: ${{ steps.policy.outputs.since }}
+          HISTORY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}
           WITH_MEMBERS: ${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}
         run: |
           umask 077
@@ -102,7 +112,8 @@ jobs:
           python3 scripts/private_discord_checkpoint.py acquire --timeout 1200 \
             --writer-receipt "$RUNNER_TEMP/discrawl/sync.json" \
             --native "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" \
-            --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE" "${member_flags[@]}"
+            --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE" \
+            --acquisition-mode "$HISTORY_MODE" "${member_flags[@]}"
 
       - name: Verify private ingestion checkpoint
         timeout-minutes: 15
