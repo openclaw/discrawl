@@ -219,7 +219,7 @@ jobs:
 
       - name: Build offline native publisher
         timeout-minutes: 5
-        run: go build -o "$RUNNER_TEMP/discrawl-recovery-native" ./cmd/discrawl
+        run: go build -o "$RUNNER_TEMP/discrawl-native" ./cmd/discrawl
 
       - name: Verify retained publisher state and publish its private archive once
         timeout-minutes: 34

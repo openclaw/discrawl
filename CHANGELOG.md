@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
+
 ## 0.17.0 - 2026-10-23
 
 **Highlights:** Keep live Discord archives complete, protect public snapshots from excluded channels, and accept protected credential files for unattended services.

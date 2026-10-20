@@ -49,7 +49,7 @@ the verification receipt consumed by promotion. These files stay on the same
 runner and are never uploaded as workflow artifacts. Promotion rechecks the
 original producer tuple, manifest, every asset identity and parent against those
 receipts before its one mutation, and still requires at least one minute left.
-A failed phase leaves its exact draft for operator reconciliation.
+A failed phase leaves its exact draft for reconciliation before another capture.
 
 The intermediate backup is not scanned again: its hash and pinned source facts
 are checked against the downloaded image. Packing carries the database hash
@@ -83,9 +83,11 @@ or unrelated payloads to obtain space.
 Keep the current checkpoint and its immediate verified parent. After promotion,
 only the exact grandparent named by that authenticated lineage can be deleted.
 Tags and unrelated releases are untouched. A failed retention operation blocks
-the next ingestion until that same deletion succeeds. An interrupted draft also
-blocks new ingestion; an operator must reconcile that exact attempt. Do not
-bulk-delete releases by age or prefix.
+the next ingestion until that same deletion succeeds. Automatic reconciliation
+first handles a complete retained publisher draft or unpublished latest
+checkpoint. An incomplete or ambiguous draft holds for operator inspection;
+it is never removed or replaced automatically. Do not bulk-delete releases by
+age or prefix.
 
 The publisher has a 125-minute job ceiling. Phase caps total at most 93 minutes:
 checkout/setup/build/configuration 18, policy validation 2, restore 10,
@@ -93,11 +95,45 @@ ingestion/reap 22, checkpoint upload/verification/promotion 30, outcome gate 1 a
 Acquisition shares one 20-minute deadline across its phases. This ceiling does not
 promise a fifteen-minute completion time or durable FIFO scheduling.
 
+Before restore, the publisher spends at most 120 seconds checking retained state.
+Already published checkpoints, retained failed-acquisition progress, and the
+initial migration checkpoint can continue to fresh acquisition. Their metadata
+check raises the normal phase ceiling to 95 minutes. When a complete retained
+publisher checkpoint needs recovery, that run instead performs the existing
+33-minute recovery inside a 34-minute step and skips fresh acquisition. Including
+setup, this path has a 54-minute phase ceiling. The two paths never combine their
+budgets. Recovery time includes discovery; it does not restart the deadline.
+
+Historical provenance accepts either the former monolithic checkpoint step or
+the ordered upload, verification and promotion steps. A failed or interrupted
+phase requires skipped descendants. Successful ingestion may resume private Git
+publication after two complete authenticated restores. Failed ingestion can
+retain its verified progress, but cannot publish an archive. Original capture
+source and outcome stay unchanged. A verified recovery emits a fixed control
+output and reports that fresh acquisition waits for the next run; an uncertain
+result emits no continuation output and stops the job.
+
+Scheduled publisher provenance follows GitHub's
+[scheduled actor contract](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#actor-for-scheduled-workflows):
+the actor can change with cron or default-branch edits. Admission requires the
+canonical main workflow, first attempt and matching actor/triggering actor,
+without a scheduled-user allowlist. Manual dispatch remains restricted to
+`vincentkoc`; historical run metadata must still match its current run record.
+
+Archive commits bind the checkpoint manifest and database hashes. An already
+completed recovery is recognized by those hashes, the exact producer receipt,
+and the direct parent commit without repeating its push. Older archive commits
+without checkpoint hashes are accepted only when the original run and every
+native, checkpoint and archive step completed successfully. Lost mutation
+responses remain holds in that run; a later run independently validates the
+retained state before deciding whether any work remains.
+
 ## Private bounded acquisition
 
 The publisher runs at 43 minutes past each even UTC hour. The daily 06:17 UTC
 member refresh replaces the ordinary 06:43 run. The shortest scheduled gap is
-94 minutes, above the 93-minute sum of phase caps. GitHub can delay scheduled
+94 minutes; metadata admission plus ordinary phase caps can reach 95 minutes.
+The shared group serializes any overlap. GitHub can delay scheduled
 jobs; concurrency does not provide durable FIFO or a completion guarantee.
 Enable this cadence only after a manual run qualifies full-state custody and
 measured restore, acquisition, checkpoint and publication behavior.
@@ -287,7 +323,7 @@ writers remain separate reviewed operations.
 Use `diagnose` for the exact failed publisher run before requesting
 `recover-publisher` with acknowledgement `RECOVER_RETAINED_PUBLISHER`. The same
 manifest, inventory, original-run and successful-probe pins apply. Admission
-requires successful native ingestion, failed checkpoint verification, and a
+requires successful native ingestion, a failed checkpoint phase, and a
 skipped archive publication step on the original first attempt. The overall
 original run remains a failure; it is never relabeled as a successful workflow.
 

@@ -43,8 +43,11 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			} `yaml:"on"`
 			Env  map[string]string `yaml:"env"`
 			Jobs map[string]struct {
-				Env   map[string]string `yaml:"env"`
-				Steps []struct {
+				Env            map[string]string `yaml:"env"`
+				TimeoutMinutes int               `yaml:"timeout-minutes"`
+				Steps          []struct {
+					ID             string            `yaml:"id"`
+					If             string            `yaml:"if"`
 					Name           string            `yaml:"name"`
 					Run            string            `yaml:"run"`
 					Env            map[string]string `yaml:"env"`
@@ -70,6 +73,12 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			promote := strings.Index(text, "name: Promote verified private checkpoint")
 			guard := strings.Index(text, "name: Require successful native ingestion")
 			publish := strings.Index(text, "name: Publish Discord archive")
+			reconcile := strings.Index(text, "name: Reconcile retained checkpoint publication")
+			restore := strings.Index(text, "name: Restore verified private checkpoint")
+			require.Greater(t, reconcile, 0)
+			require.Less(t, reconcile, restore)
+			require.Contains(t, text, "CHECKPOINT_MODE: reconcile")
+			require.Contains(t, text, "CHECKPOINT_MODE=publication-message")
 			require.Greater(t, checkpoint, 0)
 			require.Greater(t, verify, checkpoint)
 			require.Greater(t, promote, verify)
@@ -86,13 +95,40 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.Len(t, workflow.On.Schedule, 2)
 			require.Equal(t, "43 0,2,4,8,10,12,14,16,18,20,22 * * *", workflow.On.Schedule[0].Cron)
 			require.Equal(t, "17 6 * * *", workflow.On.Schedule[1].Cron)
-			phaseMinutes := 0
+			commonMinutes, captureMinutes, recoveryMinutes := 0, 0, 0
+			capture := false
+			conditions := map[string]string{
+				"Restore verified private checkpoint": "${{ success() && steps.reconcile.outputs.recovered == 'false' }}",
+				"Sync native Discord state":           "${{ success() && steps.restore.outcome == 'success' }}",
+				"Upload private ingestion checkpoint": "${{ always() && !cancelled() && steps.restore.outcome == 'success' && steps.sync.outcome != 'skipped' }}",
+				"Verify private ingestion checkpoint": "${{ always() && !cancelled() && steps.checkpoint-upload.outcome == 'success' }}",
+				"Promote verified private checkpoint": "${{ always() && !cancelled() && steps.checkpoint-verify.outcome == 'success' }}",
+				"Require successful native ingestion": "${{ always() && !cancelled() && steps.sync.outcome != 'skipped' && steps.sync.outcome != 'success' }}",
+				"Publish Discord archive":             "${{ success() && steps.checkpoint.outcome == 'success' }}",
+			}
 			for _, step := range workflow.Jobs["publish"].Steps {
 				require.Positive(t, step.TimeoutMinutes)
-				phaseMinutes += step.TimeoutMinutes
+				if step.Name == "Reconcile retained checkpoint publication" {
+					require.Equal(t, "reconcile", step.ID)
+					recoveryMinutes = step.TimeoutMinutes
+					capture = true
+				} else if capture {
+					// Recovered=true (or missing on failure) skips restore, and every
+					// descendant requires its predecessor; no fresh work follows recovery.
+					require.Contains(t, conditions, step.Name)
+					require.Equal(t, conditions[step.Name], step.If)
+					captureMinutes += step.TimeoutMinutes
+				} else {
+					commonMinutes += step.TimeoutMinutes
+				}
 			}
-			// The shortest gap is 04:43 to 06:17; leave room for every phase cap.
-			require.Less(t, phaseMinutes, 94)
+			require.Equal(t, 125, workflow.Jobs["publish"].TimeoutMinutes)
+			require.Equal(t, 34, recoveryMinutes)
+			require.Equal(t, 93, commonMinutes+captureMinutes)
+			// A no-op spends at most the 120s metadata budget; a recovery run
+			// spends its existing 34min step and performs no fresh acquisition.
+			require.Less(t, commonMinutes+captureMinutes+2, workflow.Jobs["publish"].TimeoutMinutes)
+			require.Less(t, commonMinutes+recoveryMinutes, workflow.Jobs["publish"].TimeoutMinutes)
 			require.Len(t, workflow.On.Dispatch.Inputs, 2)
 			require.Contains(t, workflow.On.Dispatch.Inputs, "since")
 			require.False(t, workflow.On.Dispatch.Inputs["since"].Required)
@@ -168,7 +204,7 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			recovery := text[strings.Index(text, "  recover-publisher:"):]
 			require.Contains(t, recovery, "if: inputs.mode == 'recover-publisher'")
 			require.Contains(t, recovery, "timeout-minutes: 34")
-			require.Contains(t, recovery, "discrawl-recovery-native")
+			require.Contains(t, recovery, "discrawl-native")
 			require.NotContains(t, recovery, "DISCORD_BOT_TOKEN")
 			require.NotContains(t, recovery, "actions/cache")
 			require.NotContains(t, recovery, "--push")

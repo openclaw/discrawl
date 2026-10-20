@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: discord-backup-repo
@@ -78,9 +79,20 @@ jobs:
             --policy-commit "$POLICY_COMMIT" --policy-sha256 "$POLICY_SHA256" \
             --since "$HISTORY_SINCE" --acquisition-mode "$HISTORY_MODE" >> "$GITHUB_OUTPUT"
 
+      - name: Reconcile retained checkpoint publication
+        timeout-minutes: 34
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+          CHECKPOINT_MODE: reconcile
+        run: python3 scripts/verify_discord_checkpoint_migration.py
+
       - name: Restore verified private checkpoint
         timeout-minutes: 10
         id: restore
+        if: ${{ success() && steps.reconcile.outputs.recovered == 'false' }}
         env:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
@@ -93,6 +105,7 @@ jobs:
       - name: Sync native Discord state
         timeout-minutes: 22
         id: sync
+        if: ${{ success() && steps.restore.outcome == 'success' }}
         continue-on-error: true
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -150,7 +163,7 @@ jobs:
 
       - name: Require successful native ingestion
         timeout-minutes: 1
-        if: ${{ always() && !cancelled() && steps.sync.outcome != 'success' }}
+        if: ${{ always() && !cancelled() && steps.sync.outcome != 'skipped' && steps.sync.outcome != 'success' }}
         run: |
           echo "::error::Native ingestion did not complete. Publication was not requested; check the private checkpoint step for retained progress."
           exit 1
@@ -160,6 +173,7 @@ jobs:
         id: git-publish
         if: ${{ success() && steps.checkpoint.outcome == 'success' }}
         env:
+          GH_TOKEN: ${{ github.token }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
@@ -171,6 +185,7 @@ jobs:
           git config --global user.email "discrawl-publisher@users.noreply.github.com"
           trap 'rm -f "$GIT_CREDENTIALS"' EXIT
           trap 'echo "::error::Private archive publication failed."; exit 1' ERR
+          MESSAGE=$(CHECKPOINT_MODE=publication-message python3 scripts/verify_discord_checkpoint_migration.py)
           BACKUP_REMOTE="https://github.com/${DISCRAWL_BACKUP_REPOSITORY}.git"
           git clone --depth=1 --single-branch --branch main --no-tags -- "$BACKUP_REMOTE" "$BACKUP_REPO" >/dev/null 2>&1
           git -C "$BACKUP_REPO" config --add remote.origin.fetch '^refs/tags/*' >/dev/null 2>&1
@@ -180,6 +195,6 @@ jobs:
           DISCRAWL_PRODUCER_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
           "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" publish \
             --repo "$BACKUP_REPO" --remote "$BACKUP_REMOTE" --readme "$BACKUP_REPO/README.md" \
-            --message "sync: discord archive" --push >/dev/null 2>&1
+            --message "$MESSAGE" --push >/dev/null 2>&1
           echo "published=true" >> "$GITHUB_OUTPUT"
           echo "Archive publication completed."
