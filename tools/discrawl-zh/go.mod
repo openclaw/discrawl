@@ -2,7 +2,7 @@ module github.com/openclaw/discrawl/tools/discrawl-zh
 
 go 1.26
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require github.com/go-ego/gse v1.1.0
 

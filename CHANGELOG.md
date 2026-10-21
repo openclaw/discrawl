@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Security: Build source, CI, releases, Docker, and optional language helpers with Go 1.27.3 to fix the reachable certificate-validation advisory GO-2026-6809, retaining existing Go language minimums.
+
 - Refresh the Anthropic SDK, Google API and RPC clients, and Go telemetry dependencies while retaining the Go minimum and SQLite/libc compatibility pins.
 
 - Refresh the OpenAI SDK, YAML parser, and Go telemetry dependencies while preserving the Go minimum and SQLite/libc compatibility pins.

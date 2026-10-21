@@ -2,7 +2,7 @@ module github.com/openclaw/discrawl/tools/discrawl-ja
 
 go 1.26
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/ikawaha/kagome-dict/ipa v1.2.6
