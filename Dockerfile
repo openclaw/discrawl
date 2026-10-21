@@ -5,6 +5,7 @@ ARG GO_IMAGE_DIGEST=sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c5852
 ARG ALPINE_VERSION=3.24
 
 FROM golang:${GO_VERSION}-alpine@${GO_IMAGE_DIGEST} AS build
+RUN apk add --no-cache --upgrade ca-certificates=20261020-r0 ca-certificates-bundle=20261020-r0
 RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -16,6 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -o /out/discrawl ./cmd/discrawl
 
 FROM alpine:${ALPINE_VERSION}
+RUN apk add --no-cache --upgrade ca-certificates=20261020-r0 ca-certificates-bundle=20261020-r0
 RUN apk add --no-cache ca-certificates git openssh-client tzdata \
     && adduser -D -u 10001 -h /home/discrawl discrawl \
     && mkdir -p /data/config /data/data /data/cache /data/state \
