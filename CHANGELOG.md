@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix `sync --full --since` repeatedly resuming incomplete stored history and never syncing the guild's other channels; windowed full syncs now scan the normal channel catalog.
+
 ## 0.16.0 - 2026-10-20
 
 - Give private checkpoint upload, full authenticated SQLite verification, and promotion independent step budgets, preserving every custody check and the promotion reserve when verification is slow.
