@@ -1,3 +1,4 @@
+from test_private_discord_checkpoint import save
 import base64
 import contextlib
 import copy
@@ -25,7 +26,7 @@ class RecoveryTests(unittest.TestCase):
         self.seed = lambda: CheckpointTests.seed(self)
         self.restore_parent = lambda: CheckpointTests.restore_parent(self)
         self.parent = self.seed()
-        fixture_checkpoint.save(self.github, self.path, self.receipt, "success")
+        save(self.github, self.path, self.receipt, "success")
         self.release = next(r for r in self.github.releases.values() if r["tag_name"] == "discrawl-state-2-1")
         self.release.update(draft=True, published_at=None)
         self.github.latest = self.parent["release_id"]

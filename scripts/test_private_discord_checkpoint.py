@@ -24,6 +24,15 @@ CACHE = {"id": 1, "key": "discrawl-discord-db-Linux-main-1-1", "ref": "refs/head
          "version": "a" * 64, "created_at": "2026-01-01T00:00:00.000Z", "size_in_bytes": 1024}
 
 
+def save(github, database, receipt, outcome, migration=None, deadline=None):
+    pending, verified = database.parent / "pending.json", database.parent / "verified.json"
+    pending.unlink(missing_ok=True)
+    verified.unlink(missing_ok=True)
+    checkpoint.save(github, database, receipt, outcome, migration, deadline, pending)
+    checkpoint.verify_save(github, pending, verified, checkpoint.time.monotonic() + checkpoint.VERIFY_TIMEOUT)
+    return checkpoint.promote_save(github, verified, deadline if deadline is not None else checkpoint.time.monotonic() + checkpoint.PROMOTE_TIMEOUT)
+
+
 def native_database(path):
     db = sqlite3.connect(path)
     db.execute("PRAGMA journal_mode=WAL")
@@ -146,7 +155,7 @@ class CheckpointTests(unittest.TestCase):
                 "outcome": outcome, "archive_commit": archive_commit}
 
     def seed(self):
-        ref = checkpoint.save(self.github, self.path, self.receipt, "migration", CACHE)
+        ref = save(self.github, self.path, self.receipt, "migration", CACHE)
         self.restore_parent()
         return ref
 
@@ -208,9 +217,9 @@ class CheckpointTests(unittest.TestCase):
 
     def test_private_round_trip_is_byte_exact_and_retains_only_current_and_parent(self):
         first = self.seed()
-        second = checkpoint.save(self.github, self.path, self.receipt, "success")
+        second = save(self.github, self.path, self.receipt, "success")
         self.restore_parent()
-        third = checkpoint.save(self.github, self.path, self.receipt, "failure")
+        third = save(self.github, self.path, self.receipt, "failure")
         self.assertEqual(self.github.latest, third["release_id"])
         self.assertEqual(set(self.github.releases), {second["release_id"], third["release_id"]})
         self.assertEqual(self.github.deleted, [first["release_id"]])
@@ -219,11 +228,11 @@ class CheckpointTests(unittest.TestCase):
         first = self.seed()
         self.github.fail_upload = True
         with self.assertRaises(checkpoint.CheckpointError):
-            checkpoint.save(self.github, self.path, self.receipt, "failure")
+            save(self.github, self.path, self.receipt, "failure")
         self.github.fail_upload = False
         self.run_id += 1
         with self.assertRaisesRegex(checkpoint.CheckpointError, "pending_draft"):
-            checkpoint.save(self.github, self.path, self.receipt, "success")
+            save(self.github, self.path, self.receipt, "success")
         self.assertEqual(len(self.github.releases), 2)
         self.assertEqual(self.github.latest, first["release_id"])
 
@@ -231,7 +240,7 @@ class CheckpointTests(unittest.TestCase):
         first = self.seed()
         self.github.corrupt_download = True
         with self.assertRaisesRegex(checkpoint.CheckpointError, "part_checksum"):
-            checkpoint.save(self.github, self.path, self.receipt, "success")
+            save(self.github, self.path, self.receipt, "success")
         self.assertEqual(self.github.latest, first["release_id"])
 
     def test_restore_failure_never_installs_a_database(self):
@@ -254,15 +263,15 @@ class CheckpointTests(unittest.TestCase):
         self.github.payloads[9999] = self.github.payloads[asset["id"]]
         asset["id"] = 9999
         with self.assertRaisesRegex(checkpoint.CheckpointError, "parent_changed"):
-            checkpoint.save(self.github, self.path, self.receipt, "success")
+            save(self.github, self.path, self.receipt, "success")
 
     def test_retention_failure_is_retried_before_next_ingestion(self):
         first = self.seed()
-        checkpoint.save(self.github, self.path, self.receipt, "success")
+        save(self.github, self.path, self.receipt, "success")
         self.restore_parent()
         self.github.fail_delete = True
         with self.assertRaises(checkpoint.CheckpointError):
-            checkpoint.save(self.github, self.path, self.receipt, "success")
+            save(self.github, self.path, self.receipt, "success")
         self.assertEqual(len(self.github.releases), 3)
         self.github.fail_delete = False
         self.restore_parent(prune=True)
@@ -284,7 +293,7 @@ class CheckpointTests(unittest.TestCase):
 
     def test_report_requires_exact_successful_published_producer(self):
         self.seed()
-        checkpoint.save(self.github, self.path, self.receipt, "success")
+        save(self.github, self.path, self.receipt, "success")
         self.restore_parent()
         source = json.loads(self.receipt.read_bytes())["manifest"]["source"]
         archive = self.root / "archive"
@@ -379,7 +388,7 @@ else:
                                          [sys.executable, "-c", "raise SystemExit(9)"]], 3, completion)
         self.assertEqual(result, 9)
         self.assertEqual(json.loads(completion.read_bytes()), {"reaped": True, "outcome": "failure"})
-        saved = checkpoint.save(self.github, self.path, self.receipt, "failure")
+        saved = save(self.github, self.path, self.receipt, "failure")
         restored = self.root / "failed-acquisition.sqlite"
         checkpoint.restore(self.github, restored, self.receipt)
         with contextlib.closing(checkpoint.readonly(restored)) as db:

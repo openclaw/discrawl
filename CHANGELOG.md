@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-10-20
+
+- Give private checkpoint upload, full authenticated SQLite verification, and promotion independent step budgets, preserving every custody check and the promotion reserve when verification is slow.
 
 - Security: Build source, CI, releases, Docker, and optional language helpers with Go 1.27.3 to fix the reachable certificate-validation advisory GO-2026-6809, retaining existing Go language minimums.
 

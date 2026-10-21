@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from test_private_discord_checkpoint import CheckpointTests, checkpoint
+from test_private_discord_checkpoint import CheckpointTests, checkpoint, save
 
 
 class SaveDeadlineTests(CheckpointTests):
@@ -15,9 +15,9 @@ class SaveDeadlineTests(CheckpointTests):
     def test_save_checks_source_and_authenticated_restore_only(self):
         self.seed()
         with patch.object(checkpoint, "database_facts", wraps=checkpoint.database_facts) as facts:
-            checkpoint.save(self.github, self.path, self.receipt, "success")
+            save(self.github, self.path, self.receipt, "success")
         self.assertEqual(facts.call_count, 2)
-        self.assertTrue(all(call.args[1] == self.github.deadline for call in facts.call_args_list[1:]))
+        self.assertIsNotNone(facts.call_args_list[1].args[1])
 
     def test_corrupted_snapshot_is_rejected_after_authentication_without_promotion(self):
         parent = self.seed()
@@ -30,7 +30,7 @@ class SaveDeadlineTests(CheckpointTests):
             return facts
         with patch.object(checkpoint, "snapshot", corrupt):
             with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*restore_parity"):
-                checkpoint.save(self.github, self.path, self.receipt, "success")
+                save(self.github, self.path, self.receipt, "success")
         self.assertEqual(self.github.latest, parent["release_id"])
         self.assertEqual(len(self.github.releases), 2)
 
@@ -69,26 +69,84 @@ class SaveDeadlineTests(CheckpointTests):
         with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
              patch.object(checkpoint, "download_database", restored):
             with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*publication_budget"):
-                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+                save(self.github, self.path, self.receipt, "success", deadline=100)
+        self.assertEqual(self.github.latest, parent["release_id"])
+
+    def test_slow_verification_gets_its_own_budget_and_cannot_spend_promotion_reserve(self):
+        self.seed()
+        pending, verified = self.root / "upload.json", self.root / "verified.json"
+        clock = [0]
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]):
+            checkpoint.save(self.github, self.path, self.receipt, "success", deadline=540, pending=pending)
+            clock[0] = 530
+            original = checkpoint.database_facts
+            def slow_sqlite(*args, **kwargs):
+                clock[0] = 1400  # Beyond the old entire-save budget; inside this verification step.
+                return original(*args, **kwargs)
+            with patch.object(checkpoint, "database_facts", slow_sqlite):
+                checkpoint.verify_save(self.github, pending, verified, deadline=1430)
+            with patch.object(checkpoint, "database_facts", side_effect=AssertionError("promotion scans SQLite")):
+                checkpoint.promote_save(self.github, verified, deadline=1580)
+        self.assertFalse(self.github.releases[self.github.latest]["draft"])
+        self.assertFalse(verified.exists())
+
+    def test_failed_verification_never_issues_promotion_receipt(self):
+        parent = self.seed()
+        pending, verified = self.root / "upload.json", self.root / "verified.json"
+        checkpoint.save(self.github, self.path, self.receipt, "success", pending=pending)
+        self.github.corrupt_download = True
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "part_checksum"):
+            checkpoint.verify_save(self.github, pending, verified, checkpoint.time.monotonic() + 900)
+        self.assertFalse(verified.exists())
+        self.assertEqual(self.github.latest, parent["release_id"])
+
+    def test_verification_timeout_retains_draft_without_authorizing_promotion(self):
+        parent = self.seed()
+        pending, verified = self.root / "upload.json", self.root / "verified.json"
+        checkpoint.save(self.github, self.path, self.receipt, "success", pending=pending)
+        clock = [0]
+        original = checkpoint.database_facts
+        def slow_sqlite(*args, **kwargs):
+            clock[0] = 901
+            return original(*args, **kwargs)
+        with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(checkpoint, "database_facts", slow_sqlite):
+            with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_timeout"):
+                checkpoint.verify_save(self.github, pending, verified, deadline=900)
+        self.assertFalse(verified.exists())
+        self.assertEqual(self.github.latest, parent["release_id"])
+        self.assertEqual(len(self.github.releases), 2)
+
+    def test_asset_replacement_between_verification_and_promotion_is_rejected(self):
+        parent = self.seed()
+        pending, verified = self.root / "upload.json", self.root / "verified.json"
+        checkpoint.save(self.github, self.path, self.receipt, "success", pending=pending)
+        checkpoint.verify_save(self.github, pending, verified, checkpoint.time.monotonic() + 900)
+        draft = next(release for release in self.github.releases.values() if release["draft"])
+        asset = draft["assets"][1]
+        self.github.payloads[9999] = self.github.payloads[asset["id"]]
+        asset["id"] = 9999
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "uploaded_manifest"):
+            checkpoint.promote_save(self.github, verified, checkpoint.time.monotonic() + 180)
         self.assertEqual(self.github.latest, parent["release_id"])
 
     def test_expiry_after_promotion_holds_without_deleting_or_retrying(self):
         self.seed()
-        checkpoint.save(self.github, self.path, self.receipt, "success")
+        save(self.github, self.path, self.receipt, "success")
         self.restore_parent()
         clock = [0]
         self.github.before_promote = lambda: clock.__setitem__(0, 101)
         with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
              patch.object(self.github, "api", wraps=self.github.api) as api:
             with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*checkpoint_timeout"):
-                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+                save(self.github, self.path, self.receipt, "success", deadline=100)
         self.assertEqual(len([call for call in api.call_args_list if len(call.args) > 1]), 1)
         self.assertEqual(len(self.github.releases), 3)
         self.assertEqual(self.github.deleted, [])
 
     def test_expiry_after_retirement_reports_hold_without_second_delete(self):
         oldest = self.seed()
-        checkpoint.save(self.github, self.path, self.receipt, "success")
+        save(self.github, self.path, self.receipt, "success")
         self.restore_parent()
         clock = [0]
         original = self.github.command
@@ -100,7 +158,7 @@ class SaveDeadlineTests(CheckpointTests):
         with patch.object(checkpoint.time, "monotonic", side_effect=lambda: clock[0]), \
              patch.object(self.github, "command", command):
             with self.assertRaisesRegex(checkpoint.CheckpointError, "checkpoint_save_hold.*checkpoint_timeout"):
-                checkpoint.save(self.github, self.path, self.receipt, "success", deadline=100)
+                save(self.github, self.path, self.receipt, "success", deadline=100)
         self.assertEqual(self.github.deleted, [oldest["release_id"]])
         self.assertEqual(len(self.github.releases), 2)
 
@@ -238,7 +296,7 @@ class SaveDeadlineTests(CheckpointTests):
                     return original_pack(*args, **kwargs)
             with self.subTest(hash=failed), patch.object(checkpoint, "pack", broken_pack):
                 with self.assertRaisesRegex(OSError, "hash failed"):
-                    checkpoint.save(self.github, self.path, self.receipt, "success")
+                    save(self.github, self.path, self.receipt, "success")
             self.assertEqual(self.github.latest, parent["release_id"])
             self.assertEqual(len(self.github.releases), 1)
 
@@ -265,7 +323,7 @@ class SaveDeadlineTests(CheckpointTests):
                                           (Path, "open", failed_file_close)):
             with self.subTest(close=name), patch.object(owner, name, replacement):
                 with self.assertRaisesRegex(OSError, "close failed"):
-                    checkpoint.save(self.github, self.path, self.receipt, "success")
+                    save(self.github, self.path, self.receipt, "success")
             self.assertEqual(self.github.latest, parent["release_id"])
             self.assertEqual(len(self.github.releases), 1)
 
@@ -277,14 +335,14 @@ class SaveDeadlineTests(CheckpointTests):
         def client(*, deadline):
             observed.append(deadline)
             return self.github
-        with patch.object(sys, "argv", ["checkpoint", "save", "--timeout", "840", "--db", str(self.path),
-                                        "--receipt", str(self.receipt), "--writer-receipt", str(completion)]), \
+        with patch.object(sys, "argv", ["checkpoint", "save", "--timeout", "540", "--db", str(self.path),
+                                        "--receipt", str(self.receipt), "--pending", str(self.root / "pending.json"), "--writer-receipt", str(completion)]), \
              patch.object(checkpoint, "execution_context"), patch.object(checkpoint, "GitHub", client), \
              patch.object(checkpoint.time, "monotonic", return_value=10), \
              patch.object(checkpoint, "save") as save:
             checkpoint.main()
-        self.assertEqual(observed, [850])
-        self.assertEqual(save.call_args.args[-1], 850)
+        self.assertEqual(observed, [550])
+        self.assertEqual(save.call_args.args[-2], 550)
 
 
 # The fixture class supplies setup/teardown helpers only in this module.

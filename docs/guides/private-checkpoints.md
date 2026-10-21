@@ -35,23 +35,34 @@ after that readback and a fresh check of its parent release and asset identities
 Workflow concurrency provides serialization; GitHub's latest update is not a
 server-side compare-and-swap operation.
 
-Ordinary saves share one 840-second deadline inside the unchanged 15-minute
-step. Source integrity, backup, compression, hashing, transfer and authenticated
-readback use that deadline. The intermediate backup is not scanned again: its
-hash and pinned source facts are both checked against the downloaded image.
-Packing carries the database hash from its raw input traversal and compressed
-part hashes from successful output writes, including the gzip trailer. It does
-not reread those local files only to hash them. Gzip level 1 favors compression
-speed over payload size; existing higher-compression checkpoints remain readable.
-The authenticated restored image still receives an independent disk hash and
-full SQLite checks. Fixed phase names and elapsed times separate download,
-reconstruction, disk verification
-and SQLite verification without exposing data. These reductions do not establish
-publication headroom until a complete run is measured.
-Promotion requires at least one minute remaining. Deadline checks are cooperative
-for filesystem and library calls; the outer minute is cleanup margin, not a hard
-completion guarantee. Any error after an attempted mutation holds the retained
-draft or published state for inspection, without a retry or rollback.
+Checkpoint saves use three sequential steps with independent deadlines:
+540 seconds for source integrity, backup, compression and upload; 900 seconds
+for authenticated download, reconstruction, disk hashing and full SQLite
+verification; and 180 seconds for promotion and retention. Their outer step
+caps are 10, 16 and 4 minutes respectively. The same split applies to initial
+migration. Slow SQLite verification can exhaust only its own budget; it cannot
+consume the promotion reserve.
+
+The upload step records the exact manifest, asset identities and verified parent
+in a private runner-local receipt. Only a complete authenticated restore creates
+the verification receipt consumed by promotion. These files stay on the same
+runner and are never uploaded as workflow artifacts. Promotion rechecks the
+original producer tuple, manifest, every asset identity and parent against those
+receipts before its one mutation, and still requires at least one minute left.
+A failed phase leaves its exact draft for operator reconciliation.
+
+The intermediate backup is not scanned again: its hash and pinned source facts
+are checked against the downloaded image. Packing carries the database hash
+from its raw input traversal and compressed part hashes from successful output
+writes, including the gzip trailer. Gzip level 1 favors compression speed over
+payload size; existing higher-compression checkpoints remain readable. The
+authenticated restored image receives an independent disk hash, full SQLite
+integrity and foreign-key checks, schema/version validation and all table counts.
+Fixed phase names and elapsed times expose timing without exposing data.
+Deadline checks are cooperative for filesystem and library calls; the outer
+minute is cleanup margin, not a hard completion guarantee. Any error after an
+attempted mutation holds the retained draft or published state for inspection,
+without a retry or rollback.
 
 Normal ingestion failure or the supervisor's time limit can still save committed
 partial progress, but the job fails and skips Git publication. A forced
@@ -76,9 +87,9 @@ the next ingestion until that same deletion succeeds. An interrupted draft also
 blocks new ingestion; an operator must reconcile that exact attempt. Do not
 bulk-delete releases by age or prefix.
 
-The publisher has a 125-minute job ceiling. Phase caps total at most 78 minutes:
+The publisher has a 125-minute job ceiling. Phase caps total at most 93 minutes:
 checkout/setup/build/configuration 18, policy validation 2, restore 10,
-ingestion/reap 22, checkpoint 15, outcome gate 1 and Git publication 10.
+ingestion/reap 22, checkpoint upload/verification/promotion 30, outcome gate 1 and Git publication 10.
 Acquisition shares one 20-minute deadline across its phases. This ceiling does not
 promise a fifteen-minute completion time or durable FIFO scheduling.
 
@@ -86,7 +97,7 @@ promise a fifteen-minute completion time or durable FIFO scheduling.
 
 The publisher runs at 43 minutes past each even UTC hour. The daily 06:17 UTC
 member refresh replaces the ordinary 06:43 run. The shortest scheduled gap is
-94 minutes, above the 78-minute sum of phase caps. GitHub can delay scheduled
+94 minutes, above the 93-minute sum of phase caps. GitHub can delay scheduled
 jobs; concurrency does not provide durable FIFO or a completion guarantee.
 Enable this cadence only after a manual run qualifies full-state custody and
 measured restore, acquisition, checkpoint and publication behavior.

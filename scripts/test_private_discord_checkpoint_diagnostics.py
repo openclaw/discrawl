@@ -230,7 +230,7 @@ class DiagnosticTests(unittest.TestCase):
         # Multiple parts prove the probe does not accidentally restore all data.
         import test_private_discord_checkpoint as fixtures
         with patch.object(fixtures.checkpoint, "source_identity", return_value=source), patch.object(fixtures.checkpoint, "RAW_PART", 32768):
-            fixtures.checkpoint.save(self.github, database, self.root / "unused", "migration", CACHE)
+            fixtures.save(self.github, database, self.root / "unused", "migration", CACHE)
         self.github.latest = None
         self.release = self.github.releases[1]
         self.release.update(draft=True, published_at=None)

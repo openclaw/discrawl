@@ -58,7 +58,7 @@ jobs:
   migrate:
     if: inputs.mode == 'migrate'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DISCRAWL_NO_AUTO_UPDATE: "1"
       EXPECTED_SHA: ${{ inputs.expected_sha }}
@@ -99,14 +99,40 @@ jobs:
           test "$MATCHED_KEY" = "$EXPECTED_KEY"
           python3 scripts/verify_discord_checkpoint_migration.py
 
-      - name: Save and independently restore full private checkpoint
+      - name: Upload full private checkpoint
+        timeout-minutes: 10
         env:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
           umask 077
           python3 scripts/private_discord_checkpoint.py migrate --db .discrawl-ci/discrawl.db \
-            --receipt "$RUNNER_TEMP/migration.json" --cache-identity "$RUNNER_TEMP/checkpoint-cache.json"
+            --receipt "$RUNNER_TEMP/migration.json" --cache-identity "$RUNNER_TEMP/checkpoint-cache.json" \
+            --pending "$RUNNER_TEMP/pending.json"
+
+      - name: Verify full private checkpoint
+        timeout-minutes: 16
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          python3 scripts/private_discord_checkpoint.py verify-save --timeout 900 \
+            --pending "$RUNNER_TEMP/pending.json" --verified "$RUNNER_TEMP/verified.json"
+
+      - name: Promote verified full private checkpoint
+        timeout-minutes: 4
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          python3 scripts/private_discord_checkpoint.py promote-save --timeout 180 --verified "$RUNNER_TEMP/verified.json"
+
+      - name: Independently restore full private checkpoint
+        timeout-minutes: 16
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
           python3 scripts/private_discord_checkpoint.py restore --db "$RUNNER_TEMP/independent-restore.sqlite" \
             --receipt "$RUNNER_TEMP/independent-restore.json"
           echo "Private full-state migration and independent restore verified; schedules remain unchanged."

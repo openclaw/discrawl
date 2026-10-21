@@ -115,16 +115,38 @@ jobs:
             --policy "$ACQUISITION_POLICY" --policy-sha256 "$POLICY_SHA256" --since "$HISTORY_SINCE" \
             --acquisition-mode "$HISTORY_MODE" "${member_flags[@]}"
 
-      - name: Verify private ingestion checkpoint
-        timeout-minutes: 15
-        id: checkpoint
+      - name: Upload private ingestion checkpoint
+        timeout-minutes: 10
+        id: checkpoint-upload
         if: ${{ always() && !cancelled() && steps.restore.outcome == 'success' && steps.sync.outcome != 'skipped' }}
         env:
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
-          python3 scripts/private_discord_checkpoint.py save --timeout 840 --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
-            --writer-receipt "$RUNNER_TEMP/discrawl/sync.json"
+          python3 scripts/private_discord_checkpoint.py save --timeout 540 --db "$DB" --receipt "$CHECKPOINT_RECEIPT" \
+            --writer-receipt "$RUNNER_TEMP/discrawl/sync.json" --pending "$RUNNER_TEMP/discrawl/pending.json"
+
+      - name: Verify private ingestion checkpoint
+        timeout-minutes: 16
+        id: checkpoint-verify
+        if: ${{ always() && !cancelled() && steps.checkpoint-upload.outcome == 'success' }}
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          python3 scripts/private_discord_checkpoint.py verify-save --timeout 900 \
+            --pending "$RUNNER_TEMP/discrawl/pending.json" --verified "$RUNNER_TEMP/discrawl/verified.json"
+
+      - name: Promote verified private checkpoint
+        timeout-minutes: 4
+        id: checkpoint
+        if: ${{ always() && !cancelled() && steps.checkpoint-verify.outcome == 'success' }}
+        env:
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+        run: |
+          python3 scripts/private_discord_checkpoint.py promote-save --timeout 180 \
+            --verified "$RUNNER_TEMP/discrawl/verified.json"
 
       - name: Require successful native ingestion
         timeout-minutes: 1

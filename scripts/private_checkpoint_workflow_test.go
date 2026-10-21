@@ -65,11 +65,18 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 		}
 		switch name {
 		case "publish-discord-backup":
-			checkpoint := strings.Index(text, "name: Verify private ingestion checkpoint")
+			checkpoint := strings.Index(text, "name: Upload private ingestion checkpoint")
+			verify := strings.Index(text, "name: Verify private ingestion checkpoint")
+			promote := strings.Index(text, "name: Promote verified private checkpoint")
 			guard := strings.Index(text, "name: Require successful native ingestion")
 			publish := strings.Index(text, "name: Publish Discord archive")
 			require.Greater(t, checkpoint, 0)
-			require.Greater(t, guard, checkpoint)
+			require.Greater(t, verify, checkpoint)
+			require.Greater(t, promote, verify)
+			require.Greater(t, guard, promote)
+			require.Contains(t, text[checkpoint:verify], "save --timeout 540")
+			require.Contains(t, text[verify:promote], "verify-save --timeout 900")
+			require.Contains(t, text[promote:guard], "promote-save --timeout 180")
 			require.Greater(t, publish, guard)
 			require.Contains(t, text[checkpoint:guard], "always() && !cancelled()")
 			require.Contains(t, text[checkpoint:guard], "--writer-receipt")

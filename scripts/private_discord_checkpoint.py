@@ -36,7 +36,9 @@ POLICY_REF = "refs/heads/maintainer-report-policy"
 POLICY_PATH = "policy/report-selectors.json"
 MAX_POLICY = 64 * 1024
 MAX_TARGETS = 4096
-SAVE_TIMEOUT = 840
+SAVE_TIMEOUT = 540
+VERIFY_TIMEOUT = 900
+PROMOTE_TIMEOUT = 180
 CHECKPOINT_PHASES = {"source_facts", "backup", "pack", "upload", "restore_verify", "promote",
                      "download", "reconstruct", "disk_verify", "sqlite_verify"}
 API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "release_list", "latest_read", "release_read",
@@ -527,6 +529,10 @@ def download_database(github, release, directory, draft=False, deadline=None):
             check_deadline(deadline)
             github.download(assets[part["name"]], directory / part["name"])
     unpack(manifest, directory, directory / "restored.sqlite", deadline)
+    return custody_receipt(manifest, assets, ref)
+
+
+def custody_receipt(manifest, assets, ref):
     inventory = [{"name": name, "id": asset["id"], "bytes": asset["size"], "digest": asset["digest"]}
                  for name, asset in sorted(assets.items())]
     return {"reference": ref, "manifest": manifest, "assets": inventory}
@@ -575,7 +581,10 @@ def restore(github, database, receipt, prune=False):
 
 
 def read_parent(github, receipt, directory):
-    saved = strict_json(receipt.read_bytes())
+    return check_parent(github, strict_json(receipt.read_bytes()), directory)
+
+
+def check_parent(github, saved, directory):
     keys(saved, "reference manifest assets")
     reference(saved["reference"])
     validate_manifest(saved["manifest"])
@@ -622,7 +631,8 @@ def require_no_drafts(github):
     return releases
 
 
-def save(github, database, receipt, outcome, migration=None, deadline=None):
+def save(github, database, receipt, outcome, migration=None, deadline=None, pending=None):
+    require(pending is not None and not pending.exists(), "pending_receipt")
     deadline = deadline if deadline is not None else time.monotonic() + SAVE_TIMEOUT
     github.deadline = min(deadline, getattr(github, "deadline", None) or deadline)
     deadline = github.deadline
@@ -662,29 +672,13 @@ def save(github, database, receipt, outcome, migration=None, deadline=None):
             standalone.unlink()
             for part in manifest["parts"]:
                 (directory / part["name"]).unlink()
-            verification = directory / "verification"
-            verification.mkdir()
-            with checkpoint_phase("restore_verify"):
-                current = download_database(github, github.api('/releases/' + str(draft["id"])), verification,
-                                            draft=True, deadline=deadline)
-                require(current["manifest"] == manifest, "uploaded_manifest")
-            if parent:
-                recheck = directory / "recheck"
-                recheck.mkdir()
-                require(read_parent(github, receipt, recheck) == parent, "parent_changed")
-            else:
-                require(github.api("/releases/latest", missing=True) is None, "parent_changed")
-            with checkpoint_phase("promote"):
-                require(deadline - time.monotonic() >= 60, "checkpoint_publication_budget")
-                published = github.api('/releases/' + str(draft["id"]), {"draft": False, "make_latest": "true"})
-                require(published.get("id") == draft["id"] and published.get("draft") is False
-                        and github.api("/releases/latest")["id"] == draft["id"], "promotion_unverified")
-                retention = directory / "retention"
-                retention.mkdir()
-                check_deadline(deadline)
-                retire_grandparent(github, current, retention)
-                check_deadline(deadline)
-            return current["reference"]
+            metadata = directory / "metadata"
+            metadata.mkdir()
+            uploaded, assets, ref = release_manifest(github, github.api('/releases/' + str(draft["id"])), metadata, draft=True)
+            require(uploaded == manifest, "uploaded_manifest")
+            check_deadline(deadline)
+            pending.write_bytes(canonical({"parent": parent, "current": custody_receipt(uploaded, assets, ref)}))
+            return ref
         except (CheckpointError, OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
             # A timed-out mutation may have committed. Preserve its draft or
             # published state for reconciliation; never retry or roll it back.
@@ -692,6 +686,76 @@ def save(github, database, receipt, outcome, migration=None, deadline=None):
                 reason = str(error) if isinstance(error, CheckpointError) else "internal"
                 raise CheckpointError("checkpoint_save_hold reason=" + reason) from error
             raise
+
+
+@contextlib.contextmanager
+def save_hold():
+    try:
+        yield
+    except (CheckpointError, OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
+        reason = str(error) if isinstance(error, CheckpointError) else "internal"
+        raise CheckpointError("checkpoint_save_hold reason=" + reason) from error
+
+
+def pending_save(pending):
+    saved = strict_json(pending.read_bytes())
+    keys(saved, "parent current")
+    keys(saved["current"], "reference manifest assets")
+    reference(saved["current"]["reference"])
+    manifest = validate_manifest(saved["current"]["manifest"])
+    source = manifest["source"]
+    require(source == source_identity(source["outcome"], source["archive_commit"]), "pending_source")
+    require((saved["parent"] is None and manifest["parent"] is None)
+            or (saved["parent"] is not None and saved["parent"]["reference"] == manifest["parent"]), "parent_identity")
+    return saved
+
+
+def verify_save(github, pending, verified, deadline):
+    # Only a complete authenticated restore can create the local promotion receipt.
+    require(not verified.exists(), "verified_receipt")
+    github.deadline = deadline
+    with save_hold(), tempfile.TemporaryDirectory(dir=pending.parent) as temp:
+        saved = pending_save(pending)
+        current = saved["current"]
+        with checkpoint_phase("restore_verify"):
+            restored = download_database(github, github.api('/releases/' + str(current["reference"]["release_id"])),
+                                         Path(temp), draft=True, deadline=deadline)
+            require(restored == current, "uploaded_manifest")
+        check_deadline(deadline)
+        verified.write_bytes(canonical(saved))
+    return current["reference"]
+
+
+def promote_save(github, verified, deadline):
+    # This fresh budget is never spent on SQLite, decompression or database hashing.
+    github.deadline = deadline
+    with save_hold(), tempfile.TemporaryDirectory(dir=verified.parent) as temp:
+        directory = Path(temp)
+        saved = pending_save(verified)
+        current, parent = saved["current"], saved["parent"]
+        with checkpoint_phase("promote"):
+            metadata = directory / "metadata"
+            metadata.mkdir()
+            release_id = current["reference"]["release_id"]
+            manifest, assets, ref = release_manifest(github, github.api('/releases/' + str(release_id)), metadata, draft=True)
+            require(custody_receipt(manifest, assets, ref) == current, "uploaded_manifest")
+            if parent:
+                recheck = directory / "parent"
+                recheck.mkdir()
+                require(check_parent(github, parent, recheck) == parent, "parent_changed")
+            else:
+                require(github.api("/releases/latest", missing=True) is None, "parent_changed")
+            require(deadline - time.monotonic() >= 60, "checkpoint_publication_budget")
+            published = github.api('/releases/' + str(release_id), {"draft": False, "make_latest": "true"})
+            require(published.get("id") == release_id and published.get("draft") is False
+                    and github.api("/releases/latest")["id"] == release_id, "promotion_unverified")
+            retention = directory / "retention"
+            retention.mkdir()
+            check_deadline(deadline)
+            retire_grandparent(github, current, retention)
+            check_deadline(deadline)
+        verified.unlink()
+    return current["reference"]
 
 
 def report_ready(receipt, archive):
@@ -876,11 +940,13 @@ def run_writers(commands, timeout, completion=None):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__, epilog="acquire also accepts --with-members for its guild refresh.")
-    parser.add_argument("operation", choices=("restore", "save", "migrate", "run", "report-check", "policy", "acquire"))
+    parser.add_argument("operation", choices=("restore", "save", "migrate", "verify-save", "promote-save", "run", "report-check", "policy", "acquire"))
     parser.add_argument("--db", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--writer-receipt", type=Path)
     parser.add_argument("--cache-identity", type=Path)
+    parser.add_argument("--pending", type=Path)
+    parser.add_argument("--verified", type=Path)
     parser.add_argument("--timeout", type=int)
     parser.add_argument("--prune", action="store_true")
     parser.add_argument("--archive", type=Path)
@@ -915,27 +981,36 @@ def main():
     if args.operation == "report-check":
         require(args.receipt is not None and args.archive is not None, "arguments")
         return 0 if report_ready(args.receipt, args.archive) else 3
-    require(args.db is not None and args.receipt is not None, "arguments")
     execution_context()
+    limits = {"save": SAVE_TIMEOUT, "migrate": SAVE_TIMEOUT, "verify-save": VERIFY_TIMEOUT, "promote-save": PROMOTE_TIMEOUT}
     deadline = None
-    if args.operation in {"save", "migrate"}:
-        timeout = args.timeout if args.timeout is not None else SAVE_TIMEOUT if args.operation == "save" else 2700
-        require(60 < timeout <= (SAVE_TIMEOUT if args.operation == "save" else 2700), "checkpoint_timeout_argument")
+    if args.operation in limits:
+        timeout = args.timeout if args.timeout is not None else limits[args.operation]
+        require(60 < timeout <= limits[args.operation], "checkpoint_timeout_argument")
         deadline = time.monotonic() + timeout
     github = GitHub(deadline=deadline)
-    if args.operation == "restore":
-        ref = restore(github, args.db, args.receipt, args.prune)
+    if args.operation == "verify-save":
+        require(args.pending is not None and args.verified is not None, "arguments")
+        verify_save(github, args.pending, args.verified, deadline)
+    elif args.operation == "promote-save":
+        require(args.verified is not None, "arguments")
+        promote_save(github, args.verified, deadline)
     else:
-        migration = strict_json(args.cache_identity.read_bytes()) if args.operation == "migrate" else None
-        outcome = "migration"
-        if migration is None:
-            require(args.writer_receipt is not None, "writer_receipt")
-            completed = strict_json(args.writer_receipt.read_bytes())
-            keys(completed, "reaped outcome")
-            require(completed["reaped"] is True and completed["outcome"] in {"success", "failure", "cancelled"}, "writer_receipt")
-            outcome = completed["outcome"]
-        ref = save(github, args.db, args.receipt, outcome, migration, deadline)
-    print("private checkpoint verified")
+        require(args.db is not None and args.receipt is not None, "arguments")
+        if args.operation == "restore":
+            restore(github, args.db, args.receipt, args.prune)
+        else:
+            require(args.pending is not None, "arguments")
+            migration = strict_json(args.cache_identity.read_bytes()) if args.operation == "migrate" else None
+            outcome = "migration"
+            if migration is None:
+                require(args.writer_receipt is not None, "writer_receipt")
+                completed = strict_json(args.writer_receipt.read_bytes())
+                keys(completed, "reaped outcome")
+                require(completed["reaped"] is True and completed["outcome"] in {"success", "failure", "cancelled"}, "writer_receipt")
+                outcome = completed["outcome"]
+            save(github, args.db, args.receipt, outcome, migration, deadline, args.pending)
+    print("private checkpoint phase completed")
     return 0
 
 
