@@ -27,7 +27,14 @@ remain durable work rather than permission to admit an unknown descendant.
 
 Parent changes invalidate descendant decisions atomically. Message transactions
 check the persisted policy decision again, so an earlier in-memory decision
-cannot authorize a write after an ancestry change. Restart seeding uses retained
+cannot authorize a write after an ancestry change. The same admission rule runs
+before content I/O (page, exact-message and attachment requests): with
+configured exclusions the persisted decision must be `allowed`; without them a
+known tombstone on the channel or an ancestor still denies the request. A scope
+rejection observed at any of these points, including the final transaction, is
+a policy outcome: the event is ignored and pending work resolves as
+`excluded_by_collection_policy` rather than being recorded as a retryable
+failure. Restart seeding uses retained
 guild/channel/thread metadata without resurrecting existing tombstones.
 
 **Public consumers must require `collection_scope=allowed` on the channel and
@@ -105,7 +112,10 @@ Transient failures retain previous successful `text_content` and its success
 timestamp. Attachment status/text and the owning message's derived text/mutation
 clock commit together. Ordinary repair retries a bounded, oldest-attempt-first
 set using fresh message attachment URLs. A failed latest attempt is a freshness
-caveat even when useful prior text is retained. Current attachment text must not
+caveat even when useful prior text is retained. Status counts only actionable
+attachment failures, those on undeleted messages in channels whose persisted
+scope is `allowed`; failure receipts for deleted messages or channels that left
+collection scope are retained but no longer degrade health or get retried. Current attachment text must not
 be spliced into old message-event observations.
 
 ## Events, repair and status
