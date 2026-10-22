@@ -103,6 +103,21 @@ func (s *Store) ChannelCollectionAllowed(ctx context.Context, id, policy string)
 	return allowed > 0, err
 }
 
+// ChannelCollectionAdmitted applies the write-time admission rule before
+// content I/O: with a policy the channel must be allowed under it; without one
+// only a known tombstone on the channel or an ancestor denies admission.
+func (s *Store) ChannelCollectionAdmitted(ctx context.Context, id, policy string) (bool, error) {
+	if policy != "" {
+		return s.ChannelCollectionAllowed(ctx, id, policy)
+	}
+	var tombstones int
+	err := s.db.QueryRowContext(ctx, `with recursive ancestry(id,parent_id,deleted_at) as (
+		select id,parent_id,deleted_at from channels where id=?
+		union select c.id,c.parent_id,c.deleted_at from channels c join ancestry a on c.id=a.parent_id
+	) select count(*) from ancestry where deleted_at is not null`, id).Scan(&tombstones)
+	return tombstones == 0, err
+}
+
 type ScopeDecision struct{ State, Revision string }
 
 func (s *Store) SetChannelScopes(ctx context.Context, scopes map[string]ScopeDecision, policy string) error {

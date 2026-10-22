@@ -183,10 +183,9 @@ func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limi
 		}
 		mutation, err := buildMessageMutation(ctx, message, "", failure.GuildID, s.tailEmbeddings, s.attachmentTextEnabled)
 		if errors.Is(err, store.ErrCollectionScope) {
-			if err := s.store.ResolveFailureGeneration(ctx, failure, "excluded_by_collection_policy"); err != nil {
+			if err := s.resolveReplayExclusion(ctx, failure, &stats); err != nil {
 				return stats, err
 			}
-			stats.OutOfScope++
 			continue
 		}
 		if err != nil {
@@ -208,6 +207,13 @@ func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limi
 		if err := s.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
+			}
+			// Scope can change between building and the transactional guard.
+			if errors.Is(err, store.ErrCollectionScope) {
+				if err := s.resolveReplayExclusion(ctx, failure, &stats); err != nil {
+					return stats, err
+				}
+				continue
 			}
 			if recordErr := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayUpsert); recordErr != nil {
 				return stats, recordErr
@@ -251,6 +257,14 @@ func tailMessageReplayEventKind(failure store.Failure) (string, bool) {
 		return "", false
 	}
 	return normalizeTailMessageEventKind(failure.RelatedID)
+}
+
+func (s *Syncer) resolveReplayExclusion(ctx context.Context, failure store.Failure, stats *tailMessageReplayStats) error {
+	if err := s.store.ResolveFailureGeneration(ctx, failure, "excluded_by_collection_policy"); err != nil {
+		return err
+	}
+	stats.OutOfScope++
+	return nil
 }
 
 func (s *Syncer) advanceReplayCursor(ctx context.Context, failure store.Failure, advance bool) error {

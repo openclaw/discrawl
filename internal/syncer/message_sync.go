@@ -1224,7 +1224,7 @@ func syncErrorOutcome(err error) string {
 // attachmentScopeGuard returns the persisted-scope check used before every
 // attachment download, or nil when collection scope is not configured.
 func (s *Syncer) attachmentScopeGuard() func(context.Context, string) error {
-	if s == nil || s.store == nil || !s.channelExclusions.configured() {
+	if s == nil || s.store == nil {
 		return nil
 	}
 	return s.requirePersistedScope
@@ -1234,10 +1234,16 @@ func (s *Syncer) attachmentScopeGuard() func(context.Context, string) error {
 // no longer allowed under the configured policy, before any further content
 // request. A concurrent Gateway move can revoke scope during pagination.
 func (s *Syncer) requirePersistedScope(ctx context.Context, channelID string) error {
-	if s.store == nil || channelID == "" || !s.channelExclusions.configured() {
+	if s.store == nil || channelID == "" {
 		return nil
 	}
-	allowed, err := s.store.ChannelCollectionAllowed(ctx, channelID, s.channelExclusions.policyID())
+	// Without configured exclusions only known channel/ancestor tombstones
+	// deny admission, matching the write-time guard.
+	policy := ""
+	if s.channelExclusions.configured() {
+		policy = s.channelExclusions.policyID()
+	}
+	allowed, err := s.store.ChannelCollectionAdmitted(ctx, channelID, policy)
 	if err != nil {
 		return err
 	}

@@ -1038,7 +1038,9 @@ func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Stat
 		return Status{}, err
 	}
 	status.OldestFailureAt = parseTime(oldest)
-	if err := s.db.QueryRowContext(ctx, `select count(*) from message_attachments where text_status='failed'`).Scan(&status.AttachmentTextFailures); err != nil {
+	// Count only actionable failures: a deleted message or a channel that left
+	// collection scope keeps its historical receipt but is no longer retried.
+	if err := s.db.QueryRowContext(ctx, `select count(*) from message_attachments a join messages m on m.id=a.message_id join channels c on c.id=m.channel_id where a.text_status='failed' and m.deleted_at is null and c.collection_scope='allowed'`).Scan(&status.AttachmentTextFailures); err != nil {
 		return Status{}, err
 	}
 	guildCount, err := s.q.CountGuilds(ctx)
