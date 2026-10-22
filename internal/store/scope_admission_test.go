@@ -1,8 +1,10 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/openclaw/discrawl/internal/messagetext"
 	"github.com/stretchr/testify/require"
@@ -74,4 +76,40 @@ func TestStatusCountsOnlyActionableAttachmentFailures(t *testing.T) {
 	var retained int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_attachments where text_status='failed'`).Scan(&retained))
 	require.Equal(t, 3, retained, "historical failure receipts are retained")
+}
+
+func TestChannelScopeRevisionTracksStoredChannel(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	revision, err := s.ChannelScopeRevision(ctx, "missing")
+	require.NoError(t, err)
+	require.Empty(t, revision)
+	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c", GuildID: "g", Kind: "text", RawJSON: `{}`}))
+	revision, err = s.ChannelScopeRevision(ctx, "c")
+	require.NoError(t, err)
+	require.NotEmpty(t, revision)
+}
+
+func TestMarkObservedGuildDeletedRespectsNewerWrites(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.Error(t, s.MarkObservedGuildDeleted(ctx, "g", "", "left", time.Time{}))
+	require.NoError(t, s.MarkObservedGuildDeleted(ctx, "absent", "gateway", "left", time.Time{}), "an unknown guild is a no-op")
+	before := time.Now().Add(-time.Hour)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "guild", RawJSON: `{}`}))
+	deletedAt := func() string {
+		var deleted sql.NullString
+		require.NoError(t, s.DB().QueryRowContext(ctx, `select deleted_at from guilds where id='g'`).Scan(&deleted))
+		return deleted.String
+	}
+	require.NoError(t, s.MarkObservedGuildDeleted(ctx, "g", "gateway", "left", before))
+	require.Empty(t, deletedAt(), "a write after the deletion request is retained")
+	require.NoError(t, s.MarkObservedGuildDeleted(ctx, "g", "gateway", "left", time.Now().Add(time.Second)))
+	require.NotEmpty(t, deletedAt())
 }
