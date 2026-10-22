@@ -5,6 +5,9 @@ also request `fullfsync=1` and `checkpoint_fullfsync=1`. The settings belong to
 the private writer URI, so each physical connection opened by the pool receives
 them, including replacement connections. Writer startup checks the effective
 settings and fails on an error or mismatch. Read-only connections are unchanged.
+Snapshot imports adjust only temporary storage, cache size and WAL mode; they
+never lower a writer's synchronous policy, so the connection stays FULL during
+and after an import.
 
 The pinned modernc SQLite driver applies `_synchronous=FULL` after Crawlkit's
 `_pragma=synchronous(NORMAL)` default. Crawlkit still owns WAL mode, transaction

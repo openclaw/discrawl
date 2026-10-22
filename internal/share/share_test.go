@@ -1196,7 +1196,7 @@ func TestApplyImportPragmasBoundImportMemory(t *testing.T) {
 
 	var synchronous int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma synchronous`).Scan(&synchronous))
-	require.NotZero(t, synchronous)
+	require.Equal(t, 2, synchronous, "imports keep the durable writer's FULL synchronization")
 }
 
 func TestImportRepairsBlankMessageGuildIDs(t *testing.T) {

@@ -37,11 +37,13 @@ func (s *Syncer) channelList(
 ) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
 		started := time.Now().UTC()
-		channels, err := s.liveChannelList(ctx, guildID, mode, exclusions)
+		channels, observed, err := s.liveChannelList(ctx, guildID, mode, exclusions)
 		if err != nil {
 			return nil, false, err
 		}
-		if err := s.storeScopeMetadata(ctx, guildID, channels, s.channelExclusions, started); err != nil {
+		// Only provider observations are stored as metadata. Threads rebuilt
+		// from stored rows keep their retained raw payload and tombstones.
+		if err := s.storeScopeMetadata(ctx, guildID, observed, s.channelExclusions, started); err != nil {
 			return nil, false, err
 		}
 		if cachedChannels != nil {
@@ -232,10 +234,12 @@ func (s *Syncer) directChannel(ctx context.Context, channelID string, results ma
 	return result
 }
 
-func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, error) {
+// liveChannelList returns the crawl catalog and, separately, the channels
+// actually observed from Discord in this call (excluding stored-row rebuilds).
+func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode channelCatalogMode, exclusions channelExclusions) ([]*discordgo.Channel, []*discordgo.Channel, error) {
 	channels, err := s.client.GuildChannels(ctx, guildID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch channels for guild %s: %w", guildID, err)
+		return nil, nil, fmt.Errorf("fetch channels for guild %s: %w", guildID, err)
 	}
 	allChannels := make(map[string]*discordgo.Channel, len(channels))
 	for _, channel := range channels {
@@ -244,30 +248,49 @@ func (s *Syncer) liveChannelList(ctx context.Context, guildID string, mode chann
 	parentIDs := scopedThreadParentIDs(channels, exclusions)
 	if mode == channelCatalogIncremental {
 		if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, parentIDs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := s.appendIncrementalArchivedThreadCatalog(ctx, allChannels, parentIDs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return mapsToSlice(allChannels), nil
+		all := mapsToSlice(allChannels)
+		return all, all, nil
 	}
 	var storedRows []store.ChannelRow
+	rebuilt := map[string]*discordgo.Channel{}
 	if s.store != nil {
 		rows, err := s.store.Channels(ctx, guildID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		storedRows = rows
+		before := make(map[string]struct{}, len(allChannels))
+		for id := range allChannels {
+			before[id] = struct{}{}
+		}
 		mergeStoredThreadChannels(allChannels, rows)
+		for id, channel := range allChannels {
+			if _, live := before[id]; !live {
+				rebuilt[id] = channel
+			}
+		}
 	}
 	if len(storedThreadParentIDs(storedRows)) == 0 {
 		if err := s.appendThreadCatalog(ctx, allChannels, parentIDs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else if err := s.appendActiveThreadCatalog(ctx, allChannels, guildID, parentIDs); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return mapsToSlice(allChannels), nil
+	observed := make([]*discordgo.Channel, 0, len(allChannels))
+	for id, channel := range allChannels {
+		// A stored rebuild replaced by a live thread listing is an observation.
+		if previous, stored := rebuilt[id]; stored && previous == channel {
+			continue
+		}
+		observed = append(observed, channel)
+	}
+	return mapsToSlice(allChannels), observed, nil
 }
 
 func scopedThreadParentIDs(channels []*discordgo.Channel, exclusions channelExclusions) []string {

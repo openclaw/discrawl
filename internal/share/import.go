@@ -132,24 +132,20 @@ func applyImportPragmas(ctx context.Context, db *sql.DB) (func(context.Context) 
 	// enabled; journal_mode=off can leave the live DB malformed if the process
 	// or host dies mid-import. Keep temporary storage file-backed and bound the
 	// page cache so large imports and FTS rebuilds do not exhaust small hosts.
+	// The writer's synchronous policy is never lowered: durable writer
+	// connections stay FULL through imports and every later write.
 	for _, stmt := range []string{
 		`pragma temp_store = file`,
 		`pragma cache_size = -32768`,
 		`pragma journal_mode = wal`,
-		`pragma synchronous = normal`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return nil, fmt.Errorf("apply import pragma %q: %w", stmt, err)
 		}
 	}
 	return func(ctx context.Context) error {
-		for _, stmt := range []string{
-			`pragma journal_mode = wal`,
-			`pragma synchronous = normal`,
-		} {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("restore import pragma %q: %w", stmt, err)
-			}
+		if _, err := db.ExecContext(ctx, `pragma journal_mode = wal`); err != nil {
+			return fmt.Errorf("restore import pragma %q: %w", `pragma journal_mode = wal`, err)
 		}
 		return nil
 	}, nil

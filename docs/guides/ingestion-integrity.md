@@ -124,6 +124,14 @@ Its raw payload retains the provider timestamp/edit timestamp. An exact repeat
 does not append a duplicate snapshot. Missing provider content is not fabricated
 and a 404 alone is not converted into a message deletion.
 
+Automatic replay during tail repair recovers individual messages without
+advancing a channel's history frontier; ordinary REST repair still fetches any
+gap before them. A failed `GUILD_DELETE` replay tombstones the guild when the
+bot has lost access (missing access or unknown guild) and stores the current
+guild when access has returned. Full catalog scans store only channels observed
+from Discord in that scan; threads rebuilt from stored rows keep their retained
+payload and tombstones.
+
 Replay resolves only the failure generation it reconciled: a newer failure for
 the same identity recorded while replay was in flight stays pending.
 A failed member removal records the time of that removal event. A later removal

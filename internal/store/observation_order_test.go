@@ -89,8 +89,10 @@ func TestRemovalEventFailureTracksEachEventTime(t *testing.T) {
 		return report.Failures[0].FirstSeenAt
 	}
 
-	require.NoError(t, s.RecordEventFailure(ctx, ref, errors.New("first removal")))
+	received := time.Now().UTC().Add(-time.Minute)
+	require.NoError(t, s.RecordEventFailure(ctx, ref, errors.New("first removal"), received))
 	first := firstSeen()
+	require.True(t, first.Equal(received), "replay compares against the Gateway receipt time")
 	time.Sleep(2 * time.Millisecond)
 	// Replay retries keep the event time they are retrying.
 	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("replay retry")))
@@ -100,9 +102,9 @@ func TestRemovalEventFailureTracksEachEventTime(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	// A later removal of the same member is a new event, even after the
 	// earlier failure resolved, so replay must not judge it by the first time.
-	require.NoError(t, s.RecordEventFailure(ctx, ref, errors.New("second removal")))
+	require.NoError(t, s.RecordEventFailure(ctx, ref, errors.New("second removal"), time.Time{}))
 	require.True(t, firstSeen().After(first))
-	require.Error(t, s.RecordEventFailure(ctx, ref, nil))
+	require.Error(t, s.RecordEventFailure(ctx, ref, nil, time.Time{}))
 }
 
 func TestStaleMutationKeepsGenuineEventObservation(t *testing.T) {

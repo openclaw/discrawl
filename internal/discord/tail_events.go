@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -105,6 +106,7 @@ func newMemberTailTask(
 	task := tailTask{
 		eventType:    eventType,
 		failureClass: tailFailureClassMember,
+		receivedAt:   time.Now().UTC(),
 		run:          run,
 	}
 	for _, member := range members {

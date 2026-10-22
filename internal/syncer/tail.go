@@ -189,7 +189,7 @@ func (s *Syncer) runTailRepair(ctx context.Context, opts SyncOptions) (SyncStats
 	}
 	replayCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, replayErr := s.ReplayTailMessageFailures(replayCtx, opts.GuildIDs, TailMessageReplayLimit)
+	_, replayErr := s.replayTailMessages(replayCtx, opts.GuildIDs, TailMessageReplayLimit, false)
 	metadataCtx, cancelMetadata := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelMetadata()
 	metadataErr := s.replayMetadataFailures(metadataCtx, opts.GuildIDs)

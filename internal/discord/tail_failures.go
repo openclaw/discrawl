@@ -41,6 +41,7 @@ type TailFailure struct {
 	ChannelID           string
 	MessageID           string
 	UserID              string
+	ReceivedAt          time.Time
 	HandlerStage        TailFailureStage
 	HandlerStageElapsed time.Duration
 	HandlerElapsed      time.Duration
@@ -150,6 +151,7 @@ func newTailFailureFromExecution(task tailTask, execution tailTaskExecution) Tai
 		ChannelID:           channelID,
 		MessageID:           messageID,
 		UserID:              userID,
+		ReceivedAt:          task.receivedAt,
 		HandlerStage:        handlerStage,
 		HandlerStageElapsed: handlerStageElapsed,
 		HandlerElapsed:      execution.handlerElapsed,

@@ -51,6 +51,13 @@ func (s *Syncer) ReplayTailMessageFailures(ctx context.Context, guildIDs []strin
 }
 
 func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []string, limit int) (tailMessageReplayStats, error) {
+	return s.replayTailMessages(ctx, guildIDs, limit, true)
+}
+
+// replayTailMessages recovers individual failed messages. advanceCursor is
+// false for automatic tail repair: an exact recovery proves one message, not
+// the history before it, so it must not move the channel's history frontier.
+func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limit int, advanceCursor bool) (tailMessageReplayStats, error) {
 	stats := tailMessageReplayStats{}
 	if s == nil || s.store == nil {
 		return stats, nil
@@ -100,7 +107,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			continue
 		}
 		if eventKind == "delete" {
-			if err := s.replayTailMessageDelete(ctx, ref); err != nil {
+			if err := s.replayTailMessageDelete(ctx, failure); err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return stats, ctxErr
 				}
@@ -127,7 +134,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 				continue
 			}
 			if !allowed {
-				if err := s.store.ResolveFailureWithReason(ctx, ref, "excluded_by_collection_policy"); err != nil {
+				if err := s.store.ResolveFailureGeneration(ctx, failure, "excluded_by_collection_policy"); err != nil {
 					return stats, err
 				}
 				stats.OutOfScope++
@@ -151,7 +158,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 		if fetchErr != nil {
 			var rest *discordgo.RESTError
 			if errors.As(fetchErr, &rest) && rest.Response != nil && rest.Response.StatusCode == http.StatusNotFound && rest.Message != nil && (rest.Message.Code == 10003 || rest.Message.Code == 10008) {
-				if err := s.store.ResolveFailureWithReason(ctx, ref, "provider_unavailable_404"); err != nil {
+				if err := s.store.ResolveFailureGeneration(ctx, failure, "provider_unavailable_404"); err != nil {
 					return stats, err
 				}
 				stats.Unavailable++
@@ -200,7 +207,8 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 			stats.Deferred++
 			continue
 		}
-		if err := s.store.AdvanceChannelLatestMessageID(ctx, failure.ChannelID, failure.MessageID); err != nil {
+		// Automatic repair keeps the history frontier for ordinary REST repair.
+		if err := s.advanceReplayCursor(ctx, failure, advanceCursor); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr
 			}
@@ -213,7 +221,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return stats, ctxErr
 		}
-		if err := s.resolveTailMessageReplay(ctx, ref); err != nil {
+		if err := s.resolveTailMessageReplay(ctx, failure); err != nil {
 			return stats, err
 		}
 		stats.Recovered++
@@ -237,16 +245,23 @@ func tailMessageReplayEventKind(failure store.Failure) (string, bool) {
 	return normalizeTailMessageEventKind(failure.RelatedID)
 }
 
-func (s *Syncer) replayTailMessageDelete(ctx context.Context, ref store.FailureRef) error {
+func (s *Syncer) advanceReplayCursor(ctx context.Context, failure store.Failure, advance bool) error {
+	if !advance {
+		return nil
+	}
+	return s.store.AdvanceChannelLatestMessageID(ctx, failure.ChannelID, failure.MessageID)
+}
+
+func (s *Syncer) replayTailMessageDelete(ctx context.Context, failure store.Failure) error {
 	if err := s.store.MarkMessageDeletedWithoutEvent(
 		ctx,
-		ref.GuildID,
-		ref.ChannelID,
-		ref.MessageID,
+		failure.GuildID,
+		failure.ChannelID,
+		failure.MessageID,
 	); err != nil {
 		return err
 	}
-	return s.resolveTailMessageReplay(ctx, ref)
+	return s.resolveTailMessageReplay(ctx, failure)
 }
 
 func (s *Syncer) recordTailMessageReplayFailure(ctx context.Context, ref store.FailureRef, failure error) error {
@@ -255,8 +270,10 @@ func (s *Syncer) recordTailMessageReplayFailure(ctx context.Context, ref store.F
 	return s.store.RecordFailure(ledgerCtx, ref, failure)
 }
 
-func (s *Syncer) resolveTailMessageReplay(ctx context.Context, ref store.FailureRef) error {
+// resolveTailMessageReplay resolves only the failure generation this replay
+// read; a newer failure for the same message recorded meanwhile stays pending.
+func (s *Syncer) resolveTailMessageReplay(ctx context.Context, failure store.Failure) error {
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
-	return s.store.ResolveFailureWithReason(ledgerCtx, ref, "exact_message_reconciled")
+	return s.store.ResolveFailureGeneration(ledgerCtx, failure, "exact_message_reconciled")
 }

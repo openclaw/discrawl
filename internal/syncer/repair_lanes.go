@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -107,6 +108,8 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 			}
 		case kind == "CHANNEL_DELETE" || kind == "THREAD_DELETE":
 			err = h.OnChannelDelete(call, &discordgo.Channel{ID: f.ChannelID, GuildID: f.GuildID})
+		case kind == "GUILD_DELETE":
+			err = s.replayGuildDelete(call, f.GuildID, started)
 		case kind == "THREAD_LIST_SYNC":
 			var channels []*discordgo.Channel
 			channels, err = s.client.GuildThreadsActive(call, f.GuildID)
@@ -156,4 +159,35 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 		}
 	}
 	return nil
+}
+
+// replayGuildDelete reconciles a failed GUILD_DELETE. Lost access proves the
+// removal, so the retained guild is tombstoned; a successful fetch means the
+// bot has access again, and that newer observation is stored instead.
+func (s *Syncer) replayGuildDelete(ctx context.Context, guildID string, started time.Time) error {
+	g, err := s.client.Guild(ctx, guildID)
+	if guildAccessGone(err) {
+		return s.store.MarkGuildDeleted(ctx, guildID, "discord-gateway", "guild-delete-event-replay")
+	}
+	if err != nil {
+		return err
+	}
+	if g == nil || g.ID != guildID {
+		return errors.New("guild identity mismatch")
+	}
+	return s.store.UpsertObservedGuild(ctx, store.GuildRecord{ID: g.ID, Name: g.Name, Icon: g.Icon, RawJSON: marshalJSONString(g, "{}")}, started)
+}
+
+func guildAccessGone(err error) bool {
+	var rest *discordgo.RESTError
+	if !errors.As(err, &rest) || rest.Response == nil || rest.Message == nil {
+		return false
+	}
+	switch {
+	case rest.Response.StatusCode == http.StatusForbidden && rest.Message.Code == discordgo.ErrCodeMissingAccess:
+		return true
+	case rest.Response.StatusCode == http.StatusNotFound && rest.Message.Code == discordgo.ErrCodeUnknownGuild:
+		return true
+	}
+	return false
 }

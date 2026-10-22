@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -56,6 +57,7 @@ type tailTask struct {
 	channelID       string
 	messageID       string
 	userID          string
+	receivedAt      time.Time
 	failureMetadata *tailFailureMetadata
 	run             func(context.Context) error
 }
