@@ -177,9 +177,9 @@ func TestSnapshotFinalizeAndCommitBranches(t *testing.T) {
 
 	state := scanState{current: map[string]fileFingerprint{}}
 	candidates := []fileCandidate{{relKey: "Cache_Data/entry", fingerprint: fileFingerprint{Size: 10, ModUnixNS: 20}}}
-	require.NoError(t, commitSnapshot(ctx, s, Options{DryRun: true}, state, candidates, newSnapshot(), true, stats))
-	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), false, stats))
-	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), true, stats))
+	require.NoError(t, commitSnapshot(ctx, s, Options{DryRun: true}, state, candidates, newSnapshot(), true, totals, stats))
+	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), false, totals, stats))
+	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), true, totals, stats))
 	require.True(t, isImportedFingerprint(state.current["Cache_Data/entry"]))
 
 	require.NoError(t, checkpointScannedCandidates(ctx, s, Options{DryRun: true}, state, candidates, stats))

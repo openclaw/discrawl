@@ -217,7 +217,8 @@ func (s *Store) UpsertObservedChannel(ctx context.Context, channel ChannelRecord
 
 // UpsertCachedChannel stores channel metadata from a non-authoritative cache,
 // such as Discord Desktop. Cached metadata never resurrects a recorded
-// deletion: a tombstoned channel keeps its retained metadata and tombstone.
+// deletion (a tombstoned channel keeps its retained metadata and tombstone)
+// and never replaces stored ancestry or a known kind.
 func (s *Store) UpsertCachedChannel(ctx context.Context, channel ChannelRecord) error {
 	return s.upsertChannel(ctx, channel, time.Time{}, false)
 }
@@ -236,8 +237,18 @@ func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, starte
 	if err == nil && !started.IsZero() && parseTime(updated).After(started) {
 		return nil
 	}
-	if err == nil && !authoritative && deleted != "" {
-		return nil
+	if err == nil && !authoritative {
+		if deleted != "" {
+			return nil
+		}
+		// Cached metadata may be stale or incomplete: it never replaces
+		// stored ancestry or a known kind, and only fills missing values.
+		if parent != "" {
+			channel.ParentID = parent
+		}
+		if kind != "" && kind != "unknown" {
+			channel.Kind = kind
+		}
 	}
 	// Repeated full catalog observations need no write if the retained provider
 	// metadata and derived kind/ancestry are identical. Partial records do not

@@ -97,7 +97,8 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 	return stats, nil
 }
 
-func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, error) {
+func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, scanTotals, error) {
+	totals := newScanTotals()
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -116,7 +117,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		stats.FinishedAt = now().UTC()
-		return stats, snap, ignoreCacheFileError(err)
+		return stats, snap, totals, ignoreCacheFileError(err)
 	}
 	defer func() { _ = rootFS.Close() }()
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -195,16 +196,15 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 		state.current[relKey] = importedFingerprint(fingerprint)
 		return nil
 	}); err != nil {
-		return stats, snap, err
+		return stats, snap, totals, err
 	}
-	totals := newScanTotals()
 	for id := range finalizeSnapshot(snap, state.channels, totals, &stats, true) {
 		for _, key := range messageSources[id] {
 			state.current[key] = skippedFingerprint(state.current[key])
 		}
 	}
 	stats.FinishedAt = now().UTC()
-	return stats, snap, nil
+	return stats, snap, totals, nil
 }
 
 func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts Options, state scanState, stats *Stats) ([]fileCandidate, []fileCandidate, error) {

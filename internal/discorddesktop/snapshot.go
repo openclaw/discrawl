@@ -101,6 +101,11 @@ func finalizeSnapshot(snap snapshot, channelLookup map[string]store.ChannelRecor
 	for id := range snap.guilds {
 		totals.guilds[id] = struct{}{}
 	}
+	refreshTotalsStats(totals, stats)
+	return unresolved
+}
+
+func refreshTotalsStats(totals scanTotals, stats *Stats) {
 	stats.DMChannels = len(totals.dmChannels)
 	stats.SkippedChannels = len(totals.skippedChannels)
 	stats.Guilds = len(totals.guilds)
@@ -109,7 +114,23 @@ func finalizeSnapshot(snap snapshot, channelLookup map[string]store.ChannelRecor
 	stats.DMMessages = len(totals.dmMessages)
 	stats.GuildMessages = len(totals.guildMessages)
 	stats.SkippedMessages = len(totals.skippedMessages)
-	return unresolved
+}
+
+// recordPolicySkipped moves messages dropped by collection policy at write
+// time from the imported totals to the skipped totals, so import statistics
+// and persisted coverage report what was actually written.
+func recordPolicySkipped(skipped unresolvedMessages, totals scanTotals, stats *Stats) {
+	if len(skipped) == 0 {
+		return
+	}
+	for messageID, channelID := range skipped {
+		delete(totals.messages, messageID)
+		delete(totals.dmMessages, messageID)
+		delete(totals.guildMessages, messageID)
+		totals.skippedMessages[messageID] = struct{}{}
+		totals.skippedChannels[channelID] = struct{}{}
+	}
+	refreshTotalsStats(totals, stats)
 }
 
 func mergeUnresolved(dst, src unresolvedMessages) {
@@ -125,20 +146,24 @@ func recordUnresolved(unresolved unresolvedMessages, totals scanTotals, stats *S
 	stats.SkippedMessages = len(totals.skippedMessages)
 }
 
-func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state scanState, candidates []fileCandidate, snap snapshot, checkpoint bool, stats *Stats) error {
+func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state scanState, candidates []fileCandidate, snap snapshot, checkpoint bool, totals scanTotals, stats *Stats) error {
 	if opts.DryRun {
 		return nil
 	}
 	if !checkpoint {
 		if snapshotHasChanges(snap) {
-			return writeSnapshot(ctx, st, snapshotWithoutMessageEvents(snap), false)
+			skipped, err := writeSnapshot(ctx, st, snapshotWithoutMessageEvents(snap), false)
+			recordPolicySkipped(skipped, totals, stats)
+			return err
 		}
 		return nil
 	}
 	if snapshotHasChanges(snap) {
-		if err := writeSnapshot(ctx, st, snap, false); err != nil {
+		skipped, err := writeSnapshot(ctx, st, snap, false)
+		if err != nil {
 			return err
 		}
+		recordPolicySkipped(skipped, totals, stats)
 	} else if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
@@ -215,20 +240,20 @@ func copyChannelLookup(in map[string]store.ChannelRecord) map[string]store.Chann
 	return out
 }
 
-func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bool) error {
+func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bool) (unresolvedMessages, error) {
 	if prune {
 		if err := st.DeleteGuildData(ctx, "@unknown"); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	guilds := mapValues(snap.guilds)
 	sort.Slice(guilds, func(i, j int) bool { return guilds[i].ID < guilds[j].ID })
 	for _, guild := range guilds {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if err := st.UpsertGuild(ctx, guild); err != nil {
-			return recordImportFailure(ctx, st, store.FailureRef{
+			return nil, recordImportFailure(ctx, st, store.FailureRef{
 				Operation: "import_guild",
 				Source:    "wiretap",
 				GuildID:   guild.ID,
@@ -239,17 +264,17 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			Source:    "wiretap",
 			GuildID:   guild.ID,
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	channels := mapValues(snap.channels)
 	sort.Slice(channels, func(i, j int) bool { return channels[i].ID < channels[j].ID })
 	for _, channel := range channels {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if err := st.UpsertCachedChannel(ctx, channel); err != nil {
-			return recordImportFailure(ctx, st, store.FailureRef{
+			return nil, recordImportFailure(ctx, st, store.FailureRef{
 				Operation: "import_channel",
 				Source:    "wiretap",
 				GuildID:   channel.GuildID,
@@ -262,16 +287,16 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			GuildID:   channel.GuildID,
 			ChannelID: channel.ID,
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	messages, err := admittedCachedMessages(ctx, st, mapValues(snap.messages))
+	messages, skipped, err := admittedCachedMessages(ctx, st, mapValues(snap.messages))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sort.Slice(messages, func(i, j int) bool { return messages[i].Record.ID < messages[j].Record.ID })
 	if err := st.UpsertMessages(ctx, messages); err != nil {
-		return recordImportFailure(ctx, st, store.FailureRef{
+		return nil, recordImportFailure(ctx, st, store.FailureRef{
 			Operation: "import_messages",
 			Source:    "wiretap",
 		}, err)
@@ -284,24 +309,25 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 		Operation: "import_messages",
 		Source:    "wiretap",
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	if err := resolveImportMessageFailures(ctx, st, messageIDs); err != nil {
-		return err
+		return nil, err
 	}
 	if prune {
 		if err := st.DeleteOrphanChannels(ctx, DirectMessageGuildID); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano))
+	return skipped, st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
 // admittedCachedMessages drops cached messages whose channel or an ancestor
 // carries a recorded deletion. That is a collection-policy outcome rather than
 // an import failure, so one tombstoned channel cannot block the whole import.
-func admittedCachedMessages(ctx context.Context, st *store.Store, messages []store.MessageMutation) ([]store.MessageMutation, error) {
+func admittedCachedMessages(ctx context.Context, st *store.Store, messages []store.MessageMutation) ([]store.MessageMutation, unresolvedMessages, error) {
 	admitted := map[string]bool{}
+	skipped := unresolvedMessages{}
 	out := messages[:0]
 	for _, message := range messages {
 		channelID := message.Record.ChannelID
@@ -309,15 +335,17 @@ func admittedCachedMessages(ctx context.Context, st *store.Store, messages []sto
 		if !known {
 			var err error
 			if allowed, err = st.ChannelCollectionAdmitted(ctx, channelID, ""); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			admitted[channelID] = allowed
 		}
 		if allowed {
 			out = append(out, message)
+		} else {
+			skipped[message.Record.ID] = channelID
 		}
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 func recordImportFailure(ctx context.Context, st *store.Store, ref store.FailureRef, failure error) error {

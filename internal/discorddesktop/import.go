@@ -86,7 +86,7 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		return Stats{}, err
 	}
 	if opts.FullCache {
-		stats, snap, err := scanFullCache(ctx, opts, state)
+		stats, snap, totals, err := scanFullCache(ctx, opts, state)
 		if err != nil {
 			return stats, err
 		}
@@ -94,9 +94,11 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		if opts.DryRun {
 			return stats, nil
 		}
-		if err := writeSnapshot(ctx, st, snap, len(state.previous) == 0); err != nil {
+		skipped, err := writeSnapshot(ctx, st, snap, len(state.previous) == 0)
+		if err != nil {
 			return stats, err
 		}
+		recordPolicySkipped(skipped, totals, &stats)
 		if err := saveFileIndex(ctx, st, state.current); err != nil {
 			return stats, err
 		}

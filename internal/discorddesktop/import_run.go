@@ -72,7 +72,7 @@ func (r *importRun) finalizeAndCommit(candidates []fileCandidate, snap snapshot,
 	if len(candidates) == 0 && !snapshotHasChanges(snap) {
 		return nil
 	}
-	return commitSnapshot(r.ctx, r.st, r.opts, r.state, candidates, snap, checkpoint, r.stats)
+	return commitSnapshot(r.ctx, r.st, r.opts, r.state, candidates, snap, checkpoint, r.totals, r.stats)
 }
 
 func (r *importRun) deferCandidates(candidates []fileCandidate, unresolved unresolvedMessages) {
@@ -99,7 +99,7 @@ func (r *importRun) retryPending() error {
 	}
 	unresolved := finalizeSnapshot(retry, r.channelLookup, r.totals, r.stats, true)
 	checkpoint := len(unresolved) == 0
-	if err := commitSnapshot(r.ctx, r.st, r.opts, r.state, r.pending, retry, checkpoint, r.stats); err != nil {
+	if err := commitSnapshot(r.ctx, r.st, r.opts, r.state, r.pending, retry, checkpoint, r.totals, r.stats); err != nil {
 		return err
 	}
 	mergeSnapshotContext(r.base, retry)
