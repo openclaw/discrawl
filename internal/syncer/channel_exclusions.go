@@ -113,12 +113,21 @@ func (e channelExclusions) excludesKind(kind string) bool {
 	if _, ok := e.kinds[kind]; ok {
 		return true
 	}
-	if kind == "thread_announcement" {
+	switch kind {
+	case "thread_announcement":
 		_, ok := e.kinds["announcement"]
 		return ok
+	case "stage", stageChannelKind:
+		// Rows stored by earlier local builds may still use "stage" until the
+		// catalog is observed again; treat both spellings as one kind.
+		_, legacy := e.kinds["stage"]
+		_, native := e.kinds[stageChannelKind]
+		return legacy || native
 	}
 	return false
 }
+
+const stageChannelKind = "type_13"
 
 func (e channelExclusions) excludesDiscordChannel(channel *discordgo.Channel, channelByID map[string]*discordgo.Channel) bool {
 	if channel == nil {

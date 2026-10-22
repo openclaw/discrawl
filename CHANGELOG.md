@@ -6,6 +6,11 @@
 - Preserve attributed embed fields and whitespace boundaries in derived text; add durable attachment extraction status and retain successful text through transient failures.
 - Reconcile bounded exact-message and metadata failures during ordinary repair, expose failures and resumable text-repair progress in status, and preserve vectors when text is unchanged.
 - Capture supported bulk message deletions, channel/thread tombstones, role changes and thread-list metadata; include voice/stage text in scoped REST repair.
+- Open every archive and metrics writer connection with FULL synchronization and macOS full-fsync checkpoints, including pool replacements, while keeping read-only connections unchanged.
+- Reconcile full guild members inside the running tail owner with separately bounded pagination waits, without treating cached authors as complete enumeration.
+- Keep native Components V2 text as attributed parts and fence recovery pages so a strictly newer edit or deletion is never replaced by a delayed page.
+- Accept protected owner-only credential files for the bot token and embedding key in unattended services, with no symlinks, writable ancestors or granting ACLs, and no Keychain fallback once selected.
+- Add opt-in measurement of native OpenAI embedding attempts and usage.
 
 ## 0.16.0 - 2026-10-20
 

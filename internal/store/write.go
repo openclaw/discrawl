@@ -460,7 +460,18 @@ func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message Messag
 	}
 	// Fixed UTC precision makes normalized edit timestamps sortable. Keep
 	// tombstones and all related rows intact when an older cache is replayed.
-	return stored.DeletedAt != "" || (!started.IsZero() && parseTime(stored.UpdatedAt).After(started)) || normalizeStoredTime(message.EditedAt) < normalizeStoredTime(stored.EditedAt), nil
+	if stored.DeletedAt != "" {
+		return true, nil
+	}
+	incoming, current := normalizeStoredTime(message.EditedAt), normalizeStoredTime(stored.EditedAt)
+	if incoming != current {
+		// Provider edit order decides when it exists. A strictly newer edit
+		// wins even after local projection-only writes advanced updated_at.
+		return incoming < current, nil
+	}
+	// Equal or absent provider revisions cannot be ordered by Discord. Then
+	// any write after this observation started is treated as newer.
+	return !started.IsZero() && parseTime(stored.UpdatedAt).After(started), nil
 }
 
 func (s *Store) upsertMessageTx(
@@ -524,6 +535,10 @@ func (s *Store) upsertMessageTx(
 		if _, err := tx.ExecContext(ctx, `update messages set text_parts_json=?,text_version=? where id=?`, message.TextPartsJSON, message.TextVersion, message.ID); err != nil {
 			return err
 		}
+	} else if _, err := tx.ExecContext(ctx, `update messages set text_parts_json='[]',text_version=0 where id=? and text_version<>0`, message.ID); err != nil {
+		// A writer without an attributed projection (for example a Desktop
+		// import) supersedes earlier parts; never keep stale provenance.
+		return err
 	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {

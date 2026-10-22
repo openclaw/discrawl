@@ -125,6 +125,34 @@ func (s *Store) RecordFailure(ctx context.Context, ref FailureRef, failure error
 	return s.pruneResolvedFailures(ctx, now)
 }
 
+// RecordEventFailure records a newly observed event whose replay compares
+// provider state against that event's time. Unlike retries recorded through
+// RecordFailure, a new event for the same identity replaces first_seen_at, so
+// replay never judges a later event by an earlier one.
+func (s *Store) RecordEventFailure(ctx context.Context, ref FailureRef, failure error) error {
+	if failure == nil {
+		return errors.New("event failure is required")
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err := recordFailure(ctx, tx, ref, failure, now); err != nil {
+		return err
+	}
+	ref = normalizeFailureRef(mergeFailureRef(ref, FailureRefFromError(failure)))
+	if _, err := tx.ExecContext(ctx, `update failure_ledger set first_seen_at=? where operation=? and source=? and guild_id=? and channel_id=? and message_id=? and related_kind=? and related_id=?`,
+		now.Format(timeLayout), ref.Operation, ref.Source, ref.GuildID, ref.ChannelID, ref.MessageID, ref.RelatedKind, ref.RelatedID); err != nil {
+		return fmt.Errorf("record %s/%s event time: %w", ref.Source, ref.Operation, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.pruneResolvedFailures(ctx, now)
+}
+
 // RecordFailureWithMessageScope atomically validates an existing message's scope
 // and records the failure under either that scope or the complete supplied scope.
 func (s *Store) RecordFailureWithMessageScope(

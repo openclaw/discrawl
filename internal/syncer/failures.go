@@ -85,7 +85,12 @@ func (t *tailHandler) RecordTailFailure(failure discordclient.TailFailure) error
 		if failure.Code != "" {
 			cause += " (" + failure.Code + ")"
 		}
-		return t.store.RecordFailure(ctx, store.FailureRef{Operation: "tail_metadata", Source: "discord", GuildID: failure.GuildID, ChannelID: failure.ChannelID, RelatedKind: "gateway_event", RelatedID: failure.EventType + ":" + failure.UserID}, errors.New(cause))
+		ref := store.FailureRef{Operation: "tail_metadata", Source: "discord", GuildID: failure.GuildID, ChannelID: failure.ChannelID, RelatedKind: "gateway_event", RelatedID: failure.EventType + ":" + failure.UserID}
+		if failure.EventType == "GUILD_MEMBER_REMOVE" {
+			// Removal replay compares the member against this event's time.
+			return t.store.RecordEventFailure(ctx, ref, errors.New(cause))
+		}
+		return t.store.RecordFailure(ctx, ref, errors.New(cause))
 	}
 	failureKind, durableFailure, ok := tailMessageFailureSentinel(failure.Kind)
 	if !ok {

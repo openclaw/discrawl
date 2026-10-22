@@ -28,8 +28,9 @@ Prepare recovery under the source owner's normal maintenance process:
    cursors, history and exclusions intact. Existing normal startup repair can
    recover those ranges while Gateway capture runs.
 5. REST pages carry their request-start observation time into the existing
-   transactional revision guard. A newer Gateway mutation or deletion wins over
-   a stale page, including when provider edit timestamps are absent. The guard
+   transactional revision guard. A deletion or a strictly newer provider edit
+   wins; when edit timestamps are equal or absent, a write recorded after the
+   page started wins over the stale page. The guard
    covers current text and dependent projections together. A page's fetched-row
    count does not prove every row was applied: verify exact candidates afterward.
 6. Verify components, attributed text, search and source frontiers. Report

@@ -78,3 +78,17 @@ func TestVoiceAndStageRepairUsesExistingCursor(t *testing.T) {
 		require.Equal(t, kind, channelTypeFromKind(channelKind(&discordgo.Channel{Type: kind})))
 	}
 }
+
+func TestStageKindKeepsExclusionAndLegacyCompatibility(t *testing.T) {
+	t.Parallel()
+	stage := &discordgo.Channel{ID: "s", Type: discordgo.ChannelTypeGuildStageVoice}
+	require.Equal(t, "type_13", channelKind(stage))
+	require.Equal(t, discordgo.ChannelTypeGuildStageVoice, channelTypeFromKind("stage"), "rows stored by earlier local builds")
+	for _, configured := range []string{"type_13", "stage"} {
+		exclusions := newChannelScope(nil, []string{configured}, nil)
+		require.True(t, exclusions.excludesKind("type_13"), configured)
+		require.True(t, exclusions.excludesKind("stage"), configured)
+		require.True(t, exclusions.excludesDiscordChannel(stage, nil), configured)
+		require.False(t, exclusions.excludesKind("voice"), configured)
+	}
+}

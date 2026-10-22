@@ -778,9 +778,9 @@ func channelKind(channel *discordgo.Channel) string {
 		return "thread_announcement"
 	case discordgo.ChannelTypeGuildVoice:
 		return "voice"
-	case discordgo.ChannelTypeGuildStageVoice:
-		return "stage"
 	default:
+		// Stage channels keep the established "type_13" kind used by
+		// exclusions, coverage and incomplete-channel classification.
 		return fmt.Sprintf("type_%d", channel.Type)
 	}
 }
@@ -804,6 +804,7 @@ func channelTypeFromKind(kind string) discordgo.ChannelType {
 	case "voice":
 		return discordgo.ChannelTypeGuildVoice
 	case "stage":
+		// Legacy spelling written by earlier local builds; read-only alias.
 		return discordgo.ChannelTypeGuildStageVoice
 	default:
 		// Preserve native numeric kinds without turning unknown channel types

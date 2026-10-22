@@ -33,10 +33,17 @@ Bot API writes preserve a stored message with a later `edited_at` or a deletion
 tombstone. This applies to REST pages and Gateway refetches, and protects the
 message and its attachment, mention, search, and embedding projections in the
 same transaction. A newer explicit content clear still replaces the old text.
-Equal edit timestamps remain eligible for refresh. An absent incoming edit time
-cannot replace a known later edit; when both edit times are absent, the later
-observation can still replace the row. These timestamps do not establish a total
+A strictly newer incoming `edited_at` always replaces the row, even if a local
+projection-only write (text repair or attachment bookkeeping) touched it after
+the request started. An absent incoming edit time cannot replace a known later
+edit. When the edit times are equal or both absent, Discord provides no order:
+a write recorded after the page or refetch started is kept, otherwise the later
+observation replaces the row. These timestamps do not establish a total
 observation order or verify Discord Message Content authorization.
+
+A writer without an attributed text projection, such as a Desktop import, clears
+any earlier `text_parts_json`/`text_version` when it replaces a message, so stale
+provenance never describes superseded text.
 
 ## Targeting
 
