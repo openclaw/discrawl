@@ -21,6 +21,13 @@ platform flush where supported by SQLite and the filesystem. Durability still
 depends on the operating system, storage device and controller honoring flushes.
 A process-kill recovery test is not a physical power-loss certification.
 
+Each commit therefore pays a full flush, so bulk catalog observations commit
+once per batch rather than once per row. A Gateway `GUILD_CREATE` or
+`THREAD_LIST_SYNC` applies all of its channels and threads in one transaction:
+with per-channel commits, a guild with several thousand active threads took
+longer than the 30-second ordered tail handler deadline and left the catalog
+partially applied. A failed batch now applies none of its channels.
+
 Validation covers initial, simultaneous and replacement writer connections,
 read-only rejection of writes, special-character paths and private creation.
 Deployment acceptance additionally kills a disposable instance during an

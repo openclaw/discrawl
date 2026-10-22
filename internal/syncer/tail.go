@@ -598,6 +598,10 @@ func (t *tailHandler) OnGuildUpsert(ctx context.Context, guild *discordgo.Guild)
 	}); err != nil {
 		return err
 	}
+	// A large guild's GUILD_CREATE carries thousands of channels and active
+	// threads. Apply them in one transaction: one durable commit per channel
+	// exceeded the ordered handler deadline and left the catalog partial.
+	records := make([]store.ChannelRecord, 0, len(guild.Channels)+len(guild.Threads))
 	for _, c := range append(guild.Channels, guild.Threads...) {
 		if c == nil || c.ID == "" {
 			continue
@@ -608,9 +612,10 @@ func (t *tailHandler) OnGuildUpsert(ctx context.Context, guild *discordgo.Guild)
 		observed := *c
 		observed.GuildID = guild.ID
 		c = &observed
-		if err := t.store.UpsertChannel(ctx, toChannelRecord(c, marshalJSONString(c, "{}"))); err != nil {
-			return err
-		}
+		records = append(records, toChannelRecord(c, marshalJSONString(c, "{}")))
+	}
+	if err := t.store.UpsertChannels(ctx, records); err != nil {
+		return err
 	}
 	return t.refreshScope(ctx)
 }

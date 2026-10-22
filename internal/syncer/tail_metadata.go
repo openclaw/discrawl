@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/openclaw/discrawl/internal/store"
 )
 
 // The syncer owns exact refetch after checking collection scope. The Gateway
@@ -42,6 +44,7 @@ func (t *tailHandler) OnThreadList(ctx context.Context, guildID string, channels
 	if !t.allowGuild(guildID) {
 		return nil
 	}
+	records := make([]store.ChannelRecord, 0, len(channels))
 	for _, c := range channels {
 		if c == nil || c.ID == "" {
 			continue
@@ -51,9 +54,11 @@ func (t *tailHandler) OnThreadList(ctx context.Context, guildID string, channels
 			return errors.New("thread list guild mismatch")
 		}
 		observed.GuildID = guildID
-		if err := t.store.UpsertChannel(ctx, toChannelRecord(&observed, marshalJSONString(&observed, "{}"))); err != nil {
-			return err
-		}
+		records = append(records, toChannelRecord(&observed, marshalJSONString(&observed, "{}")))
+	}
+	// One transaction, as for GUILD_CREATE: a sync can list many threads.
+	if err := t.store.UpsertChannels(ctx, records); err != nil {
+		return err
 	}
 	return t.refreshScope(ctx)
 }

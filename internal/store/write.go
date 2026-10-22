@@ -215,6 +215,28 @@ func (s *Store) UpsertObservedChannel(ctx context.Context, channel ChannelRecord
 	return s.upsertChannel(ctx, channel, started, true)
 }
 
+// UpsertChannels applies authoritative channel metadata, such as a full
+// GUILD_CREATE or THREAD_LIST_SYNC catalog, in one transaction. Each record
+// follows UpsertChannel semantics; the batch commits once, so a large catalog
+// costs one durable commit instead of one per channel, and an interrupted
+// batch leaves no partially applied catalog.
+func (s *Store) UpsertChannels(ctx context.Context, channels []ChannelRecord) error {
+	if len(channels) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, channel := range channels {
+		if err := s.upsertChannelTx(ctx, tx, channel, time.Time{}, true); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // UpsertCachedChannel stores channel metadata from a non-authoritative cache,
 // such as Discord Desktop. Cached metadata never resurrects a recorded
 // deletion (a tombstoned channel keeps its retained metadata and tombstone)
@@ -229,8 +251,15 @@ func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, starte
 		return err
 	}
 	defer rollback(tx)
+	if err := s.upsertChannelTx(ctx, tx, channel, started, authoritative); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel ChannelRecord, started time.Time, authoritative bool) error {
 	var parent, kind, updated, raw, guild, deleted string
-	err = tx.QueryRowContext(ctx, `select coalesce(parent_id,''),kind,updated_at,raw_json,guild_id,coalesce(deleted_at,'') from channels where id=?`, channel.ID).Scan(&parent, &kind, &updated, &raw, &guild, &deleted)
+	err := tx.QueryRowContext(ctx, `select coalesce(parent_id,''),kind,updated_at,raw_json,guild_id,coalesce(deleted_at,'') from channels where id=?`, channel.ID).Scan(&parent, &kind, &updated, &raw, &guild, &deleted)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -264,10 +293,8 @@ func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, starte
 	if err = s.q.WithTx(tx).UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout))); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `update channels set deleted_at=null,deletion_source=null where id=?`, channel.ID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = tx.ExecContext(ctx, `update channels set deleted_at=null,deletion_source=null where id=?`, channel.ID)
+	return err
 }
 
 // MergeMembers refreshes observed members without treating absence as deletion.
