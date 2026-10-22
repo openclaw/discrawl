@@ -95,6 +95,14 @@ func (s *Store) ChannelScopeRevision(ctx context.Context, id string) (string, er
 	return revision, err
 }
 
+// ChannelCollectionAllowed reports whether a stored, undeleted channel is
+// currently allowed under policy, matching the write-time scope guard.
+func (s *Store) ChannelCollectionAllowed(ctx context.Context, id, policy string) (bool, error) {
+	var allowed int
+	err := s.db.QueryRowContext(ctx, `select count(*) from channels where id=? and deleted_at is null and collection_scope='allowed' and scope_policy=?`, id, policy).Scan(&allowed)
+	return allowed > 0, err
+}
+
 type ScopeDecision struct{ State, Revision string }
 
 func (s *Store) SetChannelScopes(ctx context.Context, scopes map[string]ScopeDecision, policy string) error {

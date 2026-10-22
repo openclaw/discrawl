@@ -226,3 +226,51 @@ func TestMemberRemoveReplayUsesCurrentMembership(t *testing.T) {
 	transient := &memberLookupClient{err: errors.New("provider unavailable")}
 	require.Error(t, New(transient, s, nil).replayMemberRemove(ctx, failure, "u1", time.Now().UTC()))
 }
+
+type scopeRevokingPageClient struct {
+	fakeClient
+	revoke func()
+	calls  int
+}
+
+func (c *scopeRevokingPageClient) ChannelMessages(context.Context, string, int, string, string) ([]*discordgo.Message, error) {
+	c.calls++
+	if c.calls == 1 {
+		c.revoke()
+	}
+	return []*discordgo.Message{{
+		ID: "500", ChannelID: "c", GuildID: "g1", Content: "excluded content", Timestamp: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		Author: &discordgo.User{ID: "u1", Username: "user"},
+	}}, nil
+}
+
+func TestPaginationStopsWhenChannelLeavesScope(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	for _, c := range []store.ChannelRecord{
+		{ID: "x", GuildID: "g1", Kind: "category", Name: "excluded", RawJSON: `{}`},
+		{ID: "c", GuildID: "g1", Kind: "text", Name: "moving", RawJSON: `{}`},
+	} {
+		require.NoError(t, s.UpsertChannel(ctx, c))
+	}
+	client := &scopeRevokingPageClient{}
+	svc := New(client, s, nil)
+	svc.SetChannelExclusions([]string{"x"}, nil)
+	_, err := refreshCollectionScopes(ctx, s, svc.channelExclusions)
+	require.NoError(t, err)
+	client.revoke = func() {
+		// A concurrent Gateway update moves the channel under the exclusion.
+		require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g1", ParentID: "x", Kind: "text", Name: "moving", RawJSON: `{"parent_id":"x"}`}))
+		_, err := refreshCollectionScopes(ctx, s, svc.channelExclusions)
+		require.NoError(t, err)
+	}
+	channel := &discordgo.Channel{ID: "c", GuildID: "g1", Name: "moving", Type: discordgo.ChannelTypeGuildText, LastMessageID: "900"}
+	_, err = svc.syncChannelMessages(ctx, "g1", channel, true, false, time.Time{}, false, nil)
+	require.ErrorIs(t, err, store.ErrCollectionScope)
+	require.True(t, svc.skipSyncError(ctx, channel, err), "scope loss skips this channel without failing the run")
+	require.Equal(t, 1, client.calls, "no further pages are requested after scope loss")
+	var stored int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages where channel_id='c'`).Scan(&stored))
+	require.Zero(t, stored)
+}

@@ -148,7 +148,9 @@ snapshot; a current member (for example after a rejoin) is stored instead.
 Without exact member lookup, replay falls back to the removal time as a fence.
 The running tail owner revalidates a cached scope decision against the
 persisted channel revision before any content fetch, so scope repaired by
-metadata replay applies immediately.
+metadata replay applies immediately. REST pagination likewise rechecks the persisted
+scope before each page and attachment fetch; a channel that leaves scope during
+a crawl is skipped without failing the rest of the run.
 
 The failure ledger retains `resolution_reason`, distinguishing exact
 reconciliation, explicit policy exclusion and terminal provider unavailability.

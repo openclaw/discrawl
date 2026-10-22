@@ -646,6 +646,9 @@ func (s *Syncer) bootstrapChannelHistory(ctx context.Context, channel *discordgo
 	newest := ""
 	for {
 		observedAt := time.Now()
+		if err := s.requirePersistedScope(ctx, channel.ID); err != nil {
+			return messageCount, err
+		}
 		page, err := s.client.ChannelMessages(ctx, channel.ID, 100, before, "")
 		if err != nil {
 			return messageCount, err
@@ -700,6 +703,9 @@ func (s *Syncer) syncForwardPages(ctx context.Context, channel *discordgo.Channe
 	newest := after
 	for {
 		observedAt := time.Now()
+		if err := s.requirePersistedScope(ctx, channel.ID); err != nil {
+			return messageCount, newest, err
+		}
 		page, err := s.client.ChannelMessages(ctx, channel.ID, 100, "", after)
 		if err != nil {
 			return messageCount, newest, err
@@ -738,6 +744,9 @@ func (s *Syncer) syncBackfillPages(ctx context.Context, channel *discordgo.Chann
 	pages := 0
 	for {
 		observedAt := time.Now()
+		if err := s.requirePersistedScope(ctx, channel.ID); err != nil {
+			return messageCount, newest, err
+		}
 		page, err := s.client.ChannelMessages(ctx, channel.ID, 100, before, "")
 		if err != nil {
 			return messageCount, newest, err
@@ -828,6 +837,12 @@ func (s *Syncer) advanceChannelLatest(ctx context.Context, channelID, cursor str
 func (s *Syncer) persistMessagePage(ctx context.Context, messages []*discordgo.Message, channelName string, fallbackGuildID string, embeddings bool, observedAt time.Time) (string, error) {
 	if len(messages) == 0 {
 		return "", nil
+	}
+	if len(messages) > 0 && messages[0] != nil {
+		// Attachment extraction fetches content; recheck scope before it.
+		if err := s.requirePersistedScope(ctx, messages[0].ChannelID); err != nil {
+			return "", err
+		}
 	}
 	mutations, newest, err := buildMessageMutations(ctx, messages, channelName, fallbackGuildID, embeddings, s.attachmentTextEnabled)
 	if err != nil {
@@ -1204,4 +1219,21 @@ func syncErrorOutcome(err error) string {
 		return "deferred_retryable"
 	}
 	return "skipped"
+}
+
+// requirePersistedScope rejects a channel whose persisted collection scope is
+// no longer allowed under the configured policy, before any further content
+// request. A concurrent Gateway move can revoke scope during pagination.
+func (s *Syncer) requirePersistedScope(ctx context.Context, channelID string) error {
+	if s.store == nil || channelID == "" || !s.channelExclusions.configured() {
+		return nil
+	}
+	allowed, err := s.store.ChannelCollectionAllowed(ctx, channelID, s.channelExclusions.policyID())
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return store.ErrCollectionScope
+	}
+	return nil
 }

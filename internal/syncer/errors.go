@@ -7,9 +7,19 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/openclaw/discrawl/internal/store"
 )
 
 func (s *Syncer) skipSyncError(ctx context.Context, channel *discordgo.Channel, err error) bool {
+	if errors.Is(err, store.ErrCollectionScope) {
+		// The channel left collection scope while it was being crawled. Stop
+		// this channel only; later channels in the run continue.
+		if channel != nil {
+			s.logger.Info("channel message crawl stopped: collection scope changed", "channel_id", channel.ID)
+		}
+		return true
+	}
 	if s.skipUnavailableChannel(ctx, channel, err) {
 		return true
 	}

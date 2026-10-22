@@ -19,7 +19,11 @@ type exactMemberFixture struct {
 	member *discordgo.Member
 }
 
-func (c *exactMemberFixture) GuildMember(context.Context, string, string) (*discordgo.Member, error) {
+func (c *exactMemberFixture) GuildMember(_ context.Context, _ string, userID string) (*discordgo.Member, error) {
+	if c.member != nil && c.member.User != nil && c.member.User.ID != userID {
+		// Discord reports a departed member as Unknown Member.
+		return nil, &discordgo.RESTError{Response: &http.Response{StatusCode: http.StatusNotFound}, Message: &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownMember}}
+	}
 	return c.member, nil
 }
 
