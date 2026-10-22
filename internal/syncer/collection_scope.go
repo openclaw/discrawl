@@ -127,19 +127,18 @@ func (t *tailHandler) allowMessageChannel(ctx context.Context, guild, id string)
 		}
 	}
 	if state := t.scopeDecision(id); state != "unknown" {
-		if state == "excluded" {
-			// Another owner (for example metadata replay) may have repaired
-			// this channel's scope; never keep a denial the store no longer has.
-			stale, err := t.scopeCacheStale(ctx, id)
-			if err != nil {
+		// Another owner (for example metadata replay) may have changed this
+		// channel's ancestry or scope. Revalidate a cached decision against the
+		// persisted revision before granting or refusing content-fetch I/O.
+		stale, err := t.scopeCacheStale(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if stale {
+			if err := t.refreshScope(ctx); err != nil {
 				return false, err
 			}
-			if stale {
-				if err := t.refreshScope(ctx); err != nil {
-					return false, err
-				}
-				state = t.scopeDecision(id)
-			}
+			state = t.scopeDecision(id)
 		}
 		if state != "unknown" {
 			return state == "allowed", nil

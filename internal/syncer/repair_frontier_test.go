@@ -161,3 +161,68 @@ func TestRunningHandlerDropsStaleScopeDenial(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, allowed, "the running handler must not keep a repaired denial")
 }
+
+func TestRunningHandlerRevalidatesCachedAllowance(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	for _, c := range []store.ChannelRecord{
+		{ID: "x", GuildID: "g1", Kind: "category", Name: "excluded", RawJSON: `{}`},
+		{ID: "y", GuildID: "g1", Kind: "category", Name: "allowed", RawJSON: `{}`},
+		{ID: "c", GuildID: "g1", ParentID: "y", Kind: "text", Name: "moved", RawJSON: `{}`},
+	} {
+		require.NoError(t, s.UpsertChannel(ctx, c))
+	}
+	handler := &tailHandler{store: s, guilds: makeGuildSet([]string{"g1"}), exclusions: newChannelScope([]string{"x"}, nil, nil)}
+	require.NoError(t, handler.refreshScope(ctx))
+	allowed, err := handler.allowMessageChannel(ctx, "g1", "c")
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g1", ParentID: "x", Kind: "text", Name: "moved", RawJSON: `{"parent_id":"x"}`}))
+	allowed, err = handler.allowMessageChannel(ctx, "g1", "c")
+	require.NoError(t, err)
+	require.False(t, allowed, "a stale allowance must not permit content fetches")
+}
+
+type memberLookupClient struct {
+	fakeClient
+	member *discordgo.Member
+	err    error
+}
+
+func (c *memberLookupClient) GuildMember(context.Context, string, string) (*discordgo.Member, error) {
+	return c.member, c.err
+}
+
+func TestMemberRemoveReplayUsesCurrentMembership(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	removedAt := time.Now().UTC().Add(-time.Minute)
+	failure := store.Failure{GuildID: "g1", FirstSeenAt: removedAt}
+	deleted := func(s *store.Store) string {
+		var value string
+		require.NoError(t, s.DB().QueryRowContext(ctx, `select coalesce(deleted_at,'') from members where guild_id='g1' and user_id='u1'`).Scan(&value))
+		return value
+	}
+
+	// An older full enumeration stamped the member after the failed removal.
+	s := repairFrontierStore(t)
+	require.NoError(t, s.UpsertMember(ctx, store.MemberRecord{GuildID: "g1", UserID: "u1", Username: "stale", RawJSON: `{}`}))
+	gone := &memberLookupClient{err: &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
+		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownMember},
+	}}
+	require.NoError(t, New(gone, s, nil).replayMemberRemove(ctx, failure, "u1", time.Now().UTC()))
+	require.NotEmpty(t, deleted(s), "Unknown Member proves the removal despite the later merge timestamp")
+
+	s = repairFrontierStore(t)
+	require.NoError(t, s.UpsertMember(ctx, store.MemberRecord{GuildID: "g1", UserID: "u1", Username: "old", RawJSON: `{}`}))
+	present := &memberLookupClient{member: &discordgo.Member{GuildID: "g1", User: &discordgo.User{ID: "u1", Username: "rejoined"}}}
+	require.NoError(t, New(present, s, nil).replayMemberRemove(ctx, failure, "u1", time.Now().UTC().Add(time.Second)))
+	require.Empty(t, deleted(s), "a current member is a newer observation than the failed removal")
+
+	transient := &memberLookupClient{err: errors.New("provider unavailable")}
+	require.Error(t, New(transient, s, nil).replayMemberRemove(ctx, failure, "u1", time.Now().UTC()))
+}

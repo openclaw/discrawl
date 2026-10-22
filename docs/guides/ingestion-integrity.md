@@ -141,10 +141,14 @@ payload and tombstones.
 
 Replay resolves only the failure generation it reconciled: a newer failure for
 the same identity recorded while replay was in flight stays pending.
-A failed member removal records the time of that removal event. A later removal
-of the same member, including after the earlier failure resolved, replaces that
-time, while replay retries keep it, so replay never judges a newer removal by an
-older one.
+A failed member removal records the Gateway receipt time of that removal. Its
+replay asks Discord for the member: Unknown Member proves the removal and
+tombstones the row, even if a later full enumeration stamped it with an older
+snapshot; a current member (for example after a rejoin) is stored instead.
+Without exact member lookup, replay falls back to the removal time as a fence.
+The running tail owner revalidates a cached scope decision against the
+persisted channel revision before any content fetch, so scope repaired by
+metadata replay applies immediately.
 
 The failure ledger retains `resolution_reason`, distinguishing exact
 reconciliation, explicit policy exclusion and terminal provider unavailability.

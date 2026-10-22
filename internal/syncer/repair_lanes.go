@@ -90,7 +90,7 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 		started := time.Now()
 		switch {
 		case kind == "GUILD_MEMBER_REMOVE":
-			err = s.store.MarkObservedMemberDeleted(call, f.GuildID, id, "discord-gateway", "member-remove-event-replay", f.FirstSeenAt)
+			err = s.replayMemberRemove(call, f, id, started)
 		case strings.HasPrefix(kind, "GUILD_MEMBER_"):
 			getter, supported := s.client.(singleMemberClient)
 			if !supported {
@@ -159,6 +159,35 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 		}
 	}
 	return nil
+}
+
+// replayMemberRemove reconciles a failed GUILD_MEMBER_REMOVE against Discord's
+// current membership instead of local timestamps, which a later full member
+// enumeration may have stamped with an older snapshot. Unknown Member proves
+// the removal; a present member is a newer observation (for example a rejoin).
+// Without an exact member fetch, the removal event time remains the fence.
+func (s *Syncer) replayMemberRemove(ctx context.Context, f store.Failure, userID string, started time.Time) error {
+	getter, supported := s.client.(singleMemberClient)
+	if !supported {
+		return s.store.MarkObservedMemberDeleted(ctx, f.GuildID, userID, "discord-gateway", "member-remove-event-replay", f.FirstSeenAt)
+	}
+	m, err := getter.GuildMember(ctx, f.GuildID, userID)
+	if memberGone(err) {
+		return s.store.MarkObservedMemberDeleted(ctx, f.GuildID, userID, "discord-gateway", "member-remove-event-replay", started)
+	}
+	if err != nil {
+		return err
+	}
+	if m == nil || m.User == nil || m.User.ID != userID || (m.GuildID != "" && m.GuildID != f.GuildID) {
+		return errors.New("member identity mismatch")
+	}
+	return s.store.UpsertObservedMember(ctx, toMemberRecord(f.GuildID, m), started)
+}
+
+func memberGone(err error) bool {
+	var rest *discordgo.RESTError
+	return errors.As(err, &rest) && rest.Response != nil && rest.Message != nil &&
+		rest.Response.StatusCode == http.StatusNotFound && rest.Message.Code == discordgo.ErrCodeUnknownMember
 }
 
 // replayGuildDelete reconciles a failed GUILD_DELETE. Lost access proves the
