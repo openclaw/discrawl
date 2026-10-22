@@ -24,7 +24,8 @@ func TestFileEmbeddingProviderWorksWithUnavailableKeyring(t *testing.T) {
 	require.NoError(t, err)
 	home, err = filepath.EvalSymlinks(home)
 	require.NoError(t, err)
-	dir, err := os.MkdirTemp(home, ".discrawl-provider-test-")
+	// Protected credential files reject world-writable ancestors such as /tmp.
+	dir, err := os.MkdirTemp(home, ".discrawl-provider-test-") //nolint:usetesting // t.TempDir may sit below world-writable /tmp.
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
 	path := filepath.Join(dir, "fixture.key")

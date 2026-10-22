@@ -65,7 +65,7 @@ func TestNativeMessageRevisionOrdering(t *testing.T) {
 				var revisionBefore int
 				pageClient := &revisionDelayedPageClient{page: older, beforeReturn: func() {
 					require.NoError(t, handler.OnMessageUpdate(ctx, &partial))
-					require.NoError(t, s.DB().QueryRow(`select revision from embedding_jobs where message_id=?`, current.ID).Scan(&revisionBefore))
+					require.NoError(t, s.DB().QueryRowContext(ctx, `select revision from embedding_jobs where message_id=?`, current.ID).Scan(&revisionBefore))
 				}}
 				svc := New(pageClient, s, nil)
 				svc.SetAttachmentTextEnabled(false)
@@ -75,12 +75,12 @@ func TestNativeMessageRevisionOrdering(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, 1, count)
 				var attachments, mentions int
-				require.NoError(t, s.DB().QueryRow(`select count(*) from message_attachments where message_id=?`, current.ID).Scan(&attachments))
-				require.NoError(t, s.DB().QueryRow(`select count(*) from mention_events where message_id=?`, current.ID).Scan(&mentions))
+				require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_attachments where message_id=?`, current.ID).Scan(&attachments))
+				require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from mention_events where message_id=?`, current.ID).Scan(&mentions))
 				require.Zero(t, attachments, "stale page must not restore old attachment references")
 				require.Zero(t, mentions, "stale page must not restore old mentions")
 				var revisionAfter int
-				require.NoError(t, s.DB().QueryRow(`select revision from embedding_jobs where message_id=?`, current.ID).Scan(&revisionAfter))
+				require.NoError(t, s.DB().QueryRowContext(ctx, `select revision from embedding_jobs where message_id=?`, current.ID).Scan(&revisionAfter))
 				require.Equal(t, revisionBefore, revisionAfter, "stale page must not supersede current embedding work")
 			case "deleted message":
 				require.NoError(t, handler.OnMessageDelete(ctx, &discordgo.MessageDelete{Message: current}))
@@ -111,7 +111,7 @@ func TestNativeMessageRevisionOrdering(t *testing.T) {
 				require.NoError(t, handler.OnMessageUpdate(ctx, &partial))
 			}
 			var body, edited, tombstone string
-			require.NoError(t, s.DB().QueryRow(`select content,coalesce(edited_at,''),coalesce(deleted_at,'') from messages where id=?`, current.ID).Scan(&body, &edited, &tombstone))
+			require.NoError(t, s.DB().QueryRowContext(ctx, `select content,coalesce(edited_at,''),coalesce(deleted_at,'') from messages where id=?`, current.ID).Scan(&body, &edited, &tombstone))
 			require.Equal(t, want, body)
 			require.Equal(t, deleted, tombstone != "")
 			if scenario == "delayed REST page" || scenario == "older refetch" || scenario == "missing incoming revision" {

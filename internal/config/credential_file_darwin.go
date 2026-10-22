@@ -16,7 +16,11 @@ func credentialDirectoryFlags() int {
 func credentialACLProtected(fd int) bool {
 	attrs := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Commonattr: unix.ATTR_CMN_EXTENDED_SECURITY}
 	buf := make([]byte, 4096) // 128 ACEs, the SDK maximum, fit within this bound.
-	_, _, errno := unix.Syscall6(unix.SYS_FGETATTRLIST, uintptr(fd), uintptr(unsafe.Pointer(&attrs)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0)
+	// x/sys has no libSystem fgetattrlist wrapper. The descriptor-relative call
+	// keeps the ACL check bound to the inode whose owner/mode were checked.
+	//lint:ignore SA1019 no non-deprecated descriptor-relative wrapper exists.
+	//nolint:staticcheck // SA1019: no non-deprecated descriptor-relative wrapper exists.
+	_, _, errno := unix.Syscall6(unix.SYS_FGETATTRLIST, uintptr(fd), uintptr(unsafe.Pointer(&attrs)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0) // #nosec G103 -- fixed buffers sized for the kernel ABI.
 	return errno == 0 && credentialDarwinACLProtected(buf)
 }
 
@@ -46,7 +50,7 @@ func credentialDarwinACLProtected(buf []byte) bool {
 	if count > 128 || 44+24*count != uint64(len(data)) {
 		return false
 	}
-	for i := uint64(0); i < count; i++ {
+	for i := range count {
 		flags := u32(data[44+24*i+16 : 44+24*i+20])
 		// Deny entries only reduce access. Reject all granting/unknown ACEs,
 		// including inherited grants, rather than guessing principal rights.

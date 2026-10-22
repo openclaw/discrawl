@@ -20,7 +20,7 @@ func credentialFixture(t *testing.T, body string) string {
 	require.NoError(t, err)
 	home, err = filepath.EvalSymlinks(home)
 	require.NoError(t, err)
-	dir, err := os.MkdirTemp(home, ".discrawl-credential-test-")
+	dir, err := os.MkdirTemp(home, ".discrawl-credential-test-") //nolint:usetesting // t.TempDir may sit below world-writable /tmp.
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
 	path := filepath.Join(dir, "fixture.key")

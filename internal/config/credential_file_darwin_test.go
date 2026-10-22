@@ -15,24 +15,25 @@ func TestProtectedCredentialDarwinACLs(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			path := credentialFixture(t, "fixture")
 			target := path
-			if scope == "parent" {
+			switch scope {
+			case "parent":
 				target = filepath.Dir(path)
-			} else if scope == "ancestor" {
+			case "ancestor":
 				target = filepath.Dir(path)
 				private := filepath.Join(target, "private")
 				require.NoError(t, os.Mkdir(private, 0o700))
 				path = filepath.Join(private, "key")
 				require.NoError(t, os.WriteFile(path, []byte("fixture"), 0o600))
 			}
-			require.NoError(t, exec.Command("/bin/chmod", "+a", "everyone allow read,search", target).Run())
+			require.NoError(t, exec.CommandContext(t.Context(), "/bin/chmod", "+a", "everyone allow read,search", target).Run())
 			_, err := readProtectedCredential(path)
 			require.Error(t, err)
-			require.NoError(t, exec.Command("/bin/chmod", "-N", target).Run())
-			require.NoError(t, exec.Command("/bin/chmod", "+a", "everyone deny delete", target).Run())
+			require.NoError(t, exec.CommandContext(t.Context(), "/bin/chmod", "-N", target).Run())
+			require.NoError(t, exec.CommandContext(t.Context(), "/bin/chmod", "+a", "everyone deny delete", target).Run())
 			value, err := readProtectedCredential(path)
 			require.NoError(t, err)
 			require.Equal(t, "fixture", value)
-			require.NoError(t, exec.Command("/bin/chmod", "-N", target).Run())
+			require.NoError(t, exec.CommandContext(t.Context(), "/bin/chmod", "-N", target).Run())
 		})
 	}
 }

@@ -67,14 +67,15 @@ func writerURI(path string) (string, string, error) {
 	}
 	var u *url.URL
 	var err error
-	if path == ":memory:" {
+	switch {
+	case path == ":memory:":
 		u = &url.URL{Scheme: "file", Opaque: "discrawl-" + rand.Text(), RawQuery: "mode=memory&cache=shared"}
-	} else if strings.HasPrefix(path, "file:") {
+	case strings.HasPrefix(path, "file:"):
 		u, err = url.Parse(path)
 		if err != nil {
 			return "", "", fmt.Errorf("parse sqlite writer path: %w", err)
 		}
-	} else {
+	default:
 		// filepath.Abs/Join clean .. before the filesystem follows symlinks,
 		// which can select a different existing database. Preserve components.
 		if runtime.GOOS == "windows" {
