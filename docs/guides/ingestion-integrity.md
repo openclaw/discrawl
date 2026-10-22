@@ -141,7 +141,10 @@ metadata replay and attachment retry. A recovery fetch is a new `snapshot`
 observation at the time it was obtained, not an invented original create/edit.
 Attachment recovery also records deduplicated snapshot observations. REST
 recovery cannot overwrite a newer local observation, message deletion, member
-change or channel tombstone. Active-thread failures use the active-thread
+change or channel tombstone. A Gateway update that refetches a partial message
+uses the same fence from the time the event was handled, so a delayed response
+cannot replace a newer recovery snapshot; its genuine update event is still
+recorded. Active-thread failures use the active-thread
 endpoint, not a guild fetch that does not contain authoritative thread metadata.
 Its raw payload retains the provider timestamp/edit timestamp. An exact repeat
 does not append a duplicate snapshot. Missing provider content is not fabricated

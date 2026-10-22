@@ -383,6 +383,9 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 		t.logTailMessage("MESSAGE_UPDATE", "ignored", "channel_scope", msg)
 		return nil
 	}
+	// Fence the canonical write against recovery snapshots stored after this
+	// observation started, including while a partial event is refetched.
+	observationStarted := time.Now()
 	var err error
 	msg, err = t.messageUpdateSnapshot(ctx, msg)
 	if err != nil {
@@ -406,6 +409,7 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 		return t.scopeRejection(ctx, "MESSAGE_UPDATE", "update", msg, err)
 	}
 	mutation.Options.ScopePolicy = t.scopePolicy()
+	mutation.Options.ObservationStartedAt = observationStarted
 	mutation.Options.AppendEvent = true
 	mutation.EventType = "update"
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalWrite)

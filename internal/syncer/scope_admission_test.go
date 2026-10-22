@@ -121,3 +121,27 @@ func TestReplaySkipsTombstonedChannelBeforeFetch(t *testing.T) {
 	require.Equal(t, 1, stats.OutOfScope)
 	require.Empty(t, client.calls, "a tombstoned channel is not fetched")
 }
+
+func TestMessageUpdateRefetchCannotReplaceNewerRecoverySnapshot(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g", Kind: "text", RawJSON: `{}`}))
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	stale := &discordgo.Message{ID: "m1", GuildID: "g", ChannelID: "c", Content: "stale", Timestamp: created, Author: &discordgo.User{ID: "u", Username: "user"}}
+	client := &tailSnapshotClient{message: stale}
+	// A recovery lane stores a newer snapshot while the Gateway refetch is in
+	// flight; neither response carries a provider edit timestamp.
+	client.onFetch = func(context.Context) {
+		require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{ID: "m1", GuildID: "g", ChannelID: "c", AuthorID: "u", Content: "newer", NormalizedContent: "newer", RawJSON: `{"id":"m1","content":"newer"}`, CreatedAt: created.Format(time.RFC3339Nano)}))
+	}
+	h := &tailHandler{store: s, client: client}
+	require.NoError(t, h.OnMessageUpdate(ctx, &discordgo.Message{ID: "m1", GuildID: "g", ChannelID: "c"}))
+	require.EqualValues(t, 1, client.calls.Load())
+	var content string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id='m1'`).Scan(&content))
+	require.Equal(t, "newer", content, "a delayed refetch cannot replace the newer recovery snapshot")
+	var events int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where message_id='m1' and event_type='update'`).Scan(&events))
+	require.Equal(t, 1, events, "the genuine Gateway update is still recorded")
+}
