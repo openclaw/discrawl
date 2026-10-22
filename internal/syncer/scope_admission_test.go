@@ -89,14 +89,16 @@ func TestTailResolvesTransactionalScopeRejectionAsPolicyOutcome(t *testing.T) {
 	require.NoError(t, s.RecordFailure(ctx, ref, context.DeadlineExceeded))
 	// The channel is tombstoned while its attachment is downloading, after
 	// admission, so only the transactional write guard observes it.
+	tombstoned := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		require.NoError(t, s.MarkChannelDeleted(context.Background(), "g", "c", "gateway"))
+		tombstoned <- s.MarkChannelDeleted(context.Background(), "g", "c", "gateway")
 		_, _ = w.Write([]byte("body"))
 	}))
 	defer server.Close()
 	h := &tailHandler{store: s, attachmentTextEnabled: true}
 	m := &discordgo.Message{ID: "2", GuildID: "g", ChannelID: "c", Content: "x", Timestamp: time.Now(), Author: &discordgo.User{ID: "u"}, Attachments: []*discordgo.MessageAttachment{{ID: "a", Filename: "a.txt", ContentType: "text/plain", URL: server.URL, Size: 4}}}
 	require.NoError(t, h.OnMessageCreate(ctx, m), "scope revocation is a policy outcome, not a handler failure")
+	require.NoError(t, <-tombstoned)
 	report, err := s.ListFailures(ctx, store.FailureListOptions{IncludeResolved: true}, time.Now())
 	require.NoError(t, err)
 	require.Zero(t, report.UnresolvedCount)
