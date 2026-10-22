@@ -137,7 +137,10 @@ earlier local builds are read as stage channels and match either spelling in
 `exclude_channel_kinds` until the catalog is observed again.
 
 Ordinary startup/periodic repair performs bounded exact-message failure replay,
-metadata replay and attachment retry. A recovery fetch is a new `snapshot`
+metadata replay and attachment retry. Metadata replay resolves a failed channel
+update superseded by a recorded channel deletion (`superseded_by_deletion`) and
+a channel or member update answered by Discord Unknown Channel/Unknown Member
+(`provider_unavailable_404`); transient errors stay pending for retry. A recovery fetch is a new `snapshot`
 observation at the time it was obtained, not an invented original create/edit.
 Attachment recovery also records deduplicated snapshot observations. REST
 recovery cannot overwrite a newer local observation, message deletion, member

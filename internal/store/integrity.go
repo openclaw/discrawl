@@ -95,6 +95,14 @@ func (s *Store) ChannelScopeRevision(ctx context.Context, id string) (string, er
 	return revision, err
 }
 
+// ChannelTombstoned reports whether a stored channel carries a recorded
+// deletion. Unknown channels are not tombstoned.
+func (s *Store) ChannelTombstoned(ctx context.Context, id string) (bool, error) {
+	var deleted int
+	err := s.db.QueryRowContext(ctx, `select count(*) from channels where id=? and deleted_at is not null`, id).Scan(&deleted)
+	return deleted > 0, err
+}
+
 // ChannelCollectionAllowed reports whether a stored, undeleted channel is
 // currently allowed under policy, matching the write-time scope guard.
 func (s *Store) ChannelCollectionAllowed(ctx context.Context, id, policy string) (bool, error) {

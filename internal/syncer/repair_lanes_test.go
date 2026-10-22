@@ -115,3 +115,56 @@ func TestOrdinaryAttachmentRetryPersistsResultAndParentClock(t *testing.T) {
 	_, err = s.AttachmentTextRetryCandidates(ctx, []string{"g"}, 0)
 	require.Error(t, err)
 }
+
+type unknownChannelFixture struct {
+	*exactMemberFixture
+}
+
+func (c *unknownChannelFixture) Channel(ctx context.Context, channelID string) (*discordgo.Channel, error) {
+	if channelID == "unknown" {
+		return nil, missingResponse(http.StatusNotFound, discordgo.ErrCodeUnknownChannel)
+	}
+	if channelID == "flaky" {
+		return nil, missingResponse(http.StatusBadGateway, 0)
+	}
+	return c.fakeClient.Channel(ctx, channelID)
+}
+
+func TestMetadataReplayResolvesFailuresSupersededByDeletion(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "deleted", GuildID: "g", Kind: "text", RawJSON: `{}`}))
+	require.NoError(t, s.MarkChannelDeleted(ctx, "g", "deleted", "discord-gateway"))
+	base := &fakeClient{}
+	c := &unknownChannelFixture{&exactMemberFixture{fakeClient: base, member: &discordgo.Member{User: &discordgo.User{ID: "present"}}}}
+	for _, r := range []store.FailureRef{
+		{ChannelID: "deleted", RelatedID: "CHANNEL_UPDATE:"},
+		{ChannelID: "unknown", RelatedID: "CHANNEL_UPDATE:"},
+		{ChannelID: "flaky", RelatedID: "CHANNEL_UPDATE:"},
+		{RelatedID: "GUILD_MEMBER_UPDATE:departed"},
+	} {
+		r.Operation, r.Source, r.GuildID, r.RelatedKind = "tail_metadata", "discord", "g", "gateway_event"
+		require.NoError(t, s.RecordFailure(ctx, r, errors.New("fixture failure")))
+	}
+	require.NoError(t, New(c, s, nil).replayMetadataFailures(ctx, []string{"g"}))
+	require.Zero(t, base.channelCalls["deleted"], "a tombstoned channel is not fetched again")
+	reasons := map[string]string{}
+	rows, err := s.DB().QueryContext(ctx, `select channel_id||'|'||related_id,coalesce(resolution_reason,'') from failure_ledger`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var key, reason string
+		require.NoError(t, rows.Scan(&key, &reason))
+		reasons[key] = reason
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[string]string{
+		"deleted|CHANNEL_UPDATE:":       "superseded_by_deletion",
+		"unknown|CHANNEL_UPDATE:":       "provider_unavailable_404",
+		"flaky|CHANNEL_UPDATE:":         "",
+		"|GUILD_MEMBER_UPDATE:departed": "provider_unavailable_404",
+	}, reasons, "transient errors stay pending; terminal outcomes resolve")
+}

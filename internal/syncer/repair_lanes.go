@@ -94,6 +94,9 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 		}
 		call, cancel := context.WithTimeout(ctx, 10*time.Second)
 		started := time.Now()
+		// A terminal outcome that supersedes the failed observation resolves
+		// this generation instead of recording it again on every repair.
+		resolution := "metadata_reconciled"
 		switch {
 		case kind == "GUILD_MEMBER_REMOVE":
 			err = s.replayMemberRemove(call, f, id, started)
@@ -105,6 +108,11 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 			}
 			var m *discordgo.Member
 			m, err = getter.GuildMember(call, f.GuildID, id)
+			if confirmedDiscordMissing(err, 10007) {
+				// The member has left; the failed update has nothing to apply.
+				err, resolution = nil, "provider_unavailable_404"
+				break
+			}
 			if err == nil {
 				if m == nil || m.User == nil || m.User.ID != id || (m.GuildID != "" && m.GuildID != f.GuildID) {
 					err = errors.New("member identity mismatch")
@@ -123,8 +131,18 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 				err = s.storeScopeMetadata(call, f.GuildID, channels, s.channelExclusions, started)
 			}
 		case f.ChannelID != "":
+			var deleted bool
+			if deleted, err = s.store.ChannelTombstoned(call, f.ChannelID); err != nil || deleted {
+				// An authoritative deletion supersedes the failed update.
+				resolution = "superseded_by_deletion"
+				break
+			}
 			var c *discordgo.Channel
 			c, err = s.client.Channel(call, f.ChannelID)
+			if confirmedDiscordMissing(err, 10003) {
+				err, resolution = nil, "provider_unavailable_404"
+				break
+			}
 			if err == nil {
 				if c == nil || c.ID != f.ChannelID || c.GuildID != f.GuildID {
 					err = errors.New("channel identity mismatch")
@@ -159,7 +177,7 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 		} else {
 			// A newer failure for this identity may have been recorded while
 			// the replay was in flight; leave that generation pending.
-			if err = s.store.ResolveFailureGeneration(ctx, f, "metadata_reconciled"); err != nil {
+			if err = s.store.ResolveFailureGeneration(ctx, f, resolution); err != nil {
 				return err
 			}
 		}
