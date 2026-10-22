@@ -127,7 +127,23 @@ func (t *tailHandler) allowMessageChannel(ctx context.Context, guild, id string)
 		}
 	}
 	if state := t.scopeDecision(id); state != "unknown" {
-		return state == "allowed", nil
+		if state == "excluded" {
+			// Another owner (for example metadata replay) may have repaired
+			// this channel's scope; never keep a denial the store no longer has.
+			stale, err := t.scopeCacheStale(ctx, id)
+			if err != nil {
+				return false, err
+			}
+			if stale {
+				if err := t.refreshScope(ctx); err != nil {
+					return false, err
+				}
+				state = t.scopeDecision(id)
+			}
+		}
+		if state != "unknown" {
+			return state == "allowed", nil
+		}
 	}
 	if t.client == nil {
 		return false, errors.New("channel ancestry unavailable")
@@ -163,6 +179,20 @@ func (t *tailHandler) allowMessageChannel(ctx context.Context, guild, id string)
 		return false, errors.New("channel ancestry remains unknown")
 	}
 	return state == "allowed", nil
+}
+
+func (t *tailHandler) scopeCacheStale(ctx context.Context, id string) (bool, error) {
+	t.exclusionMu.RLock()
+	cached, ok := t.scopeCatalog[id]
+	t.exclusionMu.RUnlock()
+	if !ok {
+		return false, nil
+	}
+	revision, err := t.store.ChannelScopeRevision(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return revision != cached.Revision, nil
 }
 
 func (t *tailHandler) scopePolicy() string {

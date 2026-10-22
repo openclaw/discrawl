@@ -114,6 +114,13 @@ func shareMergePlan(plan snapshot.ImportPlan, previous snapshot.Manifest, allowE
 				out.Tables = append(out.Tables, tablePlan)
 				continue
 			}
+			if tablePlan.Reason == "columns changed" &&
+				isIntegrityColumnAddition(tablePlan.Table.Name, manifestTable(previous, tablePlan.Table.Name).Columns, tablePlan.Table.Columns) {
+				tablePlan.Mode = snapshot.TableImportFiles
+				tablePlan.Reason = "merge rows with additive integrity columns"
+				out.Tables = append(out.Tables, tablePlan)
+				continue
+			}
 			replacements = append(replacements, tablePlan.Table.Name)
 			continue
 		}
@@ -157,6 +164,37 @@ func isTombstoneColumnAddition(previous, current []string) bool {
 	}
 	for _, found := range tombstones {
 		if !found {
+			return false
+		}
+	}
+	return slices.Equal(previous, base)
+}
+
+// integrityColumnAdditions are the nullable/defaulted columns added by the
+// schema-7 ingestion-integrity migration. A publication that only appends
+// them to an otherwise identical table can be merged by an upgraded reader.
+var integrityColumnAdditions = map[string]map[string]struct{}{
+	"channels":            {"collection_scope": {}, "scope_policy": {}, "scope_updated_at": {}, "deleted_at": {}, "deletion_source": {}},
+	"messages":            {"text_parts_json": {}, "text_version": {}},
+	"message_attachments": {"text_status": {}, "text_error": {}, "text_attempted_at": {}, "text_succeeded_at": {}},
+}
+
+func isIntegrityColumnAddition(table string, previous, current []string) bool {
+	allowed, ok := integrityColumnAdditions[table]
+	if !ok || len(previous) == 0 || len(current) <= len(previous) {
+		return false
+	}
+	prior := make(map[string]struct{}, len(previous))
+	for _, column := range previous {
+		prior[column] = struct{}{}
+	}
+	base := make([]string, 0, len(previous))
+	for _, column := range current {
+		if _, existed := prior[column]; existed {
+			base = append(base, column)
+			continue
+		}
+		if _, additive := allowed[column]; !additive {
 			return false
 		}
 	}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/discrawl/internal/sqlitedurable"
 )
 
 type Target struct {
@@ -103,7 +104,7 @@ func Open(ctx context.Context, path, owner string) (*store.Store, error) {
 		if err := read.Close(); err != nil {
 			return nil, err
 		}
-		writable, err := store.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
+		writable, err := sqlitedurable.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +157,7 @@ func initialize(ctx context.Context, path, owner string) (_ *store.Store, result
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	s, err := store.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
+	s, err := sqlitedurable.Open(ctx, store.Options{Path: path, MaxOpenConns: 1, MaxIdleConns: 1})
 	if err != nil {
 		return nil, err
 	}

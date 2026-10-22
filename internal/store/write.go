@@ -172,6 +172,41 @@ func (s *Store) MarkGuildDeleted(ctx context.Context, guildID, source, reason st
 	})
 }
 
+// MarkObservedGuildDeleted tombstones a guild unless a write recorded after
+// the deletion evidence was requested (for example a Gateway rejoin) is newer.
+func (s *Store) MarkObservedGuildDeleted(ctx context.Context, guildID, source, reason string, started time.Time) error {
+	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(source) == "" || strings.TrimSpace(reason) == "" {
+		return errors.New("guild tombstone requires guild id, source, and reason")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	var updated string
+	err = tx.QueryRowContext(ctx, `select updated_at from guilds where id=?`, guildID).Scan(&updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !started.IsZero() && parseTime(updated).After(started) {
+		return nil
+	}
+	now := time.Now().UTC().Format(timeLayout)
+	if err := s.q.WithTx(tx).MarkGuildDeleted(ctx, storedb.MarkGuildDeletedParams{
+		DeletedAt:      nullString(now),
+		DeletionSource: nullString(source),
+		DeletionReason: nullString(reason),
+		UpdatedAt:      now,
+		ID:             guildID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpsertChannel(ctx context.Context, channel ChannelRecord) error {
 	return s.UpsertObservedChannel(ctx, channel, time.Time{})
 }

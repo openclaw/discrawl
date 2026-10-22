@@ -37,6 +37,13 @@ columns/decisions/ancestry are not public. Native public-only snapshots apply th
 same rule. Full-access evidence need not be deleted when its current scope is
 excluded or unknown.
 
+Snapshots from schema 7 append these defaulted columns to `channels`,
+`messages` and `message_attachments`. An upgraded reader merges a publication
+that only adds them with ordinary `update`, preserving its local rows; any other
+column change still requires an explicit replacement. Readers older than this
+release need that replacement once, as with the earlier guild/member tombstone
+columns.
+
 ## Message text and dates
 
 - `content` remains verbatim provider `content`; an embed-only message can

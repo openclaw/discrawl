@@ -384,6 +384,29 @@ func TestShareMergePlanKeepsGeneratedHistoryForceOnly(t *testing.T) {
 	require.ErrorAs(t, err, &replacement)
 	require.Equal(t, []string{"guilds"}, replacement.Tables)
 
+	// Schema-6 publications gain only defaulted integrity columns in schema 7.
+	legacyChannelColumns := []string{"id", "guild_id", "parent_id", "kind", "name", "raw_json", "updated_at"}
+	legacyMessageColumns := []string{"id", "guild_id", "channel_id", "content", "raw_json", "updated_at"}
+	integrityPlan, err := shareMergePlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{
+		{Table: snapshot.TableManifest{Name: "channels", Columns: append(append([]string{}, legacyChannelColumns...), "collection_scope", "scope_policy", "scope_updated_at", "deleted_at", "deletion_source")}, Mode: snapshot.TableImportReplace, Reason: "columns changed"},
+		{Table: snapshot.TableManifest{Name: "messages", Columns: append(append([]string{}, legacyMessageColumns...), "text_parts_json", "text_version")}, Mode: snapshot.TableImportReplace, Reason: "columns changed"},
+	}}, snapshot.Manifest{Tables: []snapshot.TableManifest{
+		{Name: "channels", Columns: legacyChannelColumns},
+		{Name: "messages", Columns: legacyMessageColumns},
+	}}, false)
+	require.NoError(t, err)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, integrityPlan, "channels").Mode)
+	require.Equal(t, snapshot.TableImportFiles, importPlanTable(t, integrityPlan, "messages").Mode)
+	for _, columns := range [][]string{
+		append(append([]string{}, legacyMessageColumns...), "text_version", "unreviewed"),
+		append([]string{"text_version"}, legacyMessageColumns[1:]...),
+	} {
+		_, err = shareMergePlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{
+			Table: snapshot.TableManifest{Name: "messages", Columns: columns}, Mode: snapshot.TableImportReplace, Reason: "columns changed",
+		}}}, snapshot.Manifest{Tables: []snapshot.TableManifest{{Name: "messages", Columns: legacyMessageColumns}}}, false)
+		require.ErrorAs(t, err, &replacement, "only additive integrity columns merge")
+	}
+
 	_, err = shareMergePlan(snapshot.ImportPlan{Full: true, Reason: "manifest version changed"}, snapshot.Manifest{}, false)
 	require.ErrorContains(t, err, "manifest version changed")
 	_, err = shareMergePlan(snapshot.ImportPlan{Tables: []snapshot.TableImportPlan{{

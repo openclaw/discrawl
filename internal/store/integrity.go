@@ -84,6 +84,17 @@ func (s *Store) ScopeChannels(ctx context.Context) ([]ChannelScope, error) {
 	return out, rows.Err()
 }
 
+// ChannelScopeRevision returns the persisted scope revision (updated_at) of
+// one channel, or "" when it is not stored.
+func (s *Store) ChannelScopeRevision(ctx context.Context, id string) (string, error) {
+	var revision string
+	err := s.db.QueryRowContext(ctx, `select updated_at from channels where id=?`, id).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return revision, err
+}
+
 type ScopeDecision struct{ State, Revision string }
 
 func (s *Store) SetChannelScopes(ctx context.Context, scopes map[string]ScopeDecision, policy string) error {

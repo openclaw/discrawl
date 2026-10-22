@@ -167,7 +167,8 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 func (s *Syncer) replayGuildDelete(ctx context.Context, guildID string, started time.Time) error {
 	g, err := s.client.Guild(ctx, guildID)
 	if guildAccessGone(err) {
-		return s.store.MarkGuildDeleted(ctx, guildID, "discord-gateway", "guild-delete-event-replay")
+		// A Gateway rejoin stored while this request was in flight is newer.
+		return s.store.MarkObservedGuildDeleted(ctx, guildID, "discord-gateway", "guild-delete-event-replay", started)
 	}
 	if err != nil {
 		return err

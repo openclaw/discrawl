@@ -132,8 +132,12 @@ func TestOpenRejectsDanglingDatabaseSymlink(t *testing.T) {
 }
 
 func TestConcurrentWritesUseNativeSQLiteLock(t *testing.T) {
-	first := newMetrics(t)
-	second, err := Open(t.Context(), first.Path(), "discrawl")
+	path := filepath.Join(t.TempDir(), "metrics.sqlite")
+	first, err := Open(t.Context(), path, "discrawl")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
+	// Store.Path is the private writer URI; public config retains the filename.
+	second, err := Open(t.Context(), path, "discrawl")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, second.Close()) })
 	tx, err := first.DB().BeginTx(t.Context(), nil)
@@ -318,14 +322,17 @@ func TestStatusOrdersImportedObservationInstants(t *testing.T) {
 }
 
 func TestStatusRejectsMalformedStoredObservationTime(t *testing.T) {
-	s := newMetrics(t)
+	path := filepath.Join(t.TempDir(), "metrics.sqlite")
+	s, err := Open(t.Context(), path, "discrawl")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
 	row := Counter(Target{"sample-alpha", "example-alpha"}, "members", nil, sampleTime, "history")
-	_, err := Write(t.Context(), s, []Row{row})
+	_, err = Write(t.Context(), s, []Row{row})
 	require.NoError(t, err)
 	_, err = s.DB().ExecContext(t.Context(), "UPDATE metric_observations SET observed_at='invalid'")
 	require.NoError(t, err)
 	var out bytes.Buffer
-	err = Run(t.Context(), []string{"status", "--config", testConfig(t, s.Path())}, "discrawl", nil, nil, &out, io.Discard)
+	err = Run(t.Context(), []string{"status", "--config", testConfig(t, path)}, "discrawl", nil, nil, &out, io.Discard)
 	require.ErrorContains(t, err, "invalid stored observation time")
 	require.Empty(t, out.String())
 }

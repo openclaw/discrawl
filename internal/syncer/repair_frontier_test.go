@@ -110,7 +110,21 @@ func TestGuildDeleteReplayTombstonesWhenAccessIsGone(t *testing.T) {
 		})
 	}
 
+	// A Gateway rejoin stored while the deletion request was in flight wins.
 	s := repairFrontierStore(t)
+	started := time.Now().UTC()
+	time.Sleep(2 * time.Millisecond) // the rejoin is strictly after the request started
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Rejoined", RawJSON: `{}`}))
+	gone := &guildErrorClient{err: &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusForbidden},
+		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeMissingAccess},
+	}}
+	require.NoError(t, New(gone, s, nil).replayGuildDelete(ctx, "g1", started))
+	var rejoinedDeleted string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select coalesce(deleted_at,'') from guilds where id='g1'`).Scan(&rejoinedDeleted))
+	require.Empty(t, rejoinedDeleted)
+
+	s = repairFrontierStore(t)
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
 	rejoined := &fakeClient{guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Renamed"}}}
 	require.NoError(t, New(rejoined, s, nil).replayGuildDelete(ctx, "g1", time.Now()))
@@ -118,4 +132,32 @@ func TestGuildDeleteReplayTombstonesWhenAccessIsGone(t *testing.T) {
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select name,coalesce(deleted_at,'') from guilds where id='g1'`).Scan(&name, &deleted))
 	require.Equal(t, "Renamed", name, "current access is a newer observation than the failed deletion")
 	require.Empty(t, deleted)
+}
+
+func TestRunningHandlerDropsStaleScopeDenial(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	for _, c := range []store.ChannelRecord{
+		{ID: "x", GuildID: "g1", Kind: "category", Name: "excluded", RawJSON: `{}`},
+		{ID: "y", GuildID: "g1", Kind: "category", Name: "allowed", RawJSON: `{}`},
+		{ID: "c", GuildID: "g1", ParentID: "x", Kind: "text", Name: "moved", RawJSON: `{}`},
+	} {
+		require.NoError(t, s.UpsertChannel(ctx, c))
+	}
+	handler := &tailHandler{store: s, guilds: makeGuildSet([]string{"g1"}), exclusions: newChannelScope([]string{"x"}, nil, nil)}
+	require.NoError(t, handler.refreshScope(ctx))
+	allowed, err := handler.allowMessageChannel(ctx, "g1", "c")
+	require.NoError(t, err)
+	require.False(t, allowed)
+
+	// Metadata replay (a different handler) repairs the move into "y".
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g1", ParentID: "y", Kind: "text", Name: "moved", RawJSON: `{"parent_id":"y"}`}))
+	replay := &tailHandler{store: s, guilds: makeGuildSet([]string{"g1"}), exclusions: handler.exclusions}
+	require.NoError(t, replay.refreshScope(ctx))
+
+	allowed, err = handler.allowMessageChannel(ctx, "g1", "c")
+	require.NoError(t, err)
+	require.True(t, allowed, "the running handler must not keep a repaired denial")
 }
