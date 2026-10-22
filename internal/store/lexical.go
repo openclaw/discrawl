@@ -330,18 +330,22 @@ func closeLexicalTokenizers(tokenizers map[string]LexicalTokenizer) {
 	}
 }
 
+// lexicalAuthorNameSQL derives the indexed author name from a message payload,
+// skipping absent or empty provider fields. Rebuild and text repair share it.
+const lexicalAuthorNameSQL = `coalesce(
+			nullif(json_extract(m.raw_json, '$.member.nick'), ''),
+			nullif(json_extract(m.raw_json, '$.author.global_name'), ''),
+			nullif(json_extract(m.raw_json, '$.author.username'), ''),
+			''
+		)`
+
 const lexicalRebuildRowsSQL = `
 	select
 		m.id,
 		m.guild_id,
 		m.channel_id,
 		coalesce(m.author_id, ''),
-		coalesce(
-			json_extract(m.raw_json, '$.member.nick'),
-			json_extract(m.raw_json, '$.author.global_name'),
-			json_extract(m.raw_json, '$.author.username'),
-			''
-		),
+		` + lexicalAuthorNameSQL + `,
 		coalesce(c.name, ''),
 		m.normalized_content
 	from messages m

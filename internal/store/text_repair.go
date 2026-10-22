@@ -56,7 +56,8 @@ func (s *Store) RepairMessageTextBatch(ctx context.Context, policy string, limit
 		revision, scope, policy string
 	}
 	batch, err := func() ([]candidate, error) {
-		rows, err := s.db.QueryContext(ctx, `select m.id,m.guild_id,m.channel_id,coalesce(m.author_id,''),m.content,m.normalized_content,m.raw_json,m.updated_at,coalesce(m.deleted_at,''),m.text_version,coalesce(c.collection_scope,'unknown'),coalesce(c.scope_policy,'')
+		rows, err := s.db.QueryContext(ctx, `select m.id,m.guild_id,m.channel_id,coalesce(m.author_id,''),m.content,m.normalized_content,m.raw_json,m.updated_at,coalesce(m.deleted_at,''),m.text_version,coalesce(c.collection_scope,'unknown'),coalesce(c.scope_policy,''),
+		`+lexicalAuthorNameSQL+`,coalesce(c.name,'')
 		from messages m left join channels c on c.id=m.channel_id where m.id>? and m.id<=? order by m.id limit ?`, p.LastID, p.HighWater, limit)
 		if err != nil {
 			return nil, err
@@ -65,7 +66,7 @@ func (s *Store) RepairMessageTextBatch(ctx context.Context, policy string, limit
 		batch := []candidate{}
 		for rows.Next() {
 			var c candidate
-			if err = rows.Scan(&c.record.ID, &c.record.GuildID, &c.record.ChannelID, &c.record.AuthorID, &c.record.Content, &c.record.NormalizedContent, &c.record.RawJSON, &c.revision, &c.record.DeletedAt, &c.record.TextVersion, &c.scope, &c.policy); err != nil {
+			if err = rows.Scan(&c.record.ID, &c.record.GuildID, &c.record.ChannelID, &c.record.AuthorID, &c.record.Content, &c.record.NormalizedContent, &c.record.RawJSON, &c.revision, &c.record.DeletedAt, &c.record.TextVersion, &c.scope, &c.policy, &c.record.AuthorName, &c.record.ChannelName); err != nil {
 				return nil, err
 			}
 			batch = append(batch, c)
