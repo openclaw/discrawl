@@ -116,7 +116,15 @@ func (t *tailHandler) scopeDecision(id string) string {
 
 func (t *tailHandler) allowMessageChannel(ctx context.Context, guild, id string) (bool, error) {
 	if !t.exclusions.configured() {
-		return !t.excludeChannel(id), nil
+		if t.excludeChannel(id) {
+			return false, nil
+		}
+		// Unconfigured collection still honors a persisted tombstone on the
+		// channel or an ancestor before any content I/O.
+		if t.store == nil || id == "" {
+			return true, nil
+		}
+		return t.store.ChannelCollectionAdmitted(ctx, id, "")
 	}
 	if t.exclusions.excludesID(id) {
 		return false, nil

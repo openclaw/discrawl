@@ -141,6 +141,16 @@ func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limi
 				stats.OutOfScope++
 				continue
 			}
+		} else if err := s.requirePersistedScope(ctx, failure.ChannelID); err != nil {
+			// A known channel or ancestor tombstone ends collection before
+			// the replay fetch, even without configured exclusions.
+			if !errors.Is(err, store.ErrCollectionScope) {
+				return stats, err
+			}
+			if err := s.resolveReplayExclusion(ctx, failure, &stats); err != nil {
+				return stats, err
+			}
+			continue
 		}
 		if s.client == nil {
 			if err := s.recordTailMessageReplayFailure(ctx, ref, errTailMessageReplayClientMissing); err != nil {

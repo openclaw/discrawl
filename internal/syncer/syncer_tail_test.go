@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -322,7 +323,9 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 				var err error
 				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 				require.NoError(t, err)
-				require.NoError(t, tailStore.Close())
+				// Fail the store after the admission check and refetch, so the
+				// canonical write is the failing stage.
+				onFetch = func(context.Context) { require.NoError(t, tailStore.Close()) }
 			case "panic":
 				var err error
 				tailStore, err = store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
@@ -334,14 +337,22 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = tailStore.Close() })
 				tailStore.DB().SetMaxOpenConns(1)
-				heldConn, err := tailStore.DB().Conn(ctx)
-				require.NoError(t, err)
+				// Hold the only connection from the refetch onward, after the
+				// admission check, so the canonical write times out.
+				var heldConn *sql.Conn
 				var releaseOnce sync.Once
 				release := func() {
-					releaseOnce.Do(func() { _ = heldConn.Close() })
+					releaseOnce.Do(func() {
+						if heldConn != nil {
+							_ = heldConn.Close()
+						}
+					})
 				}
 				t.Cleanup(release)
 				onFetch = func(taskCtx context.Context) {
+					conn, err := tailStore.DB().Conn(ctx)
+					require.NoError(t, err)
+					heldConn = conn
 					go func() {
 						<-taskCtx.Done()
 						time.Sleep(10 * time.Millisecond)

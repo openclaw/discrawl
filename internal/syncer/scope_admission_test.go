@@ -2,6 +2,10 @@ package syncer
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,4 +56,66 @@ func TestReplayResolvesTransactionalScopeRejectionAsExclusion(t *testing.T) {
 	require.Zero(t, report.UnresolvedCount)
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, "excluded_by_collection_policy", report.Failures[0].ResolutionReason)
+}
+
+func TestTailSkipsTombstonedChannelBeforeContentIO(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("body"))
+	}))
+	defer server.Close()
+	s := repairFrontierStore(t)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "cat", GuildID: "g", Kind: "category", RawJSON: `{}`}))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g", ParentID: "cat", Kind: "text", RawJSON: `{}`}))
+	require.NoError(t, s.MarkChannelDeleted(ctx, "g", "cat", "gateway"))
+	h := &tailHandler{store: s, attachmentTextEnabled: true}
+	m := &discordgo.Message{ID: "1", GuildID: "g", ChannelID: "c", Content: "x", Timestamp: time.Now(), Author: &discordgo.User{ID: "u"}, Attachments: []*discordgo.MessageAttachment{{ID: "a", Filename: "a.txt", ContentType: "text/plain", URL: server.URL, Size: 4}}}
+	require.NoError(t, h.OnMessageCreate(ctx, m))
+	require.Zero(t, requests.Load(), "a tombstoned descendant is never downloaded")
+	var stored int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages where id='1'`).Scan(&stored))
+	require.Zero(t, stored)
+}
+
+func TestTailResolvesTransactionalScopeRejectionAsPolicyOutcome(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c", GuildID: "g", Kind: "text", RawJSON: `{}`}))
+	ref := tailMessageFailureIdentity("g", "c", "2", "create")
+	require.NoError(t, s.RecordFailure(ctx, ref, context.DeadlineExceeded))
+	// The channel is tombstoned while its attachment is downloading, after
+	// admission, so only the transactional write guard observes it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		require.NoError(t, s.MarkChannelDeleted(context.Background(), "g", "c", "gateway"))
+		_, _ = w.Write([]byte("body"))
+	}))
+	defer server.Close()
+	h := &tailHandler{store: s, attachmentTextEnabled: true}
+	m := &discordgo.Message{ID: "2", GuildID: "g", ChannelID: "c", Content: "x", Timestamp: time.Now(), Author: &discordgo.User{ID: "u"}, Attachments: []*discordgo.MessageAttachment{{ID: "a", Filename: "a.txt", ContentType: "text/plain", URL: server.URL, Size: 4}}}
+	require.NoError(t, h.OnMessageCreate(ctx, m), "scope revocation is a policy outcome, not a handler failure")
+	report, err := s.ListFailures(ctx, store.FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+	require.Equal(t, "excluded_by_collection_policy", report.Failures[0].ResolutionReason)
+
+	other := errors.New("disk full")
+	require.ErrorIs(t, h.scopeRejection(ctx, "MESSAGE_CREATE", "create", m, other), other)
+}
+
+func TestReplaySkipsTombstonedChannelBeforeFetch(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", RawJSON: `{}`}))
+	require.NoError(t, s.MarkChannelDeleted(ctx, "g1", "c1", "gateway"))
+	require.NoError(t, s.RecordFailure(ctx, tailMessageFailureIdentity("g1", "c1", "80", "create"), context.DeadlineExceeded))
+	client := &exactReplayClient{}
+	stats, err := New(client, s, nil).replayTailMessageFailures(ctx, []string{"g1"}, 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.OutOfScope)
+	require.Empty(t, client.calls, "a tombstoned channel is not fetched")
 }

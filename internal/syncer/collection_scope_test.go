@@ -90,7 +90,9 @@ func TestScopeMoveWhileAttachmentFetchIsInFlightCannotCommit(t *testing.T) {
 	// A delayed old REST response must not overwrite the newer Gateway move.
 	require.NoError(t, s.UpsertObservedChannel(t.Context(), store.ChannelRecord{ID: "c", GuildID: "g", Kind: "text", RawJSON: `{}`}, oldObservation))
 	close(release)
-	require.ErrorIs(t, <-done, store.ErrCollectionScope)
+	// The transactional guard rejects the write; the revocation is a policy
+	// outcome rather than a handler failure.
+	require.NoError(t, <-done)
 	var n int
 	require.NoError(t, s.DB().QueryRowContext(t.Context(), `select count(*) from messages`).Scan(&n))
 	require.Zero(t, n)

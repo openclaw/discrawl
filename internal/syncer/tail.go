@@ -334,14 +334,14 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
 	mutation, err := buildMessageMutation(ctx, msg, "", "", t.enqueueEmbeddings, t.attachmentTextEnabled)
 	if err != nil {
-		return err
+		return t.scopeRejection(ctx, "MESSAGE_CREATE", "create", msg, err)
 	}
 	mutation.Options.ScopePolicy = t.scopePolicy()
 	mutation.Options.AppendEvent = true
 	mutation.EventType = "create"
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalWrite)
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return err
+		return t.scopeRejection(ctx, "MESSAGE_CREATE", "create", msg, err)
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
@@ -403,14 +403,14 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageMessageBuild)
 	mutation, err := buildMessageMutation(ctx, msg, "", "", t.enqueueEmbeddings, t.attachmentTextEnabled)
 	if err != nil {
-		return err
+		return t.scopeRejection(ctx, "MESSAGE_UPDATE", "update", msg, err)
 	}
 	mutation.Options.ScopePolicy = t.scopePolicy()
 	mutation.Options.AppendEvent = true
 	mutation.EventType = "update"
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageCanonicalWrite)
 	if err := t.store.UpsertMessages(ctx, []store.MessageMutation{mutation}); err != nil {
-		return err
+		return t.scopeRejection(ctx, "MESSAGE_UPDATE", "update", msg, err)
 	}
 	discordclient.UpdateTailFailureStage(ctx, discordclient.TailFailureStageStateUpdate)
 	if err := t.store.SetSyncState(ctx, "tail:last_event", msg.ID); err != nil {
@@ -515,6 +515,24 @@ func (t *tailHandler) OnMessageDelete(ctx context.Context, evt *discordgo.Messag
 		return err
 	}
 	t.logTailDelete("MESSAGE_DELETE", "archived", "", evt)
+	return nil
+}
+
+// scopeRejection turns a collection-scope revocation observed after admission
+// (by the attachment guard or the transactional write guard) into a policy
+// outcome: the event is ignored and pending work for it is resolved rather
+// than recorded as a retryable failure. Other errors pass through unchanged.
+func (t *tailHandler) scopeRejection(ctx context.Context, eventType, eventKind string, msg *discordgo.Message, err error) error {
+	if !errors.Is(err, store.ErrCollectionScope) || t.store == nil || msg == nil {
+		return err
+	}
+	ledgerCtx, cancel := failureLedgerContext(ctx)
+	defer cancel()
+	ref := tailMessageFailureIdentity(msg.GuildID, msg.ChannelID, msg.ID, eventKind)
+	if resolveErr := t.store.ResolveFailureWithReason(ledgerCtx, ref, "excluded_by_collection_policy"); resolveErr != nil {
+		return resolveErr
+	}
+	t.logTailMessage(eventType, "ignored", "channel_scope", msg)
 	return nil
 }
 
