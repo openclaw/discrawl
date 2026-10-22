@@ -14,6 +14,7 @@ import (
 )
 
 func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery time.Duration) error {
+	ctx = withAttachmentScopeGuard(ctx, s.attachmentScopeGuard())
 	if err := s.importTailMessageFailureFallbacks(ctx); err != nil {
 		return err
 	}

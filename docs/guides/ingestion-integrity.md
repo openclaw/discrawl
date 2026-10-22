@@ -149,8 +149,10 @@ Without exact member lookup, replay falls back to the removal time as a fence.
 The running tail owner revalidates a cached scope decision against the
 persisted channel revision before any content fetch, so scope repaired by
 metadata replay applies immediately. REST pagination likewise rechecks the persisted
-scope before each page and attachment fetch; a channel that leaves scope during
-a crawl is skipped without failing the rest of the run.
+scope before each page, and every attachment download (sync, tail, replay and
+attachment retry) rechecks it first. A channel that leaves scope during a crawl
+is skipped without failing the rest of the run, and its pending channel work
+resolves as `excluded_by_collection_policy` instead of degrading status.
 
 The failure ledger retains `resolution_reason`, distinguishing exact
 reconciliation, explicit policy exclusion and terminal provider unavailability.

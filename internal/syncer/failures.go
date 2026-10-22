@@ -33,6 +33,16 @@ func (s *Syncer) recordChannelFailure(ctx context.Context, guildID, channelID st
 	}
 	ledgerCtx, cancel := failureLedgerContext(ctx)
 	defer cancel()
+	if errors.Is(failure, store.ErrCollectionScope) {
+		// Leaving collection scope is a policy outcome, not a retryable
+		// failure: resolve pending channel work instead of degrading status.
+		return s.store.ResolveFailureWithReason(ledgerCtx, store.FailureRef{
+			Operation: syncMessagesFailureOperation,
+			Source:    "discord",
+			GuildID:   guildID,
+			ChannelID: channelID,
+		}, "excluded_by_collection_policy")
+	}
 	return s.store.RecordFailure(ledgerCtx, store.FailureRef{
 		Operation: syncMessagesFailureOperation,
 		Source:    "discord",

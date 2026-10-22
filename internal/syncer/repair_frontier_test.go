@@ -3,8 +3,11 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -273,4 +276,40 @@ func TestPaginationStopsWhenChannelLeavesScope(t *testing.T) {
 	var stored int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages where channel_id='c'`).Scan(&stored))
 	require.Zero(t, stored)
+}
+
+func TestAttachmentDownloadsRecheckCollectionScope(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("attachment body"))
+	}))
+	defer server.Close()
+	message := &discordgo.Message{ID: "10", GuildID: "g", ChannelID: "c", Timestamp: time.Now(), Attachments: []*discordgo.MessageAttachment{{ID: "a", Filename: "a.txt", ContentType: "text/plain", URL: server.URL, Size: 15}}}
+
+	revoked := withAttachmentScopeGuard(t.Context(), func(context.Context, string) error { return store.ErrCollectionScope })
+	_, err := buildMessageMutation(revoked, message, "", "g", false, true)
+	require.ErrorIs(t, err, store.ErrCollectionScope)
+	require.Zero(t, requests.Load(), "a revoked channel's attachment is never requested")
+
+	allowed := withAttachmentScopeGuard(t.Context(), func(context.Context, string) error { return nil })
+	_, err = buildMessageMutation(allowed, message, "", "g", false, true)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, requests.Load())
+}
+
+func TestScopeLossResolvesChannelWorkAsPolicyOutcome(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := repairFrontierStore(t)
+	svc := New(&fakeClient{}, s, nil)
+	require.NoError(t, svc.recordChannelFailure(ctx, "g1", "c", errors.New("provider timeout")))
+	require.NoError(t, svc.recordChannelFailure(ctx, "g1", "c", fmt.Errorf("write page: %w", store.ErrCollectionScope)))
+	report, err := s.ListFailures(ctx, store.FailureListOptions{IncludeResolved: true}, time.Now())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount, "an excluded channel must not leave status degraded")
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "excluded_by_collection_policy", report.Failures[0].ResolutionReason)
 }

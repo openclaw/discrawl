@@ -16,6 +16,7 @@ func (s *Syncer) retryAttachmentText(ctx context.Context, guildIDs []string) err
 	if !s.attachmentTextEnabled {
 		return nil
 	}
+	ctx = withAttachmentScopeGuard(ctx, s.attachmentScopeGuard())
 	candidates, err := s.store.AttachmentTextRetryCandidates(ctx, guildIDs, 5)
 	if err != nil {
 		return err
@@ -55,6 +56,11 @@ func (s *Syncer) retryAttachmentText(ctx context.Context, guildIDs []string) err
 			fetchErr = buildErr
 		}
 		cancel()
+		if errors.Is(fetchErr, store.ErrCollectionScope) {
+			// Scope was revoked while the refetch was in flight: a policy
+			// skip, not a retryable attachment failure.
+			continue
+		}
 		if fetchErr != nil {
 			code := discordclient.SafeFailureCode(fetchErr)
 			if code == "" {

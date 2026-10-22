@@ -27,6 +27,26 @@ const (
 
 var attachmentHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
+type attachmentScopeGuardKey struct{}
+
+// withAttachmentScopeGuard makes every attachment download first confirm that
+// the message's channel is still in collection scope. Scope can be revoked by
+// a concurrent Gateway move while a message fetch or extraction is in flight.
+func withAttachmentScopeGuard(ctx context.Context, guard func(context.Context, string) error) context.Context {
+	if guard == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, attachmentScopeGuardKey{}, guard)
+}
+
+func checkAttachmentScope(ctx context.Context, channelID string) error {
+	guard, _ := ctx.Value(attachmentScopeGuardKey{}).(func(context.Context, string) error)
+	if guard == nil {
+		return nil
+	}
+	return guard(ctx, channelID)
+}
+
 type attachmentTextError struct{ code string }
 
 func (e attachmentTextError) Error() string { return e.code }
@@ -111,6 +131,9 @@ func extractAttachments(ctx context.Context, message *discordgo.Message, guildID
 			parts = append(parts, name)
 		}
 		if attachmentText && shouldFetchAttachmentText(attachment) && attachment.URL != "" {
+			if err := checkAttachmentScope(ctx, message.ChannelID); err != nil {
+				return nil, nil, err
+			}
 			record.TextAttemptedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			text, err := fetchAttachmentText(ctx, attachment.URL)
 			switch {

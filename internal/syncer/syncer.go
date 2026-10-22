@@ -165,6 +165,7 @@ func (s *Syncer) DiscoverGuilds(ctx context.Context) ([]*discordgo.UserGuild, er
 }
 
 func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) {
+	ctx = withAttachmentScopeGuard(ctx, s.attachmentScopeGuard())
 	if opts.IncludeStoredThreads && len(makeGuildSet(opts.ChannelIDs)) == 0 {
 		return SyncStats{}, errors.New("including stored threads requires explicit channel targets")
 	}

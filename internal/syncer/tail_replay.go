@@ -58,6 +58,7 @@ func (s *Syncer) replayTailMessageFailures(ctx context.Context, guildIDs []strin
 // false for automatic tail repair: an exact recovery proves one message, not
 // the history before it, so it must not move the channel's history frontier.
 func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limit int, advanceCursor bool) (tailMessageReplayStats, error) {
+	ctx = withAttachmentScopeGuard(ctx, s.attachmentScopeGuard())
 	stats := tailMessageReplayStats{}
 	if s == nil || s.store == nil {
 		return stats, nil
@@ -181,6 +182,13 @@ func (s *Syncer) replayTailMessages(ctx context.Context, guildIDs []string, limi
 			message.GuildID = failure.GuildID
 		}
 		mutation, err := buildMessageMutation(ctx, message, "", failure.GuildID, s.tailEmbeddings, s.attachmentTextEnabled)
+		if errors.Is(err, store.ErrCollectionScope) {
+			if err := s.store.ResolveFailureGeneration(ctx, failure, "excluded_by_collection_policy"); err != nil {
+				return stats, err
+			}
+			stats.OutOfScope++
+			continue
+		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return stats, ctxErr

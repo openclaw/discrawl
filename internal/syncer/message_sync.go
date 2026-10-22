@@ -1221,6 +1221,15 @@ func syncErrorOutcome(err error) string {
 	return "skipped"
 }
 
+// attachmentScopeGuard returns the persisted-scope check used before every
+// attachment download, or nil when collection scope is not configured.
+func (s *Syncer) attachmentScopeGuard() func(context.Context, string) error {
+	if s == nil || s.store == nil || !s.channelExclusions.configured() {
+		return nil
+	}
+	return s.requirePersistedScope
+}
+
 // requirePersistedScope rejects a channel whose persisted collection scope is
 // no longer allowed under the configured policy, before any further content
 // request. A concurrent Gateway move can revoke scope during pagination.
