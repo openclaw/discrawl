@@ -174,7 +174,8 @@ Set `discord.token_source = "keyring"` if you want to require keyring lookup and
 - `[share.filter]` narrows only `publish` output; sync can still keep a richer local archive
 - `share.filter.public_only` exports only channels visible to the guild
   `@everyone` role after category/channel permission overwrites; private
-  threads are excluded
+  threads and channels with an unavailable marker (and their threads) are
+  excluded
 - `share.filter.include_channel_ids` and
   `share.filter.exclude_channel_ids` accept Discord channel ids; exclusions win,
   and including a forum parent also includes its allowed public threads

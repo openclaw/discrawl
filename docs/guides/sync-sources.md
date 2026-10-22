@@ -61,6 +61,7 @@ provenance never describes superseded text.
 - Each channel crawl has a bounded runtime budget; pathological channels are deferred and retried on the next sync.
 - Retryable failures and unavailable-channel markers are tracked per channel; stale unavailable markers are cleared after a later successful crawl.
 - Routine syncs pass over a channel while its unavailable marker is inside the seven-day window, and retries it on the next run after that window expires. `sync --guild <id> --full` attempts every channel in the guild immediately, `sync --channels <id>` retries a single channel, and `doctor` counts the markers currently inside the window against those due for another attempt.
+- An Unknown Channel answer is corroborated by one exact channel lookup before the channel's failure resolves as provider-unavailable (`provider_unavailable_404`); the marker, archived history and scope stay, and nothing is tombstoned. See [ingestion integrity](ingestion-integrity.md).
 - Marker cleanup is best-effort, so one missing local sync-state row cannot crash the run.
 - Full sync member refresh is best-effort and gives up after five minutes without a caller-supplied deadline, so message sync completion is not held hostage by a slow guild member crawl.
 - Routine refreshes keep a per-parent archived-thread cursor, so they discover threads archived between runs without rescanning the historical thread catalog.

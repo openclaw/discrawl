@@ -140,7 +140,26 @@ Ordinary startup/periodic repair performs bounded exact-message failure replay,
 metadata replay and attachment retry. Metadata replay resolves a failed channel
 update superseded by a recorded channel deletion (`superseded_by_deletion`) and
 a channel or member update answered by Discord Unknown Channel/Unknown Member
-(`provider_unavailable_404`); transient errors stay pending for retry. A recovery fetch is a new `snapshot`
+(`provider_unavailable_404`); transient errors stay pending for retry.
+
+Channel message failures follow the same model. A message request answered
+Unknown Channel (HTTP 404, code 10003) is not treated as proof on its own: the
+crawl records the failure, then makes one exact channel lookup. Only when that
+lookup also answers Unknown Channel does the failure resolve as
+`provider_unavailable_404`. That outcome is not a deletion: the channel row,
+its archived history, its scope and the failure row (error, first/last seen,
+retry count) stay in place, and the `channel:<id>:unavailable` marker keeps
+routine syncs from re-requesting it until the seven-day window expires. If the
+lookup still returns the channel, the failure stays pending and only the
+unknown-channel marker is dropped so the next routine sync retries it; any other
+lookup answer (Missing Access, rate limit, server or transport error) leaves the
+failure and marker as they are. A later successful crawl clears the marker and
+re-admits the channel; a later 404 is recorded again before it is settled.
+Ordinary repair also settles pending channel message failures recorded earlier:
+a recorded deletion of the channel or an ancestor resolves as
+`superseded_by_deletion`, an explicit exclusion under the current policy as
+`excluded_by_collection_policy`, and recorded Unknown Channel failures go
+through the same exact-lookup corroboration (bounded per repair). A recovery fetch is a new `snapshot`
 observation at the time it was obtained, not an invented original create/edit.
 Attachment recovery also records deduplicated snapshot observations. REST
 recovery cannot overwrite a newer local observation, message deletion, member

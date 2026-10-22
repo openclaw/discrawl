@@ -23,6 +23,7 @@ type snapshotFilter struct {
 	publicMemo        map[string]bool
 	publicSeen        map[string]bool
 	publicMissing     map[string]bool
+	unavailable       map[string]bool
 }
 
 type snapshotChannel struct {
@@ -51,6 +52,7 @@ func newSnapshotFilter(ctx context.Context, db *sql.DB, opts FilterOptions) (*sn
 		publicMemo:        map[string]bool{},
 		publicSeen:        map[string]bool{},
 		publicMissing:     map[string]bool{},
+		unavailable:       map[string]bool{},
 	}
 	f.active = opts.Active()
 	if !f.active {
@@ -61,6 +63,11 @@ func newSnapshotFilter(ctx context.Context, db *sql.DB, opts FilterOptions) (*sn
 	}
 	if err := f.loadChannels(ctx, db); err != nil {
 		return nil, err
+	}
+	if f.publicOnly {
+		if err := f.loadUnavailableChannels(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 	for id, ch := range f.channels {
 		if f.channelAllowed(ch) {
@@ -108,6 +115,30 @@ func (f *snapshotFilter) loadChannels(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("scan channel share filter: %w", err)
 		}
 		f.channels[ch.ID] = ch
+	}
+	return rows.Err()
+}
+
+// loadUnavailableChannels records channels whose last message crawl Discord
+// refused (Unknown Channel or Missing Access). Their stored permissions can no
+// longer be verified as public, so public-only snapshots withhold them and
+// their descendants until a successful crawl clears the marker.
+func (f *snapshotFilter) loadUnavailableChannels(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `select scope from sync_state where scope like 'channel:%:unavailable'`)
+	if err != nil {
+		return fmt.Errorf("query unavailable channels for share filter: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return fmt.Errorf("scan unavailable channel share filter: %w", err)
+		}
+		if id, ok := strings.CutPrefix(scope, "channel:"); ok {
+			if id, ok = strings.CutSuffix(id, ":unavailable"); ok && id != "" && !strings.Contains(id, ":") {
+				f.unavailable[id] = true
+			}
+		}
 	}
 	return rows.Err()
 }
@@ -277,7 +308,7 @@ func (f *snapshotFilter) publicChannel(channelID string) bool {
 			f.publicMemo[channelID] = false
 			return false
 		}
-		if ancestor.CollectionScope != "allowed" || ancestor.DeletedAt != "" {
+		if ancestor.CollectionScope != "allowed" || ancestor.DeletedAt != "" || f.unavailable[id] {
 			f.publicMemo[channelID] = false
 			return false
 		}

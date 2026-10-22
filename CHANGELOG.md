@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Settle channel message failures answered Unknown Channel only after an exact channel lookup corroborates them, as a provider outcome that keeps history and the retry marker; ordinary repair also settles earlier failures superseded by a recorded deletion or exclusion. Public-only snapshots withhold channels with an unavailable marker until a successful crawl re-admits them, and routine syncs no longer panic when only marked channels remain.
 - Apply Gateway `GUILD_CREATE` and `THREAD_LIST_SYNC` channel catalogs in one transaction, so large guilds no longer exceed the tail handler deadline at startup under FULL synchronization or leave a partially applied catalog.
 - Retain channel scope metadata independently of content, fail closed on unknown ancestry, and protect public snapshots from excluded ancestors; resolve allowed new channels without a restart.
 - Honor channel and ancestor tombstones before page, exact-message and attachment requests even without configured exclusions, resolve every scope rejection as a policy outcome, and count only actionable attachment failures in status. Desktop cache imports no longer clear channel tombstones, and text repair keeps author and channel names in multilingual lexical indexes.

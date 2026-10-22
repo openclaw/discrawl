@@ -360,6 +360,11 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 		unavailable[marker.Scope] = struct{}{}
 	}
 	candidates := makeGuildSet(incomplete)
+	if candidates == nil {
+		// makeGuildSet returns nil for an empty list; marked channels below
+		// still need a writable set when nothing else is incomplete.
+		candidates = map[string]struct{}{}
+	}
 	if len(unavailable) > 0 {
 		channels, err := s.store.Channels(ctx, guildID)
 		if err != nil {

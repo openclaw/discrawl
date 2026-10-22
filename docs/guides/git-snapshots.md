@@ -29,6 +29,10 @@ Filter rules:
 - `--public-only` keeps only channels where the guild `@everyone` role has
   `VIEW_CHANNEL` after category and channel permission overwrites
 - private threads are excluded
+- channels whose last message crawl Discord refused (an Unknown Channel or
+  Missing Access unavailable marker), and their threads, are withheld because
+  their stored permissions can no longer be verified; a later successful crawl
+  clears the marker and re-admits them
 - `--include-channels` and `--exclude-channels` accept comma-separated channel
   ids; exclusions win
 - including a forum parent also includes its allowed public threads

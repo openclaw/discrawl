@@ -103,6 +103,35 @@ func (s *Store) ChannelTombstoned(ctx context.Context, id string) (bool, error) 
 	return deleted > 0, err
 }
 
+// ChannelFailureSupersession reports whether pending channel work is
+// superseded by recorded state rather than still retryable: a recorded
+// deletion of the channel or any ancestor ("superseded_by_deletion"), or an
+// explicit exclusion under the given policy ("excluded_by_collection_policy").
+// Unknown or undecided scope is not a supersession. It returns "" otherwise.
+func (s *Store) ChannelFailureSupersession(ctx context.Context, id, policy string) (string, error) {
+	var tombstones int
+	if err := s.db.QueryRowContext(ctx, `with recursive ancestry(id,parent_id,deleted_at) as (
+		select id,parent_id,deleted_at from channels where id=?
+		union select c.id,c.parent_id,c.deleted_at from channels c join ancestry a on c.id=a.parent_id
+	) select count(*) from ancestry where deleted_at is not null`, id).Scan(&tombstones); err != nil {
+		return "", err
+	}
+	if tombstones > 0 {
+		return "superseded_by_deletion", nil
+	}
+	if policy == "" {
+		return "", nil
+	}
+	var excluded int
+	if err := s.db.QueryRowContext(ctx, `select count(*) from channels where id=? and collection_scope='excluded' and scope_policy=?`, id, policy).Scan(&excluded); err != nil {
+		return "", err
+	}
+	if excluded > 0 {
+		return "excluded_by_collection_policy", nil
+	}
+	return "", nil
+}
+
 // ChannelCollectionAllowed reports whether a stored, undeleted channel is
 // currently allowed under policy, matching the write-time scope guard.
 func (s *Store) ChannelCollectionAllowed(ctx context.Context, id, policy string) (bool, error) {

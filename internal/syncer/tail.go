@@ -194,9 +194,12 @@ func (s *Syncer) runTailRepair(ctx context.Context, opts SyncOptions) (SyncStats
 	metadataCtx, cancelMetadata := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelMetadata()
 	metadataErr := s.replayMetadataFailures(metadataCtx, opts.GuildIDs)
+	channelCtx, cancelChannels := context.WithTimeout(ctx, unknownChannelReplayBudget)
+	defer cancelChannels()
+	channelErr := s.reconcileChannelMessageFailures(channelCtx, opts.GuildIDs)
 	attachmentCtx, cancelAttachments := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelAttachments()
-	return stats, errors.Join(syncErr, replayErr, metadataErr, s.retryAttachmentText(attachmentCtx, opts.GuildIDs))
+	return stats, errors.Join(syncErr, replayErr, metadataErr, channelErr, s.retryAttachmentText(attachmentCtx, opts.GuildIDs))
 }
 
 func (s *Syncer) joinTailRepair(repair *tailRepairRun, reason string) error {

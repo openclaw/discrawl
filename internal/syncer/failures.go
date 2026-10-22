@@ -43,12 +43,25 @@ func (s *Syncer) recordChannelFailure(ctx context.Context, guildID, channelID st
 			ChannelID: channelID,
 		}, "excluded_by_collection_policy")
 	}
-	return s.store.RecordFailure(ledgerCtx, store.FailureRef{
+	ref := store.FailureRef{
 		Operation: syncMessagesFailureOperation,
 		Source:    "discord",
 		GuildID:   guildID,
 		ChannelID: channelID,
-	}, failure)
+	}
+	// Record first so the failure history keeps every observation, then
+	// settle a corroborated Unknown Channel answer as a provider outcome.
+	if err := s.store.RecordFailure(ledgerCtx, ref, failure); err != nil {
+		return err
+	}
+	if unavailableReason(failure) != "unknown_channel" || ctx == nil || ctx.Err() != nil {
+		return nil
+	}
+	return s.settleUnknownChannelFailure(ctx, guildID, channelID, func(reason string) error {
+		resolveCtx, cancelResolve := failureLedgerContext(ctx)
+		defer cancelResolve()
+		return s.store.ResolveFailureWithReason(resolveCtx, ref, reason)
+	})
 }
 
 func (s *Syncer) resolveChannelFailures(ctx context.Context, guildID, channelID string) error {

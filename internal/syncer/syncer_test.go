@@ -45,6 +45,7 @@ type fakeClient struct {
 	tailHandled       chan struct{}
 	messageDelay      time.Duration
 	channelCalls      map[string]int
+	channelErrors     map[string]error
 	guildChanCalls    int
 	threadCalls       int
 	guildThreadCalls  int
@@ -77,10 +78,15 @@ func (f *fakeClient) Guild(_ context.Context, guildID string) (*discordgo.Guild,
 }
 
 func (f *fakeClient) Channel(_ context.Context, channelID string) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.channelCalls == nil {
 		f.channelCalls = make(map[string]int)
 	}
 	f.channelCalls[channelID]++
+	if err := f.channelErrors[channelID]; err != nil {
+		return nil, err
+	}
 	return f.channelByID[channelID], nil
 }
 
