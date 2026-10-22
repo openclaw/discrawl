@@ -177,6 +177,21 @@ func (s *Store) ResolveFailureWithReason(ctx context.Context, ref FailureRef, re
 	return err
 }
 
+// ResolveFailureGeneration resolves one replayed failure only if no newer
+// failure for the same identity was recorded since it was read. Every record
+// increments retry_count, so failure_id plus retry_count identifies the
+// generation that replay actually reconciled.
+func (s *Store) ResolveFailureGeneration(ctx context.Context, failure Failure, reason string) error {
+	if reason == "" {
+		return errors.New("resolution reason required")
+	}
+	if failure.FailureID == 0 {
+		return errors.New("failure id required")
+	}
+	_, err := s.db.ExecContext(ctx, `update failure_ledger set resolved_at=?,resolution_reason=? where failure_id=? and retry_count=? and resolved_at is null`, time.Now().UTC().Format(timeLayout), reason, failure.FailureID, failure.RetryCount)
+	return err
+}
+
 func requireMessageScope(ctx context.Context, tx *sql.Tx, message MessageRecord, policy string) error {
 	if policy == "" {
 		var tombstones int

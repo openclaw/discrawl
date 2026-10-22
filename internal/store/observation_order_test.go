@@ -104,3 +104,60 @@ func TestRemovalEventFailureTracksEachEventTime(t *testing.T) {
 	require.True(t, firstSeen().After(first))
 	require.Error(t, s.RecordEventFailure(ctx, ref, nil))
 }
+
+func TestStaleMutationKeepsGenuineEventObservation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{{Record: observationOrderMessage("edited by repair", "2026-10-01T00:02:00Z")}}))
+
+	// A queued Gateway create carrying the original payload arrives after REST
+	// already stored the newer edit: canonical state stays newer, but the
+	// genuine create observation is still retained.
+	original := observationOrderMessage("original", "")
+	create := MessageMutation{
+		Record: original, EventType: "create", PayloadJSON: original.RawJSON,
+		Options: WriteOptions{PreserveNewer: true, AppendEvent: true},
+	}
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{create}))
+	var content string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id='100'`).Scan(&content))
+	require.Equal(t, "edited by repair", content)
+	var events int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where message_id='100' and event_type='create'`).Scan(&events))
+	require.Equal(t, 1, events)
+
+	create.Options.DeduplicateEvent = true
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{create}))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from message_events where message_id='100' and event_type='create'`).Scan(&events))
+	require.Equal(t, 1, events, "deduplicated observations are not repeated")
+}
+
+func TestReplayResolvesOnlyTheGenerationItReconciled(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	ref := FailureRef{Operation: "tail_metadata", Source: "discord", GuildID: "g", RelatedKind: "gateway_event", RelatedID: "GUILD_MEMBER_UPDATE:u"}
+	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("older role change")))
+	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	replayed := report.Failures[0]
+
+	// A newer event for the same identity fails while replay is in flight.
+	require.NoError(t, s.RecordFailure(ctx, ref, errors.New("newer role change")))
+	require.NoError(t, s.ResolveFailureGeneration(ctx, replayed, "metadata_reconciled"))
+	report, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 1, report.UnresolvedCount, "the newer failure stays pending")
+
+	require.NoError(t, s.ResolveFailureGeneration(ctx, report.Failures[0], "metadata_reconciled"))
+	report, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	require.NoError(t, err)
+	require.Zero(t, report.UnresolvedCount)
+	require.Error(t, s.ResolveFailureGeneration(ctx, Failure{}, "metadata_reconciled"))
+	require.Error(t, s.ResolveFailureGeneration(ctx, replayed, ""))
+}

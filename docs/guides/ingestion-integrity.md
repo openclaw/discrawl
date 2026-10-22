@@ -103,7 +103,9 @@ be spliced into old message-event observations.
 
 ## Events, repair and status
 
-Canonical create/update writes and their Gateway event commit atomically.
+Canonical create/update writes and their Gateway event commit atomically. When
+newer canonical state is retained over a stale create/update, the genuine
+Gateway observation is still appended in that transaction.
 Single and bulk message deletions retain real deletion observations; channel and
 thread deletions retain metadata tombstones. Role events update the retained
 role permissions. Voice/stage text is included in REST repair when in scope.
@@ -122,6 +124,8 @@ Its raw payload retains the provider timestamp/edit timestamp. An exact repeat
 does not append a duplicate snapshot. Missing provider content is not fabricated
 and a 404 alone is not converted into a message deletion.
 
+Replay resolves only the failure generation it reconciled: a newer failure for
+the same identity recorded while replay was in flight stays pending.
 A failed member removal records the time of that removal event. A later removal
 of the same member, including after the earlier failure resolved, replaces that
 time, while replay retries keep it, so replay never judges a newer removal by an

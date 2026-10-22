@@ -148,7 +148,9 @@ func (s *Syncer) replayMetadataFailures(ctx context.Context, guildIDs []string) 
 				return err
 			}
 		} else {
-			if err = s.store.ResolveFailureWithReason(ctx, ref, "metadata_reconciled"); err != nil {
+			// A newer failure for this identity may have been recorded while
+			// the replay was in flight; leave that generation pending.
+			if err = s.store.ResolveFailureGeneration(ctx, f, "metadata_reconciled"); err != nil {
 				return err
 			}
 		}

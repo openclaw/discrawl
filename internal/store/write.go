@@ -406,6 +406,11 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 				return err
 			}
 			if keep {
+				// Newer canonical state wins, but a genuine Gateway or snapshot
+				// observation is still retained in the same transaction.
+				if err := appendMutationEventTx(ctx, qtx, message); err != nil {
+					return err
+				}
 				continue
 			}
 		}
@@ -418,29 +423,8 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := replaceMentionEventsTx(ctx, qtx, message.Record.ID, message.Mentions); err != nil {
 			return err
 		}
-		if message.Options.AppendEvent && message.EventType != "" {
-			if message.Options.DeduplicateEvent {
-				exists, err := qtx.MessageEventExists(ctx, storedb.MessageEventExistsParams{
-					MessageID: message.Record.ID, EventType: message.EventType, PayloadJson: message.PayloadJSON,
-				})
-				if err != nil {
-					return err
-				}
-				if exists {
-					continue
-				}
-			}
-			if err := appendEventTx(
-				ctx,
-				qtx,
-				message.Record.GuildID,
-				message.Record.ChannelID,
-				message.Record.ID,
-				message.EventType,
-				message.PayloadJSON,
-			); err != nil {
-				return err
-			}
+		if err := appendMutationEventTx(ctx, qtx, message); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -448,6 +432,29 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	}
 	s.notifyEmbeddingWork()
 	return nil
+}
+
+func appendMutationEventTx(ctx context.Context, qtx *storedb.Queries, message MessageMutation) error {
+	if !message.Options.AppendEvent || message.EventType == "" {
+		return nil
+	}
+	if message.Options.DeduplicateEvent {
+		exists, err := qtx.MessageEventExists(ctx, storedb.MessageEventExistsParams{
+			MessageID: message.Record.ID, EventType: message.EventType, PayloadJson: message.PayloadJSON,
+		})
+		if err != nil || exists {
+			return err
+		}
+	}
+	return appendEventTx(
+		ctx,
+		qtx,
+		message.Record.GuildID,
+		message.Record.ChannelID,
+		message.Record.ID,
+		message.EventType,
+		message.PayloadJSON,
+	)
 }
 
 func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord, started time.Time) (bool, error) {
