@@ -318,17 +318,24 @@ func (s *Syncer) verifyChannelHistory(ctx context.Context, channel *discordgo.Ch
 		return 0, err
 	}
 	if err := s.store.DeleteSyncState(ctx, channelHistoryCompleteScope(channel.ID)); err != nil {
-		return 0, err
+		// Cancellation can be reported after a durable commit already removed
+		// the marker. Restoration is idempotent and only re-marks an empty
+		// channel, so attempt it whenever clearing reports failure.
+		return 0, s.restoreAfterFailedVerification(ctx, channel.ID, err)
 	}
 	count, err := s.syncFullChannelHistory(ctx, channel, state, embeddings, time.Time{}, checkpoint, progress)
 	if err != nil {
-		// Reuse the detached failure-state budget so cancellation cannot
-		// suppress restoration or leave it waiting indefinitely for the store.
-		restoreCtx, cancel := failureLedgerContext(ctx)
-		defer cancel()
-		return count, errors.Join(err, s.restoreHistoryCompleteAfterFailedVerification(restoreCtx, channel.ID))
+		return count, s.restoreAfterFailedVerification(ctx, channel.ID, err)
 	}
 	return count, s.recordVerifiedEmptyChannel(ctx, channel.ID)
+}
+
+// restoreAfterFailedVerification reuses the detached failure-state budget so
+// cancellation cannot suppress restoration or leave it waiting indefinitely.
+func (s *Syncer) restoreAfterFailedVerification(ctx context.Context, channelID string, failure error) error {
+	restoreCtx, cancel := failureLedgerContext(ctx)
+	defer cancel()
+	return errors.Join(failure, s.restoreHistoryCompleteAfterFailedVerification(restoreCtx, channelID))
 }
 
 // restoreHistoryCompleteAfterFailedVerification puts history_complete back when
