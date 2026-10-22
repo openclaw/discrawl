@@ -29,6 +29,15 @@ Run one explicit `--full` pass when you want a complete historical guild archive
 
 `sync` already uses parallel channel workers for bot API message crawling. The default is auto-sized from `GOMAXPROCS` with a floor of `8` and a cap of `32`. Override with `--concurrency`.
 
+Bot API writes preserve a stored message with a later `edited_at` or a deletion
+tombstone. This applies to REST pages and Gateway refetches, and protects the
+message and its attachment, mention, search, and embedding projections in the
+same transaction. A newer explicit content clear still replaces the old text.
+Equal edit timestamps remain eligible for refresh. An absent incoming edit time
+cannot replace a known later edit; when both edit times are absent, the later
+observation can still replace the row. These timestamps do not establish a total
+observation order or verify Discord Message Content authorization.
+
 ## Targeting
 
 - `--guild <id>` runs only that guild

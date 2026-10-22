@@ -74,6 +74,7 @@ func buildMessageMutation(
 		PayloadJSON: record.RawJSON,
 		Options: store.WriteOptions{
 			EnqueueEmbedding: embeddings,
+			PreserveNewer:    true,
 		},
 		Attachments: attachments,
 		Mentions:    extractMentions(message, guildID),
