@@ -384,7 +384,13 @@ func TestTailHandlerMessageUpdateFailureUsesSyncerRefetchedMetadata(t *testing.T
 			eventClient, err := discordclient.New("token")
 			require.NoError(t, err)
 			defer func() { _ = eventClient.Close() }()
-			setDiscordTailHandlerTimeout(t, eventClient, 25*time.Millisecond)
+			// Only the timeout case needs a short handler deadline; the other
+			// cases must not race it under a loaded race-detector run.
+			handlerTimeout := 2 * time.Second
+			if tt.wantKind == "timeout" {
+				handlerTimeout = 25 * time.Millisecond
+			}
+			setDiscordTailHandlerTimeout(t, eventClient, handlerTimeout)
 
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
