@@ -248,7 +248,7 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := st.UpsertChannel(ctx, channel); err != nil {
+		if err := st.UpsertCachedChannel(ctx, channel); err != nil {
 			return recordImportFailure(ctx, st, store.FailureRef{
 				Operation: "import_channel",
 				Source:    "wiretap",
@@ -265,7 +265,10 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			return err
 		}
 	}
-	messages := mapValues(snap.messages)
+	messages, err := admittedCachedMessages(ctx, st, mapValues(snap.messages))
+	if err != nil {
+		return err
+	}
 	sort.Slice(messages, func(i, j int) bool { return messages[i].Record.ID < messages[j].Record.ID })
 	if err := st.UpsertMessages(ctx, messages); err != nil {
 		return recordImportFailure(ctx, st, store.FailureRef{
@@ -292,6 +295,29 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 		}
 	}
 	return st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano))
+}
+
+// admittedCachedMessages drops cached messages whose channel or an ancestor
+// carries a recorded deletion. That is a collection-policy outcome rather than
+// an import failure, so one tombstoned channel cannot block the whole import.
+func admittedCachedMessages(ctx context.Context, st *store.Store, messages []store.MessageMutation) ([]store.MessageMutation, error) {
+	admitted := map[string]bool{}
+	out := messages[:0]
+	for _, message := range messages {
+		channelID := message.Record.ChannelID
+		allowed, known := admitted[channelID]
+		if !known {
+			var err error
+			if allowed, err = st.ChannelCollectionAdmitted(ctx, channelID, ""); err != nil {
+				return nil, err
+			}
+			admitted[channelID] = allowed
+		}
+		if allowed {
+			out = append(out, message)
+		}
+	}
+	return out, nil
 }
 
 func recordImportFailure(ctx context.Context, st *store.Store, ref store.FailureRef, failure error) error {

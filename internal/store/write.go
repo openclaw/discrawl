@@ -212,6 +212,17 @@ func (s *Store) UpsertChannel(ctx context.Context, channel ChannelRecord) error 
 }
 
 func (s *Store) UpsertObservedChannel(ctx context.Context, channel ChannelRecord, started time.Time) error {
+	return s.upsertChannel(ctx, channel, started, true)
+}
+
+// UpsertCachedChannel stores channel metadata from a non-authoritative cache,
+// such as Discord Desktop. Cached metadata never resurrects a recorded
+// deletion: a tombstoned channel keeps its retained metadata and tombstone.
+func (s *Store) UpsertCachedChannel(ctx context.Context, channel ChannelRecord) error {
+	return s.upsertChannel(ctx, channel, time.Time{}, false)
+}
+
+func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, started time.Time, authoritative bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -223,6 +234,9 @@ func (s *Store) UpsertObservedChannel(ctx context.Context, channel ChannelRecord
 		return err
 	}
 	if err == nil && !started.IsZero() && parseTime(updated).After(started) {
+		return nil
+	}
+	if err == nil && !authoritative && deleted != "" {
 		return nil
 	}
 	// Repeated full catalog observations need no write if the retained provider

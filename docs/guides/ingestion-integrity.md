@@ -36,6 +36,10 @@ a policy outcome: the event is ignored and pending work resolves as
 `excluded_by_collection_policy` rather than being recorded as a retryable
 failure. Restart seeding uses retained
 guild/channel/thread metadata without resurrecting existing tombstones.
+Discord Desktop cache imports are not authoritative channel observations: they
+keep a tombstoned channel's retained metadata and deletion, and skip cached
+messages for a channel or ancestor with a recorded deletion as a policy outcome
+rather than an import failure.
 
 **Public consumers must require `collection_scope=allowed` on the channel and
 its ancestry, no deletion tombstone, and independently proven public Discord

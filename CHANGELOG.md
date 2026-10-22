@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Retain channel scope metadata independently of content, fail closed on unknown ancestry, and protect public snapshots from excluded ancestors; resolve allowed new channels without a restart.
-- Honor channel and ancestor tombstones before page, exact-message and attachment requests even without configured exclusions, resolve every scope rejection as a policy outcome, and count only actionable attachment failures in status.
+- Honor channel and ancestor tombstones before page, exact-message and attachment requests even without configured exclusions, resolve every scope rejection as a policy outcome, and count only actionable attachment failures in status. Desktop cache imports no longer clear channel tombstones, and text repair keeps author and channel names in multilingual lexical indexes.
 - Preserve attributed embed fields and whitespace boundaries in derived text; add durable attachment extraction status and retain successful text through transient failures.
 - Reconcile bounded exact-message and metadata failures during ordinary repair, expose failures and resumable text-repair progress in status, and preserve vectors when text is unchanged.
 - Capture supported bulk message deletions, channel/thread tombstones, role changes and thread-list metadata; include voice/stage text in scoped REST repair.
