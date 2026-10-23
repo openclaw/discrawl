@@ -300,7 +300,7 @@ func catalogModeForSync(opts SyncOptions) channelCatalogMode {
 }
 
 func shouldResumeIncompleteFullSync(opts SyncOptions) bool {
-	return opts.Full && len(opts.ChannelIDs) == 0
+	return opts.Full && opts.Since.IsZero() && len(opts.ChannelIDs) == 0
 }
 
 func (s *Syncer) storeChannelList(ctx context.Context, channels []*discordgo.Channel, cachedChannels map[*discordgo.Channel]struct{}, alreadyCounted map[string]struct{}, stats *SyncStats) error {
