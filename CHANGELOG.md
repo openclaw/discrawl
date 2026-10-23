@@ -2,22 +2,24 @@
 
 ## Unreleased
 
-- Refresh Crawlkit, provider SDKs, telemetry, and the paired SQLite/libc runtime while retaining the Go minimum; let Crabbox hydrate the Go toolchain without an unsupported explicit cache option.
+## 0.17.0 - 2026-10-23
 
-- Fix `sync --full --since` repeatedly resuming incomplete stored history and never syncing the guild's other channels; windowed full syncs now scan the normal channel catalog. Thanks @rszrszrsz.
+**Highlights:** Keep live Discord archives complete, protect public snapshots from excluded channels, and accept protected credential files for unattended services.
 
-- Settle channel message failures answered Unknown Channel only after an exact channel lookup corroborates them, as a provider outcome that keeps history and the retry marker; ordinary repair also settles earlier failures superseded by a recorded deletion or exclusion. Public-only snapshots withhold channels with an unavailable marker until a successful crawl re-admits them, and routine syncs no longer panic when only marked channels remain.
-- Apply Gateway `GUILD_CREATE` and `THREAD_LIST_SYNC` channel catalogs in one transaction, so large guilds no longer exceed the tail handler deadline at startup under FULL synchronization or leave a partially applied catalog.
-- Retain channel scope metadata independently of content, fail closed on unknown ancestry, and protect public snapshots from excluded ancestors; resolve allowed new channels without a restart.
-- Honor channel and ancestor tombstones before page, exact-message and attachment requests even without configured exclusions, resolve every scope rejection as a policy outcome, and count only actionable attachment failures in status. Desktop cache imports no longer clear channel tombstones, and text repair keeps author and channel names in multilingual lexical indexes.
-- Preserve attributed embed fields and whitespace boundaries in derived text; add durable attachment extraction status and retain successful text through transient failures.
 - Reconcile bounded exact-message and metadata failures during ordinary repair, expose failures and resumable text-repair progress in status, and preserve vectors when text is unchanged.
 - Capture supported bulk message deletions, channel/thread tombstones, role changes and thread-list metadata; include voice/stage text in scoped REST repair.
 - Open every archive and metrics writer connection with FULL synchronization and macOS full-fsync checkpoints, including pool replacements, while keeping read-only connections unchanged.
+- Retain channel scope metadata independently of content, fail closed on unknown ancestry, and protect public snapshots from excluded ancestors; resolve allowed new channels without a restart.
+- Honor channel and ancestor tombstones before page, exact-message and attachment requests even without configured exclusions, resolve every scope rejection as a policy outcome, and count only actionable attachment failures in status. Desktop cache imports no longer clear channel tombstones, and text repair keeps author and channel names in multilingual lexical indexes.
+- Preserve attributed embed fields and whitespace boundaries in derived text; add durable attachment extraction status and retain successful text through transient failures.
+- Settle channel message failures answered Unknown Channel only after an exact channel lookup corroborates them, as a provider outcome that keeps history and the retry marker; ordinary repair also settles earlier failures superseded by a recorded deletion or exclusion. Public-only snapshots withhold channels with an unavailable marker until a successful crawl re-admits them, and routine syncs no longer panic when only marked channels remain.
+- Apply Gateway `GUILD_CREATE` and `THREAD_LIST_SYNC` channel catalogs in one transaction, so large guilds no longer exceed the tail handler deadline at startup under FULL synchronization or leave a partially applied catalog.
 - Reconcile full guild members inside the running tail owner with separately bounded pagination waits, without treating cached authors as complete enumeration.
 - Keep native Components V2 text as attributed parts and fence recovery pages so a strictly newer edit or deletion is never replaced by a delayed page.
 - Accept protected owner-only credential files for the bot token and embedding key in unattended services, with no symlinks, writable ancestors or granting ACLs, and no Keychain fallback once selected.
 - Add opt-in measurement of native OpenAI embedding attempts and usage.
+- Fix `sync --full --since` repeatedly resuming incomplete stored history and never syncing the guild's other channels; windowed full syncs now scan the normal channel catalog. Thanks @rszrszrsz.
+- Refresh Crawlkit, provider SDKs, telemetry, and the paired SQLite/libc runtime while retaining the Go minimum; let Crabbox hydrate the Go toolchain without an unsupported explicit cache option.
 
 ## 0.16.0 - 2026-10-20
 
