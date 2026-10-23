@@ -115,9 +115,11 @@ func (s *Syncer) reconcileChannelMessageFailures(ctx context.Context, guildIDs [
 		policy = s.channelExclusions.policyID()
 	}
 	for _, f := range rows {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			// The budget is a soft cap; remaining rows wait for the next repair.
 			return nil
+		default:
 		}
 		if f.ChannelID == "" || f.MessageID != "" {
 			continue

@@ -153,7 +153,7 @@ func TestUnknownChannelConfirmedIsProviderUnavailableAndRecovers(t *testing.T) {
 	failures = channelFailures(t, s, "c2")
 	require.Len(t, failures, 1)
 	require.Equal(t, providerUnavailableResolution, failures[0].ResolutionReason)
-	require.Greater(t, failures[0].RetryCount, 0)
+	require.Positive(t, failures[0].RetryCount)
 	require.Zero(t, unresolvedCount(t, s))
 }
 
