@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -97,23 +98,50 @@ func (s *Syncer) settleUnknownChannelFailure(ctx context.Context, guildID, chann
 	return nil
 }
 
+// channelFailureReplayCursorScope persists where the bounded channel failure
+// lane stopped, so successive repairs rotate through every pending row rather
+// than revisiting the same oldest page when earlier rows stay pending.
+const channelFailureReplayCursorScope = "repair:sync_messages:after_failure_id"
+
 // reconcileChannelMessageFailures settles pending channel message failures
 // that recorded state or a corroborated provider answer supersedes, so they do
 // not stay retryable indefinitely: recorded deletions (including ancestors),
 // explicit policy exclusions, and Unknown Channel answers confirmed by an
-// exact lookup. Other failures are left untouched.
+// exact lookup. Other failures are left untouched. Each run handles one page
+// after the persisted cursor and wraps to the start once the end is reached.
 func (s *Syncer) reconcileChannelMessageFailures(ctx context.Context, guildIDs []string) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
-	rows, err := s.store.ListFailureReplayCandidates(ctx, store.FailureRef{Operation: syncMessagesFailureOperation, Source: "discord"}, guildIDs, unknownChannelReplayLimit)
+	ref := store.FailureRef{Operation: syncMessagesFailureOperation, Source: "discord"}
+	cursorText, err := s.store.GetSyncState(ctx, channelFailureReplayCursorScope)
 	if err != nil {
 		return err
+	}
+	after, _ := strconv.ParseInt(cursorText, 10, 64)
+	rows, err := s.store.ListFailureReplayCandidatesAfter(ctx, ref, guildIDs, after, unknownChannelReplayLimit)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && after > 0 {
+		after = 0
+		if rows, err = s.store.ListFailureReplayCandidatesAfter(ctx, ref, guildIDs, 0, unknownChannelReplayLimit); err != nil {
+			return err
+		}
 	}
 	policy := ""
 	if s.channelExclusions.configured() {
 		policy = s.channelExclusions.policyID()
 	}
+	last := after
+	defer func() {
+		// Persist progress even when the budget expires mid-page.
+		ledgerCtx, cancel := failureLedgerContext(ctx)
+		defer cancel()
+		if err := s.store.SetSyncState(ledgerCtx, channelFailureReplayCursorScope, strconv.FormatInt(last, 10)); err != nil {
+			s.logger.Warn("record channel failure replay cursor", "err", err)
+		}
+	}()
 	for _, f := range rows {
 		select {
 		case <-ctx.Done():
@@ -121,30 +149,32 @@ func (s *Syncer) reconcileChannelMessageFailures(ctx context.Context, guildIDs [
 			return nil
 		default:
 		}
-		if f.ChannelID == "" || f.MessageID != "" {
-			continue
-		}
-		resolve := func(reason string) error {
-			ledgerCtx, cancel := failureLedgerContext(ctx)
-			defer cancel()
-			return s.store.ResolveFailureGeneration(ledgerCtx, f, reason)
-		}
-		reason, err := s.store.ChannelFailureSupersession(ctx, f.ChannelID, policy)
-		if err != nil {
+		if err := s.reconcileChannelMessageFailure(ctx, f, policy); err != nil {
 			return err
 		}
-		if reason != "" {
-			if err := resolve(reason); err != nil {
-				return err
-			}
-			continue
-		}
-		if !isUnknownChannel(errors.New(f.ErrorMessage)) {
-			continue
-		}
-		if err := s.settleUnknownChannelFailure(ctx, f.GuildID, f.ChannelID, resolve); err != nil {
-			return err
-		}
+		last = f.FailureID
 	}
 	return nil
+}
+
+func (s *Syncer) reconcileChannelMessageFailure(ctx context.Context, f store.Failure, policy string) error {
+	if f.ChannelID == "" || f.MessageID != "" {
+		return nil
+	}
+	resolve := func(reason string) error {
+		ledgerCtx, cancel := failureLedgerContext(ctx)
+		defer cancel()
+		return s.store.ResolveFailureGeneration(ledgerCtx, f, reason)
+	}
+	reason, err := s.store.ChannelFailureSupersession(ctx, f.ChannelID, policy)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		return resolve(reason)
+	}
+	if !isUnknownChannel(errors.New(f.ErrorMessage)) {
+		return nil
+	}
+	return s.settleUnknownChannelFailure(ctx, f.GuildID, f.ChannelID, resolve)
 }

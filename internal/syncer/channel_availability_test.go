@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -222,4 +223,34 @@ func TestReconcileChannelMessageFailuresSettlesOnlySupersededOrConfirmed(t *test
 	require.NoError(t, err)
 	require.False(t, deleted)
 	require.Equal(t, 3, unresolvedCount(t, s))
+}
+
+// The bounded lane rotates through every pending row: rows that stay pending
+// (non-404 or inconclusive) cannot starve a later settleable failure.
+func TestReconcileChannelMessageFailuresRotatesPastPendingRows(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	for i := range unknownChannelReplayLimit + 50 {
+		require.NoError(t, s.RecordFailure(ctx, store.FailureRef{Operation: syncMessagesFailureOperation, Source: "discord", GuildID: "g1", ChannelID: fmt.Sprintf("slow-%03d", i)}, errors.New("context deadline exceeded")))
+	}
+	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{Operation: syncMessagesFailureOperation, Source: "discord", GuildID: "g1", ChannelID: "gone"}, errors.New(unknownChannelMessageErr)))
+	client := &fakeClient{channelErrors: map[string]error{"gone": discordRESTErr(http.StatusNotFound, discordgo.ErrCodeUnknownChannel)}}
+	svc := New(client, s, nil)
+
+	require.NoError(t, svc.reconcileChannelMessageFailures(ctx, []string{"g1"}))
+	require.True(t, channelFailures(t, s, "gone")[0].ResolvedAt.IsZero(), "first page holds only older pending rows")
+	require.NoError(t, svc.reconcileChannelMessageFailures(ctx, []string{"g1"}))
+	gone := channelFailures(t, s, "gone")[0]
+	require.Equal(t, providerUnavailableResolution, gone.ResolutionReason, "second run continues after the cursor")
+	require.Equal(t, unknownChannelReplayLimit+50, unresolvedCount(t, s))
+
+	// The cursor wraps once the end is reached.
+	require.NoError(t, svc.reconcileChannelMessageFailures(ctx, []string{"g1"}))
+	cursor, err := s.GetSyncState(ctx, channelFailureReplayCursorScope)
+	require.NoError(t, err)
+	require.NotEmpty(t, cursor)
+	require.Equal(t, 1, client.channelCalls["gone"])
 }

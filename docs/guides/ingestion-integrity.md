@@ -159,7 +159,7 @@ Ordinary repair also settles pending channel message failures recorded earlier:
 a recorded deletion of the channel or an ancestor resolves as
 `superseded_by_deletion`, an explicit exclusion under the current policy as
 `excluded_by_collection_policy`, and recorded Unknown Channel failures go
-through the same exact-lookup corroboration (bounded per repair). A recovery fetch is a new `snapshot`
+through the same exact-lookup corroboration. Each repair handles one bounded page after a persisted cursor and wraps at the end, so rows that stay pending cannot starve later ones. A recovery fetch is a new `snapshot`
 observation at the time it was obtained, not an invented original create/edit.
 Attachment recovery also records deduplicated snapshot observations. REST
 recovery cannot overwrite a newer local observation, message deletion, member

@@ -458,7 +458,27 @@ func (s *Store) ListFailureReplayCandidates(
 	guildIDs []string,
 	limit int,
 ) ([]Failure, error) {
-	return s.listFailureReplayCandidates(ctx, ref, guildIDs, nil, limit)
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, nil, replayOrderOldestSeen, limit)
+}
+
+// replayOrderOldestSeen selects the default oldest-observation replay order.
+const replayOrderOldestSeen int64 = -1
+
+// ListFailureReplayCandidatesAfter returns unresolved failures with a
+// failure_id greater than afterID in ascending id order, so a bounded replay
+// lane can rotate through every pending row across runs instead of retrying
+// the same oldest page.
+func (s *Store) ListFailureReplayCandidatesAfter(
+	ctx context.Context,
+	ref FailureRef,
+	guildIDs []string,
+	afterID int64,
+	limit int,
+) ([]Failure, error) {
+	if afterID < 0 {
+		afterID = 0
+	}
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, nil, afterID, limit)
 }
 
 // ListFailureReplayCandidatesMatchingRelatedIDs returns unresolved failures
@@ -489,7 +509,7 @@ func (s *Store) ListFailureReplayCandidatesMatchingRelatedIDs(
 	if len(normalizedIDs) == 0 {
 		return nil, errors.New("at least one failure related ID is required")
 	}
-	return s.listFailureReplayCandidates(ctx, ref, guildIDs, normalizedIDs, limit)
+	return s.listFailureReplayCandidates(ctx, ref, guildIDs, normalizedIDs, replayOrderOldestSeen, limit)
 }
 
 func (s *Store) listFailureReplayCandidates(
@@ -497,6 +517,7 @@ func (s *Store) listFailureReplayCandidates(
 	ref FailureRef,
 	guildIDs []string,
 	relatedIDs []string,
+	afterID int64, // replayOrderOldestSeen, or >= 0 for failure_id order after this id
 	limit int,
 ) ([]Failure, error) {
 	ref = normalizeFailureRef(ref)
@@ -538,13 +559,19 @@ func (s *Store) listFailureReplayCandidates(
 			args = append(args, relatedID)
 		}
 	}
+	order := "last_seen_at asc, failure_id asc"
+	if afterID != replayOrderOldestSeen {
+		clauses = append(clauses, "failure_id > ?")
+		args = append(args, afterID)
+		order = "failure_id asc"
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		select failure_id, operation, source, guild_id, channel_id, message_id,
 		       related_kind, related_id, error_class, error_message,
 		       first_seen_at, last_seen_at, retry_count, coalesce(resolved_at, ''), resolution_reason
 		from failure_ledger
 		where `+strings.Join(clauses, " and ")+`
-		order by last_seen_at asc, failure_id asc
+		order by `+order+`
 		limit ?`, append(args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("list failure replay candidates: %w", err)
