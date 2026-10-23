@@ -564,7 +564,8 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		messageDelay: 80 * time.Millisecond,
+		guilds:       []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
 		guildByID: map[string]*discordgo.Guild{
 			"g1": {ID: "g1", Name: "Guild"},
 		},
@@ -572,7 +573,7 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
 		},
 		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "repair", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+			"c1": {{ID: "30", GuildID: "g1", ChannelID: "c1", Content: "repair", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 		},
 	}
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
@@ -583,12 +584,23 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 		MessageID: "5",
 	}, context.DeadlineExceeded))
 	svc := New(client, s, nil)
+	done := make(chan struct{})
+	var tailErr error
 	go func() {
-		time.Sleep(40 * time.Millisecond)
-		cancel()
+		defer close(done)
+		tailErr = svc.RunTail(ctx, []string{"g1"}, 10*time.Millisecond)
 	}()
-	err = svc.RunTail(ctx, []string{"g1"}, 10*time.Millisecond)
-	require.True(t, err == nil || errors.Is(err, context.Canceled))
+	defer func() {
+		cancel()
+		<-done
+	}()
+	require.Eventually(t, func() bool {
+		_, rows, queryErr := s.ReadOnlyQuery(ctx, "SELECT id FROM messages WHERE id = '30'")
+		return queryErr == nil && len(rows) == 1
+	}, 5*time.Second, 10*time.Millisecond, "periodic repair did not archive its fixture message")
+	cancel()
+	<-done
+	require.True(t, tailErr == nil || errors.Is(tailErr, context.Canceled))
 
 	status, err := s.Status(context.Background(), "db", "")
 	require.NoError(t, err)
@@ -612,6 +624,9 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 		}
 	}
 	require.True(t, foundTailFailure)
+	_, rows, err := s.ReadOnlyQuery(context.Background(), "SELECT id FROM messages WHERE id = '30'")
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"30"}}, rows, "the periodic repair must archive its fixture message")
 }
 
 func TestPanickedGatewayMessageReplaysExactlyWithoutTailSideEffects(t *testing.T) {
