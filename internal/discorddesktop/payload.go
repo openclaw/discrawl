@@ -344,10 +344,12 @@ func cleanText(raw string) string {
 		switch {
 		case r == '\u200b' || r == '\u200c' || r == '\u200d' || r == '\ufeff':
 			continue
+		case unicode.IsSpace(r):
+			// Checked before IsControl: "\n", "\t" and "\r" are controls too, and dropping
+			// them would weld the words on either side into one unsearchable token.
+			spacePending = b.Len() > 0
 		case unicode.IsControl(r):
 			continue
-		case unicode.IsSpace(r):
-			spacePending = b.Len() > 0
 		default:
 			if spacePending {
 				b.WriteByte(' ')

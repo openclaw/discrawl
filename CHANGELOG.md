@@ -6,6 +6,8 @@
 
 - Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
 
+- Fix Discord Desktop cache imports (`wiretap`) dropping line breaks without a space, which welded the words on either side into one unsearchable FTS token (worst for Hangul/CJK). Archives imported before this fix keep the fused text until their cache files are re-imported: delete the `wiretap:file_index:v3` row from `sync_state` and run `discrawl wiretap --full-cache` again.
+
 ## 0.17.0 - 2026-10-23
 
 **Highlights:** Keep live Discord archives complete, protect public snapshots from excluded channels, and accept protected credential files for unattended services.
