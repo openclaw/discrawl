@@ -25,22 +25,7 @@ func TestPrivateCheckpointReplaysNativePublication(t *testing.T) {
 	scripts := filepath.Dir(file)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "native.db")
-	db, err := store.Open(ctx, path)
-	require.NoError(t, err)
-	require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Fixture", RawJSON: `{}`}))
-	require.NoError(t, db.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "fixture", RawJSON: `{}`}))
-	require.NoError(t, db.UpsertMessages(ctx, []store.MessageMutation{{Record: store.MessageRecord{
-		ID: "m1", GuildID: "g1", ChannelID: "c1", AuthorID: "u1", Content: "retained fixture",
-		NormalizedContent: "retained fixture", CreatedAt: "2026-01-01T00:00:00Z", RawJSON: `{}`,
-	}}}))
-	for _, scope := range []string{"channel:c1:latest", "channel:c1:backfill", "channel:c1:verification"} {
-		require.NoError(t, db.SetSyncState(ctx, scope, "retained-progress"))
-	}
-	require.NoError(t, db.RecordFailure(ctx, store.FailureRef{Operation: "messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}, errors.New("fixture retry")))
-	before := nativeCheckpointFacts(t, db)
-	var nativeSyncRows int
-	require.NoError(t, db.DB().QueryRowContext(ctx, "SELECT count(*) FROM sync_state").Scan(&nativeSyncRows))
-	require.NoError(t, db.Close())
+	before, nativeSyncRows := seedNativeCheckpoint(t, path)
 	checkpoint := filepath.Join(dir, "checkpoint.db")
 	python := exec.CommandContext(ctx, "python3", "-c", "from pathlib import Path; import sys; sys.path.insert(0,sys.argv[1]); from private_discord_checkpoint import snapshot; snapshot(Path(sys.argv[2]),Path(sys.argv[3]))", scripts, path, checkpoint)
 	out, err := python.CombinedOutput()
@@ -69,7 +54,7 @@ func TestPrivateCheckpointReplaysNativePublication(t *testing.T) {
 		body, err := os.ReadFile(checkpoint)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(path, body, 0o600))
-		db, err = store.Open(ctx, path)
+		db, err := store.Open(ctx, path)
 		require.NoError(t, err)
 		require.Equal(t, before, nativeCheckpointFacts(t, db))
 		opts := share.Options{RepoPath: repo, Remote: remote, Branch: "main", Producer: &share.PublicationProducer{
@@ -108,6 +93,49 @@ func TestPrivateCheckpointReplaysNativePublication(t *testing.T) {
 		}
 		require.NoError(t, db.Close())
 	}
+}
+
+func TestPrivateCheckpointAutomaticAuthority(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	scripts := filepath.Dir(file)
+	dir := t.TempDir()
+	database, native := filepath.Join(dir, "native.db"), filepath.Join(dir, "discrawl-native")
+	seedNativeCheckpoint(t, database)
+	build := exec.CommandContext(ctx, "go", "build", "-o", native, "./cmd/discrawl")
+	build.Dir = filepath.Dir(scripts)
+	out, err := build.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	// Only external API/network transport is substituted. The real CLI, Git,
+	// checkpoint verifier and automatic admission own every publication decision.
+	proof := exec.CommandContext(ctx, "python3", filepath.Join(scripts, "private_checkpoint_authority_test.py"), database, native)
+	out, err = proof.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	t.Logf("%s", out)
+}
+
+func seedNativeCheckpoint(t *testing.T, path string) ([]any, int) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Fixture", RawJSON: `{}`}))
+	require.NoError(t, db.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "fixture", RawJSON: `{}`}))
+	require.NoError(t, db.UpsertMessages(ctx, []store.MessageMutation{{Record: store.MessageRecord{
+		ID: "m1", GuildID: "g1", ChannelID: "c1", AuthorID: "u1", Content: "retained fixture",
+		NormalizedContent: "retained fixture", CreatedAt: "2026-01-01T00:00:00Z", RawJSON: `{}`,
+	}}}))
+	for _, scope := range []string{"channel:c1:latest", "channel:c1:backfill", "channel:c1:verification"} {
+		require.NoError(t, db.SetSyncState(ctx, scope, "retained-progress"))
+	}
+	require.NoError(t, db.RecordFailure(ctx, store.FailureRef{Operation: "messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}, errors.New("fixture retry")))
+	before := nativeCheckpointFacts(t, db)
+	var nativeSyncRows int
+	require.NoError(t, db.DB().QueryRowContext(ctx, "SELECT count(*) FROM sync_state").Scan(&nativeSyncRows))
+	require.NoError(t, db.Close())
+	return before, nativeSyncRows
 }
 
 func nativeCheckpointFacts(t *testing.T, db *store.Store) []any {
