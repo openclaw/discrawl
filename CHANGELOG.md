@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update the paired CodeQL actions to 4.39.1 and the analysis bundle to 2.27.3. Thanks @dependabot.
+
 - Let `doctor` report local archive and Desktop cache health without a config, inspecting existing databases read-only and explaining schema recovery. Thanks @goutamadwant and @vkehfdl1.
 
 - Retain bounded, public-safe native failure diagnostics in checkpoint workflow logs, identifying the acquisition phase and typed error codes without exposing private output or changing checkpoint authority.
