@@ -4,6 +4,7 @@ package scripts_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/share"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
@@ -114,6 +116,79 @@ func TestPrivateCheckpointAutomaticAuthority(t *testing.T) {
 	out, err = proof.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	t.Logf("%s", out)
+}
+
+func TestPrivateCheckpointNativeFailureDiagnostics(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	scripts, dir := filepath.Dir(file), t.TempDir()
+	native := filepath.Join(dir, "discrawl-native")
+	build := exec.CommandContext(ctx, "go", "build", "-o", native, "./cmd/discrawl")
+	build.Dir = filepath.Dir(scripts)
+	out, err := build.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	configPath := filepath.Join(dir, "private-config.toml")
+	cfg := config.Default()
+	cfg.DBPath, cfg.CacheDir, cfg.LogDir = filepath.Join(dir, "private.db"), filepath.Join(dir, "cache"), filepath.Join(dir, "logs")
+	cfg.Discord.TokenSource = "none"
+	cfg.Share.AutoUpdate = false
+	require.NoError(t, config.Write(configPath, cfg))
+	require.NoError(t, os.WriteFile(cfg.DBPath, []byte("private invalid SQLite database"), 0o600))
+	badConfig := filepath.Join(dir, "malformed.toml")
+	require.NoError(t, os.WriteFile(badConfig, []byte("private secret = ["), 0o600))
+	for _, tc := range []struct {
+		phase, class string
+		exit         int
+		args         []string
+	}{
+		{"init", "usage", 2, []string{"init", "--private-invalid-flag"}},
+		{"latest", "config", 3, []string{"--config", badConfig, "sync", "--no-update"}},
+		{"selected", "sqlite", 5, []string{"--config", configPath, "sync", "--no-update"}},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			receipt := filepath.Join(dir, tc.phase+".json")
+			args := []string{
+				filepath.Join(scripts, "private_discord_checkpoint.py"), "run", "--timeout", "10",
+				"--phase", tc.phase, "--writer-receipt", receipt, "--", native, "--public-errors",
+			}
+			command := exec.CommandContext(ctx, "python3", append(args, tc.args...)...)
+			command.Env = append(os.Environ(), "DISCRAWL_NO_AUTO_UPDATE=1")
+			out, err := command.CombinedOutput()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit)
+			require.Equal(t, tc.exit, exit.ExitCode(), "%s", out)
+			require.NotContains(t, string(out), "private")
+			require.NotContains(t, string(out), dir)
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			require.Len(t, lines, 2, "only fixed begin and terminal records are public")
+			var terminal struct {
+				Phase   string `json:"phase"`
+				State   string `json:"state"`
+				Exit    int    `json:"exit"`
+				Reaped  bool   `json:"reaped"`
+				Failure struct {
+					Class      string `json:"class"`
+					Exit       int    `json:"exit"`
+					SQLiteCode int    `json:"sqlite_code"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "native: ")), &terminal))
+			require.Equal(t, tc.phase, terminal.Phase)
+			require.Equal(t, "failed", terminal.State)
+			require.True(t, terminal.Reaped)
+			require.Equal(t, tc.exit, terminal.Exit)
+			require.Equal(t, tc.exit, terminal.Failure.Exit)
+			require.Equal(t, tc.class, terminal.Failure.Class)
+			if tc.class == "sqlite" {
+				require.Equal(t, 26, terminal.Failure.SQLiteCode)
+			}
+			body, err := os.ReadFile(receipt)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"reaped":true,"outcome":"failure"}`, string(body))
+		})
+	}
 }
 
 func seedNativeCheckpoint(t *testing.T, path string) ([]any, int) {

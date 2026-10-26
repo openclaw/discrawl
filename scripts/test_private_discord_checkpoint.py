@@ -351,9 +351,10 @@ class CheckpointTests(unittest.TestCase):
         real_kill = os.killpg
         def group(pid, sig):
             if sig == 0:
+                clock.return_value = 10
                 return None
             return real_kill(pid, sig)
-        with patch.object(checkpoint.os, "killpg", group), patch.object(checkpoint.time, "monotonic", side_effect=[0, 0, 0, 10, 20]):
+        with patch.object(checkpoint.os, "killpg", group), patch.object(checkpoint.time, "monotonic", return_value=0) as clock:
             with self.assertRaisesRegex(checkpoint.CheckpointError, "writer_reap"):
                 checkpoint.run_writer([sys.executable, "-c", "pass"], 1, completion)
         self.assertFalse(completion.exists())
@@ -565,7 +566,8 @@ class AcquisitionPolicyTests(unittest.TestCase):
                                                since=since, mode="historical"), 0)
         commands, timeout, receipt = run.call_args.args
         self.assertEqual((len(commands), timeout, receipt), (1, 1200, Path("/receipt")))
-        self.assertEqual(commands[0], ["/native", "--config", "/config", "sync", "--source", "discord",
+        self.assertEqual(run.call_args.kwargs, {"phases": ["selected"]})
+        self.assertEqual(commands[0], ["/native", "--public-errors", "--config", "/config", "sync", "--source", "discord",
                                       "--guild", "100", "--no-update", "--skip-members", "--full",
                                       "--since", since, "--channels", "11,12,13",
                                       "--include-stored-threads", "--with-media=false"])
@@ -631,6 +633,7 @@ class AcquisitionPolicyTests(unittest.TestCase):
         self.assertEqual(result, 0)
         commands, timeout, receipt = run.call_args.args
         self.assertEqual((timeout, receipt), (1200, Path("/receipt")))
+        self.assertEqual(run.call_args.kwargs, {"phases": ["latest", "selected"]})
         self.assertIn("--latest-only", commands[0])
         self.assertNotIn("--channels", commands[0])
         self.assertNotIn("--include-stored-threads", commands[0])
@@ -639,6 +642,7 @@ class AcquisitionPolicyTests(unittest.TestCase):
         self.assertIn("--full", commands[1])
         self.assertIn("--include-stored-threads", commands[1])
         for command in commands:
+            self.assertIn("--public-errors", command)
             self.assertIn("--no-update", command)
             self.assertIn("--skip-members", command)
             self.assertNotIn("--with-members", command)

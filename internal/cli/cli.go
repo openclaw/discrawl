@@ -48,12 +48,28 @@ func ExitCode(err error) int {
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr error) {
-	defer func() { runErr = store.NormalizeContextError(ctx, runErr) }()
+	var global discrawlRootArgs
+	defer func() {
+		runErr = store.NormalizeContextError(ctx, runErr)
+		if runErr != nil && global.PublicErrors {
+			runErr = &publicError{err: runErr}
+		}
+	}()
 	if len(args) == 0 || rootHelpRequested(args, "config") {
 		return printUsage(stdout)
 	}
-	var global discrawlRootArgs
 	if err := parseKongArgs(&global, args, "discrawl", stdout, stderr); err != nil {
+		// Kong traces flags before applying them. Preserve this opt-in on
+		// parse failure without interpreting command arguments as root flags.
+		if parsed, ok := errors.AsType[*kong.ParseError](err); ok && parsed.Context != nil {
+			for _, path := range parsed.Context.Path {
+				if path.Flag != nil && path.Flag.Name == "public-errors" {
+					if value := parsed.Context.Value(path); value.IsValid() {
+						global.PublicErrors = value.Bool()
+					}
+				}
+			}
+		}
 		return usageErr(err)
 	}
 	if global.Version {
@@ -100,13 +116,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 }
 
 type discrawlGlobalArgs struct {
-	Config  string `help:"Config path."`
-	JSON    bool   `name:"json" help:"Write JSON output."`
-	Plain   bool   `help:"Write stable plain text output when available."`
-	Quiet   bool   `short:"q" help:"Only log errors."`
-	Verbose bool   `short:"v" help:"Enable debug logging."`
-	Version bool   `help:"Print version and exit."`
-	NoColor bool   `name:"no-color" help:"Disable color output."`
+	PublicErrors bool   `name:"public-errors" help:"Emit a public-safe terminal error record; other output remains private."`
+	Config       string `help:"Config path."`
+	JSON         bool   `name:"json" help:"Write JSON output."`
+	Plain        bool   `help:"Write stable plain text output when available."`
+	Quiet        bool   `short:"q" help:"Only log errors."`
+	Verbose      bool   `short:"v" help:"Enable debug logging."`
+	Version      bool   `help:"Print version and exit."`
+	NoColor      bool   `name:"no-color" help:"Disable color output."`
 }
 
 type discrawlRootArgs struct {
