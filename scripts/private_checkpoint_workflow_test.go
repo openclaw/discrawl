@@ -151,6 +151,8 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 					require.Contains(t, step.Run, `--acquisition-mode "$HISTORY_MODE"`)
 				}
 				if step.Name == "Sync native Discord state" {
+					require.Contains(t, step.Run, "run --timeout 60 --phase init --")
+					require.Contains(t, step.Run, `"$RUNNER_TEMP/discrawl-native" --public-errors --config "$CONFIG" init`)
 					require.Equal(t, "${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}", step.Env["WITH_MEMBERS"])
 					require.Equal(t, "${{ steps.policy.outputs.since }}", step.Env["HISTORY_SINCE"])
 					require.Equal(t, "${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])

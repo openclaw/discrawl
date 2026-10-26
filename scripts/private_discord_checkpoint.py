@@ -46,6 +46,10 @@ API_PHASES = {"api_read", "api_write", "repository_read", "archive_ref_read", "r
               "release_promote", "release_delete", "source_ref_read", "source_run_read",
               "source_workflow_read", "source_active_runs", "source_cache_read", "source_log_read",
               "archive_git", "archive_export", "archive_push"}
+WRITER_PHASES = {"command", "init", "latest", "selected"}
+NATIVE_CLASSES = {"unknown", "cancelled", "deadline", "http", "rate_limit", "sqlite", "network",
+                  "network_timeout", "usage", "config", "auth", "database"}
+MAX_WRITER_STDERR = 64 * 1024
 
 
 class CheckpointError(Exception):
@@ -856,23 +860,53 @@ def acquire(native, config, policy_path, expected_sha256, guild, completion, tim
     require(0 < timeout <= 1200, "writer_arguments")
     since = acquisition_since(since, mode)
     require(mode != "historical" or not with_members, "historical_members")
-    base = [str(native), "--config", str(config), "sync", "--source", "discord", "--guild", guild, "--no-update"]
+    base = [str(native), "--public-errors", "--config", str(config), "sync", "--source", "discord", "--guild", guild, "--no-update"]
     commands = [[*base, "--skip-members", "--full", "--since", since, "--channels", ",".join(targets),
                  "--include-stored-threads", "--with-media=false"]]
     # Historical work spends its bounded budget only on selected streams.
     # Ordinary acquisition retains its guild refresh and daily member phase.
     if mode == "current":
         commands.insert(0, [*base, "--latest-only", "--with-members" if with_members else "--skip-members"])
-    return run_writers(commands, timeout, completion)
+    return run_writers(commands, timeout, completion, phases=["latest", "selected"] if mode == "current" else ["selected"])
 
 
-def run_writer(command, timeout, completion=None):
-    return run_writers([command], timeout, completion)
+def run_writer(command, timeout, completion=None, phase="command"):
+    return run_writers([command], timeout, completion, phases=[phase])
 
 
-def run_writers(commands, timeout, completion=None):
+def native_failure(tail, exit_code):
+    # Only the native terminal record is evidence. Earlier warnings, arbitrary
+    # text and malformed/truncated records must never become public output.
+    unknown = {"class": "unknown"}
+    if not tail.endswith(b"\n"):
+        return unknown
+    line = tail.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+    prefix = b"discrawl_error="
+    if not line.startswith(prefix) or len(line) > 2048:
+        return unknown
+    try:
+        value = strict_json(line[len(prefix):])
+        if not isinstance(value, dict) or not {"schema", "class", "exit"} <= value.keys() \
+                or value.keys() - {"schema", "class", "exit", "http_status", "discord_code", "sqlite_code"}:
+            return unknown
+        if type(value["schema"]) is not int or value["schema"] != 1 \
+                or value["class"] not in NATIVE_CLASSES or type(value["exit"]) is not int \
+                or value["exit"] != exit_code or not 1 <= exit_code <= 255:
+            return unknown
+        for key in ("http_status", "discord_code", "sqlite_code"):
+            if key in value and not integer(value[key], 599 if key == "http_status" else 2 ** 31 - 1,
+                                            100 if key == "http_status" else 1):
+                return unknown
+        return value
+    except (CheckpointError, ValueError, TypeError, RecursionError):
+        return unknown
+
+
+def run_writers(commands, timeout, completion=None, phases=None):
     require(commands and all(commands) and timeout > 0, "writer_arguments")
     require(completion is None or not completion.exists(), "writer_receipt_exists")
+    phases = phases if phases is not None else ["command"] * len(commands)
+    require(len(phases) == len(commands) and all(phase in WRITER_PHASES for phase in phases), "writer_phase")
     child = None
     cancelled = False
 
@@ -888,43 +922,98 @@ def run_writers(commands, timeout, completion=None):
             env = {key: value for key, value in os.environ.items() if key not in {"GH_TOKEN", "DISCORD_BACKUP_TOKEN"}}
             deadline = time.monotonic() + timeout
             result = 1
-            for command in commands:
+            for command, phase in zip(commands, phases):
                 if cancelled or time.monotonic() >= deadline:
                     cancelled = True
                     break
+                started, child, reaped, reason = time.monotonic(), None, False, "capture"
+                result = 1
+                nonblocking = False
+                completed = False
+                tail = bytearray()
+                print("native: " + canonical({"phase": phase, "state": "begin"}).decode(), flush=True)
                 try:
-                    child = subprocess.Popen(command, stdout=output, stderr=output, env=env, start_new_session=True)
-                except OSError:
-                    # Prior phases are reaped; preserve their committed progress.
-                    result = 1
-                    break
-                while child.poll() is None and not cancelled and time.monotonic() < deadline:
                     try:
-                        child.wait(timeout=0.2)
-                    except subprocess.TimeoutExpired:
-                        pass
-                if child.poll() is None:
-                    cancelled = True
-                    os.killpg(child.pid, signal.SIGTERM)
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(child.pid, signal.SIGKILL)
-                        child.wait(timeout=5)
-                # No next phase or checkpoint may run while descendants write.
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(child.pid, signal.SIGKILL)
-                reap_deadline = time.monotonic() + 5
-                while True:
-                    try:
-                        os.killpg(child.pid, 0)
-                    except ProcessLookupError:
+                        child = subprocess.Popen(command, stdout=output, stderr=subprocess.PIPE, env=env, start_new_session=True)
+                    except OSError:
+                        # Prior phases are reaped; preserve their committed progress.
+                        result, reaped, reason = 1, True, "spawn"
                         break
-                    except PermissionError as error:
-                        raise CheckpointError("writer_reap") from error
-                    require(time.monotonic() < reap_deadline, "writer_reap")
-                    time.sleep(0.05)
-                result = 1 if cancelled else child.returncode
+                    with selectors.DefaultSelector() as selector:
+                        os.set_blocking(child.stderr.fileno(), False)
+                        nonblocking = True
+                        selector.register(child.stderr, selectors.EVENT_READ)
+
+                        def drain(wait):
+                            ready = selector.select(wait)
+                            for key, _ in ready:
+                                try:
+                                    chunk = os.read(key.fd, 16384)
+                                except BlockingIOError:
+                                    continue
+                                if not chunk:
+                                    selector.unregister(key.fileobj)
+                                else:
+                                    tail.extend(chunk)
+                                    del tail[:-MAX_WRITER_STDERR]
+
+                        while child.poll() is None and not cancelled and time.monotonic() < deadline:
+                            drain(0.2)
+                        reason = "exit"
+                        if cancelled or child.poll() is None:
+                            reason = "cancelled" if cancelled else "timeout"
+                            cancelled = True
+                            with contextlib.suppress(ProcessLookupError):
+                                os.killpg(child.pid, signal.SIGTERM)
+                            grace = time.monotonic() + 5
+                            # Keep draining during the existing termination
+                            # grace: a full pipe must not prevent clean exit.
+                            while child.poll() is None and time.monotonic() < grace:
+                                drain(0.2)
+                    completed = True
+                finally:
+                    try:
+                        if child is not None:
+                            # Capture errors must still reap the writer. No next
+                            # phase or checkpoint may run while descendants write.
+                            with contextlib.suppress(ProcessLookupError):
+                                os.killpg(child.pid, signal.SIGKILL)
+                            child.wait(timeout=5)
+                            reap_deadline = time.monotonic() + 5
+                            while True:
+                                try:
+                                    os.killpg(child.pid, 0)
+                                except ProcessLookupError:
+                                    break
+                                except PermissionError as error:
+                                    raise CheckpointError("writer_reap") from error
+                                require(time.monotonic() < reap_deadline, "writer_reap")
+                                time.sleep(0.05)
+                            reaped = True
+                            # Only buffered bytes remain; never wait for EOF on
+                            # an inherited pipe outside the owned process group.
+                            for _ in range(64 if nonblocking else 0):
+                                try:
+                                    chunk = os.read(child.stderr.fileno(), 16384)
+                                except BlockingIOError:
+                                    break
+                                if not chunk:
+                                    break
+                                tail.extend(chunk)
+                                del tail[:-MAX_WRITER_STDERR]
+                            else:
+                                tail.clear()  # Unread bytes make the terminal record unknown.
+                            if completed:
+                                result = 1 if cancelled else child.returncode
+                    finally:
+                        if child is not None:
+                            child.stderr.close()
+                        status = {"phase": phase, "state": "complete" if reaped and result == 0 else "failed",
+                                  "exit": child.returncode if child is not None else None, "reaped": reaped,
+                                  "reason": reason if reaped else "reap", "elapsed_ms": int((time.monotonic() - started) * 1000)}
+                        if reaped and child is not None and child.returncode != 0:
+                            status["error"] = native_failure(tail, child.returncode)
+                        print("native: " + canonical(status).decode(), flush=True)
                 if result != 0:
                     break
             result = 1 if cancelled else result
@@ -948,6 +1037,7 @@ def main():
     parser.add_argument("--pending", type=Path)
     parser.add_argument("--verified", type=Path)
     parser.add_argument("--timeout", type=int)
+    parser.add_argument("--phase", choices=sorted(WRITER_PHASES), default="command")
     parser.add_argument("--prune", action="store_true")
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--policy", type=Path)
@@ -959,7 +1049,7 @@ def main():
     parser.add_argument("--acquisition-mode", choices=("current", "historical"), default="current")
     args, command = parser.parse_known_args()
     if args.operation == "run":
-        return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout if args.timeout is not None else 2700, args.writer_receipt)
+        return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout if args.timeout is not None else 2700, args.writer_receipt, args.phase)
     # Keep this acquisition-only flag out of the common parser: run forwards
     # the same native flag, including commands without a -- separator.
     with_members = args.operation == "acquire" and command == ["--with-members"]

@@ -22,6 +22,18 @@ process group to disappear before issuing its completion receipt. Only then can
 the checkpoint helper open a read transaction and copy SQLite through its backup
 API. The pinned image supplies schema, table counts and integrity results.
 
+Actions logs retain fixed `native:` begin and terminal records for `init`,
+`latest` and `selected`. Terminal records report elapsed milliseconds, exit code,
+termination reason and whether the owned process group was reaped. The native
+CLI's opt-in `--public-errors` supplies an allowlisted failure class and optional
+numeric HTTP, Discord or SQLite error codes. It changes only the terminal error;
+other native output remains private. The supervisor discards stdout, drains
+stderr with a 64 KiB tail bound, and accepts only a valid final error record.
+Absent, malformed or truncated records report `unknown`; raw errors, paths,
+provider bodies and identifiers never enter the public log. This evidence does
+not change the completion receipt or authorize publication. It cannot recover
+error output discarded by older runs.
+
 The checkpoint is the **native ingestion boundary before Git publication**.
 It deliberately precedes the publisher's later `share:*` bookkeeping. Replaying
 that boundary preserves messages, native cursors and failure history. Every

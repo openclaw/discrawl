@@ -116,8 +116,8 @@ jobs:
         run: |
           umask 077
           test -n "$DISCORD_BOT_TOKEN" && test -n "$DISCRAWL_GUILD_ID"
-          python3 scripts/private_discord_checkpoint.py run --timeout 60 -- \
-            "$RUNNER_TEMP/discrawl-native" --config "$CONFIG" init --db "$DB" --guild "$DISCRAWL_GUILD_ID"
+          python3 scripts/private_discord_checkpoint.py run --timeout 60 --phase init -- \
+            "$RUNNER_TEMP/discrawl-native" --public-errors --config "$CONFIG" init --db "$DB" --guild "$DISCRAWL_GUILD_ID"
           member_flags=()
           if [ "$WITH_MEMBERS" = "true" ]; then
             member_flags+=(--with-members)

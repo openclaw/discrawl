@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain bounded, public-safe native failure diagnostics in checkpoint workflow logs, identifying the acquisition phase and typed error codes without exposing private output or changing checkpoint authority.
+
 - Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
 
 - Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
