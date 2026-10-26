@@ -44,6 +44,16 @@ discrawl wiretap --watch-every 10s --stats --json
 - persists only compact aggregate import counters for [`coverage`](coverage.html); raw cache paths and payloads are not added to coverage state
 - with `--dry-run --stats`, reads coverage from an existing archive without migrating it; reports empty coverage if no archive exists, including in watch mode. Existing archives use normal SQLite read-only access, which may create WAL/SHM sidecar files.
 
+## Recover older multiline imports
+
+Imports made before the whitespace fix may have joined words across newlines or
+tabs. Upgrading fixes newly imported text; unchanged cache files are normally
+skipped. To repair an affected local archive, stop its writers, take a consistent
+backup, and remove only the `wiretap:file_index:v3` entry from `sync_state` using
+an explicit database write. Run `discrawl wiretap --full-cache` with the same
+configuration, then verify the affected search terms. This re-reads available
+cache files; it cannot recover content that Discord has already evicted.
+
 ## Default desktop paths
 
 - macOS: `~/Library/Application Support/discord`

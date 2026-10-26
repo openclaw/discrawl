@@ -558,3 +558,32 @@ https://discord.com/channels/999999999999999997/111111111111111118
 	require.NoError(t, err)
 	require.Empty(t, results)
 }
+
+func TestImportKeepsWordsSeparatedByLineBreaksSearchable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Local Storage", "leveldb")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "000001.log"), []byte(`noise
+{"id":"111111111111111111","type":1,"recipients":[{"id":"222222222222222222","username":"alice","global_name":"Alice"}]}
+binary-ish {"t":"MESSAGE_CREATE","d":{"id":"333333333333333333","channel_id":"111111111111111111","content":"21세기 콜로세움\n\n흰개미는 멍청하다.","timestamp":"2026-04-23T18:20:43.123Z","author":{"id":"222222222222222222","username":"alice","global_name":"Alice"}}} tail
+`), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	stats, err := Import(ctx, st, Options{
+		Path: dir,
+		Now:  func() time.Time { return time.Date(2026, 4, 23, 18, 30, 0, 0, time.UTC) },
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Messages)
+
+	for _, query := range []string{"콜로세움", "흰개미는", "멍청하다"} {
+		results, err := st.SearchMessages(ctx, store.SearchOptions{Query: query, Limit: 10})
+		require.NoError(t, err, query)
+		require.Len(t, results, 1, query)
+		require.Equal(t, "333333333333333333", results[0].MessageID, query)
+	}
+}

@@ -135,7 +135,7 @@ func TestDiscordMessagePayloadHelpers(t *testing.T) {
 	}}, mentions)
 
 	require.Equal(t, []string{"Deploy", "Ready"}, embedText(raw))
-	require.Equal(t, "helloworld\ntrace.txt\natt2\nDeploy\nReady", normalizeText(raw["content"], attachmentText(attachments), embedText(raw)))
+	require.Equal(t, "hello world\ntrace.txt\natt2\nDeploy\nReady", normalizeText(raw["content"], attachmentText(attachments), embedText(raw)))
 	require.Equal(t, "hidden text", cleanText("\u200bhidden\x00 text\n"))
 	require.Equal(t, "222222222222222222", messageReferenceID(raw))
 	require.Empty(t, messageReferenceID(map[string]any{}))
@@ -194,4 +194,27 @@ func TestParseMessageIndexesComponentsV2Text(t *testing.T) {
 	message, ok = parseMessage(raw, time.Time{}, nil)
 	require.True(t, ok)
 	require.Empty(t, message.Record.NormalizedContent, "classic message components are not message bodies")
+}
+
+func TestCleanTextTurnsLineBreaksIntoWordBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"newline", "콜로세움\n흰개미는", "콜로세움 흰개미는"},
+		{"blank line", "21세기 콜로세움\n\n흰개미는 멍청하다.", "21세기 콜로세움 흰개미는 멍청하다."},
+		{"crlf", "one\r\ntwo", "one two"},
+		{"tab", "one\ttwo", "one two"},
+		{"vertical tab and form feed", "one\v\ftwo", "one two"},
+		{"edges are trimmed", "\n\n one\n", "one"},
+		{"zero width characters join", "ab\u200bc\ufeffd", "abcd"},
+		{"other controls are dropped", "ab\x00c\x07d", "abcd"},
+		{"newline next to zero width", "one\u200b\n\u200btwo", "one two"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, cleanText(tt.raw))
+		})
+	}
 }

@@ -10,6 +10,8 @@
 
 - Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
 
+- Preserve whitespace word boundaries in Discord Desktop cache imports so multiline text remains searchable, including Hangul and CJK. Existing archives need a backup-first cache re-import as documented in `wiretap`. Thanks @vkehfdl1.
+
 ## 0.17.0 - 2026-10-23
 
 **Highlights:** Keep live Discord archives complete, protect public snapshots from excluded channels, and accept protected credential files for unattended services.
