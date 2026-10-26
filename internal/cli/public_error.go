@@ -26,7 +26,10 @@ type publicError struct{ err error }
 func (e *publicError) Unwrap() error { return e.err }
 
 func (e *publicError) Error() string {
-	encoded, _ := json.Marshal(describePublicFailure(e.err)) // Only strings and integers.
+	encoded, err := json.Marshal(describePublicFailure(e.err))
+	if err != nil {
+		return "discrawl_error={}" // A failed encoding remains unknown to the supervisor.
+	}
 	return "discrawl_error=" + string(encoded)
 }
 

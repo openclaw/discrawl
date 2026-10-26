@@ -23,7 +23,7 @@ func (unprintableError) Error() string { panic("private error must not be format
 func TestPublicFailureClassification(t *testing.T) {
 	private := unprintableError{}
 	rest := &discordgo.RESTError{
-		Response:     &http.Response{StatusCode: 403},
+		Response:     &http.Response{StatusCode: http.StatusForbidden},
 		ResponseBody: []byte("private response"), Message: &discordgo.APIErrorMessage{Code: 50001, Message: "private channel"},
 	}
 	cases := []struct {
@@ -38,7 +38,7 @@ func TestPublicFailureClassification(t *testing.T) {
 		{"database", dbErr(private), publicFailure{Schema: 1, Class: "database", Exit: 5}},
 		{"cancelled", errors.Join(private, context.Canceled), publicFailure{Schema: 1, Class: "cancelled", Exit: 1}},
 		{"deadline", fmt.Errorf("private path: %w", context.DeadlineExceeded), publicFailure{Schema: 1, Class: "deadline", Exit: 1}},
-		{"http", errors.Join(private, authErr(rest)), publicFailure{Schema: 1, Class: "http", Exit: 4, HTTPStatus: 403, DiscordCode: 50001}},
+		{"http", errors.Join(private, authErr(rest)), publicFailure{Schema: 1, Class: "http", Exit: 4, HTTPStatus: http.StatusForbidden, DiscordCode: 50001}},
 		{"rate_limit", &discordgo.RateLimitError{}, publicFailure{Schema: 1, Class: "rate_limit", Exit: 1}},
 		{"network", &net.DNSError{Err: "private endpoint", Name: "private.invalid"}, publicFailure{Schema: 1, Class: "network", Exit: 1}},
 		{"network_timeout", &net.DNSError{Err: "private endpoint", IsTimeout: true}, publicFailure{Schema: 1, Class: "network_timeout", Exit: 1}},
@@ -63,7 +63,7 @@ func TestPublicFailureSQLiteCode(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	_, err = db.Exec("SELECT private_column FROM private_table")
+	_, err = db.ExecContext(t.Context(), "SELECT private_column FROM private_table")
 	require.Error(t, err)
 	report := describePublicFailure(dbErr(err))
 	require.Equal(t, publicFailure{Schema: 1, Class: "sqlite", Exit: 5, SQLiteCode: 1}, report)
