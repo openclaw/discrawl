@@ -24,6 +24,19 @@ const (
 
 var ErrSchemaVersionMismatch = errors.New("database schema version mismatch")
 
+type SchemaVersionMismatchError struct {
+	Got  int
+	Want int
+}
+
+func (e *SchemaVersionMismatchError) Error() string {
+	return fmt.Sprintf("%s: got %d want %d", ErrSchemaVersionMismatch, e.Got, e.Want)
+}
+
+func (e *SchemaVersionMismatchError) Unwrap() error {
+	return ErrSchemaVersionMismatch
+}
+
 type Store struct {
 	embeddingWakeMu   sync.RWMutex
 	embeddingWake     func()
@@ -185,7 +198,7 @@ func openReadOnlyWithLexicalTokenizers(
 		return nil, err
 	} else if version != storeSchemaVersion {
 		_ = store.Close()
-		return nil, fmt.Errorf("%w: got %d want %d", ErrSchemaVersionMismatch, version, storeSchemaVersion)
+		return nil, &SchemaVersionMismatchError{Got: version, Want: storeSchemaVersion}
 	}
 	return store, nil
 }
@@ -282,7 +295,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err
 	} else if version != storeSchemaVersion {
-		return fmt.Errorf("%w: got %d want %d", ErrSchemaVersionMismatch, version, storeSchemaVersion)
+		return &SchemaVersionMismatchError{Got: version, Want: storeSchemaVersion}
 	}
 	if err := s.applyQueryIndexMigration(ctx); err != nil {
 		return err

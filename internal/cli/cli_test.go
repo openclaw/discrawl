@@ -4026,6 +4026,160 @@ func TestDoctorChecksEnabledLocalEmbeddingProvider(t *testing.T) {
 	require.Contains(t, out.String(), "embeddings_probe=ok")
 }
 
+func TestDoctorMissingConfigUsesDefaultsAndReportsDesktopCache(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	dataHome := filepath.Join(home, "data")
+	configPath := filepath.Join(configHome, "discrawl", "config.toml")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv(config.DefaultConfigEnv, "")
+	t.Setenv(config.DefaultTokenEnv, "test-token")
+	defaultConfig := config.Default()
+	desktopPath := defaultConfig.Desktop.Path
+	require.NoError(t, os.MkdirAll(desktopPath, 0o755))
+	db, err := store.Open(ctx, defaultConfig.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	var out bytes.Buffer
+	rt := &runtime{
+		ctx:        ctx,
+		configPath: configPath,
+		stdout:     &out,
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		newDiscord: func(config.Config) (discordClient, error) {
+			return &fakeDiscordClient{self: &discordgo.User{ID: "test-bot"}}, nil
+		},
+	}
+	require.NoError(t, rt.runDoctor([]string{"--json"}))
+
+	var report map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "defaults (no config file)", report["config"])
+	require.Equal(t, "ok", report["database"])
+	require.Equal(t, "ok", report["fts"])
+	require.Equal(t, "ok", report["desktop_cache"])
+	require.Equal(t, desktopPath, report["desktop_path"])
+}
+
+func TestDoctorMissingConfigDoesNotCreateDefaultDatabase(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	configPath := filepath.Join(configHome, "discrawl", "config.toml")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv(config.DefaultConfigEnv, "")
+	t.Setenv(config.DefaultTokenEnv, "test-token")
+	dbPath := config.Default().DBPath
+
+	var out bytes.Buffer
+	rt := &runtime{
+		ctx:        ctx,
+		configPath: configPath,
+		stdout:     &out,
+		stderr:     &bytes.Buffer{},
+		logger:     discardLogger(),
+		newDiscord: func(config.Config) (discordClient, error) {
+			return &fakeDiscordClient{self: &discordgo.User{ID: "test-bot"}}, nil
+		},
+	}
+	require.NoError(t, rt.runDoctor([]string{"--json"}))
+
+	var report map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+	require.Equal(t, "not found", report["database"])
+	_, err := os.Stat(dbPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestDoctorReportsReadOnlySchemaRecoveryWithoutChangingArchive(t *testing.T) {
+	tests := []struct {
+		name     string
+		version  int
+		recovery string
+	}{
+		{
+			name:     "older archive",
+			version:  6,
+			recovery: "run a normal write command such as discrawl wiretap with the same configuration to upgrade the archive, then rerun doctor",
+		},
+		{
+			name:     "newer archive",
+			version:  999,
+			recovery: "update discrawl to a version that supports this archive, then rerun doctor",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.toml")
+			cfg := config.Default()
+			cfg.DBPath = filepath.Join(dir, "discrawl.db")
+			cfg.Discord.TokenSource = "none"
+			require.NoError(t, config.Write(cfgPath, cfg))
+
+			db, err := store.Open(ctx, cfg.DBPath)
+			require.NoError(t, err)
+			require.NoError(t, db.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "kept", RawJSON: `{}`}))
+			_, err = db.DB().ExecContext(ctx, fmt.Sprintf("pragma user_version = %d", tt.version))
+			require.NoError(t, err)
+			require.NoError(t, db.Close())
+
+			var out bytes.Buffer
+			rt := &runtime{
+				ctx:        ctx,
+				configPath: cfgPath,
+				stdout:     &out,
+				stderr:     &bytes.Buffer{},
+				logger:     discardLogger(),
+			}
+			require.NoError(t, rt.runDoctor([]string{"--json"}))
+
+			var report map[string]any
+			require.NoError(t, json.Unmarshal(out.Bytes(), &report))
+			require.Contains(t, report["database"], "database schema version mismatch")
+			require.Equal(t, tt.recovery, report["database_recovery"])
+			require.NotContains(t, report, "fts")
+
+			reader, err := sql.Open("sqlite", cfg.DBPath)
+			require.NoError(t, err)
+			defer func() { _ = reader.Close() }()
+			var version int
+			require.NoError(t, reader.QueryRowContext(ctx, `pragma user_version`).Scan(&version))
+			require.Equal(t, tt.version, version)
+			var guildName string
+			require.NoError(t, reader.QueryRowContext(ctx, `select name from guilds where id = 'g1'`).Scan(&guildName))
+			require.Equal(t, "kept", guildName)
+		})
+	}
+}
+
+func TestDesktopCacheStatus(t *testing.T) {
+	dir := t.TempDir()
+	require.Equal(t, "not found", desktopCacheStatus(filepath.Join(dir, "missing")))
+	require.Equal(t, "ok", desktopCacheStatus(dir))
+
+	filePath := filepath.Join(dir, "cache-file")
+	require.NoError(t, os.WriteFile(filePath, nil, 0o600))
+	require.Equal(t, "not a directory", desktopCacheStatus(filePath))
+}
+
 func TestDoctorReportsEmbeddingProviderWarningsNonFatally(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

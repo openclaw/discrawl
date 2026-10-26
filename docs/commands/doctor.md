@@ -11,6 +11,8 @@ discrawl doctor
 ## What it verifies
 
 - config loads from the expected path
+- when config is absent, local checks continue with normalized defaults
+- whether the configured Discord Desktop cache path is present and is a directory
 - where the bot token was resolved from (env var or OS keyring)
 - bot auth succeeds against Discord
 - how many guilds the bot can access
@@ -21,6 +23,7 @@ discrawl doctor
 ## What it does not do
 
 - does not print the token contents
+- does not create or migrate the local database
 - does not run a sync; it only checks readiness
 
 ## Common outputs
@@ -32,6 +35,8 @@ discrawl doctor
 - `unavailable_markers_expired` - channels whose marker has aged out, so the next routine sync attempts them again
 - `unavailable_markers_unparsed` - markers with invalid timestamps; these remain eligible for retry so a new observation can repair them
 - `unavailable_markers_oldest_days` - age of the oldest parsed marker, clamped to zero for future timestamps
+- `desktop_cache` - `ok`, `not found`, `not a directory`, or the filesystem error for the reported `desktop_path`; directory presence does not prove Discord is installed or that messages are cached
+- `database_recovery` - when the archive schema does not match the binary, explains whether to run a normal write command to upgrade an older archive or update Discrawl for a newer archive
 
 ## See also
 

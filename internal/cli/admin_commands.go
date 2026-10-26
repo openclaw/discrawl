@@ -600,11 +600,26 @@ func (r *runtime) runDoctor(args []string) error {
 	}
 	cfg, err := config.Load(r.configPath)
 	if err != nil {
-		report["config"] = err.Error()
-		return r.print(report)
+		if !errors.Is(err, os.ErrNotExist) {
+			report["config"] = err.Error()
+			return r.print(report)
+		}
+		cfg = config.Default()
+		if err := cfg.Normalize(); err != nil {
+			report["config"] = err.Error()
+			return r.print(report)
+		}
+		report["config"] = "defaults (no config file)"
+	} else {
+		report["config"] = "ok"
 	}
-	report["config"] = "ok"
 	report["default_guild_id"] = cfg.EffectiveDefaultGuildID()
+	if desktopPath, pathErr := config.ExpandPath(cfg.Desktop.Path); pathErr != nil {
+		report["desktop_cache"] = pathErr.Error()
+	} else {
+		report["desktop_path"] = desktopPath
+		report["desktop_cache"] = desktopCacheStatus(desktopPath)
+	}
 	if cfg.ShareEnabled() {
 		report["share_remote"] = cfg.Share.Remote
 		report["share_repo_path"] = cfg.Share.RepoPath
@@ -661,10 +676,27 @@ func (r *runtime) runDoctor(args []string) error {
 	}
 	dbPath, err := config.ExpandPath(cfg.DBPath)
 	if err == nil {
-		db, dbErr := store.Open(r.ctx, dbPath)
-		if dbErr != nil {
-			report["database"] = dbErr.Error()
-		} else {
+		_, statErr := os.Stat(dbPath)
+		switch {
+		case errors.Is(statErr, os.ErrNotExist):
+			report["database"] = "not found"
+		case statErr != nil:
+			report["database"] = statErr.Error()
+		default:
+			db, dbErr := store.OpenReadOnly(r.ctx, dbPath)
+			if dbErr != nil {
+				report["database"] = dbErr.Error()
+				if mismatch, ok := errors.AsType[*store.SchemaVersionMismatchError](dbErr); ok {
+					if mismatch.Got < mismatch.Want {
+						report["database_recovery"] = "run a normal write command such as discrawl wiretap with the same configuration to upgrade the archive, then rerun doctor"
+					} else {
+						report["database_recovery"] = "update discrawl to a version that supports this archive, then rerun doctor"
+					}
+				}
+				break
+			}
+			defer func() { _ = db.Close() }()
+
 			report["database"] = "ok"
 			ftsErr := db.CheckMessageFTS(r.ctx)
 			if ftsErr != nil {
@@ -682,8 +714,21 @@ func (r *runtime) runDoctor(args []string) error {
 				report["unavailable_markers_oldest_days"] = counts.OldestDays
 			}
 			report["vector"] = "not configured"
-			_ = db.Close()
 		}
 	}
 	return r.print(report)
+}
+
+func desktopCacheStatus(path string) string {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil && info.IsDir():
+		return "ok"
+	case err == nil:
+		return "not a directory"
+	case errors.Is(err, os.ErrNotExist):
+		return "not found"
+	default:
+		return err.Error()
+	}
 }
