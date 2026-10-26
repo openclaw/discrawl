@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update the paired CodeQL actions to 4.39.1 and the analysis bundle to 2.27.3. Thanks @dependabot.
+
 - Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
 
 - Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
