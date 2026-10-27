@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refresh the OpenAI and Google SDKs, gRPC, network helpers, and security analysis tooling while preserving the Go minimum and SQLite compatibility pins.
 - Restore opt-in D1/R2 publication after verified native checkpoint and Git publication, preserving serialized acquisition, inventory adoption guards, resumable uploads and visible cloud failures.
 
 ## 0.18.0 - 2026-10-26
