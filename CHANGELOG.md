@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restore opt-in D1/R2 publication after verified native checkpoint and Git publication, preserving serialized acquisition, inventory adoption guards, resumable uploads and visible cloud failures.
+
 ## 0.18.0 - 2026-10-26
 
 **Highlights:** Inspect local archive health without a config, preserve multilingual Desktop text, and resume interrupted checkpoint publication.

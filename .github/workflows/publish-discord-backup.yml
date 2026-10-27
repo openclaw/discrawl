@@ -36,7 +36,7 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 125
+    timeout-minutes: 170
     steps:
       - name: Checkout discrawl
         timeout-minutes: 2
@@ -198,3 +198,33 @@ jobs:
             --message "$MESSAGE" --push >/dev/null 2>&1
           echo "published=true" >> "$GITHUB_OUTPUT"
           echo "Archive publication completed."
+
+      - name: Setup Node for cloud publication
+        timeout-minutes: 3
+        if: ${{ success() && vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.12.1
+
+      - name: Publish the same current state to D1 and R2
+        timeout-minutes: 40
+        id: cloud-publish
+        if: ${{ success() && vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}
+        env:
+          DISCRAWL_CLOUD_ENDPOINT: ${{ secrets.DISCRAWL_CLOUD_ENDPOINT }}
+          DISCRAWL_CLOUD_ARCHIVE: ${{ secrets.DISCRAWL_CLOUD_ARCHIVE }}
+          DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_ID: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_ID }}
+          DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET: ${{ secrets.DISCRAWL_CLOUD_ACCESS_CLIENT_SECRET }}
+          DISCRAWL_CLOUD_SNAPSHOT: ${{ runner.temp }}/discrawl/cloud.db
+          DISCRAWL_CLOUD_SOURCE_DB: ${{ github.workspace }}/.discrawl-ci/discrawl.db
+        run: |
+          umask 077
+          trap 'rm -f "$DISCRAWL_CLOUD_SNAPSHOT"' EXIT
+          trap 'echo "::error::Cloud publication failed after verified checkpoint and Git publication. Retained source is safe; resume the existing workflow without resetting the cloud archive."; exit 1' ERR
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          DISCRAWL_CLOUD_SOURCE_COMMIT="$(git -C "$BACKUP_REPO" rev-parse HEAD)"
+          export DISCRAWL_CLOUD_SOURCE_COMMIT
+          "$RUNNER_TEMP/discrawl-native" --public-errors --config "$CONFIG" cloud publish --export-only "$DISCRAWL_CLOUD_SNAPSHOT" >/dev/null
+          node scripts/publish-cloud.mjs
+          echo "Cloud publication completed."

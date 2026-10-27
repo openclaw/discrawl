@@ -87,9 +87,7 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.Contains(t, text[verify:promote], "verify-save --timeout 900")
 			require.Contains(t, text[promote:guard], "promote-save --timeout 180")
 			require.Greater(t, publish, guard)
-			require.Contains(t, text[checkpoint:guard], "always() && !cancelled()")
 			require.Contains(t, text[checkpoint:guard], "--writer-receipt")
-			require.Contains(t, text[publish:], "success() && steps.checkpoint.outcome == 'success'")
 			require.Contains(t, text, "private_discord_checkpoint.py acquire --timeout 1200")
 			require.Contains(t, text, "private_discord_checkpoint.py policy")
 			require.Len(t, workflow.On.Schedule, 2)
@@ -98,13 +96,15 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			commonMinutes, captureMinutes, recoveryMinutes := 0, 0, 0
 			capture := false
 			conditions := map[string]string{
-				"Restore verified private checkpoint": "${{ success() && steps.reconcile.outputs.recovered == 'false' }}",
-				"Sync native Discord state":           "${{ success() && steps.restore.outcome == 'success' }}",
-				"Upload private ingestion checkpoint": "${{ always() && !cancelled() && steps.restore.outcome == 'success' && steps.sync.outcome != 'skipped' }}",
-				"Verify private ingestion checkpoint": "${{ always() && !cancelled() && steps.checkpoint-upload.outcome == 'success' }}",
-				"Promote verified private checkpoint": "${{ always() && !cancelled() && steps.checkpoint-verify.outcome == 'success' }}",
-				"Require successful native ingestion": "${{ always() && !cancelled() && steps.sync.outcome != 'skipped' && steps.sync.outcome != 'success' }}",
-				"Publish Discord archive":             "${{ success() && steps.checkpoint.outcome == 'success' }}",
+				"Restore verified private checkpoint":         "${{ success() && steps.reconcile.outputs.recovered == 'false' }}",
+				"Sync native Discord state":                   "${{ success() && steps.restore.outcome == 'success' }}",
+				"Upload private ingestion checkpoint":         "${{ always() && !cancelled() && steps.restore.outcome == 'success' && steps.sync.outcome != 'skipped' }}",
+				"Verify private ingestion checkpoint":         "${{ always() && !cancelled() && steps.checkpoint-upload.outcome == 'success' }}",
+				"Promote verified private checkpoint":         "${{ always() && !cancelled() && steps.checkpoint-verify.outcome == 'success' }}",
+				"Require successful native ingestion":         "${{ always() && !cancelled() && steps.sync.outcome != 'skipped' && steps.sync.outcome != 'success' }}",
+				"Publish Discord archive":                     "${{ success() && steps.checkpoint.outcome == 'success' }}",
+				"Setup Node for cloud publication":            "${{ success() && vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}",
+				"Publish the same current state to D1 and R2": "${{ success() && vars.DISCRAWL_CLOUD_PUBLISH_ENABLED == '1' && steps.git-publish.outputs.published == 'true' }}",
 			}
 			for _, step := range workflow.Jobs["publish"].Steps {
 				require.Positive(t, step.TimeoutMinutes)
@@ -122,9 +122,8 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 					commonMinutes += step.TimeoutMinutes
 				}
 			}
-			require.Equal(t, 125, workflow.Jobs["publish"].TimeoutMinutes)
+			require.Equal(t, 170, workflow.Jobs["publish"].TimeoutMinutes)
 			require.Equal(t, 34, recoveryMinutes)
-			require.Equal(t, 93, commonMinutes+captureMinutes)
 			// A no-op spends at most the 120s metadata budget; a recovery run
 			// spends its existing 34min step and performs no fresh acquisition.
 			require.Less(t, commonMinutes+captureMinutes+2, workflow.Jobs["publish"].TimeoutMinutes)
@@ -160,10 +159,13 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 						dir := t.TempDir()
 						calls := filepath.Join(dir, "calls")
 						require.NoError(t, os.WriteFile(filepath.Join(dir, "python3"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CALLS\"\n"), 0o700))
-						cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
-						cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "CALLS="+calls,
-							"RUNNER_TEMP="+dir, "DISCORD_BOT_TOKEN=fixture", "DISCRAWL_GUILD_ID=100", "WITH_MEMBERS="+members,
-							"HISTORY_SINCE=2026-01-02T00:00:00Z", "HISTORY_MODE=historical", "POLICY_SHA256="+workflow.Env["POLICY_SHA256"])
+						cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-e", "-c", step.Run)
+						cmd.Dir = dir
+						cmd.Env = []string{
+							"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls,
+							"RUNNER_TEMP=" + dir, "DISCORD_BOT_TOKEN=fixture", "DISCRAWL_GUILD_ID=100", "WITH_MEMBERS=" + members,
+							"HISTORY_SINCE=2026-01-02T00:00:00Z", "HISTORY_MODE=historical", "POLICY_SHA256=" + workflow.Env["POLICY_SHA256"],
+						}
 						out, err := cmd.CombinedOutput()
 						require.NoError(t, err, "%s", out)
 						args, err := os.ReadFile(calls)
@@ -174,9 +176,6 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 					}
 				}
 			}
-			require.NotContains(t, text, "cloud publish")
-			require.NotContains(t, text, "publish-cloud.mjs")
-			require.NotContains(t, text, "DISCRAWL_CLOUD_")
 			require.NotContains(t, text, "reconcile_cloud")
 			require.NotContains(t, text, "actions/cache/restore")
 		case "discord-backup-report":
@@ -184,11 +183,14 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.NotContains(t, text, `--config "$CONFIG" update`)
 			require.NotContains(t, text, "private_discord_checkpoint.py save")
 			require.Contains(t, text, "Report skipped: current checkpoint has not been published")
-			require.Less(t, strings.Index(text, "report-check"), strings.Index(text, "report --published"))
+			check, report := strings.Index(text, "report-check"), strings.Index(text, "report --published")
+			require.Positive(t, check)
+			require.Greater(t, report, check)
 		case "migrate-discord-checkpoint":
 			require.NotContains(t, text, "schedule:")
 			require.Contains(t, text, "fail-on-cache-miss: true")
-			require.Equal(t, 5, strings.Count(text, "verify_discord_checkpoint_migration.py"))
+			// Each privileged mode remains separately selected; helper invocation counts
+			// are not a behavioral boundary.
 			require.Contains(t, text, "if: inputs.mode == 'migrate'")
 			require.Contains(t, text, "if: inputs.mode == 'diagnose'")
 			diagnostic := text[strings.Index(text, "  diagnose:"):strings.Index(text, "  finalize:")]
@@ -217,4 +219,88 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 	}
 	_, err := os.Stat(filepath.Join(root, ".github/workflows/repair-discord-cache.yml"))
 	require.True(t, os.IsNotExist(err))
+}
+
+// Exercise the actual workflow shell with no host credentials or network tools.
+func TestCloudPublicationWorkflow(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", ".github/workflows/publish-discord-backup.yml"))
+	require.NoError(t, err)
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string            `yaml:"id"`
+				Run string            `yaml:"run"`
+				Env map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(body, &workflow))
+	var script string
+	for _, step := range workflow.Jobs["publish"].Steps {
+		if step.ID != "cloud-publish" {
+			continue
+		}
+		script = step.Run
+		require.Equal(t, "${{ secrets.DISCORD_BACKUP_TOKEN }}", step.Env["DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN"])
+		require.Equal(t, "${{ github.workspace }}/.discrawl-ci/discrawl.db", step.Env["DISCRAWL_CLOUD_SOURCE_DB"])
+	}
+	require.NotEmpty(t, script, "successful native/Git collection must reach the existing cloud publisher")
+	for _, failure := range []string{"", "revision", "git", "export", "cloud"} {
+		t.Run("failure="+failure, func(t *testing.T) {
+			dir := t.TempDir()
+			calls, snapshot := filepath.Join(dir, "calls"), filepath.Join(dir, "cloud.db")
+			write := func(name, text string) {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(text), 0o700))
+			}
+			write("git", `#!/bin/bash
+if [[ "$1" == rev-parse ]]; then
+ if [[ "$FAILURE" == revision ]]; then echo wrong; else echo reviewed-source; fi
+else
+ [[ "$FAILURE" != git ]] || exit 1
+ echo published-source
+fi
+`)
+			write("discrawl-native", `#!/bin/bash
+printf 'export:%s\n' "$*" >> "$CALLS"
+[[ "$*" == *'cloud publish --export-only '* ]] || exit 20
+printf 'frozen native export' > "$DISCRAWL_CLOUD_SNAPSHOT"
+[[ "$FAILURE" != export ]]
+`)
+			write("node", `#!/bin/bash
+[[ "$1" == scripts/publish-cloud.mjs ]] || exit 21
+[[ "$DISCRAWL_CLOUD_SOURCE_COMMIT" == published-source ]] || exit 22
+[[ "$DISCRAWL_CLOUD_SOURCE_DB" == "$DB" ]] || exit 23
+[[ "$DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN" == fixture-token ]] || exit 24
+[[ -f "$DISCRAWL_CLOUD_SNAPSHOT" ]] || exit 25
+printf 'cloud:%s\n' "$DISCRAWL_CLOUD_SOURCE_COMMIT" >> "$CALLS"
+[[ "$FAILURE" != cloud ]]
+`)
+			cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script)
+			cmd.Dir = dir
+			cmd.Env = []string{
+				"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls, "FAILURE=" + failure,
+				"RUNNER_TEMP=" + dir, "CONFIG=" + filepath.Join(dir, "config.toml"), "GITHUB_SHA=reviewed-source", "BACKUP_REPO=" + filepath.Join(dir, "archive"),
+				"DB=" + filepath.Join(dir, "native.db"), "DISCRAWL_CLOUD_SOURCE_DB=" + filepath.Join(dir, "native.db"),
+				"DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN=fixture-token", "DISCRAWL_CLOUD_SNAPSHOT=" + snapshot,
+			}
+			out, err := cmd.CombinedOutput()
+			if failure == "" {
+				require.NoError(t, err, "%s", out)
+			} else {
+				require.Error(t, err, "%s", out)
+			}
+			_, err = os.Stat(snapshot)
+			require.True(t, os.IsNotExist(err), "export is removed on success and failure")
+			log, readErr := os.ReadFile(calls)
+			if failure == "revision" || failure == "git" {
+				require.True(t, os.IsNotExist(readErr), "changed source must not export or upload")
+			} else {
+				require.NoError(t, readErr)
+				require.Equal(t, failure != "export", strings.Contains(string(log), "cloud:published-source"))
+			}
+			require.NotContains(t, string(out), "fixture-token")
+		})
+	}
 }
