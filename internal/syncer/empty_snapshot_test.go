@@ -46,7 +46,7 @@ func (f *issue321Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(r.URL.Path, "/messages") {
 		body = "[" + body + "]"
 	}
-	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 }
 
 type issue321Client struct {
@@ -203,7 +203,8 @@ func TestIssue321EmptySnapshotReceiptCompatibility(t *testing.T) {
 				s := issue321Store(t)
 				issue321Seed(t, s, "")
 				incoming := issue321Payload(t, "", "")
-				if scenario == "legacy-v0" {
+				switch scenario {
+				case "legacy-v0":
 					var receipt map[string]any
 					require.NoError(t, json.Unmarshal([]byte(issue321Read(t, s).Raw), &receipt))
 					// Old native receipts omitted these fields; null/[]/omitted
@@ -213,7 +214,7 @@ func TestIssue321EmptySnapshotReceiptCompatibility(t *testing.T) {
 					}
 					_, err := s.DB().ExecContext(t.Context(), "update messages set raw_json=?,text_version=0,text_parts_json='[]' where id=?", issue321JSON(t, receipt), issue321ID)
 					require.NoError(t, err)
-				} else if scenario == "same-rich-envelope" {
+				case "same-rich-envelope":
 					incoming["attachments"] = []any{map[string]any{"id": "a1", "filename": "quartz.txt"}}
 					incoming["embeds"] = []any{map[string]any{"description": "quartz embed"}}
 					incoming["flags"] = 1 << 15
@@ -223,7 +224,7 @@ func TestIssue321EmptySnapshotReceiptCompatibility(t *testing.T) {
 					h := &tailHandler{store: s, preserveHistoryCursor: true, enqueueEmbeddings: true}
 					require.NoError(t, h.OnMessageCreate(t.Context(), issue321Decode(t, issue321JSON(t, incoming))))
 					incoming["content"] = ""
-				} else {
+				default:
 					incoming["author"] = map[string]any{"id": "u1", "username": "renamed", "global_name": "new display", "bot": false}
 					incoming["pinned"] = true
 					incoming["reactions"] = []any{map[string]any{"count": 1, "emoji": map[string]any{"name": "thumbsup"}}}
