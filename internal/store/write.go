@@ -452,7 +452,7 @@ func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRec
 	}
 	defer rollback(tx)
 	if opts.PreserveNewer {
-		keep, err := keepStoredMessage(ctx, s.q.WithTx(tx), message, opts.ObservationStartedAt)
+		keep, err := keepStoredMessage(ctx, tx, s.q.WithTx(tx), message, opts.ObservationStartedAt)
 		if err != nil || keep {
 			return err
 		}
@@ -488,13 +488,13 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 			return err
 		}
 		if message.Options.PreserveNewer {
-			keep, err := keepStoredMessage(ctx, qtx, message.Record, message.Options.ObservationStartedAt)
+			keep, err := keepStoredMessage(ctx, tx, qtx, message.Record, message.Options.ObservationStartedAt)
 			if err != nil {
 				return err
 			}
 			if keep {
-				// Newer canonical state wins, but a genuine Gateway or snapshot
-				// observation is still retained in the same transaction.
+				// Keep canonical state and its related rows, but retain a genuine
+				// Gateway or snapshot observation in the same transaction.
 				if err := appendMutationEventTx(ctx, qtx, message); err != nil {
 					return err
 				}
@@ -544,7 +544,7 @@ func appendMutationEventTx(ctx context.Context, qtx *storedb.Queries, message Me
 	)
 }
 
-func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message MessageRecord, started time.Time) (bool, error) {
+func keepStoredMessage(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, message MessageRecord, started time.Time) (bool, error) {
 	stored, err := qtx.GetMessageRevision(ctx, message.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -565,7 +565,64 @@ func keepStoredMessage(ctx context.Context, qtx *storedb.Queries, message Messag
 	}
 	// Equal or absent provider revisions cannot be ordered by Discord. Then
 	// any write after this observation started is treated as newer.
-	return !started.IsZero() && parseTime(stored.UpdatedAt).After(started), nil
+	if !started.IsZero() && parseTime(stored.UpdatedAt).After(started) {
+		return true, nil
+	}
+	if message.Content != "" || message.DeletedAt != "" {
+		return false, nil
+	}
+	var content, raw string
+	if err := tx.QueryRowContext(ctx, "select content,raw_json from messages where id=?", message.ID).Scan(&content, &raw); err != nil {
+		return false, err
+	}
+	// An unordered reread that only loses authored text is not evidence of
+	// a clear. Retain the entire canonical mutation, including its related
+	// rows and projections. An actual clear without a newer edit revision
+	// and with identical shape is indistinguishable, so prefer known text.
+	// Distinct rich-message changes keep their existing admission policy.
+	return content != "" && sameMessageTextShape(raw, message.RawJSON), nil
+}
+
+// Compare message identity and content-bearing fields, not mutable user names,
+// reactions, pin state, or SDK receipt-schema additions. Empty collections are
+// equivalent whether omitted, null, or []. GuildID comes from channel scope and
+// may be absent on REST receipts. A newer provider revision bypasses this check.
+func sameMessageTextShape(a, b string) bool {
+	var shapes [2]struct {
+		ID        string    `json:"id"`
+		ChannelID string    `json:"channel_id"`
+		Timestamp time.Time `json:"timestamp"`
+		Type      int       `json:"type"`
+		Author    *struct {
+			ID string `json:"id"`
+		} `json:"author"`
+		Attachments       []any `json:"attachments,omitempty"`
+		Embeds            []any `json:"embeds,omitempty"`
+		Components        []any `json:"components,omitempty"`
+		StickerItems      []any `json:"sticker_items,omitempty"`
+		Poll              any   `json:"poll,omitempty"`
+		MessageReference  any   `json:"message_reference,omitempty"`
+		ReferencedMessage any   `json:"referenced_message,omitempty"`
+		MessageSnapshots  []any `json:"message_snapshots,omitempty"`
+		Mentions          []struct {
+			ID string `json:"id"`
+		} `json:"mentions,omitempty"`
+		MentionRoles    []string `json:"mention_roles,omitempty"`
+		MentionEveryone bool     `json:"mention_everyone"`
+		Flags           int      `json:"flags"`
+	}
+	var encoded [2]string
+	for i, raw := range []string{a, b} {
+		if json.Unmarshal([]byte(raw), &shapes[i]) != nil || shapes[i].ID == "" || shapes[i].ChannelID == "" {
+			return false
+		}
+		body, err := json.Marshal(shapes[i])
+		if err != nil {
+			return false
+		}
+		encoded[i] = string(body)
+	}
+	return encoded[0] == encoded[1]
 }
 
 func (s *Store) upsertMessageTx(
