@@ -41,7 +41,7 @@ func TestEmptySnapshotAdmissionBoundaries(t *testing.T) {
 				require.NoError(t, s.DB().QueryRowContext(t.Context(), "select content,raw_json from messages where id='100'").Scan(&content, &raw))
 				if tc.retained {
 					require.Equal(t, "quartz", content)
-					require.Equal(t, []byte(positive), []byte(raw), "retained receipt bytes must not change")
+					require.Equal(t, positive, raw) //nolint:testifylint // Retention preserves exact receipt bytes, not merely equivalent JSON.
 				} else {
 					require.Empty(t, content)
 					require.Equal(t, tc.raw, raw)
