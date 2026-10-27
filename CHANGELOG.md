@@ -2,17 +2,16 @@
 
 ## Unreleased
 
-- Update the paired CodeQL actions to 4.39.1 and the analysis bundle to 2.27.3. Thanks @dependabot.
+## 0.18.0 - 2026-10-26
+
+**Highlights:** Inspect local archive health without a config, preserve multilingual Desktop text, and resume interrupted checkpoint publication.
 
 - Let `doctor` report local archive and Desktop cache health without a config, inspecting existing databases read-only and explaining schema recovery. Thanks @goutamadwant and @vkehfdl1.
-
-- Retain bounded, public-safe native failure diagnostics in checkpoint workflow logs, identifying the acquisition phase and typed error codes without exposing private output or changing checkpoint authority.
-
-- Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
-
-- Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
-
 - Preserve whitespace word boundaries in Discord Desktop cache imports so multiline text remains searchable, including Hangul and CJK. Existing archives need a backup-first cache re-import as documented in `wiretap`. Thanks @vkehfdl1.
+- Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
+- Reconcile retained checkpoint publication before scheduled acquisition, preserving original capture provenance and GitHub-assigned scheduled actors while resuming interrupted promotion or archive delivery without duplicate writes.
+- Retain bounded, public-safe native failure diagnostics in checkpoint workflow logs, identifying the acquisition phase and typed error codes without exposing private output or changing checkpoint authority.
+- Update the paired CodeQL actions to 4.39.1 and the analysis bundle to 2.27.3. Thanks @dependabot.
 
 ## 0.17.0 - 2026-10-23
 
