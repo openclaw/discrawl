@@ -34,8 +34,14 @@ Remote commands require `[remote]` config with `mode = "cloud"`, `endpoint`,
 ## Scheduled publication
 
 The existing backup workflow can also publish its successful source state to D1
-and R2. It saves the runtime cache before Cloud publication. A Cloud failure
-therefore does not discard the Discord sync or the published Git snapshot.
+and R2. It verifies and promotes the complete private native checkpoint, then publishes
+the Git snapshot before Cloud publication. The existing serialized job and pinned
+acquisition policy remain unchanged. Failed acquisition, checkpoint verification,
+or Git publication cannot start Cloud publication. A recovered checkpoint-only
+run defers fresh acquisition and Cloud publication to the next run. A Cloud
+failure fails the job but does not discard the Discord sync, verified checkpoint
+or published Git snapshot. The next successful collection can resume Cloud
+publication through the same workflow; no separate collector is needed.
 
 Enable `DISCRAWL_CLOUD_PUBLISH_ENABLED=1` only after the backend supports
 `discrawl.current-state.v1` and publisher credentials are configured. The first
@@ -74,20 +80,14 @@ this check or reset the remote tables.
 
 ### Reconciling an older hosted archive
 
-If first adoption finds identities missing from the source, keep Cloud publication
-paused. The backup workflow has an optional `reconcile_cloud` input for a manual
-run on reviewed `main`. Its private `DISCRAWL_CLOUD_RECONCILE_PLAN` Actions secret
-contains a gzip/base64 JSON plan with the target archive, member identities and
-message identities, including their guild/channel and original creation time.
-The plan must match the configured archive and collector guild.
+If first adoption finds identities missing from the source, publication stops
+before changing Cloud data and reports only missing-key counts per table, never
+the identities or content. Keep Cloud publication paused for owner review.
+Source tombstones are accepted as evidence of intentional deletion; unknown
+remote records are not silently discarded.
 
-The helper checks current guild/channel access, then fetches those exact records
-from Discord. It restores live records through the normal store converters.
-Only HTTP 404 with Discord's specific Unknown Member or Unknown Message code
-creates a deletion record. Permission errors, other failures and mismatched
-identities stop before observations are applied. Existing source rows, including
-deletion records, are preserved. Media downloads and embeddings are disabled.
-
-Git publication and cache persistence follow reconciliation in the same job.
-The normal Cloud adoption guard remains required. Remove the private plan secret
-after recovery succeeds; scheduled runs never enable reconciliation themselves.
+The existing workflow has no automatic reconciliation input. Do not use a legacy
+Cloud publisher, reset the managed archive, import a filtered Git snapshot as
+native state, or broaden Discord access to bypass adoption. Any recovery of
+missing source identities requires a separately reviewed, authorized plan. The
+normal inventory guard remains required after recovery.

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { tables, buildBatches, batchBody, verifyAdoption, cloudRequest } from './publish-cloud.mjs';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
+import { tables, buildBatches, batchBody, verifyAdoption, cloudRequest, publishCloud } from './publish-cloud.mjs';
 
 function fixture(t) {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
@@ -37,7 +42,9 @@ test('adoption accepts source tombstones and refuses unknown remote rows', async
   db.exec("insert into messages values('deleted-message','2026-09-19')");
   const request=async path=>({keys:path.includes('table=messages')?[['deleted-message']]:[],next:null});
   await verifyAdoption(db,request,'current-state');
-  await assert.rejects(verifyAdoption(db,async()=>({keys:[['unknown']],next:null}),'current-state'),/absent from the source/);
+  const requestUnknown = async path => ({ keys: path.includes('table=members') ? [['guild', 'unknown-member']] : path.includes('table=messages') ? [['unknown-one'], ['unknown-two'], ['deleted-message']] : [], next: null });
+  await assert.rejects(verifyAdoption(db, requestUnknown, 'current-state'), error => error.message ===
+    'cloud archive has rows absent from the source; adoption stopped without changing data; missing_counts={"guilds":0,"channels":0,"members":1,"messages":2}');
 });
 test('HTTP failures never expose private server responses', async () => {
   const request=cloudRequest('https://fixture.invalid/',{authorization:'fixture-token'},async()=>new Response('private backend detail',{status:403}));
@@ -234,4 +241,98 @@ test('ambiguous identity failures, invalid rate headers, and credential denials 
     await assert.rejects(request('v1/auth/github/token'), error => !error.message.includes('private-invalid-header'));
     assert.equal(calls, 1);
   }
+});
+
+
+async function diskFixture(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'discrawl-publisher-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const snapshot = join(directory, 'export.db');
+  const sourceDB = join(directory, 'native.db');
+  const exported = new DatabaseSync(snapshot);
+  const source = new DatabaseSync(sourceDB);
+  for (const [table, { columns, sourceKeys }] of Object.entries(tables)) {
+    exported.exec(`create table ${table}(${columns.map(c => `${c} text`).join(',')})`);
+    source.exec(`create table ${table}(${sourceKeys.map(c => `${c} text`).join(',')},deleted_at text)`);
+  }
+  exported.exec("insert into messages values('new-message','channel','guild','user','name','current content','2026-10-27T12:00:00Z','')");
+  source.exec("insert into messages values('new-message',null),('deleted-message','2026-10-26')");
+  exported.close(); source.close();
+  return { snapshot, sourceDB, archive: 'fixture', sourceCommit: 'a'.repeat(40) };
+}
+
+test('a failed cloud refresh resumes its frozen native export without repeating completed uploads', async t => {
+  const options = await diskFixture(t);
+  let state = { current: null, generation: 0, manifest: null, completed_batches: [], uploaded_parts: [], snapshot_verified: false };
+  const writes = [];
+  const uploaded = new Map();
+  const rows = new Map();
+  let fail = true;
+  const request = async (path, { method = 'GET', body, generation } = {}) => {
+    const url = new URL(path, 'https://fixture.invalid/');
+    assert.equal(url.pathname, '/v1/apps/discrawl/archives/fixture/current-state');
+    if (method === 'GET') {
+      if (url.searchParams.has('table')) return { keys: url.searchParams.get('table') === 'messages' ? [['deleted-message']] : [], next: null };
+      return structuredClone(state);
+    }
+    writes.push({ method, query: url.search, operation: body?.operation });
+    if (body?.operation === 'begin') {
+      assert.equal(body.expected_generation, 0);
+      assert.equal(body.manifest.source_commit, options.sourceCommit);
+      state.manifest = body.manifest; state.generation = 1;
+      return {};
+    }
+    if (method === 'PUT') {
+      assert.equal(generation, 1);
+      const index = Number(url.searchParams.get('part'));
+      assert.equal(createHash('sha256').update(body).digest('hex'), state.manifest.parts[index].sha256);
+      uploaded.set(index, body); state.uploaded_parts[index] = 1;
+      return {};
+    }
+    if (body?.operation === 'verify') {
+      assert.equal(body.generation, 1);
+      const uncompressed = gunzipSync(Buffer.concat([...uploaded.values()]));
+      assert.deepEqual(uncompressed, await readFile(options.snapshot));
+      state.snapshot_verified = true; return {};
+    }
+    if (url.searchParams.has('batch')) {
+      assert.equal(generation, 1);
+      const index = Number(url.searchParams.get('batch'));
+      if (state.manifest.batches[index].table === 'messages' && fail) { fail = false; throw new Error('fixture transport failure'); }
+      rows.set(state.manifest.batches[index].table, JSON.parse(body));
+      state.completed_batches[index] = 1;
+      return { complete: true };
+    }
+    assert.equal(body.operation, 'complete');
+    assert.equal(body.generation, 1);
+    assert.equal(state.completed_batches.filter(Boolean).length, state.manifest.batches.length);
+    state.current = { generation: 1, plan: state.manifest };
+    return { status: 'complete' };
+  };
+  await assert.rejects(publishCloud({ ...options, request }), /fixture transport failure/);
+  assert.equal(state.current, null, 'failed refresh does not claim completion');
+  const before = writes.length;
+  const result = await publishCloud({ ...options, request });
+  assert.deepEqual(result, { status: 'complete', batches_uploaded: 1, batches_skipped: 3, counts: { guilds: 0, channels: 0, members: 0, messages: 1 } });
+  assert.deepEqual(writes.slice(before).map(w => w.query || w.operation), ['?batch=3', 'complete']);
+  assert.deepEqual(rows.get('messages'), [['new-message','channel','guild','user','name','current content','2026-10-27T12:00:00Z','']]);
+  const completedWrites = writes.length;
+  assert.equal((await publishCloud({ ...options, request })).status, 'unchanged');
+  assert.equal(writes.length, completedWrites);
+});
+
+test('initial unknown remote records stop publication before any begin, upload or row write', async t => {
+  const options = await diskFixture(t);
+  const request = async (path, { method = 'GET' } = {}) => {
+    assert.equal(method, 'GET', 'adoption must stay read-only on refusal');
+    const table = new URL(path, 'https://fixture.invalid/').searchParams.get('table');
+    if (table) return { keys: table === 'messages' ? [['unknown-private-id']] : [], next: null };
+    return { current: null, generation: 0, manifest: null };
+  };
+  await assert.rejects(publishCloud({ ...options, request }), error => error.message.includes('missing_counts=') && !error.message.includes('unknown-private-id'));
+  // A pending initial adoption is not proof that a changed source still owns all keys.
+  await assert.rejects(publishCloud({ ...options, request: async (path, settings) => {
+    const response = await request(path, settings);
+    return 'generation' in response ? { ...response, generation: 1 } : response;
+  } }), error => error.message.includes('missing_counts='));
 });

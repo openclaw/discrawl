@@ -180,6 +180,7 @@ export function cloudRequest(endpoint, headers, fetchImpl = fetch, { sleep = ms 
 }
 
 export async function verifyAdoption(source, request, path) {
+  const missing = Object.fromEntries(Object.keys(tables).map(table => [table, 0]));
   for (const [table, { sourceKeys }] of Object.entries(tables)) {
     const exists = source.prepare(`select 1 from ${table} where ${sourceKeys.map(c => `${c}=?`).join(' and ')}`);
     const cursors = new Set();
@@ -188,7 +189,7 @@ export async function verifyAdoption(source, request, path) {
       const page = await request(`${path}?table=${table}${after ? `&after=${encodeURIComponent(JSON.stringify(after))}` : ''}`);
       for (const key of page.keys) {
         // Source tombstones prove intentional deletion. Unknown remote IDs need owner recovery.
-        if (!exists.get(...key)) throw new PublishError('cloud archive has rows absent from the source; adoption stopped without changing data');
+        if (!exists.get(...key)) missing[table]++;
       }
       after = page.next;
       if (after) {
@@ -198,6 +199,8 @@ export async function verifyAdoption(source, request, path) {
       }
     } while (after);
   }
+  if (Object.values(missing).some(count => count > 0)) throw new PublishError(
+    `cloud archive has rows absent from the source; adoption stopped without changing data; missing_counts=${JSON.stringify(missing)}`);
 }
 
 export async function publishCloud({ snapshot, sourceDB, sourceCommit, request, archive, exportedAt = new Date().toISOString() }) {
@@ -215,7 +218,7 @@ export async function publishCloud({ snapshot, sourceDB, sourceCommit, request, 
     // Reuse an interrupted generation, including its immutable object names.
     const samePending = state.manifest?.sha256 === sha256 && state.manifest?.archive_sha256 === plan.archive_sha256
       && JSON.stringify(state.manifest.batches) === JSON.stringify(batches);
-    if (!state.current && !state.generation) {
+    if (!state.current) {
       const source = new DatabaseSync(sourceDB, { readOnly: true });
       try { await verifyAdoption(source, request, path); } finally { source.close(); }
     }
