@@ -161,9 +161,11 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 						require.NoError(t, os.WriteFile(filepath.Join(dir, "python3"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CALLS\"\n"), 0o700))
 						cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-e", "-c", step.Run)
 						cmd.Dir = dir
-						cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls,
+						cmd.Env = []string{
+							"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls,
 							"RUNNER_TEMP=" + dir, "DISCORD_BOT_TOKEN=fixture", "DISCRAWL_GUILD_ID=100", "WITH_MEMBERS=" + members,
-							"HISTORY_SINCE=2026-01-02T00:00:00Z", "HISTORY_MODE=historical", "POLICY_SHA256=" + workflow.Env["POLICY_SHA256"]}
+							"HISTORY_SINCE=2026-01-02T00:00:00Z", "HISTORY_MODE=historical", "POLICY_SHA256=" + workflow.Env["POLICY_SHA256"],
+						}
 						out, err := cmd.CombinedOutput()
 						require.NoError(t, err, "%s", out)
 						args, err := os.ReadFile(calls)
@@ -277,10 +279,12 @@ printf 'cloud:%s\n' "$DISCRAWL_CLOUD_SOURCE_COMMIT" >> "$CALLS"
 `)
 			cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script)
 			cmd.Dir = dir
-			cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls, "FAILURE=" + failure,
+			cmd.Env = []string{
+				"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + ":/usr/bin:/bin", "CALLS=" + calls, "FAILURE=" + failure,
 				"RUNNER_TEMP=" + dir, "CONFIG=" + filepath.Join(dir, "config.toml"), "GITHUB_SHA=reviewed-source", "BACKUP_REPO=" + filepath.Join(dir, "archive"),
 				"DB=" + filepath.Join(dir, "native.db"), "DISCRAWL_CLOUD_SOURCE_DB=" + filepath.Join(dir, "native.db"),
-				"DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN=fixture-token", "DISCRAWL_CLOUD_SNAPSHOT=" + snapshot}
+				"DISCRAWL_CLOUD_AUTH_GITHUB_TOKEN=fixture-token", "DISCRAWL_CLOUD_SNAPSHOT=" + snapshot,
+			}
 			out, err := cmd.CombinedOutput()
 			if failure == "" {
 				require.NoError(t, err, "%s", out)
