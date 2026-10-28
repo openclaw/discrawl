@@ -78,6 +78,14 @@ an automatic software gate or authorization to run a canary:
 5. Stop expansion if a limit is exceeded or evidence is incomplete. The owner must explicitly approve the measured tradeoff for the intended rollout; successful publication elsewhere does not establish acceptable local costs.
 6. For rollback, restore the matching pre-upgrade binary, configuration and database from the verified backup, accounting for any writes since backup. A binary downgrade alone is not a verified rollback plan.
 
+## Change feed
+
+`change_log`, `change_feed_tables` and `change_feed_meta` record which rows of
+`message_attachments`, `mention_events`, `message_embedding_history` and
+`attachment_text_history` changed, so readers can copy only those rows. They
+are local-only and excluded from Git snapshots. See the
+[source change feed](change-feed.html) contract.
+
 ## Failure history
 
 `failure_ledger` records bounded error text and available Discord row
@@ -103,6 +111,7 @@ See [`sql`](../commands/sql.html).
 - [`coverage`](../commands/coverage.html) - per-guild/channel archive readiness and wiretap progress counters
 - [`diagnostics`](../commands/diagnostics.html) - SQLite integrity, WAL, freshness, and writer-lock state
 - [`failures`](../commands/failures.html) - local ingestion and write failure history
+- [Source change feed](change-feed.html) - incremental reader contract for relationship and history tables
 - [`channels`](../commands/channels.html) - channel directory
 - [`members`](../commands/members.html) - member directory
 - [Security](../security.html)

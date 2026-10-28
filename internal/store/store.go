@@ -68,6 +68,7 @@ type Status struct {
 	OldestFailureAt        time.Time              `json:"oldest_failure_at,omitzero"`
 	AttachmentTextFailures int                    `json:"attachment_text_failures"`
 	BackgroundWork         *EmbeddingWorkerStatus `json:"background_work,omitempty"`
+	ChangeFeed             *ChangeFeedStatus      `json:"change_feed,omitempty"`
 	DBPath                 string                 `json:"db_path"`
 	GuildCount             int                    `json:"guild_count"`
 	ChannelCount           int                    `json:"channel_count"`
@@ -318,7 +319,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureEmbeddingSearchIndexes(ctx); err != nil {
 		return err
 	}
-	return nil
+	// Last, so triggers are generated from the final table definitions and a
+	// migration that changed a tracked table starts a new feed generation.
+	return s.ensureChangeFeed(ctx)
 }
 
 func (s *Store) RebuildSearchIndexes(ctx context.Context) error {

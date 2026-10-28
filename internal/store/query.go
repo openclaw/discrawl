@@ -1100,6 +1100,10 @@ func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Stat
 	if err != nil {
 		return Status{}, err
 	}
+	status.ChangeFeed, err = s.ChangeFeedStatus(ctx)
+	if err != nil {
+		return Status{}, err
+	}
 	return status, nil
 }
 
