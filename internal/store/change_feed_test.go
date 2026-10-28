@@ -393,6 +393,60 @@ func TestChangeFeedPartialFeedStartsNewGenerations(t *testing.T) {
 	}
 }
 
+func TestChangeFeedRecoveryAfterCompactionKeepsSequencesAboveFloor(t *testing.T) {
+	t.Parallel()
+	s, path := openChangeFeedStore(t)
+	ctx := t.Context()
+	seedChangeFeedGuild(t, s)
+	for i := range 5 {
+		require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation(fmt.Sprintf("m%d", i), "c1", "x", nil, 1)}))
+	}
+	_, err := s.DB().ExecContext(ctx, `update change_log set recorded_at_ms=0`)
+	require.NoError(t, err)
+	_, err = s.CompactChangeFeed(ctx, time.Now(), ChangeFeedRetention)
+	require.NoError(t, err)
+	r := &feedReader{table: "mention_events"}
+	r.capture(ctx, t, s.DB())
+	require.Equal(t, int64(5), r.cursor.Seq)
+	for _, tracked := range ChangeFeedTables() {
+		for _, suffix := range []string{"ai", "au", "ad"} {
+			_, err := s.DB().ExecContext(ctx, `drop trigger `+quoteIdent("change_feed_"+tracked+"_"+suffix))
+			require.NoError(t, err)
+		}
+	}
+	_, err = s.DB().ExecContext(ctx, `drop table change_log`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	reopened, err := Open(ctx, path)
+	require.NoError(t, err)
+	defer func() { _ = reopened.Close() }()
+	r.capture(ctx, t, reopened.DB())
+	require.Equal(t, 2, r.reconciles)
+	require.NoError(t, reopened.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("late", "c1", "x", nil, 1)}))
+	var seq int64
+	require.NoError(t, reopened.DB().QueryRowContext(ctx, `select min(seq) from change_log`).Scan(&seq))
+	require.Equal(t, int64(6), seq)
+	r.capture(ctx, t, reopened.DB())
+	require.Equal(t, 2, r.reconciles)
+	require.Equal(t, snapshotTable(ctx, t, reopened.DB(), "mention_events"), r.rows)
+}
+
+func TestChangeFeedMissingMetaRowStartsNewGenerations(t *testing.T) {
+	t.Parallel()
+	s, path := openChangeFeedStore(t)
+	_, err := s.DB().ExecContext(t.Context(), `delete from change_feed_meta`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	reopened, err := Open(t.Context(), path)
+	require.NoError(t, err)
+	defer func() { _ = reopened.Close() }()
+	for _, tracked := range ChangeFeedTables() {
+		generation, _, reason := feedGeneration(t, reopened, tracked)
+		require.Equal(t, int64(2), generation, tracked)
+		require.Equal(t, "feed_restored", reason, tracked)
+	}
+}
+
 func TestChangeFeedCompactionKeepsRetentionWindowAndNeverReusesSequences(t *testing.T) {
 	t.Parallel()
 	s, _ := openChangeFeedStore(t)

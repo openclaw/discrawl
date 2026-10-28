@@ -166,6 +166,13 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	partial := present != 3
+	if !partial {
+		var meta int
+		if err := tx.QueryRowContext(ctx, `select count(*) from change_feed_meta where singleton=1`).Scan(&meta); err != nil {
+			return err
+		}
+		partial = meta == 0
+	}
 	for _, stmt := range []string{
 		`create table if not exists change_log (
 			seq integer primary key autoincrement,
@@ -196,6 +203,11 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 			return fmt.Errorf("create change feed: %w", err)
 		}
 	}
+	// A recreated log has no AUTOINCREMENT high-water mark. Never allocate a
+	// sequence at or below one a reader may already hold.
+	if err := restoreChangeLogAllocator(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `insert into change_feed_meta(singleton,contract_version,compacted_through,retention_seconds)
 		values(1,?,0,?) on conflict(singleton) do update set contract_version=excluded.contract_version,retention_seconds=excluded.retention_seconds`,
 		ChangeFeedContractVersion, int64(ChangeFeedRetention/time.Second)); err != nil {
@@ -224,6 +236,24 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func restoreChangeLogAllocator(ctx context.Context, tx *sql.Tx) error {
+	var floor int64
+	if err := tx.QueryRowContext(ctx, `select max(
+		coalesce((select max(compacted_through) from change_feed_meta),0),
+		coalesce((select max(generation_seq) from change_feed_tables),0),
+		coalesce((select max(seq) from change_log),0))`).Scan(&floor); err != nil {
+		return err
+	}
+	if floor == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `insert into sqlite_sequence(name,seq) select 'change_log',0 where not exists(select 1 from sqlite_sequence where name='change_log')`); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `update sqlite_sequence set seq=? where name='change_log' and seq<?`, floor, floor)
+	return err
 }
 
 func changeFeedRepairReason(ctx context.Context, tx *sql.Tx, table string) (string, error) {

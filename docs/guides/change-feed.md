@@ -77,7 +77,7 @@ log cannot express what happened:
 | `schema_changed` | The table definition changed, for example a migration added a column (which changes every row without row writes) |
 | `triggers_restored` | A trigger was missing or different at open, so writes may be unrecorded |
 | `contract_upgraded` | The feed contract version changed |
-| `feed_restored` | `change_log`, `change_feed_tables` or `change_feed_meta` was missing at open, so entries or the compaction floor may be lost (applies to every table) |
+| `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start |
 | `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored `message_attachments` and `mention_events` |
 
 Writable opens check the feed after every migration. When the installed
