@@ -31,6 +31,9 @@ const (
 	changeFeedCompactionBatch = 5000
 )
 
+// changeEntryDigestSQL identifies one change_log entry for cursor validation.
+const changeEntryDigestSQL = `json_array(table_name,op,row_key,recorded_at_ms)`
+
 const (
 	ChangeOpInsert = "i"
 	ChangeOpUpdate = "u"
@@ -195,6 +198,7 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 			singleton integer primary key check (singleton = 1),
 			contract_version integer not null,
 			compacted_through integer not null default 0,
+			compacted_entry text,
 			compacted_at text,
 			retention_seconds integer not null
 		)`,
@@ -212,6 +216,21 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 		values(1,?,0,?) on conflict(singleton) do update set contract_version=excluded.contract_version,retention_seconds=excluded.retention_seconds`,
 		ChangeFeedContractVersion, int64(ChangeFeedRetention/time.Second)); err != nil {
 		return err
+	}
+	if partial {
+		// Every generation restarts below. Make the current head the floor so
+		// it is a valid empty cursor boundary, and drop entries no reader of
+		// the new generations can use.
+		head, err := changeFeedHead(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `delete from change_log where seq<=?`, head); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update change_feed_meta set compacted_through=?,compacted_entry=null,compacted_at=? where singleton=1`, head, time.Now().UTC().Format(timeLayout)); err != nil {
+			return err
+		}
 	}
 	for _, table := range changeFeedTables {
 		current, err := changeFeedTableCurrent(ctx, tx, table)
@@ -477,6 +496,12 @@ func (s *Store) compactChangeFeedBatch(ctx context.Context, cutoff int64, now ti
 	if through == floor {
 		return 0, true, nil
 	}
+	// Keep the identity of the last compacted entry, so a reader whose cursor
+	// sits exactly on the floor can still prove continuity after a restore.
+	var entry string
+	if err := tx.QueryRowContext(ctx, `select `+changeEntryDigestSQL+` from change_log where seq=?`, through).Scan(&entry); err != nil {
+		return 0, false, err
+	}
 	result, err := tx.ExecContext(ctx, `delete from change_log where seq>? and seq<=?`, floor, through)
 	if err != nil {
 		return 0, false, err
@@ -485,7 +510,7 @@ func (s *Store) compactChangeFeedBatch(ctx context.Context, cutoff int64, now ti
 	if err != nil {
 		return 0, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `update change_feed_meta set compacted_through=?,compacted_at=? where singleton=1`, through, now.UTC().Format(timeLayout)); err != nil {
+	if _, err := tx.ExecContext(ctx, `update change_feed_meta set compacted_through=?,compacted_entry=?,compacted_at=? where singleton=1`, through, entry, now.UTC().Format(timeLayout)); err != nil {
 		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {

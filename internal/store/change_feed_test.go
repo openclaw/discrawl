@@ -40,27 +40,33 @@ func (r *feedReader) capture(ctx context.Context, t *testing.T, db *sql.DB) {
 	var generationID string
 	require.NoError(t, tx.QueryRowContext(ctx, `select generation_id from change_feed_tables where table_name=?`, r.table).Scan(&generationID))
 	var floor int64
-	require.NoError(t, tx.QueryRowContext(ctx, `select compacted_through from change_feed_meta where singleton=1`).Scan(&floor))
+	var compacted string
+	require.NoError(t, tx.QueryRowContext(ctx, `select compacted_through,coalesce(compacted_entry,'') from change_feed_meta where singleton=1`).Scan(&floor, &compacted))
 	head, err := changeFeedHead(ctx, tx)
 	require.NoError(t, err)
-	if !r.cursorValid(ctx, t, tx, generationID, floor, head) {
+	if !r.cursorValid(ctx, t, tx, generationID, floor, compacted, head) {
 		r.rows = snapshotTable(ctx, t, tx, r.table)
 		r.reconciles++
 	} else {
 		r.replay(ctx, t, tx, head)
 	}
-	r.cursor = &feedCursor{GenerationID: generationID, Seq: head, Digest: entryDigest(ctx, t, tx, head)}
+	digest := entryDigest(ctx, t, tx, head)
+	if digest == "" && head == floor {
+		digest = compacted
+	}
+	r.cursor = &feedCursor{GenerationID: generationID, Seq: head, Digest: digest}
 }
 
-func (r *feedReader) cursorValid(ctx context.Context, t *testing.T, tx *sql.Tx, generationID string, floor, head int64) bool {
+func (r *feedReader) cursorValid(ctx context.Context, t *testing.T, tx *sql.Tx, generationID string, floor int64, compacted string, head int64) bool {
 	c := r.cursor
 	if c == nil || c.GenerationID != generationID || c.Seq < floor || c.Seq > head {
 		return false
 	}
 	digest := entryDigest(ctx, t, tx, c.Seq)
 	if digest == "" {
-		// Only a compacted (or never allocated) position may be absent.
-		return c.Seq == floor || c.Seq == 0
+		// Only the floor may be absent, and it must be the entry this
+		// cursor recorded (or an empty boundary on both sides).
+		return c.Seq == floor && c.Digest == compacted
 	}
 	return digest == c.Digest
 }
@@ -97,14 +103,13 @@ func (r *feedReader) replay(ctx context.Context, t *testing.T, tx *sql.Tx, head 
 
 func entryDigest(ctx context.Context, t *testing.T, tx *sql.Tx, seq int64) string {
 	t.Helper()
-	var table, op, key string
-	var at int64
-	err := tx.QueryRowContext(ctx, `select table_name,op,row_key,recorded_at_ms from change_log where seq=?`, seq).Scan(&table, &op, &key, &at)
+	var digest string
+	err := tx.QueryRowContext(ctx, `select `+changeEntryDigestSQL+` from change_log where seq=?`, seq).Scan(&digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ""
 	}
 	require.NoError(t, err)
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", table, op, key, at)
+	return digest
 }
 
 func primaryKey(ctx context.Context, t *testing.T, q changeFeedDB, table string) []string {
@@ -429,6 +434,72 @@ func TestChangeFeedRecoveryAfterCompactionKeepsSequencesAboveFloor(t *testing.T)
 	r.capture(ctx, t, reopened.DB())
 	require.Equal(t, 2, r.reconciles)
 	require.Equal(t, snapshotTable(ctx, t, reopened.DB(), "mention_events"), r.rows)
+}
+
+func TestChangeFeedRecoveredEmptyHeadIsAStableCursor(t *testing.T) {
+	t.Parallel()
+	s, path := openChangeFeedStore(t)
+	ctx := t.Context()
+	seedChangeFeedGuild(t, s)
+	for i := range 5 {
+		require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation(fmt.Sprintf("m%d", i), "c1", "x", nil, 1)}))
+	}
+	_, err := s.DB().ExecContext(ctx, `update change_log set recorded_at_ms=0`)
+	require.NoError(t, err)
+	_, err = s.CompactChangeFeed(ctx, time.Now(), ChangeFeedRetention)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `delete from change_feed_meta`)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	reopened, err := Open(ctx, path)
+	require.NoError(t, err)
+	defer func() { _ = reopened.Close() }()
+	r := &feedReader{table: "mention_events"}
+	r.capture(ctx, t, reopened.DB())
+	r.capture(ctx, t, reopened.DB())
+	r.capture(ctx, t, reopened.DB())
+	require.Equal(t, 1, r.reconciles)
+	require.Equal(t, int64(5), r.cursor.Seq)
+}
+
+// A reader parked exactly on the floor still detects an in-place restore
+// whose reused sequences were later compacted away.
+func TestChangeFeedRestoreDetectedAfterCompactionRemovesCursorEntry(t *testing.T) {
+	t.Parallel()
+	s, path := openChangeFeedStore(t)
+	ctx := t.Context()
+	seedChangeFeedGuild(t, s)
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("m1", "c1", "x", nil, 1)}))
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("m2", "c1", "x", nil, 1)}))
+	backup := filepath.Join(t.TempDir(), "backup.db")
+	_, err := s.DB().ExecContext(ctx, `vacuum into ?`, backup)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `update mention_events set target_name='discarded' where event_id=1`)
+	require.NoError(t, err)
+	r := &feedReader{table: "mention_events"}
+	r.capture(ctx, t, s.DB())
+	require.Equal(t, int64(3), r.cursor.Seq)
+	require.NoError(t, s.Close())
+
+	body, err := os.ReadFile(backup)
+	require.NoError(t, err)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		require.NoError(t, os.RemoveAll(path+suffix))
+	}
+	require.NoError(t, os.WriteFile(path, body, 0o600))
+	restored, err := Open(ctx, path)
+	require.NoError(t, err)
+	defer func() { _ = restored.Close() }()
+	time.Sleep(2 * time.Millisecond)
+	_, err = restored.DB().ExecContext(ctx, `update mention_events set target_name='kept' where event_id=2`)
+	require.NoError(t, err)
+	_, err = restored.DB().ExecContext(ctx, `update change_log set recorded_at_ms=0`)
+	require.NoError(t, err)
+	_, err = restored.CompactChangeFeed(ctx, time.Now(), ChangeFeedRetention)
+	require.NoError(t, err)
+	r.capture(ctx, t, restored.DB())
+	require.Equal(t, 2, r.reconciles)
+	require.Equal(t, snapshotTable(ctx, t, restored.DB(), "mention_events"), r.rows)
 }
 
 func TestChangeFeedMissingMetaRowStartsNewGenerations(t *testing.T) {

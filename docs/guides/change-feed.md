@@ -31,8 +31,10 @@ generation started), `reason`, `schema_sha256` (hash of the table's
 `sqlite_master.sql`), `contract_version` and `updated_at`.
 
 `change_feed_meta` is a singleton: `contract_version` (currently 1),
-`compacted_through` (highest compacted `seq`), `compacted_at` and
-`retention_seconds` (604800).
+`compacted_through` (highest compacted `seq`), `compacted_entry` (the digest of
+that compacted entry, or null), `compacted_at` and `retention_seconds` (604800).
+
+An entry's digest is `json_array(table_name, op, row_key, recorded_at_ms)`.
 
 ## How entries are written
 
@@ -77,7 +79,7 @@ log cannot express what happened:
 | `schema_changed` | The table definition changed, for example a migration added a column (which changes every row without row writes) |
 | `triggers_restored` | A trigger was missing or different at open, so writes may be unrecorded |
 | `contract_upgraded` | The feed contract version changed |
-| `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start |
+| `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start, and the head becomes the new floor |
 | `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored `message_attachments` and `mention_events` |
 
 Writable opens check the feed after every migration. When the installed
@@ -103,21 +105,22 @@ compaction floor and each table's generation.
 ## Reader algorithm
 
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
-`digest` identifies the entry at `seq` (`table_name`, `op`, `row_key`,
-`recorded_at_ms`) or is empty when no entry exists there.
+`digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when
+null) when no entry exists there.
 
 ```text
 capture(T, cursor):
   BEGIN read transaction                         # one consistent snapshot
   if change_feed_tables has no row for T: full snapshot (feed absent)
   G     = select generation_id from change_feed_tables where table_name = T
-  floor = select compacted_through from change_feed_meta
+  floor, compacted = select compacted_through, coalesce(compacted_entry, '') from change_feed_meta
   head  = max(sqlite_sequence.seq for 'change_log', max(change_log.seq), floor)
   valid = cursor != null
       and cursor.generation_id == G
       and floor <= cursor.seq <= head
-      and (entry at cursor.seq matches cursor.digest
-           or (no entry at cursor.seq and cursor.seq in {floor, 0}))
+      and (digest of entry at cursor.seq == cursor.digest
+           or (no entry at cursor.seq and cursor.seq == floor
+               and cursor.digest == compacted))
   if not valid:
       rows = full read of T (apply the reader's own scope filter)
   else:
@@ -127,13 +130,15 @@ capture(T, cursor):
         if row: upsert(row)                       # last op must not be 'd'
         else:   delete(row_key)                   # last op must be 'd'
         a contradiction means the contract was broken: reconcile fully
-  cursor = (G, head, digest of entry at head)
+  cursor = (G, head, digest of entry at head, or compacted if head == floor and absent)
   COMMIT
 ```
 
 The digest check detects a store restored in place from an earlier copy and
 then written again: the generation is unchanged, but the restored file
-reassigns sequences after its own head to different entries. A file replaced
+reassigns sequences after its own head to different entries. Because
+compaction keeps the digest of the last entry it removes, the check still
+works when the reassigned entry at the reader's cursor has been compacted. A file replaced
 by a new inode should also be detected by the reader's file identity check.
 `internal/store/change_feed_test.go` contains a reference implementation that
 reproduces each table exactly across random writes, repairs, deletions,
