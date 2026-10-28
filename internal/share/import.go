@@ -99,6 +99,11 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 			if err := preserveImportedAttachmentMedia(ctx, tx, existingMedia); err != nil {
 				return err
 			}
+			// A replacement restores whole tables. Change readers reconcile
+			// once instead of replaying a delete and insert for every row.
+			if err := store.BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "message_attachments", "mention_events"); err != nil {
+				return err
+			}
 			if opts.IncludeEmbeddings {
 				return importEmbeddings(ctx, tx, opts, manifest.Embeddings)
 			}

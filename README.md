@@ -136,6 +136,7 @@ The full documentation lives at **[discrawl.sh](https://discrawl.sh/)**:
 - [Search modes](docs/guides/search-modes.md)
 - [Multilingual lexical benchmark](docs/benchmarks/multilingual-lexical.md)
 - [Git snapshot workflows](docs/guides/git-snapshots.md)
+- [Source change feed](docs/guides/change-feed.md)
 - [Configuration](docs/configuration.md)
 
 ## Development

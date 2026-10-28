@@ -71,6 +71,7 @@ type archiveControlStatus struct {
 	OldestFailureAt        time.Time                    `json:"oldest_failure_at,omitzero"`
 	AttachmentTextFailures int                          `json:"attachment_text_failures"`
 	BackgroundWork         *store.EmbeddingWorkerStatus `json:"background_work,omitempty"`
+	ChangeFeed             *store.ChangeFeedStatus      `json:"change_feed,omitempty"`
 	control.Status
 	LastTailEventAt string `json:"last_tail_event_at,omitempty"`
 }
@@ -115,6 +116,7 @@ func controlStatus(configPath string, cfg config.Config, status store.Status, sh
 	}
 	result := archiveControlStatus{Status: out, BackgroundWork: status.BackgroundWork, UnresolvedFailures: status.UnresolvedFailures, OldestFailureAt: status.OldestFailureAt, AttachmentTextFailures: status.AttachmentTextFailures}
 	result.TextRepair = status.TextRepair
+	result.ChangeFeed = status.ChangeFeed
 	if !status.LastTailEventAt.IsZero() {
 		result.LastTailEventAt = status.LastTailEventAt.UTC().Format(time.RFC3339)
 	}

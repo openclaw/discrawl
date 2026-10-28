@@ -52,6 +52,9 @@ func (s *Syncer) RunTail(ctx context.Context, guildIDs []string, repairEvery tim
 	textDone := make(chan struct{})
 	go func() { defer close(textDone); s.runTextRepair(tailCtx) }()
 	defer func() { cancelTail(); <-textDone }()
+	compactionDone := make(chan struct{})
+	go func() { defer close(compactionDone); s.runChangeFeedCompaction(tailCtx) }()
+	defer func() { cancelTail(); <-compactionDone }()
 	var closeOnce sync.Once
 	closeClient := func() {
 		if closeable, ok := s.client.(closeableClient); ok {

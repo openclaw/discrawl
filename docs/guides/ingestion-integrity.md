@@ -224,6 +224,9 @@ vectors and their prior text are retained in
 `attachment_text_history`. These are **internal evidence tables**, not public
 content projections. They include origin message/guild/channel identity for
 authorization and must not bypass the original message's scope/visibility.
+Both history tables are written only by `insert or ignore` and have no update,
+delete or retention path. Their changes, like those of `message_attachments`
+and `mention_events`, are also recorded in the [source change feed](change-feed.md).
 
 No migration fabricates missing source IDs, dates, parent messages or provider
 deletions, and none purges already captured raw/history evidence.
