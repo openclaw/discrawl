@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-10-28
+
+**Highlights:** Let readers copy only changed relationship and history rows, and restore opt-in cloud publication.
+
 - Add a durable source change feed for `message_attachments`, `mention_events`, `message_embedding_history` and `attachment_text_history`: same-transaction trigger entries with a gap-safe sequence, per-table generations for history the log cannot express, 7-day prefix compaction during `tail`, and `change_feed` in `status --json`. Readers can copy only changed rows; existing tables and readers are unchanged.
 - Refresh the OpenAI and Google SDKs, gRPC, network helpers, and security analysis tooling while preserving the Go minimum and SQLite compatibility pins.
 - Restore opt-in D1/R2 publication after verified native checkpoint and Git publication, preserving serialized acquisition, inventory adoption guards, resumable uploads and visible cloud failures.
