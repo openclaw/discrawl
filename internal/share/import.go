@@ -72,7 +72,7 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 				return false, err
 			}
 			if table == "mention_events" && row["event_id"] != nil {
-				if err := store.CheckImportedMentionIdentityTx(ctx, importTx, row); err != nil {
+				if err := store.MapImportedMentionIdentityTx(ctx, importTx, row); err != nil {
 					return false, err
 				}
 			}

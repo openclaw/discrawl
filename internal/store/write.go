@@ -1563,6 +1563,13 @@ func (s *Store) refreshUnchangedMessageTx(ctx context.Context, tx *sql.Tx, qtx *
 			if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 				return err
 			}
+			if renamed && !missing {
+				for _, language := range s.lexicalLanguages() {
+					if _, err := tx.ExecContext(ctx, "update "+lexicalFTSTable(language)+" set author_name=?,channel_name=? where rowid=?", message.AuthorName, message.ChannelName, rowID); err != nil {
+						return err
+					}
+				}
+			}
 			if missing {
 				tokenized, err := s.tokenizeLexical(ctx, message.NormalizedContent)
 				if err != nil {

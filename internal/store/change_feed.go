@@ -66,6 +66,7 @@ var changeFeedV2Tables = []string{
 	"entity_observations",
 	"entity_check_history",
 	"mention_event_history",
+	"mention_event_id_map",
 }
 
 var changeFeedTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)

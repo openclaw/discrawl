@@ -30,7 +30,9 @@ The unreleased record-efficiency candidate treats `guilds`, `channels`, `members
 column or the canonical provider metadata changes, and `updated_at` then means
 "content last changed". The 6-hourly repair, the daily member refresh and
 Gateway replays of unchanged rows write no content row, no search-index row
-and no content change-feed entry. Evidence and checks are appended separately. A message's `updated_at` still advances when one of
+and no content change-feed entry. Name-only rereads still refresh metadata in
+every enabled lexical index without retokenizing or advancing content clocks.
+Evidence and checks are appended separately. A message's `updated_at` still advances when one of
 its attachments or mentions changes.
 
 `raw_json` holds one canonical form per entity, whichever transport delivered
@@ -121,10 +123,15 @@ an ID is removed by duplicate reconciliation, disappearance, or metadata update.
 Resolve historical IDs here when absent from `mention_events`. Existing IDs are
 not renumbered; current identical natural identities keep their original ID.
 Before exact snapshot replacement, current mention identities are retained in
-history. A legacy snapshot supplying an explicit event ID already bound to a
-different `(message_id,target_type,target_id)` is rejected atomically; import it
-into a fresh archive instead of aliasing a historical reference. Modern snapshots
-omit local event IDs and allocate above the local AUTOINCREMENT high-water mark.
+history. Imported source event IDs are mapped through
+`mention_event_id_map(source_event_id, identity_key, local_event_id)`, keyed by
+`(source_event_id,identity_key)`, where identity_key is the JSON array
+`[message_id,target_type,target_id]`. A source ID colliding with local history
+(including retained DMs) gets a fresh local ID above all allocated IDs; repeated
+imports reuse the mapping. Existing local IDs are never reassigned. Original
+source rows and source IDs remain in entity evidence bound to the local ID.
+Resolve an external source ID with its natural identity through this map; bare
+local IDs continue to resolve through current rows or mention_event_history.
 Permission metadata is not transport noise: missing/null `permission_overwrites`
 is distinct from a known empty array, preserving publication preflight semantics.
 Accepted role events record observed freshness even when their content is equal,

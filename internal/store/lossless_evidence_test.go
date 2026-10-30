@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -156,10 +157,11 @@ func TestImportedMentionIdentityFenceRetainsFirstBinding(t *testing.T) {
 	require.NoError(t, err)
 	defer rollback(tx)
 	row := map[string]any{"event_id": int64(42), "message_id": "m", "target_type": "user", "target_id": "u", "target_name": "original"}
-	require.NoError(t, CheckImportedMentionIdentityTx(ctx, tx, row))
-	require.NoError(t, CheckImportedMentionIdentityTx(ctx, tx, row))
+	require.NoError(t, MapImportedMentionIdentityTx(ctx, tx, row))
+	require.NoError(t, MapImportedMentionIdentityTx(ctx, tx, row))
 	row["message_id"] = "other"
-	require.ErrorContains(t, CheckImportedMentionIdentityTx(ctx, tx, row), "conflicts with retained local identity")
+	require.NoError(t, MapImportedMentionIdentityTx(ctx, tx, row))
+	require.Equal(t, int64(43), row["event_id"])
 	require.NoError(t, tx.Commit())
 	var body string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from mention_event_history where event_id=42`).Scan(&body))
@@ -202,4 +204,32 @@ func TestReplyTransportMergePreservesAmbiguousEmptyReread(t *testing.T) {
 			require.Empty(t, content)
 		})
 	}
+}
+
+func TestUnchangedMessageRenameRefreshesLexicalMetadata(t *testing.T) {
+	ctx := t.Context()
+	s, err := openWithLexicalTokenizers(ctx, filepath.Join(t.TempDir(), "archive.db"), map[string]LexicalTokenizer{"ar": newArabicLexicalTokenizer()})
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	c := ChannelRecord{ID: "c", GuildID: "g", Kind: "text", Name: "general", RawJSON: `{}`}
+	require.NoError(t, s.UpsertChannel(ctx, c))
+	m := MessageRecord{ID: "100", GuildID: "g", ChannelID: "c", ChannelName: "general", AuthorID: "u", AuthorName: "old", Content: "والكتاب", NormalizedContent: "والكتاب", RawJSON: `{}`}
+	require.NoError(t, s.UpsertMessage(ctx, m))
+	var before, tokens string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id='100'`).Scan(&before))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content from message_fts_ar where message_id='100'`).Scan(&tokens))
+	c.Name = "maktaba"
+	require.NoError(t, s.UpsertChannel(ctx, c))
+	m.ChannelName = "maktaba"
+	m.AuthorName = "new"
+	require.NoError(t, s.UpsertMessage(ctx, m))
+	results, err := s.SearchMessages(ctx, SearchOptions{Query: "كتاب", Channel: "maktaba", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	var after, nowTokens, author string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id='100'`).Scan(&after))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select content,author_name from message_fts_ar where message_id='100'`).Scan(&nowTokens, &author))
+	require.Equal(t, before, after)
+	require.Equal(t, tokens, nowTokens)
+	require.Equal(t, "new", author)
 }

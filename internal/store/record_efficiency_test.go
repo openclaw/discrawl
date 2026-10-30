@@ -370,7 +370,7 @@ func TestChangeFeedServesContractTwoNextToContractOne(t *testing.T) {
 	}
 	var tables string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select tables_json from change_feed_contracts where contract_version=2`).Scan(&tables))
-	require.JSONEq(t, `["message_attachments","mention_events","message_embedding_history","attachment_text_history","guilds","channels","members","messages","entity_metrics","entity_evidence","entity_observations","entity_check_history","mention_event_history"]`, tables)
+	require.JSONEq(t, `["message_attachments","mention_events","message_embedding_history","attachment_text_history","guilds","channels","members","messages","entity_metrics","entity_evidence","entity_observations","entity_check_history","mention_event_history","mention_event_id_map"]`, tables)
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select tables_json from change_feed_contracts where contract_version=1`).Scan(&tables))
 	require.JSONEq(t, `["message_attachments","mention_events","message_embedding_history","attachment_text_history"]`, tables)
 

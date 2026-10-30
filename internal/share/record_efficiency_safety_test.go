@@ -69,7 +69,7 @@ func TestPermissionEvidenceNullToEmptyRecoversPublication(t *testing.T) {
 	require.True(t, filter.allowChannelID("selected"))
 }
 
-func TestExactImportRejectsHistoricalMentionIDReuse(t *testing.T) {
+func TestExactImportMapsHistoricalMentionIDReuse(t *testing.T) {
 	ctx := t.Context()
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
@@ -84,14 +84,17 @@ func TestExactImportRejectsHistoricalMentionIDReuse(t *testing.T) {
 	manifest = appendSnapshotRow(t, repo, manifest, "mention_events", map[string]any{"event_id": oldID, "message_id": "different", "guild_id": "g1", "channel_id": "c1", "target_type": "user", "target_id": "different", "target_name": "different", "event_at": "2026-10-30T00:00:00Z"})
 	writeShareManifest(t, repo, manifest)
 	_, err = Import(ctx, dst, Options{RepoPath: repo})
-	require.ErrorContains(t, err, "conflicts with retained local identity")
+	require.NoError(t, err)
 	var after string
 	require.NoError(t, dst.DB().QueryRowContext(ctx, `select message_id from mention_events where event_id=?`, oldID).Scan(&after))
 	require.Equal(t, oldMessage, after)
-	// The failed exact replacement rolls back its retention and feed writes too.
+	// Both original local and imported source identities remain reconstructible.
 	var retained int
 	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&retained))
-	require.Zero(t, retained)
+	require.Positive(t, retained)
+	var mapped int64
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select local_event_id from mention_event_id_map where source_event_id=? and identity_key='["different","user","different"]'`, oldID).Scan(&mapped))
+	require.NotEqual(t, oldID, mapped)
 }
 
 func TestRoutineMergeHonorsNativeObservationFences(t *testing.T) {

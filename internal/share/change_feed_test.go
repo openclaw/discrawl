@@ -49,11 +49,11 @@ func TestSnapshotImportsKeepChangeFeedExact(t *testing.T) {
 	// A replacement restores whole tables, so readers reconcile once. The
 	// triggers are suspended during the replacement: no per-row entries.
 	var before int
-	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name<>'mention_event_history'`).Scan(&before))
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name not in ('mention_event_history','mention_event_id_map','entity_evidence','entity_observations')`).Scan(&before))
 	_, err = Import(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	var after int
-	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name<>'mention_event_history'`).Scan(&after))
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name not in ('mention_event_history','mention_event_id_map','entity_evidence','entity_observations')`).Scan(&after))
 	require.Equal(t, before, after)
 	var historical int
 	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&historical))

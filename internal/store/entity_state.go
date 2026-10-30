@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"math"
 	"slices"
 	"time"
 )
@@ -60,6 +61,11 @@ func ensureEntityStateTables(ctx context.Context, db changeFeedDB) error {
  check_id integer primary key autoincrement, table_name text not null, row_key text not null,
  check_kind text not null, checked_at text not null, succeeded_at text, outcome text not null
  )`,
+		`create table if not exists mention_event_id_map (
+ source_event_id integer not null, identity_key text not null, local_event_id integer not null,
+ primary key(source_event_id,identity_key)
+ ) without rowid`,
+		`create index if not exists idx_mention_event_id_map_local on mention_event_id_map(local_event_id)`,
 		`create table if not exists mention_event_history (
  event_id integer primary key, payload_json text not null
  )`,
@@ -91,10 +97,10 @@ func ensureEntityStateTables(ctx context.Context, db changeFeedDB) error {
 
 func (s *Store) applyEntityStateMigration(ctx context.Context) error {
 	var present int
-	if err := s.db.QueryRowContext(ctx, `select count(*) from sqlite_master where type in ('table','index') and name in ('entity_checks','entity_metrics','idx_entity_checks_checked','entity_evidence','entity_observations','entity_check_history','mention_event_history','idx_entity_observations_owner')`).Scan(&present); err != nil {
+	if err := s.db.QueryRowContext(ctx, `select count(*) from sqlite_master where type in ('table','index') and name in ('entity_checks','entity_metrics','idx_entity_checks_checked','entity_evidence','entity_observations','entity_check_history','mention_event_history','idx_entity_observations_owner','mention_event_id_map','idx_mention_event_id_map_local')`).Scan(&present); err != nil {
 		return err
 	}
-	if present == 8 {
+	if present == 10 {
 		// No DDL on routine opens, so PRAGMA schema_version stays stable.
 		return nil
 	}
@@ -378,7 +384,7 @@ func retainLegacyAttachmentTx(ctx context.Context, tx *sql.Tx, id string) error 
 }
 
 // RetainMentionIdentitiesTx protects existing IDs before exact snapshot
-// replacement. Imported explicit IDs must pass CheckImportedMentionIdentityTx;
+// replacement. Imported explicit IDs pass MapImportedMentionIdentityTx;
 // omitted IDs continue above SQLite's existing AUTOINCREMENT high-water mark.
 func RetainMentionIdentitiesTx(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `insert into mention_event_history(event_id,payload_json)
@@ -387,24 +393,59 @@ func RetainMentionIdentitiesTx(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-// CheckImportedMentionIdentityTx rejects a legacy snapshot that tries to reuse
-// an existing local event ID for a different natural identity. The entire
-// replacement rolls back, preserving both the current archive and its history.
-func CheckImportedMentionIdentityTx(ctx context.Context, tx *sql.Tx, row map[string]any) error {
-	var conflicts int
-	err := tx.QueryRowContext(ctx, `select count(*) from mention_event_history where event_id=? and
- (json_extract(payload_json,'$.message_id') is not ? or json_extract(payload_json,'$.target_type') is not ? or json_extract(payload_json,'$.target_id') is not ?)`, row["event_id"], row["message_id"], row["target_type"], row["target_id"]).Scan(&conflicts)
-	if err != nil {
+// MapImportedMentionIdentityTx preserves source aliases without reusing a local
+// historical ID for another fact. This allows ordinary snapshots to coexist
+// with local DM IDs and supports revisiting older snapshot revisions.
+func MapImportedMentionIdentityTx(ctx context.Context, tx *sql.Tx, row map[string]any) error {
+	var sourceID int64
+	if err := tx.QueryRowContext(ctx, `select ?`, row["event_id"]).Scan(&sourceID); err != nil {
 		return err
 	}
-	if conflicts > 0 {
-		return errors.New("snapshot mention event_id conflicts with retained local identity; import into a fresh archive")
+	var identity string
+	if err := tx.QueryRowContext(ctx, `select json_array(cast(? as text),cast(? as text),cast(? as text))`, row["message_id"], row["target_type"], row["target_id"]).Scan(&identity); err != nil {
+		return err
 	}
+	var localID int64
+	err := tx.QueryRowContext(ctx, `select local_event_id from mention_event_id_map where source_event_id=? and identity_key=?`, sourceID, identity).Scan(&localID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		var previous string
+		err = tx.QueryRowContext(ctx, `select json_array(cast(json_extract(payload_json,'$.message_id') as text),cast(json_extract(payload_json,'$.target_type') as text),cast(json_extract(payload_json,'$.target_id') as text)) from mention_event_history where event_id=?`, sourceID).Scan(&previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var high int64
+		if err := tx.QueryRowContext(ctx, `select max(v) from (
+   select coalesce(max(event_id),0) v from mention_events union all
+   select coalesce(max(event_id),0) from mention_event_history union all
+   select coalesce(max(local_event_id),0) from mention_event_id_map union all
+   select coalesce(max(seq),0) from sqlite_sequence where name='mention_events')`).Scan(&high); err != nil {
+			return err
+		}
+		localID = sourceID
+		if previous != identity && sourceID <= high {
+			if high == math.MaxInt64 {
+				return errors.New("mention identity sequence exhausted")
+			}
+			localID = high + 1
+		}
+		if _, err := tx.ExecContext(ctx, `insert into mention_event_id_map(source_event_id,identity_key,local_event_id) values(?,?,?)`, sourceID, identity, localID); err != nil {
+			return err
+		}
+	}
+	original := maps.Clone(row)
+	row["event_id"] = localID
 	body, err := json.Marshal(row)
 	if err != nil {
 		return err
 	}
-	// Also fence a second conflicting explicit ID within the same snapshot.
-	_, err = tx.ExecContext(ctx, `insert into mention_event_history(event_id,payload_json) values(?,?) on conflict do nothing`, row["event_id"], string(body))
-	return err
+	if _, err = tx.ExecContext(ctx, `insert into mention_event_history(event_id,payload_json) values(?,?) on conflict do nothing`, localID, string(body)); err != nil {
+		return err
+	}
+	return recordEvidenceTx(ctx, tx, "mention_events", struct {
+		SourceEventID int64
+		Row           map[string]any
+	}{sourceID, original}, localID)
 }
