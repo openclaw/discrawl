@@ -253,8 +253,8 @@ func upsertMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row m
 			return false, err
 		}
 	}
-	if table == "guilds" || table == "members" {
-		apply, err := shouldMergeTombstoneEntityRow(ctx, tx, table, row)
+	if slices.Contains([]string{"guilds", "members", "channels", "messages"}, table) {
+		apply, err := shouldMergeObservedEntityRow(ctx, tx, table, row)
 		if err != nil || !apply {
 			return false, err
 		}
@@ -265,7 +265,7 @@ func upsertMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row m
 	return upsertSnapshotRow(ctx, tx, table, row, protectNewer)
 }
 
-func shouldMergeTombstoneEntityRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) (bool, error) {
+func shouldMergeObservedEntityRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) (bool, error) {
 	var query string
 	var args []any
 	switch table {
@@ -275,6 +275,9 @@ func shouldMergeTombstoneEntityRow(ctx context.Context, tx *sql.Tx, table string
 	case "members":
 		query = `select updated_at, deleted_at is not null from members where guild_id = ? and user_id = ?`
 		args = []any{importValue(row["guild_id"]), importValue(row["user_id"])}
+	case "channels", "messages":
+		query = "select updated_at, false from " + quoteIdent(table) + " where id=?"
+		args = []any{importValue(row["id"])}
 	default:
 		return true, nil
 	}
@@ -286,6 +289,21 @@ func shouldMergeTombstoneEntityRow(ctx context.Context, tx *sql.Tx, table string
 	}
 	if err != nil {
 		return false, fmt.Errorf("read existing %s merge revision: %w", table, err)
+	}
+	// Content updated_at no longer advances for unchanged native observations.
+	// Preserve the observation fence when deciding whether a remote revision
+	// may replace local metadata, including publication permissions.
+	rowExpr := "json_array(?)"
+	if table == "members" {
+		rowExpr = "json_array(?,?)"
+	}
+	var checked string
+	err = tx.QueryRowContext(ctx, "select checked_at from entity_checks where table_name=? and row_key="+rowExpr+" and check_kind='observed'", append([]any{table}, args...)...).Scan(&checked)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if err == nil && compareSnapshotRevisions(checked, localUpdated) > 0 {
+		localUpdated = checked
 	}
 	comparison := compareSnapshotRevisions(stringValue(row["updated_at"]), localUpdated)
 	if comparison != 0 {

@@ -126,7 +126,9 @@ omit local event IDs and allocate above the local AUTOINCREMENT high-water mark.
 Permission metadata is not transport noise: missing/null `permission_overwrites`
 is distinct from a known empty array, preserving publication preflight semantics.
 Accepted role events record observed freshness even when their content is equal,
-so delayed repair cannot restore a stale permission grant.
+so delayed repair cannot restore a stale permission grant. Routine Git snapshot
+merges use the later of content revision and local observed check for guilds,
+channels, members and messages; exact replacement remains explicitly destructive.
 
 
 ## DMs

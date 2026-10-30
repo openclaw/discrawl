@@ -93,3 +93,42 @@ func TestExactImportRejectsHistoricalMentionIDReuse(t *testing.T) {
 	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&retained))
 	require.Zero(t, retained)
 }
+
+func TestRoutineMergeHonorsNativeObservationFences(t *testing.T) {
+	ctx := t.Context()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+	defer func() { _ = dst.Close() }()
+	// Pin source revisions around an unchanged local observation, avoiding wall
+	// clock sleeps while exercising the public MergeIfChanged entrypoint.
+	for _, s := range []*store.Store{src, dst} {
+		_, err := s.DB().ExecContext(ctx, `update guilds set raw_json='{"id":"g1","roles":[{"id":"g1","permissions":"0"}]}'; update channels set raw_json='{"permission_overwrites":[]}',collection_scope='allowed'`)
+		require.NoError(t, err)
+	}
+	for _, table := range []string{"guilds", "channels", "members", "messages"} {
+		_, err := dst.DB().ExecContext(ctx, "update "+table+" set updated_at='2026-10-30T10:00:00Z'")
+		require.NoError(t, err)
+		_, err = src.DB().ExecContext(ctx, "update "+table+" set updated_at='2026-10-30T10:01:00Z'")
+		require.NoError(t, err)
+	}
+	_, err := src.DB().ExecContext(ctx, `update guilds set raw_json='{"id":"g1","roles":[{"id":"g1","permissions":"1024"}]}',name='stale guild';update channels set name='stale channel';update members set username='stale member';update messages set content='stale message',normalized_content='stale message'`)
+	require.NoError(t, err)
+	_, err = dst.DB().ExecContext(ctx, `update entity_checks set checked_at='2026-10-30T10:02:00.000000000Z' where check_kind='observed'`)
+	require.NoError(t, err)
+	repo := filepath.Join(t.TempDir(), "share")
+	_, err = Export(ctx, src, Options{RepoPath: repo})
+	require.NoError(t, err)
+	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo})
+	require.NoError(t, err)
+	require.True(t, changed)
+	for _, q := range []string{`select count(*) from guilds where name='stale guild'`, `select count(*) from channels where name='stale channel'`, `select count(*) from members where username='stale member'`, `select count(*) from messages where content='stale message'`} {
+		var n int
+		require.NoError(t, dst.DB().QueryRowContext(ctx, q).Scan(&n))
+		require.Zero(t, n)
+	}
+	report, err := PreflightPublishScope(ctx, dst, FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.True(t, report.Ready)
+	require.Zero(t, report.Messages.Allowed)
+}
