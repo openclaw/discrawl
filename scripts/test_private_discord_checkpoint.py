@@ -578,7 +578,7 @@ class AcquisitionPolicyTests(unittest.TestCase):
                                        "100", Path("/receipt"), since=since, mode="historical", **options)
                 run.assert_not_called()
 
-    def test_historical_cli_requires_manual_dispatch(self):
+    def test_historical_cli_rejects_unqualified_scheduled_dispatch(self):
         import io
         for operation in ["policy", "acquire"]:
             with self.subTest(operation=operation), \
@@ -600,7 +600,74 @@ class AcquisitionPolicyTests(unittest.TestCase):
             self.assertEqual(checkpoint.main(), 0)
             window.assert_called_once_with("2026-01-05T00:00:00Z", "historical")
 
-    def test_policy_cli_returns_only_frozen_date_and_acquire_reuses_it(self):
+    def test_scheduled_selected_cli_freezes_mode_and_recent_date_before_acquisition(self):
+        import io
+        class FrozenDatetime(checkpoint.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 1, 3, 8, tzinfo=checkpoint.timezone.utc)
+        env = {"GITHUB_EVENT_NAME": "schedule", "HISTORY_SCHEDULE": checkpoint.SELECTED_SCHEDULE,
+               "DISCRAWL_GUILD_ID": "100"}
+        raw = checkpoint.canonical(self.policy)
+        self.path.write_bytes(raw)
+        with patch.dict(os.environ, env), patch.object(checkpoint, "datetime", FrozenDatetime), \
+             patch.object(checkpoint, "execution_context", return_value="publish-discord-backup.yml"), \
+             patch.object(checkpoint, "GitHub"), patch.object(checkpoint, "load_policy"), \
+             patch.object(sys, "argv", ["checkpoint", "policy", "--policy", str(self.path),
+                                       "--acquisition-mode", "historical"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(checkpoint.main(), 0)
+            frozen = dict(line.split("=", 1) for line in out.getvalue().splitlines())
+        self.assertEqual(frozen, {"since": "2026-01-02T00:00:00Z", "mode": "historical"})
+        native, calls = Path(self.temp.name) / "native", Path(self.temp.name) / "calls.json"
+        for code in [0, 7]:
+            with self.subTest(code=code):
+                native.write_text("#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
+                                  "Path(%r).write_text(json.dumps(sys.argv[1:]))\nraise SystemExit(%d)\n"
+                                  % (str(calls), code))
+                native.chmod(0o700)
+                receipt = Path(self.temp.name) / ("writer-%d.json" % code)
+                with patch.dict(os.environ, env), patch.object(checkpoint, "datetime", FrozenDatetime), \
+                     patch.object(checkpoint, "execution_context", return_value="publish-discord-backup.yml"), \
+                     patch.object(sys, "argv", ["checkpoint", "acquire", "--policy", str(self.path),
+                                               "--policy-sha256", checkpoint.digest(raw), "--native", str(native),
+                                               "--config", "/config", "--writer-receipt", str(receipt),
+                                               "--timeout", "3", "--since", frozen["since"],
+                                               "--acquisition-mode", frozen["mode"]]):
+                    self.assertEqual(checkpoint.main(), code)
+                command = json.loads(calls.read_bytes())
+                self.assertIn("--full", command)
+                self.assertIn("--skip-members", command)
+                self.assertNotIn("--latest-only", command)
+                self.assertNotIn("--with-members", command)
+                self.assertEqual(command[command.index("--since") + 1], frozen["since"])
+                self.assertEqual(json.loads(receipt.read_bytes()),
+                                 {"reaped": True, "outcome": "failure" if code else "success"})
+
+    def test_scheduled_history_rejects_other_routes_long_windows_and_missing_frozen_date(self):
+        class FrozenDatetime(checkpoint.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 1, 3, 8, tzinfo=checkpoint.timezone.utc)
+        cases = [("migrate-discord-checkpoint.yml", checkpoint.SELECTED_SCHEDULE, "2026-01-02T00:00:00Z", "historical_dispatch"),
+                 ("discord-backup-report.yml", checkpoint.SELECTED_SCHEDULE, "2026-01-02T00:00:00Z", "historical_dispatch"),
+                 ("publish-discord-backup.yml", "17 6 * * *", "2026-01-02T00:00:00Z", "historical_dispatch"),
+                 ("publish-discord-backup.yml", checkpoint.SELECTED_SCHEDULE, "2026-01-01T00:00:00Z", "acquisition_window"),
+                 ("publish-discord-backup.yml", checkpoint.SELECTED_SCHEDULE, None, "acquisition_window")]
+        for workflow, schedule, since, error in cases:
+            args = ["checkpoint", "acquire", "--acquisition-mode", "historical", "--policy", str(self.path)]
+            if since:
+                args.extend(["--since", since])
+            with self.subTest(workflow=workflow, schedule=schedule, since=since), \
+                 patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule", "HISTORY_SCHEDULE": schedule}), \
+                 patch.object(checkpoint, "datetime", FrozenDatetime), \
+                 patch.object(checkpoint, "execution_context", return_value=workflow), \
+                 patch.object(sys, "argv", args), patch.object(checkpoint, "acquire") as acquire:
+                with self.assertRaisesRegex(checkpoint.CheckpointError, error):
+                    checkpoint.main()
+                acquire.assert_not_called()
+
+    def test_policy_cli_returns_frozen_date_and_mode_and_acquire_reuses_them(self):
         import io
         frozen = "2026-01-02T00:00:00Z"
         with patch.object(sys, "argv", ["checkpoint", "policy", "--policy", str(self.path),
@@ -609,7 +676,7 @@ class AcquisitionPolicyTests(unittest.TestCase):
              patch.object(checkpoint, "acquisition_since", return_value=frozen), \
              patch.object(checkpoint, "load_policy"), patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(checkpoint.main(), 0)
-            self.assertEqual(out.getvalue(), "since=" + frozen + "\n")
+            self.assertEqual(out.getvalue(), "since=" + frozen + "\nmode=current\n")
         for mode, flags in [("current", []), ("current", ["--with-members"]), ("historical", [])]:
             with self.subTest(mode=mode, flags=flags), \
                  patch.object(sys, "argv", ["checkpoint", "acquire", "--policy", str(self.path),
