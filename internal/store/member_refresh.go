@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -55,21 +54,21 @@ func (s *Store) mergeObservedMemberBatch(ctx context.Context, members []MemberRe
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
 	for _, member := range members {
-		var updated string
-		err := tx.QueryRowContext(ctx, `select updated_at from members where guild_id=? and user_id=?`, member.GuildID, member.UserID).Scan(&updated)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		last, exists, err := lastObservedTx(ctx, tx, "members", "guild_id=? and user_id=?", member.GuildID, member.UserID)
+		if err != nil {
 			return MemberRefreshMerge{}, err
 		}
-		if err == nil && parseTime(updated).After(started) {
+		if exists && last.After(started) {
+			if err := recordEvidenceTx(ctx, tx, "members", member, member.GuildID, member.UserID); err != nil {
+				return MemberRefreshMerge{}, err
+			}
 			result.NewerSkipped++
 			continue
 		}
-		now := time.Now().UTC().Format(timeLayout)
-		if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
+		// Applied counts accepted observations; an unchanged member writes
+		// only its check record.
+		if _, err := upsertMemberTx(ctx, tx, qtx, member); err != nil {
 			return MemberRefreshMerge{}, fmt.Errorf("merge observed member: %w", err)
-		}
-		if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
-			return MemberRefreshMerge{}, err
 		}
 		result.Applied++
 	}

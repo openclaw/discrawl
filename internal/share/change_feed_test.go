@@ -46,14 +46,27 @@ func TestSnapshotImportsKeepChangeFeedExact(t *testing.T) {
 	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name='mention_events' and op='i'`).Scan(&logged))
 	require.Positive(t, logged)
 
-	// A replacement restores whole tables, so readers reconcile once.
+	// A replacement restores whole tables, so readers reconcile once. The
+	// triggers are suspended during the replacement: no per-row entries.
+	var before int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name not in ('mention_event_history','mention_event_id_map','entity_evidence','entity_observations')`).Scan(&before))
 	_, err = Import(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
-	for _, table := range []string{"mention_events", "message_attachments"} {
+	var after int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from change_log where table_name not in ('mention_event_history','mention_event_id_map','entity_evidence','entity_observations')`).Scan(&after))
+	require.Equal(t, before, after)
+	var historical int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&historical))
+	require.Positive(t, historical)
+	for _, table := range []string{"mention_events", "message_attachments", "guilds", "channels", "members", "messages"} {
 		generation, reason = changeFeedGeneration(t, dst, table)
 		require.Equal(t, int64(2), generation, table)
 		require.Equal(t, "snapshot_import", reason, table)
 	}
+	// The triggers are back: a later write is recorded.
+	var triggers int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type='trigger' and name like 'change_feed_%'`).Scan(&triggers))
+	require.Equal(t, 3*len(store.ChangeFeedTables()), triggers)
 	generation, _ = changeFeedGeneration(t, dst, "message_embedding_history")
 	require.Equal(t, int64(1), generation)
 }

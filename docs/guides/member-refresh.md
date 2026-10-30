@@ -36,7 +36,9 @@ or content are logged. Cancellation never authorizes another page or certifies
 an incomplete listing.
 
 After complete pagination, member rows merge in 256-row writer transactions.
-Rows updated after enumeration began win, including newer Gateway additions,
+A member whose content is unchanged writes no member or search row; only its
+`entity_checks` observation advances. Rows written or checked after enumeration
+began win, including newer Gateway additions,
 role changes and removal tombstones. Unreturned rows remain retained: a missing
 row in a changing paginated listing is not an invented provider deletion.
 Partial merge progress may survive an interruption, but never advances the full

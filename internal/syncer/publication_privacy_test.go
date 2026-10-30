@@ -258,7 +258,10 @@ func TestGatewayGuildFilteredPublicationProjectsNestedMetadata(t *testing.T) {
 	}))
 	var original string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select raw_json from guilds where id = 'guild'`).Scan(&original))
+	// Local canonical metadata retains the full nested source; the export
+	// projection, not ingestion, owns removal of excluded private members.
 	require.Contains(t, original, "excluded member marker")
+	require.Contains(t, original, "excluded channel marker")
 	repo := filepath.Join(t.TempDir(), "snapshot")
 	manifest, err := share.Export(ctx, s, share.Options{RepoPath: repo, Filter: share.FilterOptions{PublicOnly: true}})
 	require.NoError(t, err)

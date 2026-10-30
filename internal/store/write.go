@@ -129,33 +129,60 @@ type WriteOptions struct {
 const deleteMessageFTSByRowIDSQL = `delete from message_fts where rowid = ?`
 
 func (s *Store) UpsertGuild(ctx context.Context, guild GuildRecord) error {
-	return s.q.UpsertGuild(ctx, storedb.UpsertGuildParams{
-		ID:        guild.ID,
-		Name:      guild.Name,
-		Icon:      nullString(guild.Icon),
-		RawJson:   guild.RawJSON,
-		UpdatedAt: time.Now().UTC().Format(timeLayout),
-	})
+	return s.UpsertObservedGuild(ctx, guild, time.Time{})
 }
 
+// UpsertObservedGuild stores guild metadata unless a write or check recorded
+// after started is newer. An observation whose canonical content equals the
+// stored row writes no content row; it records a check and any changed live
+// counters only.
 func (s *Store) UpsertObservedGuild(ctx context.Context, guild GuildRecord, started time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	var updated string
-	err = tx.QueryRowContext(ctx, `select updated_at from guilds where id=?`, guild.ID).Scan(&updated)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && parseTime(updated).After(started) {
-		return nil
-	}
-	if err = s.q.WithTx(tx).UpsertGuild(ctx, storedb.UpsertGuildParams{ID: guild.ID, Name: guild.Name, Icon: nullString(guild.Icon), RawJson: guild.RawJSON, UpdatedAt: time.Now().UTC().Format(timeLayout)}); err != nil {
+	if err := upsertGuildTx(ctx, tx, s.q.WithTx(tx), guild, started); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func upsertGuildTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, guild GuildRecord, started time.Time) error {
+	if err := recordEvidenceTx(ctx, tx, "guilds", guild, guild.ID); err != nil {
+		return err
+	}
+	var name, icon, raw, deleted string
+	err := tx.QueryRowContext(ctx, `select name,coalesce(icon,''),raw_json,coalesce(deleted_at,'') from guilds where id=?`, guild.ID).Scan(&name, &icon, &raw, &deleted)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	exists := err == nil
+	if exists && !started.IsZero() {
+		last, _, err := lastObservedTx(ctx, tx, "guilds", "id=?", guild.ID)
+		if err != nil {
+			return err
+		}
+		if last.After(started) {
+			return nil
+		}
+	}
+	merged, metrics := canonicalizeRaw(entityGuild, guild.RawJSON, raw, "")
+	changed := !exists || deleted != "" || name != guild.Name || icon != guild.Icon || !sameCanonicalRaw(entityGuild, raw, merged, "")
+	if changed {
+		if exists {
+			if err := retainLegacyRawTx(ctx, tx, "guilds", raw, guild.ID); err != nil {
+				return err
+			}
+		}
+		if err := qtx.UpsertGuild(ctx, storedb.UpsertGuildParams{ID: guild.ID, Name: guild.Name, Icon: nullString(guild.Icon), RawJson: merged, UpdatedAt: time.Now().UTC().Format(timeLayout)}); err != nil {
+			return err
+		}
+	}
+	if err := recordMetricsTx(ctx, tx, "guild", guild.ID, metrics); err != nil {
+		return err
+	}
+	return recordObservedTx(ctx, tx, "guilds", changed, guild.ID)
 }
 
 func (s *Store) MarkGuildDeleted(ctx context.Context, guildID, source, reason string) error {
@@ -183,15 +210,14 @@ func (s *Store) MarkObservedGuildDeleted(ctx context.Context, guildID, source, r
 		return err
 	}
 	defer rollback(tx)
-	var updated string
-	err = tx.QueryRowContext(ctx, `select updated_at from guilds where id=?`, guildID).Scan(&updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
+	last, exists, err := lastObservedTx(ctx, tx, "guilds", "id=?", guildID)
 	if err != nil {
 		return err
 	}
-	if !started.IsZero() && parseTime(updated).After(started) {
+	if !exists {
+		return nil
+	}
+	if !started.IsZero() && last.After(started) {
 		return nil
 	}
 	now := time.Now().UTC().Format(timeLayout)
@@ -258,43 +284,77 @@ func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, starte
 }
 
 func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel ChannelRecord, started time.Time, authoritative bool) error {
-	var parent, kind, updated, raw, guild, deleted string
-	err := tx.QueryRowContext(ctx, `select coalesce(parent_id,''),kind,updated_at,raw_json,guild_id,coalesce(deleted_at,'') from channels where id=?`, channel.ID).Scan(&parent, &kind, &updated, &raw, &guild, &deleted)
+	if err := recordEvidenceTx(ctx, tx, "channels", channel, channel.ID); err != nil {
+		return err
+	}
+	var stored storedChannel
+	err := tx.QueryRowContext(ctx, `select guild_id,coalesce(parent_id,''),kind,name,coalesce(topic,''),coalesce(position,0),is_nsfw,is_archived,is_locked,is_private_thread,coalesce(thread_parent_id,''),coalesce(archive_timestamp,''),raw_json,coalesce(deleted_at,'') from channels where id=?`, channel.ID).
+		Scan(&stored.guild, &stored.parent, &stored.kind, &stored.name, &stored.topic, &stored.position, &stored.nsfw, &stored.archived, &stored.locked, &stored.private, &stored.threadParent, &stored.archiveTimestamp, &stored.raw, &stored.deleted)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err == nil && !started.IsZero() && parseTime(updated).After(started) {
-		return nil
+	exists := err == nil
+	if exists && !started.IsZero() {
+		last, _, err := lastObservedTx(ctx, tx, "channels", "id=?", channel.ID)
+		if err != nil {
+			return err
+		}
+		if last.After(started) {
+			return nil
+		}
 	}
-	if err == nil && !authoritative {
-		if deleted != "" {
+	if exists && !authoritative {
+		if stored.deleted != "" {
 			return nil
 		}
 		// Cached metadata may be stale or incomplete: it never replaces
 		// stored ancestry or a known kind, and only fills missing values.
-		if parent != "" {
-			channel.ParentID = parent
+		if stored.parent != "" {
+			channel.ParentID = stored.parent
 		}
-		if kind != "" && kind != "unknown" {
-			channel.Kind = kind
+		if stored.kind != "" && stored.kind != "unknown" {
+			channel.Kind = stored.kind
 		}
 	}
-	// Repeated full catalog observations need no write if the retained provider
-	// metadata and derived kind/ancestry are identical. Partial records do not
-	// establish this equivalence.
-	if err == nil && raw != "{}" && raw != "" && raw == channel.RawJSON && guild == channel.GuildID && parent == channel.ParentID && kind == channel.Kind && deleted == "" {
-		return nil
-	}
-	if err == nil && (parent != channel.ParentID || kind != channel.Kind) {
-		if err = invalidateChannelScope(ctx, tx, channel.ID); err != nil {
+	channel.ArchiveTimestamp = normalizeProviderTime(channel.ArchiveTimestamp)
+	merged, metrics := canonicalizeRaw(entityChannel, channel.RawJSON, stored.raw, channel.Kind)
+	channel.RawJSON = merged
+	// Repeated observations write no content row when every content column
+	// and the canonical provider metadata are unchanged.
+	changed := !exists || stored.deleted != "" || stored.guild != channel.GuildID || stored.parent != channel.ParentID ||
+		stored.kind != channel.Kind || stored.name != channel.Name || stored.topic != channel.Topic ||
+		stored.position != int64(channel.Position) || stored.nsfw != int64(boolInt(channel.IsNSFW)) ||
+		stored.archived != int64(boolInt(channel.IsArchived)) || stored.locked != int64(boolInt(channel.IsLocked)) ||
+		stored.private != int64(boolInt(channel.IsPrivateThread)) || stored.threadParent != channel.ThreadParentID ||
+		normalizeProviderTime(stored.archiveTimestamp) != channel.ArchiveTimestamp ||
+		!sameCanonicalRaw(entityChannel, stored.raw, merged, channel.Kind)
+	if changed {
+		if exists {
+			if err := retainLegacyRawTx(ctx, tx, "channels", stored.raw, channel.ID); err != nil {
+				return err
+			}
+		}
+		if exists && (stored.parent != channel.ParentID || stored.kind != channel.Kind) {
+			if err = invalidateChannelScope(ctx, tx, channel.ID); err != nil {
+				return err
+			}
+		}
+		if err = s.q.WithTx(tx).UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout))); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `update channels set deleted_at=null,deletion_source=null where id=? and deleted_at is not null`, channel.ID); err != nil {
 			return err
 		}
 	}
-	if err = s.q.WithTx(tx).UpsertChannel(ctx, upsertChannelParams(channel, time.Now().UTC().Format(timeLayout))); err != nil {
+	if err := recordMetricsTx(ctx, tx, "channel", channel.ID, metrics); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `update channels set deleted_at=null,deletion_source=null where id=?`, channel.ID)
-	return err
+	return recordObservedTx(ctx, tx, "channels", changed, channel.ID)
+}
+
+type storedChannel struct {
+	guild, parent, kind, name, topic, threadParent, archiveTimestamp, raw, deleted string
+	position, nsfw, archived, locked, private                                      int64
 }
 
 // MergeMembers refreshes observed members without treating absence as deletion.
@@ -305,15 +365,11 @@ func (s *Store) MergeMembers(ctx context.Context, guildID string, members []Memb
 	}
 	defer rollback(tx)
 	qtx := s.q.WithTx(tx)
-	now := time.Now().UTC().Format(timeLayout)
 	for _, member := range members {
 		if member.GuildID != guildID {
 			return fmt.Errorf("member guild %q does not match refresh guild %q", member.GuildID, guildID)
 		}
-		if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
-			return err
-		}
-		if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
+		if _, err := upsertMemberTx(ctx, tx, qtx, member); err != nil {
 			return err
 		}
 	}
@@ -334,12 +390,11 @@ func (s *Store) MarkObservedMemberDeleted(ctx context.Context, guildID, userID, 
 	}
 	defer rollback(tx)
 	if !observed.IsZero() {
-		var updated string
-		err := tx.QueryRowContext(ctx, `select updated_at from members where guild_id=? and user_id=?`, guildID, userID).Scan(&updated)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		last, exists, err := lastObservedTx(ctx, tx, "members", "guild_id=? and user_id=?", guildID, userID)
+		if err != nil {
 			return err
 		}
-		if err == nil && parseTime(updated).After(observed) {
+		if exists && last.After(observed) {
 			return nil
 		}
 	}
@@ -371,24 +426,58 @@ func (s *Store) UpsertObservedMember(ctx context.Context, member MemberRecord, s
 	}
 	defer rollback(tx)
 	if !started.IsZero() {
-		var updated string
-		err := tx.QueryRowContext(ctx, `select updated_at from members where guild_id=? and user_id=?`, member.GuildID, member.UserID).Scan(&updated)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		last, exists, err := lastObservedTx(ctx, tx, "members", "guild_id=? and user_id=?", member.GuildID, member.UserID)
+		if err != nil {
 			return err
 		}
-		if err == nil && parseTime(updated).After(started) {
-			return nil
+		if exists && last.After(started) {
+			if err := recordEvidenceTx(ctx, tx, "members", member, member.GuildID, member.UserID); err != nil {
+				return err
+			}
+			return tx.Commit()
 		}
 	}
-	qtx := s.q.WithTx(tx)
-	now := time.Now().UTC().Format(timeLayout)
-	if err := qtx.UpsertMember(ctx, upsertMemberParams(member, now)); err != nil {
-		return err
-	}
-	if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
+	if _, err := upsertMemberTx(ctx, tx, s.q.WithTx(tx), member); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// upsertMemberTx writes a member only when a content column or the canonical
+// provider metadata changed, and records the observation either way. The
+// search index is refreshed only with a content write.
+func upsertMemberTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, member MemberRecord) (bool, error) {
+	if err := recordEvidenceTx(ctx, tx, "members", member, member.GuildID, member.UserID); err != nil {
+		return false, err
+	}
+	var username, globalName, displayName, nick, discriminator, avatar, joined, roles, raw, deleted string
+	var bot int64
+	err := tx.QueryRowContext(ctx, `select username,coalesce(global_name,''),coalesce(display_name,''),coalesce(nick,''),coalesce(discriminator,''),coalesce(avatar,''),bot,coalesce(joined_at,''),role_ids_json,raw_json,coalesce(deleted_at,'') from members where guild_id=? and user_id=?`, member.GuildID, member.UserID).
+		Scan(&username, &globalName, &displayName, &nick, &discriminator, &avatar, &bot, &joined, &roles, &raw, &deleted)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	exists := err == nil
+	member.JoinedAt = normalizeProviderTime(member.JoinedAt)
+	member.RawJSON, _ = canonicalizeRaw(entityMember, member.RawJSON, raw, "")
+	changed := !exists || deleted != "" || username != member.Username || globalName != member.GlobalName ||
+		displayName != member.DisplayName || nick != member.Nick || discriminator != member.Discriminator ||
+		avatar != member.Avatar || bot != int64(boolInt(member.Bot)) || normalizeProviderTime(joined) != member.JoinedAt ||
+		roles != member.RoleIDsJSON || !sameCanonicalRaw(entityMember, raw, member.RawJSON, "")
+	if changed {
+		if exists {
+			if err := retainLegacyRawTx(ctx, tx, "members", raw, member.GuildID, member.UserID); err != nil {
+				return false, err
+			}
+		}
+		if err := qtx.UpsertMember(ctx, upsertMemberParams(member, time.Now().UTC().Format(timeLayout))); err != nil {
+			return false, err
+		}
+		if err := upsertMemberFTSTx(ctx, tx, member); err != nil {
+			return false, err
+		}
+	}
+	return changed, recordObservedTx(ctx, tx, "members", changed, member.GuildID, member.UserID)
 }
 
 func (s *Store) DeleteGuildData(ctx context.Context, guildID string) error {
@@ -451,13 +540,23 @@ func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRec
 		return err
 	}
 	defer rollback(tx)
+	if err := recordEvidenceTx(ctx, tx, "messages", message, message.ID); err != nil {
+		return err
+	}
 	if opts.PreserveNewer {
 		keep, err := keepStoredMessage(ctx, tx, s.q.WithTx(tx), message, opts.ObservationStartedAt)
-		if err != nil || keep {
+		if err != nil {
 			return err
 		}
+		if keep {
+			return tx.Commit()
+		}
 	}
-	if err := s.upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts); err != nil {
+	changed, err := s.upsertMessageTx(ctx, tx, s.q.WithTx(tx), message, opts)
+	if err != nil {
+		return err
+	}
+	if err := recordObservedTx(ctx, tx, "messages", changed, message.ID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -484,6 +583,9 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := requireMessageScope(ctx, tx, message.Record, message.Options.ScopePolicy); err != nil {
 			return err
 		}
+		if err := recordEvidenceTx(ctx, tx, "messages", message, message.Record.ID); err != nil {
+			return err
+		}
 		if err := prepareTextMutation(ctx, tx, &message); err != nil {
 			return err
 		}
@@ -501,13 +603,27 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 				continue
 			}
 		}
-		if err := s.upsertMessageTx(ctx, tx, qtx, message.Record, message.Options); err != nil {
+		changed, err := s.upsertMessageTx(ctx, tx, qtx, message.Record, message.Options)
+		if err != nil {
 			return err
 		}
-		if err := replaceAttachmentsTx(ctx, tx, qtx, message.Record.ID, message.Attachments); err != nil {
+		attachmentsChanged, err := applyAttachmentsTx(ctx, tx, qtx, message.Record.ID, message.Attachments)
+		if err != nil {
 			return err
 		}
-		if err := replaceMentionEventsTx(ctx, qtx, message.Record.ID, message.Mentions); err != nil {
+		mentionsChanged, err := applyMentionEventsTx(ctx, tx, message.Record.ID, message.Mentions)
+		if err != nil {
+			return err
+		}
+		if !changed && (attachmentsChanged || mentionsChanged) {
+			// Readers rebind relationship rows from the owning message's
+			// updated_at, so a relationship change still advances it.
+			if _, err := tx.ExecContext(ctx, `update messages set updated_at=? where id=?`, time.Now().UTC().Format(timeLayout), message.Record.ID); err != nil {
+				return err
+			}
+			changed = true
+		}
+		if err := recordObservedTx(ctx, tx, "messages", changed, message.Record.ID); err != nil {
 			return err
 		}
 		if err := appendMutationEventTx(ctx, qtx, message); err != nil {
@@ -565,8 +681,14 @@ func keepStoredMessage(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, me
 	}
 	// Equal or absent provider revisions cannot be ordered by Discord. Then
 	// any write after this observation started is treated as newer.
-	if !started.IsZero() && parseTime(stored.UpdatedAt).After(started) {
-		return true, nil
+	if !started.IsZero() {
+		last, _, err := lastObservedTx(ctx, tx, "messages", "id=?", message.ID)
+		if err != nil {
+			return false, err
+		}
+		if last.After(started) {
+			return true, nil
+		}
 	}
 	if message.Content != "" || message.DeletedAt != "" {
 		return false, nil
@@ -580,7 +702,11 @@ func keepStoredMessage(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, me
 	// rows and projections. An actual clear without a newer edit revision
 	// and with identical shape is indistinguishable, so prefer known text.
 	// Distinct rich-message changes keep their existing admission policy.
-	return content != "" && sameMessageTextShape(raw, message.RawJSON), nil
+	// Admission must compare the same merged transport representation that
+	// the writer stores, particularly inside referenced_message. Otherwise
+	// retained Gateway metadata makes an empty REST reread look like an edit.
+	incomingRaw, _ := canonicalizeRaw(entityMessage, message.RawJSON, raw, "")
+	return content != "" && sameMessageTextShape(raw, incomingRaw), nil
 }
 
 // Compare message identity and content-bearing fields, not mutable user names,
@@ -631,13 +757,26 @@ func (s *Store) upsertMessageTx(
 	qtx *storedb.Queries,
 	message MessageRecord,
 	opts WriteOptions,
-) error {
+) (bool, error) {
+	stored, exists, err := loadStoredMessageTx(ctx, tx, message.ID)
+	if err != nil {
+		return false, err
+	}
+	message.RawJSON, _ = canonicalizeRaw(entityMessage, message.RawJSON, stored.raw, "")
+	if exists && !messageContentChanged(stored, message) {
+		return false, s.refreshUnchangedMessageTx(ctx, tx, qtx, stored, message, opts)
+	}
+	if exists {
+		if err := retainLegacyRawTx(ctx, tx, "messages", stored.raw, message.ID); err != nil {
+			return false, err
+		}
+	}
 	var tokenized map[string]string
 	if message.DeletedAt == "" {
 		var err error
 		tokenized, err = s.tokenizeLexical(ctx, message.NormalizedContent)
 		if err != nil {
-			return err
+			return true, err
 		}
 	}
 	now := time.Now().UTC().Format(timeLayout)
@@ -645,33 +784,33 @@ func (s *Store) upsertMessageTx(
 	jobExists := false
 	normalized, previousErr := qtx.GetMessageNormalizedContent(ctx, message.ID)
 	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
-		return previousErr
+		return true, previousErr
 	}
 	if previousErr == nil {
 		previousNormalized = sql.NullString{String: normalized, Valid: true}
 		if opts.EnqueueEmbedding {
 			existingJobs, err := qtx.CountEmbeddingJobsByMessage(ctx, message.ID)
 			if err != nil {
-				return err
+				return true, err
 			}
 			jobExists = existingJobs > 0
 		}
 	}
 	if previousNormalized.Valid && previousNormalized.String != message.NormalizedContent {
 		if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
-			return err
+			return true, err
 		}
 		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
-			return err
+			return true, err
 		}
 		if !opts.EnqueueEmbedding {
 			if _, err := tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',locked_at=null where message_id=?`, message.ID); err != nil {
-				return err
+				return true, err
 			}
 		}
 	}
 	if err := qtx.UpsertMessage(ctx, upsertMessageParams(message, now)); err != nil {
-		return &RowWriteError{
+		return true, &RowWriteError{
 			Ref: FailureRef{
 				Operation: "write_message",
 				GuildID:   message.GuildID,
@@ -684,60 +823,60 @@ func (s *Store) upsertMessageTx(
 	}
 	if message.TextVersion > 0 {
 		if _, err := tx.ExecContext(ctx, `update messages set text_parts_json=?,text_version=? where id=?`, message.TextPartsJSON, message.TextVersion, message.ID); err != nil {
-			return err
+			return true, err
 		}
 	} else if _, err := tx.ExecContext(ctx, `update messages set text_parts_json='[]',text_version=0 where id=? and text_version<>0`, message.ID); err != nil {
 		// A writer without an attributed projection (for example a Desktop
 		// import) supersedes earlier parts; never keep stale provenance.
-		return err
+		return true, err
 	}
 	if rowID, ok := messageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
-			return err
+			return true, err
 		}
 		if err := s.upsertLexicalMessageTx(ctx, tx, message, tokenized); err != nil {
-			return err
+			return true, err
 		}
 		if message.DeletedAt != "" {
 			if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
-				return err
+				return true, err
 			}
 			if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
-				return err
+				return true, err
 			}
 			if _, err := tx.ExecContext(ctx, `delete from embedding_jobs where message_id = ?`, message.ID); err != nil {
-				return err
+				return true, err
 			}
-			return nil
+			return true, nil
 		}
 		if _, err := tx.ExecContext(ctx, `
 			insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
 			values(?, ?, ?, ?, ?, ?, ?, ?)
 		`, rowID, message.ID, message.GuildID, message.ChannelID, nullable(message.AuthorID), message.AuthorName, message.ChannelName, message.NormalizedContent); err != nil {
-			return err
+			return true, err
 		}
 	}
 	queueEmbedding := opts.EnqueueEmbedding && message.GuildID != "@me" &&
 		(errors.Is(previousErr, sql.ErrNoRows) || previousNormalized.String != message.NormalizedContent || !jobExists)
 	if queueEmbedding {
 		if err := archiveMessageEmbeddings(ctx, tx, message.ID, previousNormalized.String); err != nil {
-			return err
+			return true, err
 		}
 		if err := qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: message.ID, UpdatedAt: now}); err != nil {
-			return err
+			return true, err
 		}
 		priority := 1
 		if opts.EmbeddingCatchUp {
 			priority = 0
 		}
 		if _, err := tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',available_at='',priority=?,enqueued_at=? where message_id=?`, priority, now, message.ID); err != nil {
-			return err
+			return true, err
 		}
 		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID); err != nil {
-			return err
+			return true, err
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, messageID string, payload any) error {
@@ -859,22 +998,42 @@ func appendEventTx(ctx context.Context, q *storedb.Queries, guildID, channelID, 
 	})
 }
 
-func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord) error {
+// applyAttachmentsTx reconciles a message's attachment rows in place. A row
+// is written only when one of its content columns changes; attachments that
+// disappeared from the message are deleted. text_attempted_at and
+// text_succeeded_at are check fields: an extraction attempt that changes no
+// content is recorded in entity_checks ('attachment_text') and leaves the row
+// untouched. Retained text history is unchanged.
+func applyAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord) (bool, error) {
 	if err := retainAttachmentText(ctx, tx, messageID); err != nil {
-		return err
+		return false, err
 	}
 	existing, err := existingAttachmentMediaTx(ctx, qtx, messageID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := qtx.DeleteAttachmentsByMessage(ctx, messageID); err != nil {
-		return err
+	keep := make(map[string]struct{}, len(attachments))
+	for _, attachment := range attachments {
+		keep[attachment.AttachmentID] = struct{}{}
 	}
-	if len(attachments) == 0 {
-		return nil
+	changed := false
+	for id := range existing {
+		if _, ok := keep[id]; ok {
+			continue
+		}
+		if err := retainLegacyAttachmentTx(ctx, tx, id); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `delete from message_attachments where attachment_id=?`, id); err != nil {
+			return false, err
+		}
+		changed = true
 	}
 	now := time.Now().UTC().Format(timeLayout)
 	for _, attachment := range attachments {
+		if err := recordEvidenceTx(ctx, tx, "message_attachments", attachment, attachment.AttachmentID); err != nil {
+			return false, err
+		}
 		if media, ok := existing[attachment.AttachmentID]; ok && attachment.MediaPath == "" {
 			attachment.MediaPath = media.MediaPath
 			attachment.ContentSHA256 = media.ContentSHA256
@@ -883,29 +1042,118 @@ func replaceAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries,
 			attachment.FetchStatus = media.FetchStatus
 			attachment.FetchError = media.FetchError
 		}
-		if err := qtx.InsertMessageAttachment(ctx, insertMessageAttachmentParams(attachment, now)); err != nil {
-			return &RowWriteError{
-				Ref: FailureRef{
-					Operation:   "write_attachment",
-					GuildID:     attachment.GuildID,
-					ChannelID:   attachment.ChannelID,
-					MessageID:   attachment.MessageID,
-					RelatedKind: "attachment_id",
-					RelatedID:   attachment.AttachmentID,
-				},
-				AuthorID:    attachment.AuthorID,
-				Filename:    attachment.Filename,
-				ContentType: attachment.ContentType,
-				Size:        attachment.Size,
-				Err:         err,
+		if attachment.TextStatus == "" {
+			attachment.TextStatus = "unknown"
+		}
+		same, err := sameStoredAttachmentTx(ctx, tx, attachment)
+		if err != nil {
+			return false, err
+		}
+		if !same {
+			if err := retainLegacyAttachmentTx(ctx, tx, attachment.AttachmentID); err != nil {
+				return false, err
+			}
+			if err := writeAttachmentTx(ctx, tx, qtx, attachment, now); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+		if attachment.TextAttemptedAt != "" {
+			if err := recordCheckTx(ctx, tx, "message_attachments", checkAttachmentText, normalizeStoredTime(attachment.TextAttemptedAt), normalizeStoredTime(attachment.TextSucceededAt), attachment.TextStatus, attachment.AttachmentID); err != nil {
+				return false, err
 			}
 		}
-		status := attachment.TextStatus
-		if status == "" {
-			status = "unknown"
+	}
+	return changed, nil
+}
+
+// sameStoredAttachmentTx compares every content column the writer sets,
+// using the upsert's own merge rules for media columns.
+func sameStoredAttachmentTx(ctx context.Context, tx *sql.Tx, a AttachmentRecord) (bool, error) {
+	var messageID, guildID, channelID, authorID, filename, contentType, url, proxyURL, text, mediaPath, sha, fetchedAt, fetchStatus, fetchError, textStatus, textError string
+	var size, contentSize int64
+	err := tx.QueryRowContext(ctx, `select message_id,guild_id,channel_id,coalesce(author_id,''),filename,coalesce(content_type,''),size,coalesce(url,''),coalesce(proxy_url,''),text_content,coalesce(media_path,''),coalesce(content_sha256,''),content_size,coalesce(fetched_at,''),fetch_status,fetch_error,text_status,text_error from message_attachments where attachment_id=?`, a.AttachmentID).
+		Scan(&messageID, &guildID, &channelID, &authorID, &filename, &contentType, &size, &url, &proxyURL, &text, &mediaPath, &sha, &contentSize, &fetchedAt, &fetchStatus, &fetchError, &textStatus, &textError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	effective := func(incoming, stored string) string {
+		if incoming != "" {
+			return incoming
 		}
-		if _, err := tx.ExecContext(ctx, `update message_attachments set text_status=?,text_error=?,text_attempted_at=?,text_succeeded_at=? where attachment_id=?`, status, attachment.TextError, nullString(attachment.TextAttemptedAt), nullString(attachment.TextSucceededAt), attachment.AttachmentID); err != nil {
-			return err
+		return stored
+	}
+	wantContentSize := contentSize
+	if a.ContentSize > 0 {
+		wantContentSize = a.ContentSize
+	}
+	wantFetchError := fetchError
+	if a.FetchStatus != "" || a.FetchError != "" {
+		wantFetchError = a.FetchError
+	}
+	return messageID == a.MessageID && guildID == a.GuildID && channelID == a.ChannelID && authorID == a.AuthorID &&
+		filename == a.Filename && contentType == a.ContentType && size == a.Size && url == a.URL && proxyURL == a.ProxyURL &&
+		text == a.TextContent && mediaPath == effective(a.MediaPath, mediaPath) && sha == effective(a.ContentSHA256, sha) &&
+		contentSize == wantContentSize && fetchedAt == effective(a.FetchedAt, fetchedAt) &&
+		fetchStatus == effective(a.FetchStatus, fetchStatus) && fetchError == wantFetchError &&
+		textStatus == a.TextStatus && textError == a.TextError, nil
+}
+
+// writeAttachmentTx writes one attachment row, including its text receipt, in
+// a single statement, so one content change is one change-feed entry. Media
+// columns follow the InsertMessageAttachment merge rules.
+func writeAttachmentTx(ctx context.Context, tx *sql.Tx, _ *storedb.Queries, attachment AttachmentRecord, now string) error {
+	p := insertMessageAttachmentParams(attachment, now)
+	_, err := tx.ExecContext(ctx, `insert into message_attachments(
+	attachment_id, message_id, guild_id, channel_id, author_id, filename,
+	content_type, size, url, proxy_url, text_content, media_path, content_sha256,
+	content_size, fetched_at, fetch_status, fetch_error, updated_at,
+	text_status, text_error, text_attempted_at, text_succeeded_at
+) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+on conflict(attachment_id) do update set
+	message_id = excluded.message_id,
+	guild_id = excluded.guild_id,
+	channel_id = excluded.channel_id,
+	author_id = excluded.author_id,
+	filename = excluded.filename,
+	content_type = excluded.content_type,
+	size = excluded.size,
+	url = excluded.url,
+	proxy_url = excluded.proxy_url,
+	text_content = excluded.text_content,
+	media_path = coalesce(excluded.media_path, message_attachments.media_path),
+	content_sha256 = coalesce(excluded.content_sha256, message_attachments.content_sha256),
+	content_size = case when excluded.content_size > 0 then excluded.content_size else message_attachments.content_size end,
+	fetched_at = coalesce(excluded.fetched_at, message_attachments.fetched_at),
+	fetch_status = case when excluded.fetch_status <> '' then excluded.fetch_status else message_attachments.fetch_status end,
+	fetch_error = case when excluded.fetch_status <> '' or excluded.fetch_error <> '' then excluded.fetch_error else message_attachments.fetch_error end,
+	updated_at = excluded.updated_at,
+	text_status = excluded.text_status,
+	text_error = excluded.text_error,
+	text_attempted_at = excluded.text_attempted_at,
+	text_succeeded_at = excluded.text_succeeded_at`,
+		p.AttachmentID, p.MessageID, p.GuildID, p.ChannelID, p.AuthorID, p.Filename,
+		p.ContentType, p.Size, p.Url, p.ProxyUrl, p.TextContent, p.MediaPath, p.ContentSha256,
+		p.ContentSize, p.FetchedAt, p.FetchStatus, p.FetchError, p.UpdatedAt,
+		attachment.TextStatus, attachment.TextError, nullString(attachment.TextAttemptedAt), nullString(attachment.TextSucceededAt))
+	if err != nil {
+		return &RowWriteError{
+			Ref: FailureRef{
+				Operation:   "write_attachment",
+				GuildID:     attachment.GuildID,
+				ChannelID:   attachment.ChannelID,
+				MessageID:   attachment.MessageID,
+				RelatedKind: "attachment_id",
+				RelatedID:   attachment.AttachmentID,
+			},
+			AuthorID:    attachment.AuthorID,
+			Filename:    attachment.Filename,
+			ContentType: attachment.ContentType,
+			Size:        attachment.Size,
+			Err:         err,
 		}
 	}
 	return nil
@@ -931,32 +1179,93 @@ func existingAttachmentMediaTx(ctx context.Context, qtx *storedb.Queries, messag
 	return out, nil
 }
 
-func replaceMentionEventsTx(ctx context.Context, qtx *storedb.Queries, messageID string, mentions []MentionEventRecord) error {
-	if err := qtx.DeleteMentionEventsByMessage(ctx, messageID); err != nil {
-		return err
+// applyMentionEventsTx reconciles a message's mention events by their natural
+// identity (message_id, target_type, target_id). An unchanged mention keeps
+// its row and event_id; a changed target name, scope or time is updated in
+// place; only mentions that appeared or disappeared are inserted or deleted.
+// Duplicate rows for one identity (from older writers) collapse to the
+// lowest event_id.
+func applyMentionEventsTx(ctx context.Context, tx *sql.Tx, messageID string, mentions []MentionEventRecord) (bool, error) {
+	type row struct {
+		id                                    int64
+		guild, channel, author, name, eventAt string
 	}
-	if len(mentions) == 0 {
-		return nil
+	existing := map[[2]string]row{}
+	var drop []int64
+	rows, err := tx.QueryContext(ctx, `select event_id,target_type,target_id,guild_id,channel_id,coalesce(author_id,''),target_name,event_at from mention_events where message_id=? order by event_id`, messageID)
+	if err != nil {
+		return false, err
 	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var r row
+		var key [2]string
+		if err := rows.Scan(&r.id, &key[0], &key[1], &r.guild, &r.channel, &r.author, &r.name, &r.eventAt); err != nil {
+			return false, err
+		}
+		if _, dup := existing[key]; dup {
+			drop = append(drop, r.id)
+			continue
+		}
+		existing[key] = r
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	changed := false
+	seen := map[[2]string]struct{}{}
 	for _, mention := range mentions {
+		key := [2]string{mention.TargetType, mention.TargetID}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		eventAt := normalizeStoredTime(mention.EventAt)
+		prior, ok := existing[key]
 		if eventAt == "" {
-			eventAt = time.Now().UTC().Format(timeLayout)
+			if ok {
+				eventAt = prior.eventAt
+			} else {
+				eventAt = time.Now().UTC().Format(timeLayout)
+			}
 		}
-		if err := qtx.InsertMentionEvent(ctx, storedb.InsertMentionEventParams{
-			MessageID:  mention.MessageID,
-			GuildID:    mention.GuildID,
-			ChannelID:  mention.ChannelID,
-			AuthorID:   nullString(mention.AuthorID),
-			TargetType: mention.TargetType,
-			TargetID:   mention.TargetID,
-			TargetName: mention.TargetName,
-			EventAt:    eventAt,
-		}); err != nil {
-			return err
+		if !ok {
+			if _, err := tx.ExecContext(ctx, `insert into mention_events(message_id,guild_id,channel_id,author_id,target_type,target_id,target_name,event_at) values(?,?,?,?,?,?,?,?)`,
+				messageID, mention.GuildID, mention.ChannelID, nullString(mention.AuthorID), mention.TargetType, mention.TargetID, mention.TargetName, eventAt); err != nil {
+				return false, err
+			}
+			changed = true
+			continue
 		}
+		delete(existing, key)
+		if prior.guild == mention.GuildID && prior.channel == mention.ChannelID && prior.author == mention.AuthorID && prior.name == mention.TargetName && prior.eventAt == eventAt {
+			continue
+		}
+		if err := retainMentionIDTx(ctx, tx, prior.id); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `update mention_events set guild_id=?,channel_id=?,author_id=?,target_name=?,event_at=? where event_id=?`,
+			mention.GuildID, mention.ChannelID, nullString(mention.AuthorID), mention.TargetName, eventAt, prior.id); err != nil {
+			return false, err
+		}
+		changed = true
 	}
-	return nil
+	for _, r := range existing {
+		drop = append(drop, r.id)
+	}
+	for _, id := range drop {
+		if err := retainMentionIDTx(ctx, tx, id); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `delete from mention_events where event_id=?`, id); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	return changed, nil
 }
 
 func (s *Store) SetSyncState(ctx context.Context, scope, cursor string) error {
@@ -1183,4 +1492,121 @@ func upsertMemberFTSTx(ctx context.Context, tx *sql.Tx, member MemberRecord) err
 		values(?, ?, ?, ?, ?, ?, ?)
 	`, rowID, memberKey(member.GuildID, member.UserID), member.GuildID, member.UserID, member.Username, displayName, memberProfileSearchText(member.RawJSON))
 	return err
+}
+
+type storedMessage struct {
+	guild, channel, author, createdAt, editedAt, deletedAt, content, normalized, replyTo, raw, textParts string
+	messageType, pinned, hasAttachments, textVersion                                                     int64
+}
+
+func loadStoredMessageTx(ctx context.Context, tx *sql.Tx, id string) (storedMessage, bool, error) {
+	var m storedMessage
+	err := tx.QueryRowContext(ctx, `select guild_id,channel_id,coalesce(author_id,''),message_type,created_at,coalesce(edited_at,''),coalesce(deleted_at,''),content,normalized_content,coalesce(reply_to_message_id,''),pinned,has_attachments,raw_json,text_parts_json,text_version from messages where id=?`, id).
+		Scan(&m.guild, &m.channel, &m.author, &m.messageType, &m.createdAt, &m.editedAt, &m.deletedAt, &m.content, &m.normalized, &m.replyTo, &m.pinned, &m.hasAttachments, &m.raw, &m.textParts, &m.textVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return m, false, nil
+	}
+	return m, err == nil, err
+}
+
+// messageContentChanged compares every column the message writer sets, with
+// the writer's own merge rules (a tombstone is never cleared by an upsert, and
+// a writer without a text projection resets only an attributed one). The
+// incoming raw_json must already be the canonical merge with stored.raw.
+func messageContentChanged(stored storedMessage, message MessageRecord) bool {
+	deleted := normalizeStoredTime(message.DeletedAt)
+	if deleted == "" {
+		deleted = stored.deletedAt
+	}
+	parts, version := message.TextPartsJSON, int64(message.TextVersion)
+	if version <= 0 {
+		parts, version = stored.textParts, stored.textVersion
+		if stored.textVersion != 0 {
+			parts, version = "[]", 0
+		}
+	}
+	return stored.guild != message.GuildID || stored.channel != message.ChannelID || stored.author != message.AuthorID ||
+		stored.messageType != int64(message.MessageType) || stored.createdAt != normalizeStoredTime(message.CreatedAt) ||
+		stored.editedAt != normalizeStoredTime(message.EditedAt) || stored.deletedAt != deleted ||
+		stored.content != message.Content || stored.normalized != message.NormalizedContent ||
+		stored.replyTo != message.ReplyToMessageID || stored.pinned != int64(boolInt(message.Pinned)) ||
+		stored.hasAttachments != int64(boolInt(message.HasAttachments)) || stored.textParts != parts ||
+		stored.textVersion != version || !sameCanonicalRaw(entityMessage, stored.raw, message.RawJSON, "")
+}
+
+// refreshUnchangedMessageTx keeps derived state current for an observation
+// that changed no message content: a missing embedding job is still queued,
+// and the search row picks up a newly known author or channel name. It writes
+// no messages row.
+func (s *Store) refreshUnchangedMessageTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, stored storedMessage, message MessageRecord, opts WriteOptions) error {
+	if stored.deletedAt != "" {
+		return nil
+	}
+	if rowID, ok := messageFTSRowID(message.ID); ok {
+		var authorName, channelName sql.NullString
+		err := tx.QueryRowContext(ctx, `select author_name,channel_name from message_fts where rowid=?`, rowID).Scan(&authorName, &channelName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		missing := errors.Is(err, sql.ErrNoRows)
+		renamed := (message.AuthorName != "" && message.AuthorName != authorName.String) ||
+			(message.ChannelName != "" && message.ChannelName != channelName.String)
+		if missing || renamed {
+			if !missing {
+				if message.AuthorName == "" {
+					message.AuthorName = authorName.String
+				}
+				if message.ChannelName == "" {
+					message.ChannelName = channelName.String
+				}
+			}
+			if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
+				return err
+			}
+			if renamed && !missing {
+				for _, language := range s.lexicalLanguages() {
+					if _, err := tx.ExecContext(ctx, "update "+lexicalFTSTable(language)+" set author_name=?,channel_name=? where rowid=?", message.AuthorName, message.ChannelName, rowID); err != nil {
+						return err
+					}
+				}
+			}
+			if missing {
+				tokenized, err := s.tokenizeLexical(ctx, message.NormalizedContent)
+				if err != nil {
+					return err
+				}
+				if err := s.upsertLexicalMessageTx(ctx, tx, message, tokenized); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `
+				insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
+				values(?, ?, ?, ?, ?, ?, ?, ?)
+			`, rowID, message.ID, message.GuildID, message.ChannelID, nullable(message.AuthorID), message.AuthorName, message.ChannelName, message.NormalizedContent); err != nil {
+				return err
+			}
+		}
+	}
+	if !opts.EnqueueEmbedding || message.GuildID == "@me" {
+		return nil
+	}
+	jobs, err := qtx.CountEmbeddingJobsByMessage(ctx, message.ID)
+	if err != nil || jobs > 0 {
+		return err
+	}
+	now := time.Now().UTC().Format(timeLayout)
+	if err := archiveMessageEmbeddings(ctx, tx, message.ID, stored.normalized); err != nil {
+		return err
+	}
+	if err := qtx.UpsertEmbeddingJobPending(ctx, storedb.UpsertEmbeddingJobPendingParams{MessageID: message.ID, UpdatedAt: now}); err != nil {
+		return err
+	}
+	priority := 1
+	if opts.EmbeddingCatchUp {
+		priority = 0
+	}
+	if _, err := tx.ExecContext(ctx, `update embedding_jobs set revision=revision+1,lease_token='',lease_until='',available_at='',priority=?,enqueued_at=? where message_id=?`, priority, now, message.ID); err != nil {
+		return err
+	}
+	return qtx.DeleteMessageEmbeddingsByMessage(ctx, message.ID)
 }

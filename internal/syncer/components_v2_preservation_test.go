@@ -68,7 +68,11 @@ func TestComponentsV2NativePreservationAndReuse(t *testing.T) {
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id=?`, message.ID).Scan(&observed))
 	require.Equal(t, revision, nextRevision)
 	require.Equal(t, 1, vectors)
-	require.Greater(t, observed, updated, "reobservation clock remains independent of text identity")
+	// An identical reobservation is a check, not a content write.
+	require.Equal(t, updated, observed)
+	var checked string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select checked_at from entity_checks where table_name='messages' and row_key=json_array(?) and check_kind='observed'`, message.ID).Scan(&checked))
+	require.Greater(t, checked, updated, "reobservation clock remains independent of text identity")
 	message.Components[0].(*discordgo.Container).Components[0].(*discordgo.TextDisplay).Content = "Changed card"
 	require.NoError(t, handler.OnMessageCreate(ctx, message))
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select revision from embedding_jobs where message_id=?`, message.ID).Scan(&nextRevision))
