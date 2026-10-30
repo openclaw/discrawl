@@ -41,10 +41,10 @@ test-large:
 	jq -e 'select(.Action == "pass" and .Test == "TestCatalogIntegrityProbeLargeCompleteFixture")' "$$output_file" >/dev/null
 
 test-race:
-	GOWORK=off go test -count=1 -race ./...
+	GOWORK=off go test -count=1 -race -timeout=25m ./...
 
 test-coverage:
-	GOWORK=off go test -count=1 -race ./... -coverprofile=coverage.out
+	GOWORK=off go test -count=1 -race -timeout=25m ./... -coverprofile=coverage.out
 	@grep -v '^github.com/openclaw/discrawl/internal/store/storedb/' coverage.out > coverage.filtered.out
 	@total="$$(go tool cover -func=coverage.filtered.out | awk '/^total:/ { sub(/%$$/, "", $$3); print $$3 }')"; \
 	awk -v total="$$total" 'BEGIN { if (total == "" || total + 0 < 85.0) { printf("coverage %s%% is below 85%%\n", total == "" ? "missing" : total); exit 1 } printf("coverage %.1f%%\n", total + 0) }'

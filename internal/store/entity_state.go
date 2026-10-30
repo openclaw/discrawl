@@ -104,7 +104,17 @@ func (s *Store) applyEntityStateMigration(ctx context.Context) error {
 		// No DDL on routine opens, so PRAGMA schema_version stays stable.
 		return nil
 	}
-	return ensureEntityStateTables(ctx, s.db)
+	// Install the additive schema atomically and pay one durable commit,
+	// rather than a full-sync commit for each table/index on every new archive.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err := ensureEntityStateTables(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // recordCheckTx records one check of a content row. rowKey values are the

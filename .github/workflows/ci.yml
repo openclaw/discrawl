@@ -82,7 +82,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,8 +101,10 @@ jobs:
       - name: Test source reconciliation entry point
         run: go test -count=1 scripts/reconcile_cloud_source.go scripts/reconcile_cloud_source_test.go
 
+      # Durable SQLite fixtures accumulate across an entire package. Bound
+      # that aggregate run explicitly; individual behavioral deadlines stay intact.
       - name: Test with race detector and coverage
-        run: go test -count=1 -race ./... -coverprofile=coverage.out
+        run: go test -count=1 -race -timeout=25m ./... -coverprofile=coverage.out
 
       - name: Exclude generated code from coverage
         run: grep -v '^github.com/openclaw/discrawl/internal/store/storedb/' coverage.out > coverage.filtered.out

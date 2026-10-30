@@ -259,7 +259,8 @@ coordinated operation requiring reader acceptance and the consistent clone.
    ARTIFACT_DIR=/path/to/downloaded-assets`. The operator-selected version and
    artifact receipt must be pinned in the coordinated cutover plan.
 3. The first authorized writable `Store.Open` creates the additive evidence,
-   check and metric tables and contract-2 triggers. It leaves `user_version=7`,
+   check and metric tables in one durable transaction, then installs contract-2
+   triggers. Partial additive-schema creation rolls back on error. It leaves `user_version=7`,
    contract-1 generations and all existing content IDs intact. The optional
    `SeedEntityMetrics` store operation is idempotent; it seeds only missing
    metric keys from legacy raw rows and does not rewrite them. It is not an
@@ -276,3 +277,12 @@ coordinated operation requiring reader acceptance and the consistent clone.
    vacuum as a rollback substitute. An old binary can open the unchanged schema
    version, but it cannot produce the new evidence contract. After new writes
    resume, preserve/replay them before any older-clone restoration.
+
+### Validation runtime budget
+
+The complete race suite uses a 25-minute per-package watchdog, with a 35-minute
+hosted test-job bound. The share package creates many fully durable temporary
+archives and can exceed Go's implicit ten-minute package limit on hosted runners.
+Individual behavior deadlines, race detection, all test cases and the 85% coverage
+floor are unchanged. Additive evidence-schema setup uses one transaction instead
+of ten separate durable DDL commits; production FULL synchronization is not relaxed.

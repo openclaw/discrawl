@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -232,4 +233,21 @@ func TestUnchangedMessageRenameRefreshesLexicalMetadata(t *testing.T) {
 	require.Equal(t, before, after)
 	require.Equal(t, tokens, nowTokens)
 	require.Equal(t, "new", author)
+}
+
+func TestEntityStateMigrationRollsBackPartialSchema(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "partial.db"))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = db.ExecContext(ctx, `create table entity_checks(existing_column text)`)
+	require.NoError(t, err)
+	s := &Store{db: db}
+	require.ErrorContains(t, s.applyEntityStateMigration(ctx), "checked_at")
+	var created int
+	require.NoError(t, db.QueryRowContext(ctx, `select count(*) from sqlite_master where name in ('entity_evidence','entity_observations','entity_metrics','mention_event_id_map')`).Scan(&created))
+	require.Zero(t, created)
+	var original int
+	require.NoError(t, db.QueryRowContext(ctx, `select count(*) from pragma_table_info('entity_checks') where name='existing_column'`).Scan(&original))
+	require.Equal(t, 1, original)
 }
