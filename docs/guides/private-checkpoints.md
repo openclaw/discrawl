@@ -190,7 +190,7 @@ UTC midnight by default. An optional `since` input may pin a UTC midnight less
 than 48 hours ago. It is fixed before restore and revalidated before acquisition;
 a stale or future value stops rather than silently selecting a different day.
 The daily 06:17 UTC route requires a member refresh in the first guild-wide
-phase; ordinary scheduled and manual runs skip members. A required member-refresh failure stops before
+phase; manual current runs skip members. A required member-refresh failure stops before
 the targeted phase. The second phase always uses `--skip-members`,
 `--with-media=false` and `--no-update`.
 Both phases share the same 1,200-second deadline, and the second
@@ -200,11 +200,20 @@ checkpoint after all owned processes are reaped.
 
 For a separately reviewed historical backfill, manually dispatch the same
 workflow with `mode: historical` and an explicit `since` UTC midnight less than
-31 days ago. Scheduled runs always use `current`; historical mode cannot request
-members. It runs only the selected native full-history scan, using the same pinned
+31 days ago. Historical mode cannot request members. It runs only the selected native full-history scan, using the same pinned
 policy, stored-thread selection and 1,200-second supervisor. The 5-minute native
 channel deadline remains in effect. Restore, checkpoint verification, failure
 handling and publication use the same serialized owner as current acquisition.
+
+Ordinary two-hour scheduled ticks use that selected scan independently of the
+guild-wide latest refresh. Their UTC-yesterday lower bound and acquisition mode
+are frozen before restore and reused at acquisition; scheduled windows remain
+less than 48 hours old, never the manual 31-day backfill allowance. The daily
+06:17 UTC tick retains the current guild-wide and required-member phases. Its
+failures remain visible and block publication for that invocation. New text and
+announcement threads discovered by the broad pass enter selected acquisition
+after daily discovery; a failing daily pass leaves discovery and member freshness
+degraded. Every selected scan must still qualify its own stream receipts.
 
 The native scan deliberately traverses from the live head through `since`, so it
 also collects newer messages. There is no `until` input. A completed native

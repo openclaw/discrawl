@@ -75,6 +75,9 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			publish := strings.Index(text, "name: Publish Discord archive")
 			reconcile := strings.Index(text, "name: Reconcile retained checkpoint publication")
 			restore := strings.Index(text, "name: Restore verified private checkpoint")
+			policy := strings.Index(text, "name: Verify pinned private acquisition policy")
+			require.Positive(t, policy)
+			require.Less(t, policy, restore)
 			require.Greater(t, reconcile, 0)
 			require.Less(t, reconcile, restore)
 			require.Contains(t, text, "CHECKPOINT_MODE: reconcile")
@@ -146,7 +149,8 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 				if step.Name == "Verify pinned private acquisition policy" {
 					require.Equal(t, "${{ inputs.since }}", step.Env["HISTORY_SINCE"])
 					require.Contains(t, step.Run, `--since "$HISTORY_SINCE"`)
-					require.Equal(t, "${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])
+					require.Equal(t, "${{ github.event_name == 'schedule' && github.event.schedule == '43 0,2,4,8,10,12,14,16,18,20,22 * * *' && 'historical' || inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])
+					require.Equal(t, "${{ github.event.schedule }}", step.Env["HISTORY_SCHEDULE"])
 					require.Contains(t, step.Run, `--acquisition-mode "$HISTORY_MODE"`)
 				}
 				if step.Name == "Sync native Discord state" {
@@ -154,7 +158,8 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 					require.Contains(t, step.Run, `"$RUNNER_TEMP/discrawl-native" --public-errors --config "$CONFIG" init`)
 					require.Equal(t, "${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}", step.Env["WITH_MEMBERS"])
 					require.Equal(t, "${{ steps.policy.outputs.since }}", step.Env["HISTORY_SINCE"])
-					require.Equal(t, "${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}", step.Env["HISTORY_MODE"])
+					require.Equal(t, "${{ steps.policy.outputs.mode }}", step.Env["HISTORY_MODE"])
+					require.Equal(t, "${{ github.event.schedule }}", step.Env["HISTORY_SCHEDULE"])
 					for _, members := range []string{"true", "false", ""} {
 						dir := t.TempDir()
 						calls := filepath.Join(dir, "calls")

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep scheduled report-history acquisition independent of unrelated guild-wide message failures, while retaining daily guild discovery and required member refresh with visible failure and unchanged checkpoint verification.
+
 ## 0.19.0 - 2026-10-28
 
 **Highlights:** Let readers copy only changed relationship and history rows, and restore opt-in cloud publication.
