@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,4 +165,41 @@ func TestImportedMentionIdentityFenceRetainsFirstBinding(t *testing.T) {
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from mention_event_history where event_id=42`).Scan(&body))
 	require.Contains(t, body, `"message_id":"m"`)
 	require.Contains(t, body, `"target_name":"original"`)
+}
+
+func TestReplyTransportMergePreservesAmbiguousEmptyReread(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "single", true: "batch"}[batch], func(t *testing.T) {
+			s := openEfficiencyStore(t)
+			ctx := t.Context()
+			gateway := `{"id":"100","channel_id":"c","author":{"id":"u"},"timestamp":"2026-10-01T00:00:00Z","content":"quartz","referenced_message":{"id":"r","channel_id":"c","guild_id":"g","content":"quoted","member":{"roles":["role"]},"author":{"id":"ru","public_flags":0}}}`
+			rest := `{"id":"100","channel_id":"c","author":{"id":"u"},"timestamp":"2026-10-01T00:00:00Z","content":"quartz","referenced_message":{"id":"r","channel_id":"c","content":"quoted","author":{"id":"ru","public_flags":64}}}`
+			m := MessageRecord{ID: "100", GuildID: "g", ChannelID: "c", AuthorID: "u", CreatedAt: "2026-10-01T00:00:00Z", Content: "quartz", NormalizedContent: "quartz"}
+			apply := func(raw, content string) {
+				m.RawJSON = raw
+				m.Content = content
+				m.NormalizedContent = content
+				opts := WriteOptions{PreserveNewer: true, ObservationStartedAt: time.Now()}
+				if batch {
+					require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{{Record: m, Options: opts}}))
+				} else {
+					require.NoError(t, s.UpsertMessageWithOptions(ctx, m, opts))
+				}
+			}
+			apply(gateway, "quartz")
+			apply(rest, "quartz")
+			switched, _ := canonicalizeRaw(entityMessage, strings.Replace(rest, `"id":"r"`, `"id":"new-reference"`, 1), gateway, "")
+			require.Nil(t, rawField(t, switched, "referenced_message.member"))
+			require.Nil(t, rawField(t, switched, "referenced_message.guild_id"))
+			empty := strings.Replace(rest, `"content":"quartz"`, `"content":""`, 1)
+			apply(empty, "")
+			var content string
+			require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id='100'`).Scan(&content))
+			require.Equal(t, "quartz", content)
+			// A real quoted rich-content change still passes admission.
+			apply(strings.Replace(empty, `"content":"quoted"`, `"content":"changed quote"`, 1), "")
+			require.NoError(t, s.DB().QueryRowContext(ctx, `select content from messages where id='100'`).Scan(&content))
+			require.Empty(t, content)
+		})
+	}
 }

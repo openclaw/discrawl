@@ -185,7 +185,7 @@ func canonicalMerge(kind entityKind, incoming, stored, channelKind string) (stri
 			mergeMentionMembers(in, base)
 			ref, _ := in["referenced_message"].(map[string]any)
 			baseRef, _ := base["referenced_message"].(map[string]any)
-			if ref != nil && baseRef != nil {
+			if ref != nil && baseRef != nil && sameEntityIdentity(entityMessage, ref, baseRef) {
 				keepKnown(ref, baseRef, "guild_id", isZeroValue)
 				keepKnown(ref, baseRef, "member", isZeroValue)
 				mergeUserFlags(ref, baseRef, "author")

@@ -40,7 +40,9 @@ it:
   never replaces a known stored value. Messages keep the Gateway `guild_id`,
   `member` and `mentions[].member`, and keep REST `author.flags`/
   `author.public_flags` (also inside `referenced_message`) when Gateway sends
-  zeros. Members keep `guild_id`, member `flags` and `user.flags`/
+  zeros. Referenced-message transport metadata is merged only for the same
+  referenced message identity. Empty-reread admission uses the same transport
+  comparison, so metadata shape alone cannot clear archived reply text. Members keep `guild_id`, member `flags` and `user.flags`/
   `user.public_flags`. Channels keep `guild_id`, a non-voice `bitrate` and a
   public thread's `thread_metadata.invitable`. Guilds keep the Gateway
   `joined_at`, `large` and a `region` that REST reports as `deprecated`. A

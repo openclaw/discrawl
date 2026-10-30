@@ -702,7 +702,11 @@ func keepStoredMessage(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, me
 	// rows and projections. An actual clear without a newer edit revision
 	// and with identical shape is indistinguishable, so prefer known text.
 	// Distinct rich-message changes keep their existing admission policy.
-	return content != "" && sameMessageTextShape(raw, message.RawJSON), nil
+	// Admission must compare the same merged transport representation that
+	// the writer stores, particularly inside referenced_message. Otherwise
+	// retained Gateway metadata makes an empty REST reread look like an edit.
+	incomingRaw, _ := canonicalizeRaw(entityMessage, message.RawJSON, raw, "")
+	return content != "" && sameMessageTextShape(raw, incomingRaw), nil
 }
 
 // Compare message identity and content-bearing fields, not mutable user names,
