@@ -1,0 +1,64 @@
+name: diagnose-discord-content
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed main commit, after openclaw-secops approval and owner authorization
+        type: string
+        required: true
+      expected_application_id:
+        description: Existing collector application ID, confirmed without new API calls
+        type: string
+        required: true
+      expected_bot_id:
+        description: Existing collector bot ID, confirmed without new API calls
+        type: string
+        required: true
+      expected_author_id:
+        description: Human author ID of fixed message 1564461144779784244, confirmed by operator
+        type: string
+        required: true
+      ordinary_text_confirmed:
+        description: I confirmed this exact message is ordinary human text in maintainers in guild 1456350064065904867, not an app mention or context-menu exception
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-backup-repo
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: >-
+      github.repository == 'openclaw/discrawl' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'vincentkoc' &&
+      github.triggering_actor == 'vincentkoc' &&
+      github.run_attempt == 1 &&
+      inputs.expected_sha == github.sha &&
+      inputs.ordinary_text_confirmed
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout reviewed diagnostic
+        timeout-minutes: 1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Measure application flags and one message length
+        timeout-minutes: 1
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          set +x
+          export CHECKED_OUT_SHA="$(git rev-parse HEAD 2>/dev/null)"
+          python3 -B scripts/diagnose_discord_content.py 2>/dev/null || {
+            echo '::error::Read-only diagnostic stopped; no retry or acquisition was requested.'
+            exit 1
+          }
