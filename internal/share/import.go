@@ -102,6 +102,9 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 			return nil
 		},
 		DeleteTable: func(ctx context.Context, tx *sql.Tx, table string) error {
+			if err := clearReplacedEntityChecks(ctx, tx, table); err != nil {
+				return err
+			}
 			query, args := snapshotDeleteQuery(table)
 			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 				return fmt.Errorf("clear %s: %w", table, err)
@@ -428,4 +431,29 @@ func materializeRefFile(ctx context.Context, opts mirror.Options, ref, filePath,
 		return fmt.Errorf("write historical share file %s: %w", clean, err)
 	}
 	return nil
+}
+
+// Exact replacement supersedes local freshness fences for replaced owners.
+// Keep immutable check history and all current local-only DM fences; only the
+// latest-state overlay is reset, including orphaned keys from earlier removals.
+func clearReplacedEntityChecks(ctx context.Context, tx *sql.Tx, table string) error {
+	var key, scope string
+	switch table {
+	case "guilds":
+		key = "json_array(id)"
+		scope = "id"
+	case "channels", "messages":
+		key = "json_array(id)"
+		scope = "guild_id"
+	case "members":
+		key = "json_array(guild_id,user_id)"
+		scope = "guild_id"
+	case "message_attachments":
+		key = "json_array(attachment_id)"
+		scope = "guild_id"
+	default:
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, "delete from entity_checks where table_name=? and row_key not in (select "+key+" from "+quoteIdent(table)+" where "+scope+"=?)", table, directMessageGuildID)
+	return err
 }

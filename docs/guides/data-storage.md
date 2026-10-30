@@ -129,6 +129,9 @@ Accepted role events record observed freshness even when their content is equal,
 so delayed repair cannot restore a stale permission grant. Routine Git snapshot
 merges use the later of content revision and local observed check for guilds,
 channels, members and messages; exact replacement remains explicitly destructive.
+Exact replacement resets only latest check overlays for superseded owners,
+preserving current local-only DM overlays and all immutable check histories, so
+old local observations cannot fence the explicitly selected replacement forever.
 
 
 ## DMs

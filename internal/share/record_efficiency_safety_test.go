@@ -132,3 +132,28 @@ func TestRoutineMergeHonorsNativeObservationFences(t *testing.T) {
 	require.True(t, report.Ready)
 	require.Zero(t, report.Messages.Allowed)
 }
+
+func TestExactReplacementResetsOnlySupersededObservationFences(t *testing.T) {
+	ctx := t.Context()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+	defer func() { _ = dst.Close() }()
+	require.NoError(t, dst.UpsertGuild(ctx, store.GuildRecord{ID: "@me", RawJSON: `{}`}))
+	require.NoError(t, dst.UpsertChannel(ctx, store.ChannelRecord{ID: "dm", GuildID: "@me", Kind: "dm", RawJSON: `{}`}))
+	require.NoError(t, dst.UpsertMessage(ctx, store.MessageRecord{ID: "private", GuildID: "@me", ChannelID: "dm", Content: "private", NormalizedContent: "private", RawJSON: `{}`}))
+	var checksBefore int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from entity_check_history`).Scan(&checksBefore))
+	repo := filepath.Join(t.TempDir(), "share")
+	_, err := Export(ctx, src, Options{RepoPath: repo})
+	require.NoError(t, err)
+	_, err = Import(ctx, dst, Options{RepoPath: repo})
+	require.NoError(t, err)
+	var checksAfter, overlays, private int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from entity_check_history`).Scan(&checksAfter))
+	require.Equal(t, checksBefore, checksAfter)
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from entity_checks where table_name='messages'`).Scan(&overlays))
+	require.Equal(t, 1, overlays)
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from entity_checks where table_name='messages' and row_key='["private"]'`).Scan(&private))
+	require.Equal(t, 1, private)
+}
