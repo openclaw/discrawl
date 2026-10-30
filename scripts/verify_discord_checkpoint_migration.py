@@ -17,9 +17,9 @@ import tempfile
 import time
 
 from private_discord_checkpoint import (CheckpointError, GitHub, POLICY_REF, canonical, check_deadline, digest,
-                                        download_database, execution_context,
+                                        custody_receipt, download_database, execution_context, load_policy,
                                         file_digest, github_command, hash_value, integer, keys,
-                                        readonly, release_manifest, require, strict_json)
+                                        readonly, release_manifest, require, strict_json, validate_policy)
 
 
 DEADLINE = None
@@ -120,7 +120,7 @@ def publisher_actor_allowed(event, actor, triggering_actor):
             and (event == "schedule" or event == "workflow_dispatch" and actor == "vincentkoc"))
 
 
-def publisher_run(run_id, resume=False, native_outcome="success", published=False):
+def publisher_run_evidence(run_id, resume=False, native_outcome="success", published=False):
     require(native_outcome in {"success", "failure", "cancelled"}, "recovery_native_outcome")
     run = api(f"actions/runs/{run_id}/attempts/1")
     current = api(f"actions/runs/{run_id}")
@@ -174,7 +174,11 @@ def publisher_run(run_id, resume=False, native_outcome="success", published=Fals
                        and archive == "skipped"), "recovery_original_step")
     require(not (published or run["conclusion"] == "success") or all(value == "success" for value in selected),
             "recovery_original_step")
-    return run
+    return run, selected
+
+
+def publisher_run(run_id, resume=False, native_outcome="success", published=False):
+    return publisher_run_evidence(run_id, resume, native_outcome, published)[0]
 
 
 def failed_publisher(run_id):
@@ -259,6 +263,209 @@ def diagnose(expected, run_id, manifest_sha, inventory_sha):
         verify_quiescence()
         require(time.monotonic() < DEADLINE, "diagnostic_timeout")
     print("checkpoint diagnostic verified: read-only path; historical failure remains unclassified")
+
+
+def history_identity(raw):
+    require(isinstance(raw, str) and len(raw.encode()) <= 16384, "history_identity_bound")
+    value = strict_json(raw.encode())
+    keys(value, "archive_revision policy_revision policy_sha256 since channel_sha256s channel_set_sha256")
+    require(all(isinstance(value[key], str) and re.fullmatch(r"[0-9a-f]{40}", value[key])
+                for key in ("archive_revision", "policy_revision"))
+            and hash_value(value["policy_sha256"]), "history_identity")
+    hashes = value["channel_sha256s"]
+    require(isinstance(hashes, list) and 1 <= len(hashes) <= 100 and all(hash_value(x) for x in hashes)
+            and hashes == sorted(set(hashes))
+            and digest(canonical(hashes)) == value["channel_set_sha256"], "history_channel_set")
+    require(isinstance(value["since"], str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T00:00:00Z", value["since"]),
+            "history_since")
+    history_time(value["since"])
+    return value
+
+
+def history_time(value):
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z", value),
+            "history_timestamp")
+    # Keep native RFC3339Nano ordering; datetime alone discards sub-microseconds.
+    second, _, fraction = value.removesuffix("Z").partition(".")
+    return datetime.fromisoformat(second), int(fraction.ljust(9, "0") or "0")
+
+
+def history_checkpoint(github, run_id, manifest_sha, inventory_sha, identity, directory):
+    repository = github.api("")
+    require(repository.get("id") == github.identity["id"] and repository.get("full_name") == github.repository
+            and repository.get("private") is True and repository.get("archived") is False, "private_repository")
+    run, phases = publisher_run_evidence(run_id, resume=True)
+    require(all(phase == "success" for phase in phases), "history_publisher_phases")
+    release = github.api("/releases/latest")
+    manifest, assets, reference = release_manifest(github, release, directory)
+    source = manifest["source"]
+    inventory = [{key: asset[key] for key in ("id", "name", "size", "digest")}
+                 for _, asset in sorted(assets.items())]
+    require(reference["manifest_sha256"] == manifest_sha and digest(canonical(inventory)) == inventory_sha,
+            "history_checkpoint_changed")
+    require(source["workflow"] == "publish-discord-backup.yml" and source["outcome"] == "success"
+            and source["run_id"] == run_id and source["run_attempt"] == 1
+            and source["revision"] == run["head_sha"] and manifest["parent"] is not None
+            and release.get("target_commitish") == source["archive_commit"]
+            and isinstance(release.get("published_at"), str), "history_publisher_binding")
+    require(github.api("/git/ref/heads/main")["object"]["sha"] == identity["archive_revision"],
+            "history_archive_changed")
+    exported_checkpoint(github, manifest, reference, identity["archive_revision"],
+                        legacy_published=run["conclusion"] == "success")
+    return custody_receipt(manifest, assets, reference), run, phases
+
+
+def history_receipt(value, channel, guild, kind, since):
+    receipt = strict_json(value.encode())
+    fields = "guild_id channel_id channel_type since until completed_at boundary"
+    keys(receipt, fields + (" boundary_message_id" if "boundary_message_id" in receipt else ""))
+    # These are the native channelKind/Discord type pairs, not inferred labels.
+    types = {"text": 0, "voice": 2, "announcement": 5, "thread_announcement": 10,
+             "thread_public": 11, "thread_private": 12, "stage": 13}
+    channel_type = types.get(kind)
+    if re.fullmatch(r"type_(?:0|[1-9][0-9]*)", kind):
+        channel_type = int(kind.removeprefix("type_"))
+    require(receipt["guild_id"] == guild and receipt["channel_id"] == channel
+            and channel_type in {0, 2, 5, 10, 11, 12, 13}
+            and type(receipt["channel_type"]) is int and receipt["channel_type"] == channel_type
+            and receipt["since"] == since, "history_receipt_identity")
+    require(history_time(since) < history_time(receipt["until"]) <= history_time(receipt["completed_at"]),
+            "history_receipt_window")
+    require(receipt["boundary"] in {"since", "end"}
+            and (receipt["boundary"] != "since" or isinstance(receipt.get("boundary_message_id"), str)
+                 and re.fullmatch(r"[1-9][0-9]{0,19}", receipt["boundary_message_id"])), "history_receipt_boundary")
+    return {key: receipt[key] for key in ("since", "until", "completed_at", "boundary")}
+
+
+def history_projection(database, channels, guild, identity, deadline):
+    # Read through the native schema without opening a migration-capable Store.
+    # The ledger is upserted and pruned: absence never proves non-attempt.
+    with contextlib.closing(readonly(database)) as db:
+        db.execute("PRAGMA query_only=ON")
+        db.execute("PRAGMA trusted_schema=OFF")
+        require(db.execute("PRAGMA query_only").fetchone() == (1,)
+                and db.execute("PRAGMA trusted_schema").fetchone() == (0,), "history_readonly")
+        db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN")
+        try:
+            nodes, targets = {}, []
+            for target in channels:
+                ancestry, channel = [], target
+                while channel:
+                    check_deadline(deadline)
+                    require(channel not in ancestry and len(ancestry) < 32, "history_ancestry_bound")
+                    ancestry.append(channel)
+                    if channel not in nodes:
+                        require(len(nodes) < 512, "history_channel_bound")
+                        row = db.execute("SELECT guild_id,parent_id,kind,deleted_at,deletion_source,collection_scope,"
+                                         "scope_policy,updated_at FROM channels WHERE id=?", (channel,)).fetchone()
+                        nodes[channel] = dict(row) if row else None
+                    row = nodes[channel]
+                    if row is None:
+                        break
+                    require(row["guild_id"] == guild, "history_channel_guild")
+                    channel = row["parent_id"]
+                row = nodes[target]
+                progress = db.execute("SELECT cursor AS value,updated_at,length(CAST(cursor AS BLOB)) AS bytes FROM sync_state "
+                                      "WHERE scope=?", (f"channel:{target}:history_window:v1:{identity['since']}",)).fetchone()
+                receipt = None
+                if progress:
+                    require(row is not None and progress["bytes"] <= 8192, "history_receipt_bound")
+                    receipt = history_receipt(progress["value"], target, guild, row["kind"], identity["since"])
+                    history_time(progress["updated_at"])
+                targets.append({"channel_sha256": digest(target.encode()),
+                                "ancestry_sha256s": [digest(x.encode()) for x in ancestry],
+                                "receipt": receipt, "checkpoint_updated_at": progress["updated_at"] if progress else None})
+            projected_nodes = []
+            for channel, row in sorted(nodes.items(), key=lambda item: digest(item[0].encode())):
+                node = {"channel_sha256": digest(channel.encode()), "missing": row is None}
+                if row is not None:
+                    history_time(row["updated_at"])
+                    scope = row["collection_scope"]
+                    node.update(deleted=row["deleted_at"] is not None,
+                                deletion_source_sha256=digest(canonical(row["deletion_source"])),
+                                collection_scope=scope if scope in {"allowed", "excluded", "unknown"} else "other",
+                                scope_policy_sha256=digest(canonical(row["scope_policy"])), updated_at=row["updated_at"])
+                projected_nodes.append(node)
+            placeholders = ",".join("?" for _ in nodes)
+            rows = db.execute("SELECT operation,source,guild_id,channel_id,message_id,related_kind,related_id,"
+                              "error_class,error_message,first_seen_at,last_seen_at,retry_count,resolved_at,resolution_reason "
+                              "FROM failure_ledger WHERE channel_id IN (" + placeholders + ") "
+                              "ORDER BY (resolved_at IS NULL) DESC,last_seen_at DESC,failure_id DESC LIMIT 1001",
+                              list(nodes)).fetchall()
+            require(len(rows) <= 1000, "history_ledger_row_bound")
+            failures = []
+            for row in rows:
+                check_deadline(deadline)
+                for field in ("first_seen_at", "last_seen_at"):
+                    history_time(row[field])
+                if row["resolved_at"] is not None:
+                    history_time(row["resolved_at"])
+                require(integer(row["retry_count"], minimum=0), "history_retry_count")
+                error_class = row["error_class"]
+                failure = {"identity_sha256": digest(canonical([row[key] for key in
+                           ("operation", "source", "guild_id", "channel_id", "message_id", "related_kind", "related_id")])),
+                           "channel_sha256": digest(row["channel_id"].encode()),
+                           "error_class": error_class if error_class in {"context_canceled", "deadline_exceeded", "sqlite",
+                                           "discordgo.RESTError", "errors.errorString"} else "other",
+                           "error_class_sha256": digest(canonical(error_class)),
+                           "error_message_sha256": digest(canonical(row["error_message"])),
+                           "resolution_reason_sha256": digest(canonical(row["resolution_reason"])),
+                           "retry_count": row["retry_count"], "resolved": row["resolved_at"] is not None,
+                           **{key: row[key] for key in ("first_seen_at", "last_seen_at", "resolved_at")}}
+                # Only fixed codes escape the private error text; sanitized
+                # native messages can still contain names and channel IDs.
+                failure["http_codes"] = sorted({int(x) for x in re.findall(r"\bHTTP ([1-5][0-9]{2})\b", row["error_message"])})
+                failure["discord_codes"] = sorted({int(x) for x in re.findall(r'"code"\s*:\s*(10003|50001|50013|20028|20029)\b', row["error_message"])})
+                failures.append(failure)
+            result = {"schema": 1, "outcome": "HISTORY_DIAGNOSTIC_COMPLETE", "identity": identity,
+                      "targets": targets, "channels": projected_nodes, "failures": failures,
+                      "ledger_is_invocation_history": False, "absence_proves_non_attempt": False}
+            require(len(canonical(result)) <= 65536, "history_output_bound")
+            check_deadline(deadline)
+            return result
+        finally:
+            db.rollback()
+            db.set_progress_handler(None, 0)
+
+
+def diagnose_history(expected, run_id, manifest_sha, inventory_sha, raw_identity):
+    global DEADLINE
+    DEADLINE = time.monotonic() + 900
+    require(integer(run_id) and hash_value(manifest_sha) and hash_value(inventory_sha), "history_arguments")
+    identity = history_identity(raw_identity)
+    verify_context(expected)
+    github = GitHub(deadline=DEADLINE, read_only=True)
+    guild = os.environ.get("DISCRAWL_GUILD_ID", "")
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        initial = directory / "initial"
+        initial.mkdir()
+        before = history_checkpoint(github, run_id, manifest_sha, inventory_sha, identity, initial)
+        policy_file = directory / "policy.json"
+        load_policy(github, identity["policy_revision"], identity["policy_sha256"], guild, policy_file)
+        policy_bytes = policy_file.read_bytes()
+        _, targets = validate_policy(policy_bytes, identity["policy_sha256"], guild)
+        by_hash = {digest(channel.encode()): channel for channel in targets}
+        require(len(by_hash) == len(targets) and all(value in by_hash for value in identity["channel_sha256s"]),
+                "history_policy_targets")
+        selected = [by_hash[value] for value in identity["channel_sha256s"]]
+        scratch = directory / "restore"
+        scratch.mkdir()
+        release = github.api('/releases/' + str(before[0]["reference"]["release_id"]))
+        require(download_database(github, release, scratch, deadline=DEADLINE, expected_receipt=before[0]) == before[0],
+                "history_restore_changed")
+        result = history_projection(scratch / "restored.sqlite", selected, guild, identity, DEADLINE)
+        after = directory / "after"
+        after.mkdir()
+        require(history_checkpoint(github, run_id, manifest_sha, inventory_sha, identity, after) == before,
+                "history_evidence_changed")
+        load_policy(github, identity["policy_revision"], identity["policy_sha256"], guild, directory / "policy-after.json")
+        require((directory / "policy-after.json").read_bytes() == policy_bytes, "history_policy_changed")
+        verify_context(expected)
+        check_deadline(DEADLINE)
+    print(canonical(result).decode())
 
 
 def successful_probe(probe_run, probe_revision, original_run, manifest_sha, inventory_sha):
@@ -781,6 +988,12 @@ def main():
         require(os.environ.get("MIGRATION_ACK") == "DIAGNOSE_EXISTING_CHECKPOINT", "migration_ack")
         diagnose(os.environ.get("EXPECTED_SHA", ""), int(os.environ.get("ORIGINAL_RUN", "")),
                  os.environ.get("MANIFEST_SHA256", ""), os.environ.get("INVENTORY_SHA256", ""))
+        return
+    if mode == "diagnose-history":
+        require(os.environ.get("MIGRATION_ACK") == "DIAGNOSE_PUBLISHED_HISTORY", "migration_ack")
+        diagnose_history(os.environ.get("EXPECTED_SHA", ""), int(os.environ.get("ORIGINAL_RUN", "")),
+                         os.environ.get("MANIFEST_SHA256", ""), os.environ.get("INVENTORY_SHA256", ""),
+                         os.environ.get("HISTORY_IDENTITY", ""))
         return
     require(mode == "migrate", "migration_mode")
     require(os.environ.get("MIGRATION_ACK") == "MIGRATE_FULL_NATIVE_STATE", "migration_ack")

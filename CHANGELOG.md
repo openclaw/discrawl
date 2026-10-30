@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a read-only hosted history diagnostic for an exact published private checkpoint, with authenticated restore, bounded anonymous channel and failure-ledger evidence, and no collection or publication changes.
+
+- Keep scheduled report-history acquisition independent of unrelated guild-wide message failures, while retaining daily guild discovery and required member refresh with visible failure and unchanged checkpoint verification.
+
+
 - Skip unchanged guild, channel, member, message and attachment content writes. Preserve every check in append-only history and use a latest-check overlay for freshness guards.
 - Compare canonical Gateway/REST content while retaining exact incoming records and legacy raw bytes in content-addressed evidence. Preserve unknown fields, original array shapes, timestamp precision, signed URLs and whitespace.
 - Record numeric guild/channel counters, including zero, in value-change histories. Keep relationship identifiers as content.

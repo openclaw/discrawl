@@ -2,7 +2,7 @@ name: publish-discord-backup
 
 on:
   schedule:
-    # The daily member refresh replaces the ordinary 06:43 run.
+    # Selected history runs independently; the daily guild/member pass replaces 06:43.
     - cron: "43 0,2,4,8,10,12,14,16,18,20,22 * * *"
     - cron: "17 6 * * *"
   workflow_dispatch:
@@ -73,7 +73,8 @@ jobs:
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
           HISTORY_SINCE: ${{ inputs.since }}
-          HISTORY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}
+          HISTORY_MODE: ${{ github.event_name == 'schedule' && github.event.schedule == '43 0,2,4,8,10,12,14,16,18,20,22 * * *' && 'historical' || inputs.mode || 'current' }}
+          HISTORY_SCHEDULE: ${{ github.event.schedule }}
         run: |
           python3 scripts/private_discord_checkpoint.py policy --policy "$ACQUISITION_POLICY" \
             --policy-commit "$POLICY_COMMIT" --policy-sha256 "$POLICY_SHA256" \
@@ -111,7 +112,8 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
           HISTORY_SINCE: ${{ steps.policy.outputs.since }}
-          HISTORY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'current' }}
+          HISTORY_MODE: ${{ steps.policy.outputs.mode }}
+          HISTORY_SCHEDULE: ${{ github.event.schedule }}
           WITH_MEMBERS: ${{ github.event_name == 'schedule' && github.event.schedule == '17 6 * * *' }}
         run: |
           umask 077

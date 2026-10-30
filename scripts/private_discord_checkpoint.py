@@ -50,6 +50,7 @@ WRITER_PHASES = {"command", "init", "latest", "selected"}
 NATIVE_CLASSES = {"unknown", "cancelled", "deadline", "http", "rate_limit", "sqlite", "network",
                   "network_timeout", "usage", "config", "auth", "database"}
 MAX_WRITER_STDERR = 64 * 1024
+SELECTED_SCHEDULE = "43 0,2,4,8,10,12,14,16,18,20,22 * * *"
 
 
 class CheckpointError(Exception):
@@ -523,9 +524,13 @@ def release_manifest(github, release, directory, draft=False):
                                "database_sha256": manifest["database"]["sha256"]}
 
 
-def download_database(github, release, directory, draft=False, deadline=None):
+def download_database(github, release, directory, draft=False, deadline=None, expected_receipt=None):
     check_deadline(deadline)
     manifest, assets, ref = release_manifest(github, release, directory, draft)
+    # A diagnostic admits immutable custody before spending a full restore.
+    # Reject a changed manifest or inventory before downloading any data part.
+    require(expected_receipt is None or custody_receipt(manifest, assets, ref) == expected_receipt,
+            "checkpoint_custody_changed")
     require(shutil.disk_usage(directory).free > manifest["database"]["bytes"]
             + sum(p["bytes"] for p in manifest["parts"]), "checkpoint_capacity")
     with checkpoint_phase("download"):
@@ -1055,15 +1060,24 @@ def main():
     with_members = args.operation == "acquire" and command == ["--with-members"]
     require(not command or with_members, "arguments")
     if args.operation in {"policy", "acquire"}:
-        execution_context()
-        require(args.acquisition_mode != "historical" or os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
+        workflow = execution_context()
+        scheduled_history = args.acquisition_mode == "historical" and os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+        require(args.acquisition_mode != "historical" or os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                or scheduled_history and workflow == "publish-discord-backup.yml"
+                and os.environ.get("HISTORY_SCHEDULE") == SELECTED_SCHEDULE,
                 "historical_dispatch")
+        if scheduled_history:
+            # Scheduled selection borrows the historical collector, not its
+            # 31-day allowance. Acquisition must reuse the pre-restore date.
+            require(args.operation == "policy" or bool(args.since), "acquisition_window")
+            args.since = acquisition_since(args.since)
         require(args.policy is not None, "arguments")
         guild = os.environ.get("DISCRAWL_GUILD_ID", "")
         if args.operation == "policy":
             since = acquisition_since(args.since, args.acquisition_mode)
             load_policy(GitHub(), args.policy_commit, args.policy_sha256, guild, args.policy)
             print("since=" + since)
+            print("mode=" + args.acquisition_mode)
             return 0
         require(args.native is not None and args.config is not None and args.writer_receipt is not None, "arguments")
         return acquire(args.native, args.config, args.policy, args.policy_sha256, guild, args.writer_receipt,

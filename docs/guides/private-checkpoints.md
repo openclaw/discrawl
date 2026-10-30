@@ -190,7 +190,7 @@ UTC midnight by default. An optional `since` input may pin a UTC midnight less
 than 48 hours ago. It is fixed before restore and revalidated before acquisition;
 a stale or future value stops rather than silently selecting a different day.
 The daily 06:17 UTC route requires a member refresh in the first guild-wide
-phase; ordinary scheduled and manual runs skip members. A required member-refresh failure stops before
+phase; manual current runs skip members. A required member-refresh failure stops before
 the targeted phase. The second phase always uses `--skip-members`,
 `--with-media=false` and `--no-update`.
 Both phases share the same 1,200-second deadline, and the second
@@ -200,11 +200,20 @@ checkpoint after all owned processes are reaped.
 
 For a separately reviewed historical backfill, manually dispatch the same
 workflow with `mode: historical` and an explicit `since` UTC midnight less than
-31 days ago. Scheduled runs always use `current`; historical mode cannot request
-members. It runs only the selected native full-history scan, using the same pinned
+31 days ago. Historical mode cannot request members. It runs only the selected native full-history scan, using the same pinned
 policy, stored-thread selection and 1,200-second supervisor. The 5-minute native
 channel deadline remains in effect. Restore, checkpoint verification, failure
 handling and publication use the same serialized owner as current acquisition.
+
+Ordinary two-hour scheduled ticks use that selected scan independently of the
+guild-wide latest refresh. Their UTC-yesterday lower bound and acquisition mode
+are frozen before restore and reused at acquisition; scheduled windows remain
+less than 48 hours old, never the manual 31-day backfill allowance. The daily
+06:17 UTC tick retains the current guild-wide and required-member phases. Its
+failures remain visible and block publication for that invocation. New text and
+announcement threads discovered by the broad pass enter selected acquisition
+after daily discovery; a failing daily pass leaves discovery and member freshness
+degraded. Every selected scan must still qualify its own stream receipts.
 
 The native scan deliberately traverses from the live head through `since`, so it
 also collects newer messages. There is no `until` input. A completed native
@@ -293,6 +302,50 @@ state stops the diagnostic. A successful
 probe proves the current credential and first-part read path; it does not locate
 an earlier unrecorded failure or verify the other parts. Full recovery still
 requires a separately reviewed complete restore and parity check.
+
+## Inspect published history without collecting again
+
+Use the same manual workflow with `mode: diagnose-history` and acknowledgement
+`DIAGNOSE_PUBLISHED_HISTORY`. Supply the reviewed current `expected_sha`, the
+original publisher's first-attempt `original_run`, and the exact published
+checkpoint's `manifest_sha256` and `inventory_sha256`. This mode reads the latest
+published checkpoint; it does not diagnose a draft or authorize finalization.
+
+The `history_identity` JSON has these exact fields:
+
+- `archive_revision`: the archive commit exported from that checkpoint.
+- `policy_revision` and `policy_sha256`: the current pinned private policy.
+- `since`: the exact native UTC midnight key, such as `2026-01-01T00:00:00Z`.
+- `channel_sha256s`: 1–100 unique lowercase SHA-256 hashes, sorted lexically.
+  Hash each bare decimal channel ID as UTF-8, without a prefix or newline.
+- `channel_set_sha256`: SHA-256 of the compact JSON array of those sorted
+  hashes, without whitespace or a trailing newline.
+
+Targets must resolve exactly against the authenticated policy before any data
+part downloads. Native ingestion, every checkpoint phase, and Git publication
+must have succeeded; a later optional Cloud failure does not invalidate those
+facts. The diagnostic verifies the archive's parent, checkpoint trailers and
+producer receipt. It restores all checkpoint parts on the existing hosted runner
+through the canonical checksum, capacity, schema and SQLite integrity gates.
+The admitted manifest and inventory must still match before the first part and
+after restore. No full checkpoint is downloaded to the operator's machine.
+
+One read-only SQLite transaction inspects native `parent_id` ancestry, the exact
+requested history-window key, and both resolved and unresolved failure rows for
+the selected channels and their ancestors. Output contains hashes, validated
+timestamps, fixed error codes and retry counts; names, native IDs, cursors,
+boundary-message IDs and raw errors stay private. Missing receipts and ancestors
+are explicit. More than 1,000 ledger rows or 64 KiB of projected JSON stops with
+a bound error rather than truncating evidence.
+
+The failure ledger is upserted and resolved entries are pruned. It is not an
+invocation log: an absent failure cannot prove that collection was unattempted.
+The exact source, run, archive, policy and custody bindings are rechecked before
+the result is printed. Scratch is removed on success and failure. The existing
+900-second diagnostic and 20-minute job ceilings apply; a full restore's actual
+duration and space still need to qualify on the selected checkpoint. No Discord
+credential, collection, migration, reconciliation, promotion, archive or Cloud
+publication, retention change, or scheduler activation runs.
 
 ## Finalize a retained initial checkpoint
 
