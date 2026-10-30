@@ -81,7 +81,7 @@ func canonicalForm(kind entityKind, raw, channelKind string) string {
 	if !ok {
 		return form
 	}
-	for _, key := range []string{"reactions", "attachments", "embeds", "components", "mentions", "mention_roles", "channels", "threads", "roles", "permission_overwrites"} {
+	for _, key := range []string{"reactions", "attachments", "embeds", "components", "mentions", "mention_roles", "channels", "threads", "roles"} {
 		if isEmptyValue(obj[key]) {
 			delete(obj, key)
 		}

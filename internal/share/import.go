@@ -43,6 +43,7 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 	}
 	pragmasRestored := false
 	existingMedia := map[string]attachmentMediaRecord{}
+	var importTx *sql.Tx
 	defer func() {
 		if !pragmasRestored {
 			_ = restorePragmas(ctx)
@@ -70,9 +71,18 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 			if err := validateSnapshotRow(table, row); err != nil {
 				return false, err
 			}
+			if table == "mention_events" && row["event_id"] != nil {
+				if err := store.CheckImportedMentionIdentityTx(ctx, importTx, row); err != nil {
+					return false, err
+				}
+			}
 			return true, nil
 		},
 		BeforeImport: func(ctx context.Context, tx *sql.Tx) error {
+			importTx = tx
+			if err := store.RetainMentionIdentitiesTx(ctx, tx); err != nil {
+				return err
+			}
 			var err error
 			existingMedia, err = attachmentMediaByID(ctx, tx)
 			if err != nil {

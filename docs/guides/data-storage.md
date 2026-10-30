@@ -118,6 +118,15 @@ blob hash. Evidence and check rows are not content versions.
 an ID is removed by duplicate reconciliation, disappearance, or metadata update.
 Resolve historical IDs here when absent from `mention_events`. Existing IDs are
 not renumbered; current identical natural identities keep their original ID.
+Before exact snapshot replacement, current mention identities are retained in
+history. A legacy snapshot supplying an explicit event ID already bound to a
+different `(message_id,target_type,target_id)` is rejected atomically; import it
+into a fresh archive instead of aliasing a historical reference. Modern snapshots
+omit local event IDs and allocate above the local AUTOINCREMENT high-water mark.
+Permission metadata is not transport noise: missing/null `permission_overwrites`
+is distinct from a known empty array, preserving publication preflight semantics.
+Accepted role events record observed freshness even when their content is equal,
+so delayed repair cannot restore a stale permission grant.
 
 
 ## DMs

@@ -69,12 +69,18 @@ func (s *Store) ApplyGuildRole(ctx context.Context, guildID, roleID string, role
 	}
 	merged, _ := canonicalizeRaw(entityGuild, string(body), raw, "")
 	if sameCanonicalRaw(entityGuild, raw, merged, "") {
+		if err := recordObservedTx(ctx, tx, "guilds", false, guildID); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	if err := retainLegacyRawTx(ctx, tx, "guilds", raw, guildID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `update guilds set raw_json=?,updated_at=? where id=?`, merged, time.Now().UTC().Format(timeLayout), guildID); err != nil {
+		return err
+	}
+	if err := recordObservedTx(ctx, tx, "guilds", true, guildID); err != nil {
 		return err
 	}
 	return tx.Commit()

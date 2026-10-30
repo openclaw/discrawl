@@ -147,3 +147,21 @@ func TestRepairStartClockDoesNotDuplicateMessageEvidence(t *testing.T) {
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_check_history where table_name='messages' and check_kind='observation_started'`).Scan(&checks))
 	require.Equal(t, 2, checks)
 }
+
+func TestImportedMentionIdentityFenceRetainsFirstBinding(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer rollback(tx)
+	row := map[string]any{"event_id": int64(42), "message_id": "m", "target_type": "user", "target_id": "u", "target_name": "original"}
+	require.NoError(t, CheckImportedMentionIdentityTx(ctx, tx, row))
+	require.NoError(t, CheckImportedMentionIdentityTx(ctx, tx, row))
+	row["message_id"] = "other"
+	require.ErrorContains(t, CheckImportedMentionIdentityTx(ctx, tx, row), "conflicts with retained local identity")
+	require.NoError(t, tx.Commit())
+	var body string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from mention_event_history where event_id=42`).Scan(&body))
+	require.Contains(t, body, `"message_id":"m"`)
+	require.Contains(t, body, `"target_name":"original"`)
+}

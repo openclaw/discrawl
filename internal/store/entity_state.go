@@ -376,3 +376,35 @@ func retainLegacyAttachmentTx(ctx context.Context, tx *sql.Tx, id string) error 
 	}
 	return retainLegacyRawTx(ctx, tx, "message_attachments", body, id)
 }
+
+// RetainMentionIdentitiesTx protects existing IDs before exact snapshot
+// replacement. Imported explicit IDs must pass CheckImportedMentionIdentityTx;
+// omitted IDs continue above SQLite's existing AUTOINCREMENT high-water mark.
+func RetainMentionIdentitiesTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `insert into mention_event_history(event_id,payload_json)
+ select event_id,json_object('event_id',event_id,'message_id',message_id,'guild_id',guild_id,'channel_id',channel_id,'author_id',author_id,'target_type',target_type,'target_id',target_id,'target_name',target_name,'event_at',event_at)
+ from mention_events where true on conflict do nothing`)
+	return err
+}
+
+// CheckImportedMentionIdentityTx rejects a legacy snapshot that tries to reuse
+// an existing local event ID for a different natural identity. The entire
+// replacement rolls back, preserving both the current archive and its history.
+func CheckImportedMentionIdentityTx(ctx context.Context, tx *sql.Tx, row map[string]any) error {
+	var conflicts int
+	err := tx.QueryRowContext(ctx, `select count(*) from mention_event_history where event_id=? and
+ (json_extract(payload_json,'$.message_id') is not ? or json_extract(payload_json,'$.target_type') is not ? or json_extract(payload_json,'$.target_id') is not ?)`, row["event_id"], row["message_id"], row["target_type"], row["target_id"]).Scan(&conflicts)
+	if err != nil {
+		return err
+	}
+	if conflicts > 0 {
+		return errors.New("snapshot mention event_id conflicts with retained local identity; import into a fresh archive")
+	}
+	body, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	// Also fence a second conflicting explicit ID within the same snapshot.
+	_, err = tx.ExecContext(ctx, `insert into mention_event_history(event_id,payload_json) values(?,?) on conflict do nothing`, row["event_id"], string(body))
+	return err
+}

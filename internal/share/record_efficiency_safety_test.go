@@ -1,0 +1,95 @@
+package share
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/openclaw/discrawl/internal/store"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUnchangedRoleRevocationFencesDelayedRepairPublication(t *testing.T) {
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	role := &discordgo.Role{ID: "guild", Permissions: 0}
+	guild := &discordgo.Guild{ID: "guild", Name: "Fixture", Roles: []*discordgo.Role{role}}
+	body, err := json.Marshal(guild)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "guild", Name: "Fixture", RawJSON: string(body)}))
+	require.NoError(t, s.ApplyGuildRole(ctx, "guild", "guild", role))
+	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "selected", GuildID: "guild", Kind: "text", RawJSON: `{"id":"selected","permission_overwrites":[]}`}))
+	upsertSnapshotFilterMessage(t, ctx, s, "m", "selected", "u", "private")
+	allowPublicFixtureChannels(t, s)
+	var before, after string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from guilds where id='guild'`).Scan(&before))
+	started := time.Now()
+	time.Sleep(time.Millisecond)
+	require.NoError(t, s.ApplyGuildRole(ctx, "guild", "guild", role))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from guilds where id='guild'`).Scan(&after))
+	require.Equal(t, before, after)
+	guild.Roles[0] = &discordgo.Role{ID: "guild", Permissions: 1024}
+	body, err = json.Marshal(guild)
+	require.NoError(t, err)
+	require.NoError(t, s.UpsertObservedGuild(ctx, store.GuildRecord{ID: "guild", Name: "Fixture", RawJSON: string(body)}, started))
+	report, err := PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.True(t, report.Ready)
+	require.Zero(t, report.Messages.Allowed)
+	filter, err := newSnapshotFilter(ctx, s.DB(), FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.False(t, filter.allowChannelID("selected"))
+}
+
+func TestPermissionEvidenceNullToEmptyRecoversPublication(t *testing.T) {
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "guild", RawJSON: `{"id":"guild","roles":[{"id":"guild","permissions":"1024"}]}`}))
+	c := store.ChannelRecord{ID: "selected", GuildID: "guild", Kind: "text", RawJSON: `{"id":"selected","permission_overwrites":null}`}
+	require.NoError(t, s.UpsertChannel(ctx, c))
+	upsertSnapshotFilterMessage(t, ctx, s, "m", "selected", "u", "public")
+	allowPublicFixtureChannels(t, s)
+	report, err := PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	c.RawJSON = `{"id":"selected","permission_overwrites":[]}`
+	require.NoError(t, s.UpsertChannel(ctx, c))
+	report, err = PreflightPublishScope(ctx, s, FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.True(t, report.Ready)
+	require.Equal(t, 1, report.Messages.Allowed)
+	filter, err := newSnapshotFilter(ctx, s.DB(), FilterOptions{PublicOnly: true})
+	require.NoError(t, err)
+	require.True(t, filter.allowChannelID("selected"))
+}
+
+func TestExactImportRejectsHistoricalMentionIDReuse(t *testing.T) {
+	ctx := t.Context()
+	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
+	defer func() { _ = src.Close() }()
+	dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+	defer func() { _ = dst.Close() }()
+	var oldID int64
+	var oldMessage string
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select event_id,message_id from mention_events order by event_id limit 1`).Scan(&oldID, &oldMessage))
+	repo := filepath.Join(t.TempDir(), "share")
+	manifest, err := Export(ctx, src, Options{RepoPath: repo})
+	require.NoError(t, err)
+	manifest = appendSnapshotRow(t, repo, manifest, "mention_events", map[string]any{"event_id": oldID, "message_id": "different", "guild_id": "g1", "channel_id": "c1", "target_type": "user", "target_id": "different", "target_name": "different", "event_at": "2026-10-30T00:00:00Z"})
+	writeShareManifest(t, repo, manifest)
+	_, err = Import(ctx, dst, Options{RepoPath: repo})
+	require.ErrorContains(t, err, "conflicts with retained local identity")
+	var after string
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select message_id from mention_events where event_id=?`, oldID).Scan(&after))
+	require.Equal(t, oldMessage, after)
+	// The failed exact replacement rolls back its retention and feed writes too.
+	var retained int
+	require.NoError(t, dst.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&retained))
+	require.Zero(t, retained)
+}

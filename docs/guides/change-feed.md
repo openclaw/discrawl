@@ -107,7 +107,7 @@ log cannot express what happened:
 | `triggers_restored` | A trigger was missing or different at open, so writes may be unrecorded |
 | `contract_upgraded` | The feed contract version changed |
 | `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start, and the head becomes the new floor |
-| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored the tracked snapshot tables (`guilds`, `channels`, `members`, `messages`, `message_attachments`, `mention_events`). Their triggers are suspended during the replacement, so the import writes no per-row entries |
+| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored the tracked snapshot tables (`guilds`, `channels`, `members`, `messages`, `message_attachments`, `mention_events`). Their triggers are suspended during the replacement, so the import writes no per-row content entries; first-time preservation of replaced mention identities still logs history inserts |
 
 Writable opens check the feed after every migration. When the installed
 triggers already match, the check issues no DDL, so routine opens do not change
