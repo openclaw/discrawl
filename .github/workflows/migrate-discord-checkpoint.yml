@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Migrate, diagnose, finalize initial state, or recover an unpublished publisher checkpoint
+        description: Migrate, diagnose draft or published history, finalize, or recover an unpublished checkpoint
         type: choice
-        options: [migrate, diagnose, finalize, recover-publisher]
+        options: [migrate, diagnose, diagnose-history, finalize, recover-publisher]
         default: migrate
         required: true
       expected_sha:
@@ -22,7 +22,7 @@ on:
         type: string
         required: false
       original_run:
-        description: Exact failed migration or publisher run
+        description: Exact original migration or publisher run
         type: string
         required: false
       manifest_sha256:
@@ -31,6 +31,10 @@ on:
         required: false
       inventory_sha256:
         description: Diagnose/finalize - reviewed asset inventory SHA-256
+        type: string
+        required: false
+      history_identity:
+        description: History only - exact archive/policy revisions, policy hash, UTC since, sorted channel hashes and set hash JSON
         type: string
         required: false
       probe_run:
@@ -42,7 +46,7 @@ on:
         type: string
         required: false
       acknowledgement:
-        description: Type MIGRATE_FULL_NATIVE_STATE, DIAGNOSE_EXISTING_CHECKPOINT, FINALIZE_EXISTING_CHECKPOINT, or RECOVER_RETAINED_PUBLISHER
+        description: Type MIGRATE_FULL_NATIVE_STATE, DIAGNOSE_EXISTING_CHECKPOINT, DIAGNOSE_PUBLISHED_HISTORY, FINALIZE_EXISTING_CHECKPOINT, or RECOVER_RETAINED_PUBLISHER
         type: string
         required: true
 
@@ -138,7 +142,7 @@ jobs:
           echo "Private full-state migration and independent restore verified; schedules remain unchanged."
 
   diagnose:
-    if: inputs.mode == 'diagnose'
+    if: inputs.mode == 'diagnose' || inputs.mode == 'diagnose-history'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -154,12 +158,28 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Inspect retained draft and one existing part without changes
+        if: inputs.mode == 'diagnose'
         timeout-minutes: 16
         env:
           GH_TOKEN: ${{ github.token }}
           DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
           DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
         run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_discord_checkpoint_migration.py
+
+      - name: Inspect published history and failure ledger without changes
+        if: inputs.mode == 'diagnose-history'
+        timeout-minutes: 16
+        env:
+          CHECKPOINT_MODE: diagnose-history
+          HISTORY_IDENTITY: ${{ inputs.history_identity }}
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_BACKUP_TOKEN: ${{ secrets.DISCORD_BACKUP_TOKEN }}
+          DISCRAWL_BACKUP_REPOSITORY: ${{ secrets.DISCRAWL_BACKUP_REPOSITORY }}
+          DISCRAWL_GUILD_ID: ${{ secrets.DISCRAWL_GUILD_ID }}
+        run: |
+          umask 077
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           python3 scripts/verify_discord_checkpoint_migration.py
 

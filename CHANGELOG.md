@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a read-only hosted history diagnostic for an exact published private checkpoint, with authenticated restore, bounded anonymous channel and failure-ledger evidence, and no collection or publication changes.
+
 - Keep scheduled report-history acquisition independent of unrelated guild-wide message failures, while retaining daily guild discovery and required member refresh with visible failure and unchanged checkpoint verification.
 
 ## 0.19.0 - 2026-10-28
