@@ -618,6 +618,17 @@ func TestChangeFeedReaderReconstructsSnapshots(t *testing.T) {
 			require.Equal(t, want, r.rows, "step %d table %s", step, table)
 		}
 	}
+	// Source aliases are written by exact snapshot import, not normal native
+	// message mutations. Exercise that contract explicitly before random work.
+	check(-2)
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	require.NoError(t, MapImportedMentionIdentityTx(ctx, tx, map[string]any{
+		"event_id": int64(1000), "message_id": "imported", "guild_id": "g", "channel_id": "c1",
+		"target_type": "user", "target_id": "target", "target_name": "target", "event_at": "2026-10-28T00:00:00Z",
+	}))
+	require.NoError(t, tx.Commit())
+	check(-1)
 	rng := rand.New(rand.NewPCG(1, 28))
 	contents := []string{"alpha", "beta", "gamma"}
 	embedded := 0
