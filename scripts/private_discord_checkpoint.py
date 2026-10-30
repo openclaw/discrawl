@@ -524,9 +524,13 @@ def release_manifest(github, release, directory, draft=False):
                                "database_sha256": manifest["database"]["sha256"]}
 
 
-def download_database(github, release, directory, draft=False, deadline=None):
+def download_database(github, release, directory, draft=False, deadline=None, expected_receipt=None):
     check_deadline(deadline)
     manifest, assets, ref = release_manifest(github, release, directory, draft)
+    # A diagnostic admits immutable custody before spending a full restore.
+    # Reject a changed manifest or inventory before downloading any data part.
+    require(expected_receipt is None or custody_receipt(manifest, assets, ref) == expected_receipt,
+            "checkpoint_custody_changed")
     require(shutil.disk_usage(directory).free > manifest["database"]["bytes"]
             + sum(p["bytes"] for p in manifest["parts"]), "checkpoint_capacity")
     with checkpoint_phase("download"):

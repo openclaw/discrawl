@@ -203,6 +203,23 @@ func TestPrivateCheckpointWorkflowBoundaries(t *testing.T) {
 			require.Contains(t, diagnostic, "CHECKPOINT_MODE: diagnose")
 			require.NotContains(t, diagnostic, "actions/cache")
 			require.NotContains(t, diagnostic, "private_discord_checkpoint.py")
+			require.Equal(t, []string{"migrate", "diagnose", "diagnose-history", "finalize", "recover-publisher"}, workflow.On.Dispatch.Inputs["mode"].Options)
+			require.False(t, workflow.On.Dispatch.Inputs["history_identity"].Required)
+			for _, step := range workflow.Jobs["diagnose"].Steps {
+				switch step.Name {
+				case "Inspect retained draft and one existing part without changes":
+					require.Equal(t, "inputs.mode == 'diagnose'", step.If)
+					require.NotContains(t, step.Run, "diagnose-history")
+				case "Inspect published history and failure ledger without changes":
+					require.Equal(t, "inputs.mode == 'diagnose-history'", step.If)
+					require.Equal(t, 16, step.TimeoutMinutes)
+					require.Equal(t, "diagnose-history", step.Env["CHECKPOINT_MODE"])
+					require.Equal(t, "${{ inputs.history_identity }}", step.Env["HISTORY_IDENTITY"])
+					require.Equal(t, "${{ secrets.DISCRAWL_GUILD_ID }}", step.Env["DISCRAWL_GUILD_ID"])
+				}
+			}
+			require.NotContains(t, diagnostic, "DISCORD_BOT_TOKEN")
+			require.NotContains(t, diagnostic, "Build")
 			finalize := text[strings.Index(text, "  finalize:"):]
 			require.Contains(t, finalize, "if: inputs.mode == 'finalize'")
 			require.Contains(t, finalize, "CHECKPOINT_MODE: finalize")
