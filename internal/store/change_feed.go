@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,9 +21,14 @@ import (
 // transaction, so every writer (including older binaries, share imports and
 // manual repairs) is covered without application bookkeeping.
 const (
-	// ChangeFeedContractVersion changes only when entry semantics change.
-	// Every tracked table then starts a new generation.
+	// ChangeFeedContractVersion is the baseline contract recorded in
+	// change_feed_meta. It stays 1 so contract-1 readers keep their cursors;
+	// later contracts are served next to it (see changeFeedContracts).
 	ChangeFeedContractVersion = 1
+	// ChangeFeedLatestContractVersion is the newest contract this binary
+	// serves. Contract 2 adds the content tables and entity_metrics with the
+	// same entry semantics; see docs/guides/change-feed.md.
+	ChangeFeedLatestContractVersion = 2
 	// ChangeFeedRetention bounds change_log growth. Entries younger than this
 	// are never compacted; a reader whose cursor falls below the compaction
 	// floor must reconcile once.
@@ -40,20 +46,60 @@ const (
 	ChangeOpDelete = "d"
 )
 
-var changeFeedTables = []string{
+var changeFeedV1Tables = []string{
 	"message_attachments",
 	"mention_events",
 	"message_embedding_history",
 	"attachment_text_history",
 }
 
-// ChangeFeedTables returns the tables covered by the change feed.
+// Tables added by contract 2. Each table's change_feed_tables row records the
+// contract that introduced it, so contract-1 tables keep their generations
+// and a contract-1 binary still finds its own tables current.
+var changeFeedV2Tables = []string{
+	"guilds",
+	"channels",
+	"members",
+	"messages",
+	"entity_metrics",
+	"entity_evidence",
+	"entity_observations",
+	"entity_check_history",
+	"mention_event_history",
+}
+
+var changeFeedTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)
+
+// changeFeedContracts lists every contract this binary serves and its tables.
+var changeFeedContracts = map[int][]string{
+	1: changeFeedV1Tables,
+	2: changeFeedTables,
+}
+
+// ChangeFeedTables returns the tables covered by the change feed (all
+// contracts).
 func ChangeFeedTables() []string {
 	return slices.Clone(changeFeedTables)
 }
 
+func changeFeedTableContract(table string) int {
+	if slices.Contains(changeFeedV1Tables, table) {
+		return 1
+	}
+	return 2
+}
+
+func changeFeedContractsJSON(version int) string {
+	body, err := json.Marshal(changeFeedContracts[version])
+	if err != nil {
+		panic(err)
+	} // []string contains no unsupported JSON values.
+	return string(body)
+}
+
 type ChangeFeedTableStatus struct {
 	Table         string `json:"table"`
+	Contract      int    `json:"contract_version"`
 	Generation    int64  `json:"generation"`
 	GenerationID  string `json:"generation_id"`
 	GenerationSeq int64  `json:"generation_seq"`
@@ -63,6 +109,7 @@ type ChangeFeedTableStatus struct {
 
 type ChangeFeedStatus struct {
 	ContractVersion  int                     `json:"contract_version"`
+	ContractVersions []int                   `json:"contract_versions"`
 	HeadSeq          int64                   `json:"head_seq"`
 	CompactedThrough int64                   `json:"compacted_through"`
 	CompactedAt      string                  `json:"compacted_at,omitempty"`
@@ -119,10 +166,40 @@ func changeFeedCurrent(ctx context.Context, db changeFeedDB) (bool, error) {
 	if version.Int64 != ChangeFeedContractVersion {
 		return false, nil
 	}
+	if ok, err := changeFeedContractsCurrent(ctx, db); err != nil || !ok {
+		return false, err
+	}
 	for _, table := range changeFeedTables {
 		ok, err := changeFeedTableCurrent(ctx, db, table)
 		if err != nil || !ok {
 			return false, err
+		}
+	}
+	return true, nil
+}
+
+// changeFeedContractsCurrent reports whether change_feed_contracts lists
+// exactly the contracts this binary serves. A newer binary's extra contract
+// rows are left alone by older binaries, which never read this table.
+func changeFeedContractsCurrent(ctx context.Context, db changeFeedDB) (bool, error) {
+	var present int
+	if err := db.QueryRowContext(ctx, `select count(*) from sqlite_master where type='table' and name='change_feed_contracts'`).Scan(&present); err != nil {
+		return false, err
+	}
+	if present == 0 {
+		return false, nil
+	}
+	for version := range changeFeedContracts {
+		var tables string
+		err := db.QueryRowContext(ctx, `select tables_json from change_feed_contracts where contract_version=?`, version).Scan(&tables)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if tables != changeFeedContractsJSON(version) {
+			return false, nil
 		}
 	}
 	return true, nil
@@ -142,7 +219,7 @@ func changeFeedTableCurrent(ctx context.Context, db changeFeedDB, table string) 
 	if err != nil {
 		return false, err
 	}
-	if stored.String != schemaSHA || contract.Int64 != ChangeFeedContractVersion {
+	if stored.String != schemaSHA || contract.Int64 != int64(changeFeedTableContract(table)) {
 		return false, nil
 	}
 	for name, want := range triggers {
@@ -217,6 +294,21 @@ func ensureChangeFeedTx(ctx context.Context, tx *sql.Tx) error {
 		ChangeFeedContractVersion, int64(ChangeFeedRetention/time.Second)); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `create table if not exists change_feed_contracts (
+			contract_version integer primary key,
+			tables_json text not null,
+			updated_at text not null
+		)`); err != nil {
+		return fmt.Errorf("create change feed: %w", err)
+	}
+	for _, version := range slices.Sorted(maps.Keys(changeFeedContracts)) {
+		if _, err := tx.ExecContext(ctx, `insert into change_feed_contracts(contract_version,tables_json,updated_at) values(?,?,?)
+			on conflict(contract_version) do update set tables_json=excluded.tables_json,updated_at=excluded.updated_at
+			where change_feed_contracts.tables_json<>excluded.tables_json`,
+			version, changeFeedContractsJSON(version), time.Now().UTC().Format(timeLayout)); err != nil {
+			return err
+		}
+	}
 	if partial {
 		// Every generation restarts below. Make the current head the floor so
 		// it is a valid empty cursor boundary, and drop entries no reader of
@@ -290,7 +382,7 @@ func changeFeedRepairReason(ctx context.Context, tx *sql.Tx, table string) (stri
 		return "", err
 	}
 	switch {
-	case contract.Int64 != ChangeFeedContractVersion:
+	case contract.Int64 != int64(changeFeedTableContract(table)):
 		return "contract_upgraded", nil
 	case stored.String != schemaSHA:
 		return "schema_changed", nil
@@ -330,11 +422,53 @@ func BumpChangeFeedGenerationTx(ctx context.Context, tx *sql.Tx, reason string, 
 		if !slices.Contains(changeFeedTables, table) {
 			return fmt.Errorf("change feed does not track %q", table)
 		}
+		// Reinstall the triggers, so a generation that follows
+		// SuspendChangeFeedTx records later writes again.
+		if err := installChangeFeedTriggers(ctx, tx, table); err != nil {
+			return err
+		}
 		if err := bumpChangeFeedGeneration(ctx, tx, table, reason); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// SuspendChangeFeedTx drops the feed triggers of tables whose contents the
+// caller is about to replace wholesale, so a replacement does not log a delete
+// and an insert for every row. The caller must call
+// BumpChangeFeedGenerationTx for the same tables in the same transaction; a
+// rollback restores the triggers. It is a no-op before the feed is installed.
+func SuspendChangeFeedTx(ctx context.Context, tx *sql.Tx, tables ...string) error {
+	var present int
+	if err := tx.QueryRowContext(ctx, `select count(*) from sqlite_master where type='table' and name='change_feed_tables'`).Scan(&present); err != nil {
+		return err
+	}
+	if present == 0 {
+		return nil
+	}
+	for _, table := range tables {
+		if !slices.Contains(changeFeedTables, table) {
+			return fmt.Errorf("change feed does not track %q", table)
+		}
+		for _, suffix := range []string{"ai", "au", "ad"} {
+			if _, err := tx.ExecContext(ctx, `drop trigger if exists `+quoteIdent("change_feed_"+table+"_"+suffix)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ChangeFeedReplacedTables returns the tracked tables among tables.
+func ChangeFeedReplacedTables(tables []string) []string {
+	var out []string
+	for _, table := range tables {
+		if slices.Contains(changeFeedTables, table) {
+			out = append(out, table)
+		}
+	}
+	return out
 }
 
 func bumpChangeFeedGeneration(ctx context.Context, tx *sql.Tx, table, reason string) error {
@@ -355,7 +489,7 @@ func bumpChangeFeedGeneration(ctx context.Context, tx *sql.Tx, table, reason str
 		on conflict(table_name) do update set generation=change_feed_tables.generation+1,generation_id=excluded.generation_id,
 			generation_seq=excluded.generation_seq,reason=excluded.reason,schema_sha256=excluded.schema_sha256,
 			contract_version=excluded.contract_version,updated_at=excluded.updated_at`,
-		table, hex.EncodeToString(id[:]), head, reason, schemaSHA, ChangeFeedContractVersion, time.Now().UTC().Format(timeLayout))
+		table, hex.EncodeToString(id[:]), head, reason, schemaSHA, changeFeedTableContract(table), time.Now().UTC().Format(timeLayout))
 	return err
 }
 
@@ -567,14 +701,20 @@ func (s *Store) ChangeFeedStatus(ctx context.Context) (*ChangeFeedStatus, error)
 		return nil, err
 	}
 	status.HeadSeq = head
-	rows, err := s.db.QueryContext(ctx, `select table_name,generation,generation_id,generation_seq,reason,updated_at from change_feed_tables order by table_name`)
+	status.ContractVersions = []int{ChangeFeedContractVersion}
+	if ok, err := changeFeedContractsCurrent(ctx, s.db); err != nil {
+		return nil, err
+	} else if ok {
+		status.ContractVersions = slices.Sorted(maps.Keys(changeFeedContracts))
+	}
+	rows, err := s.db.QueryContext(ctx, `select table_name,contract_version,generation,generation_id,generation_seq,reason,updated_at from change_feed_tables order by table_name`)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var t ChangeFeedTableStatus
-		if err := rows.Scan(&t.Table, &t.Generation, &t.GenerationID, &t.GenerationSeq, &t.Reason, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.Table, &t.Contract, &t.Generation, &t.GenerationID, &t.GenerationSeq, &t.Reason, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		status.Tables = append(status.Tables, t)

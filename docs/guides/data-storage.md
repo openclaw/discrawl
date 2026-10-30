@@ -23,6 +23,103 @@ path if you want to move an existing archive to the platform-native location.
 
 Messages imported from Discord Desktop use the same message, attachment, mention, and FTS paths as bot-synced messages.
 
+## Content rows, checks and metrics
+
+The unreleased record-efficiency candidate treats `guilds`, `channels`, `members`, `messages` and
+`message_attachments` as content rows: a write happens only when a content
+column or the canonical provider metadata changes, and `updated_at` then means
+"content last changed". The 6-hourly repair, the daily member refresh and
+Gateway replays of unchanged rows write no content row, no search-index row
+and no content change-feed entry. Evidence and checks are appended separately. A message's `updated_at` still advances when one of
+its attachments or mentions changes.
+
+`raw_json` holds one canonical form per entity, whichever transport delivered
+it:
+
+- **Merge rule.** A value that the incoming transport omits, nulls or zeroes
+  never replaces a known stored value. Messages keep the Gateway `guild_id`,
+  `member` and `mentions[].member`, and keep REST `author.flags`/
+  `author.public_flags` (also inside `referenced_message`) when Gateway sends
+  zeros. Members keep `guild_id`, member `flags` and `user.flags`/
+  `user.public_flags`. Channels keep `guild_id`, a non-voice `bitrate` and a
+  public thread's `thread_metadata.invitable`. Guilds keep the Gateway
+  `joined_at`, `large` and a `region` that REST reports as `deprecated`. A
+  provider that genuinely resets one of these fields to zero is always retained in exact evidence, even when the canonical display
+  keeps the known value.
+- **Unordered sets** are sorted: guild `features` and channel
+  `permission_overwrites` (by id, then type).
+- **Timestamps** in member `joined_at`, `premium_since`,
+  `communication_disabled_until`, channel `archive_timestamp` (column and
+  `thread_metadata`) and `thread_metadata.create_timestamp` are truncated to
+  milliseconds, the precision both transports share.
+- **Guild collections** retain their complete nested fields, including unknown
+  metadata. A missing or empty transport catalog keeps the last known catalog.
+  Exact incoming missing/null/array shape is preserved in evidence.
+- When the canonical form equals the incoming payload, the incoming bytes are
+  stored unchanged; otherwise the canonical encoding (sorted keys) is stored.
+  Rows written before 0.20.0 are not rewritten: they compare by canonical form
+  and change on their next real content change.
+
+`entity_metrics(entity_type, entity_id, metric, observed_at, value)` is a
+value-change series for live counters, appended only when a value differs
+from the latest recorded one: guild `member_count`, `approximate_member_count`,
+`approximate_presence_count` and `premium_subscription_count`, and channel
+`message_count`, `member_count` and `total_message_sent`.
+Every observed numeric value, including zero, is recorded. No inference that
+a zero means absent is applied to metric history. `last_message_id` remains
+content because it is an identity relationship, not a numeric count. These counters are no longer stored in content
+`raw_json`. `discrawl` does not seed old values automatically; the store
+function `SeedEntityMetrics` backfills them from legacy `raw_json` without
+touching content rows.
+
+`entity_checks(table_name, row_key, check_kind, checked_at, succeeded_at,
+outcome)` holds the latest check per row: `observed` for every accepted
+observation (`outcome` `changed` or `unchanged`) and `attachment_text` for
+every attachment text extraction attempt (`outcome` is the text status).
+`observation_started` retains a message mutation request start separately, so a
+new repair start does not duplicate the unchanged message evidence body.
+`row_key` uses the change feed's JSON primary-key encoding. Freshness guards
+("a write after this observation started is newer") use the later of
+`updated_at` and the observed check. `message_attachments.text_attempted_at`
+and `text_succeeded_at` are check fields: they are refreshed only with a
+content write (for example a new text status, error or text), and text retries
+are ordered by the later of `text_attempted_at` and the `attachment_text`
+check.
+
+All efficiency tables are additive and do not change `user_version`, so an
+older binary can still open the archive. None is exported to Git snapshots.
+
+### Exact evidence and check history
+
+`entity_checks` is a latest-state convenience overlay, not the only check log.
+`entity_check_history(check_id, table_name, row_key, check_kind, checked_at,
+succeeded_at, outcome)` appends every accepted check, with a monotonic integer
+`check_id`. It has no deletion or retention policy.
+
+Before canonicalization, `entity_observations(observation_id, table_name,
+row_key, observed_at, evidence_hash)` binds each observation to an immutable
+`entity_evidence(evidence_hash, payload_json)` object. The hash is SHA-256 of the
+serialized native record. Decode `payload_json` into that native record or
+message mutation (local `WriteOptions` are not source data): its `RawJSON` string is the exact original input, preserving
+whitespace, missing versus null, array order, numeric spelling, full timestamp
+precision and signed URLs. Message mutations also retain the original event
+payload, attachments and mentions. Identical receipts share one evidence body;
+A-B-A retains three observations, not two. These are exact store inputs, not a
+claim to recover network bytes already discarded by an upstream SDK.
+
+Unknown fields remain meaningful content, including unknown null/empty values.
+Only the documented known transport equivalences normalize comparison. Historical
+rows are not rewritten or compacted, and legacy raw data is retained before its
+first canonical replacement. A new consumer must join evidence through its
+owner key and apply the owner's privacy restrictions, never expose an unscoped
+blob hash. Evidence and check rows are not content versions.
+
+`mention_event_history(event_id, payload_json)` retains the original row before
+an ID is removed by duplicate reconciliation, disappearance, or metadata update.
+Resolve historical IDs here when absent from `mention_events`. Existing IDs are
+not renumbered; current identical natural identities keep their original ID.
+
+
 ## DMs
 
 Proven DMs use the synthetic guild id `@me`. Unclassifiable desktop-cache payloads are skipped instead of being stored as unknown synthetic data.
@@ -115,3 +212,44 @@ See [`sql`](../commands/sql.html).
 - [`channels`](../commands/channels.html) - channel directory
 - [`members`](../commands/members.html) - member directory
 - [Security](../security.html)
+
+## Preservation boundary and coordinated activation
+
+The current candidate preserves exact native store inputs, not original REST
+response bodies or Gateway frame bytes. The Discord client currently decodes
+responses through typed discordgo APIs before `syncer/records.go` reserializes
+them. Unknown fields discarded by that SDK cannot be reconstructed from the
+new evidence tables. The preservation contract covers all already-admitted native
+records and RawJSON values, not fields the legacy SDK never retained. No new
+unrestricted HTTP or Gateway capture is introduced. Activation remains a separate
+coordinated operation requiring reader acceptance and the consistent clone.
+
+### Coordinated migration and rollback procedure
+
+1. Keep the current writer and readers unchanged until the coordinator has a
+   consistent stopped-writer storage clone covering SQLite and WAL, the derived
+   store, configuration and matching binaries. Do not copy a running database
+   or run an archive-scale rehearsal for this candidate.
+2. After native review and reader acceptance are complete, use the
+   protected-main signed workflow described in [Releasing](../RELEASING.md),
+   then verify the exact archive with `make verify-release VERSION=vX.Y.Z
+   ARTIFACT_DIR=/path/to/downloaded-assets`. The operator-selected version and
+   artifact receipt must be pinned in the coordinated cutover plan.
+3. The first authorized writable `Store.Open` creates the additive evidence,
+   check and metric tables and contract-2 triggers. It leaves `user_version=7`,
+   contract-1 generations and all existing content IDs intact. The optional
+   `SeedEntityMetrics` store operation is idempotent; it seeds only missing
+   metric keys from legacy raw rows and does not rewrite them. It is not an
+   automatic startup migration or a public CLI command. Legacy evidence is
+   copied lazily before a canonical replacement, not by a bulk archive rewrite.
+   Attachment legacy evidence preserves the complete native row as the RawJSON
+   string before replacement/removal; refetch evidence retains every error code.
+4. With writers still paused, verify a representative unchanged check, content
+   A-B-A, zero metric transition, old mention ID, evidence reconstruction,
+   allowed/denied reader and feed-v1/v2 cursor behavior. Fixture tests cover
+   additive DDL idempotence and transaction rollback without live data.
+5. If acceptance fails, restore the coordinated clone and matching old binaries
+   and configuration before resuming writes. Do not drop additive tables or
+   vacuum as a rollback substitute. An old binary can open the unchanged schema
+   version, but it cannot produce the new evidence contract. After new writes
+   resume, preserve/replay them before any older-clone restoration.

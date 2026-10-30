@@ -319,6 +319,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureEmbeddingSearchIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.applyEntityStateMigration(ctx); err != nil {
+		return err
+	}
 	// Last, so triggers are generated from the final table definitions and a
 	// migration that changed a tracked table starts a new feed generation.
 	return s.ensureChangeFeed(ctx)

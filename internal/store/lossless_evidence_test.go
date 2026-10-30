@@ -1,0 +1,149 @@
+package store
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestLosslessEvidenceReconstructsEachObservation(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	a := " {\n\"id\":\"g\",\"features\":[\"B\",\"A\"],\"member_count\":2,\"unknown\":null,\"signed_url\":\"https://x/a?expires=123\"} "
+	b := `{"id":"g","features":["A","B"],"member_count":0,"unknown":null,"signed_url":"https://x/a?expires=123"}`
+	for _, raw := range []string{a, a, b, a} {
+		require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "G", RawJSON: raw}))
+	}
+	require.Equal(t, 1, feedCount(t, s, "guilds"))
+	var blobs, checks int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_evidence`).Scan(&blobs))
+	require.Equal(t, 2, blobs)
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_check_history`).Scan(&checks))
+	require.Equal(t, 4, checks)
+	rows, err := s.DB().QueryContext(ctx, `select payload_json from entity_observations join entity_evidence using(evidence_hash) order by observation_id`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var raws []string
+	for rows.Next() {
+		var body string
+		require.NoError(t, rows.Scan(&body))
+		var rec GuildRecord
+		require.NoError(t, json.Unmarshal([]byte(body), &rec))
+		raws = append(raws, rec.RawJSON)
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	require.Equal(t, []string{a, a, b, a}, raws)
+	require.Equal(t, []string{"2", "0", "2"}, metricRows(t, s, "guild", "g", "member_count"))
+	// Unknown null/absent and array shape differences remain real content.
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "G", RawJSON: `{"id":"g","features":["A","B"],"signed_url":"https://x/a?expires=123"}`}))
+	require.Equal(t, 2, feedCount(t, s, "guilds"))
+}
+
+func TestLegacyMentionIDsRemainResolvable(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	seedEfficiencyChannel(t, s)
+	m := messageMutation(restMessage, "hello", "t", nil)
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{m}))
+	_, err := s.DB().ExecContext(ctx, `insert into mention_events(message_id,guild_id,channel_id,target_type,target_id,target_name,event_at) select message_id,guild_id,channel_id,target_type,target_id,'legacy',event_at from mention_events`)
+	require.NoError(t, err)
+	var old int64
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select max(event_id) from mention_events`).Scan(&old))
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{m}))
+	var body string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from mention_event_history where event_id=?`, old).Scan(&body))
+	require.Contains(t, body, `"target_name":"legacy"`)
+	m.Mentions = nil
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{m}))
+	var n int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from mention_event_history`).Scan(&n))
+	require.Equal(t, 2, n)
+}
+
+func TestLegacyRawSurvivesFirstCanonicalReplacement(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	legacy := " {\n\"id\":\"g\",\"features\":[\"B\",\"A\"],\"member_count\":123,\"unknown\":1.2300} "
+	_, err := s.DB().ExecContext(ctx, `insert into guilds(id,name,raw_json,updated_at) values('g','old',?,'2026-01-01T00:00:00Z')`, legacy)
+	require.NoError(t, err)
+	for range 2 {
+		require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "old", RawJSON: `{"id":"g","features":["A","B"],"member_count":123,"unknown":1.2300}`}))
+	}
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "new", RawJSON: `{"id":"g","features":["A","B"],"unknown":2}`}))
+	var body string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from entity_observations join entity_evidence using(evidence_hash) where observed_at='legacy'`).Scan(&body))
+	var rec struct {
+		RawJSON   string
+		UpdatedAt string
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &rec))
+	require.Equal(t, legacy, rec.RawJSON)
+	require.Equal(t, "2026-01-01T00:00:00Z", rec.UpdatedAt)
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "newer", RawJSON: `{"id":"g","unknown":3}`}))
+	var n int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_observations where observed_at='legacy'`).Scan(&n))
+	require.Equal(t, 1, n)
+}
+
+func TestLosslessMigrationIsIdempotentAndRollbackKeepsEvidence(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g", Name: "a", RawJSON: `{"id":"g","member_count":1}`}))
+	var schemaBefore, schemaAfter int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma schema_version`).Scan(&schemaBefore))
+	require.NoError(t, s.applyEntityStateMigration(ctx))
+	require.NoError(t, s.ensureChangeFeed(ctx))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma schema_version`).Scan(&schemaAfter))
+	require.Equal(t, schemaBefore, schemaAfter)
+	var evidenceBefore, evidenceAfter int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_observations`).Scan(&evidenceBefore))
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	require.NoError(t, recordEvidenceTx(ctx, tx, "guilds", GuildRecord{ID: "g", Name: "b"}, "g"))
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_observations`).Scan(&evidenceAfter))
+	require.Equal(t, evidenceBefore, evidenceAfter)
+	var version int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `pragma user_version`).Scan(&version))
+	require.Equal(t, 7, version)
+}
+
+func TestLegacyAttachmentAndRefetchEvidenceSurvive(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	seedEfficiencyChannel(t, s)
+	a := &AttachmentRecord{AttachmentID: "a", MessageID: "m", GuildID: "g", ChannelID: "c", Filename: "old.txt", URL: "https://x/?signed=old", TextStatus: "failed", TextError: "old", TextAttemptedAt: "2026-01-01T01:00:00.123456Z"}
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{messageMutation(restMessage, "hello", "t", a)}))
+	require.NoError(t, s.RecordAttachmentRefetchFailure(ctx, MessageRecord{ID: "m"}, "new-error"))
+	a.Filename = "new.txt"
+	a.URL = "https://x/?signed=new"
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{messageMutation(restMessage, "hello", "t", a)}))
+	var body string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select payload_json from entity_evidence join entity_observations using(evidence_hash) where table_name='message_attachments' and observed_at='legacy'`).Scan(&body))
+	var legacy struct{ RawJSON string }
+	require.NoError(t, json.Unmarshal([]byte(body), &legacy))
+	require.Contains(t, legacy.RawJSON, `"filename":"old.txt"`)
+	require.Contains(t, legacy.RawJSON, `"text_error":"old"`)
+	var count int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_evidence where json_extract(payload_json,'$.Code')='new-error'`).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestRepairStartClockDoesNotDuplicateMessageEvidence(t *testing.T) {
+	s := openEfficiencyStore(t)
+	ctx := t.Context()
+	seedEfficiencyChannel(t, s)
+	m := messageMutation(restMessage, "hello", "t", nil)
+	for _, at := range []time.Time{time.Now(), time.Now().Add(time.Minute)} {
+		m.Options.ObservationStartedAt = at
+		require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{m}))
+	}
+	var blobs, checks int
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(distinct evidence_hash) from entity_observations where table_name='messages'`).Scan(&blobs))
+	require.Equal(t, 1, blobs)
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_check_history where table_name='messages' and check_kind='observation_started'`).Scan(&checks))
+	require.Equal(t, 2, checks)
+}

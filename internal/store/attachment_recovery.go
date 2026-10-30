@@ -55,7 +55,11 @@ func (s *Store) AttachmentTextRetryCandidates(ctx context.Context, guildIDs []st
 		}
 	}
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `select m.id,m.guild_id,m.channel_id from message_attachments a join messages m on m.id=a.message_id join channels c on c.id=m.channel_id where a.text_status='failed' and m.deleted_at is null and c.collection_scope='allowed'`+where+` group by m.id order by min(a.text_attempted_at),m.id limit ?`, args...)
+	// Unchanged retries leave text_attempted_at alone and record the attempt
+	// in entity_checks, so order by the later of the two.
+	rows, err := s.db.QueryContext(ctx, `select m.id,m.guild_id,m.channel_id from message_attachments a join messages m on m.id=a.message_id join channels c on c.id=m.channel_id
+		left join entity_checks ec on ec.table_name='message_attachments' and ec.row_key=json_array(a.attachment_id) and ec.check_kind='attachment_text'
+		where a.text_status='failed' and m.deleted_at is null and c.collection_scope='allowed'`+where+` group by m.id order by min(max(coalesce(a.text_attempted_at,''),coalesce(ec.checked_at,''))),m.id limit ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +75,9 @@ func (s *Store) AttachmentTextRetryCandidates(ctx context.Context, guildIDs []st
 	return out, rows.Err()
 }
 
+// RecordAttachmentRefetchFailure records a failed message refetch for the
+// message's failed attachments. The attempt is always recorded as a check; a
+// content row is written only when the failure code changes.
 func (s *Store) RecordAttachmentRefetchFailure(ctx context.Context, m MessageRecord, code string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -78,11 +85,49 @@ func (s *Store) RecordAttachmentRefetchFailure(ctx context.Context, m MessageRec
 	}
 	defer rollback(tx)
 	now := time.Now().UTC().Format(timeLayout)
-	if _, err = tx.ExecContext(ctx, `update message_attachments set text_attempted_at=?,text_error=?,updated_at=? where message_id=? and text_status='failed'`, now, code, now, m.ID); err != nil {
+	ids, err := func() ([]string, error) {
+		rows, err := tx.QueryContext(ctx, `select attachment_id from message_attachments where message_id=? and text_status='failed'`, m.ID)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}()
+	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `update messages set updated_at=? where id=?`, now, m.ID); err != nil {
+	for _, id := range ids {
+		if err := retainLegacyAttachmentTx(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := recordEvidenceTx(ctx, tx, "message_attachments", struct {
+			Code        string
+			AttemptedAt string
+		}{code, now}, id); err != nil {
+			return err
+		}
+		if err := recordCheckTx(ctx, tx, "message_attachments", checkAttachmentText, now, "", "failed", id); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `update message_attachments set text_attempted_at=?,text_error=?,updated_at=? where message_id=? and text_status='failed' and text_error<>?`, now, code, now, m.ID, code)
+	if err != nil {
 		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		if _, err = tx.ExecContext(ctx, `update messages set updated_at=? where id=?`, now, m.ID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

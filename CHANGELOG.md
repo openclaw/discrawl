@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Skip unchanged guild, channel, member, message and attachment content writes. Preserve every check in append-only history and use a latest-check overlay for freshness guards.
+- Compare canonical Gateway/REST content while retaining exact incoming records and legacy raw bytes in content-addressed evidence. Preserve unknown fields, original array shapes, timestamp precision, signed URLs and whitespace.
+- Record numeric guild/channel counters, including zero, in value-change histories. Keep relationship identifiers as content.
+- Keep mention IDs stable and attachment rows in place, retaining removed legacy mention IDs in immutable history.
+- Serve change feed contract 2 beside unchanged contract 1, adding content, metrics, checks and exact native-input evidence; snapshot replacement suspends only replaced-table triggers.
+
 ## 0.19.0 - 2026-10-28
 
 **Highlights:** Let readers copy only changed relationship and history rows, and restore opt-in cloud publication.

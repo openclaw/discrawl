@@ -98,7 +98,16 @@ func TestExtractionStorageRetainsSuccessAndScopesRetries(t *testing.T) {
 	require.Empty(t, other)
 	_, err = s.AttachmentTextRetryCandidates(ctx, nil, 0)
 	require.Error(t, err)
+	// A repeated identical failure is a check, not a content change: the
+	// attempt goes to entity_checks and the rows keep their revision.
 	require.NoError(t, s.RecordAttachmentRefetchFailure(ctx, m.Record, "http_503"))
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id='1'`).Scan(&after))
+	require.Equal(t, before, after)
+	var checked string
+	require.NoError(t, s.DB().QueryRowContext(ctx, `select checked_at from entity_checks where table_name='message_attachments' and row_key='["a"]' and check_kind='attachment_text'`).Scan(&checked))
+	require.Greater(t, checked, "2026-01-02T00:00:00Z")
+	// A different failure code is content and advances the owner.
+	require.NoError(t, s.RecordAttachmentRefetchFailure(ctx, m.Record, "message_refetch_failed"))
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select updated_at from messages where id='1'`).Scan(&after))
 	require.Greater(t, after, before)
 	// Disabled extraction must preserve the latest successful text and receipt.

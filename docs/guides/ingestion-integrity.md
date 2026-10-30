@@ -63,8 +63,10 @@ columns.
   legitimately have an empty value.
 - `created_at` and `edited_at` remain source timestamps. Do not substitute
   `updated_at`, event receipt time or collection time for an unknown source edit.
-- `updated_at` is the owning message's local mutation clock, including derived
-  text and attachment-status changes.
+- `updated_at` is the owning message's local content-change clock, including
+  derived text and attachment or mention changes. Since 0.20.0 an unchanged
+  reobservation does not advance it; the observation is recorded in
+  `entity_checks` (see [Data storage](data-storage.md#content-rows-checks-and-metrics)).
 - `text_parts_json` is an array of attributed parts, each with `kind`, `path`
   and original `text`, plus `attachment_id` or `message_id` when applicable.
 - `text_version=2` identifies this projection. Version 0 means it has not been
@@ -105,7 +107,7 @@ Existing fields are `attachment_id`, `message_id`, `guild_id`, `channel_id`,
 | --- | --- |
 | `text_status` | `unknown`, `skipped`, `succeeded`, `empty`, or `failed` |
 | `text_error` | Stable non-secret reason code or empty string |
-| `text_attempted_at` | Nullable UTC time of the latest extraction attempt |
+| `text_attempted_at` | Nullable UTC time of the attempt that produced the stored text outcome. Since 0.20.0 a retry with an unchanged outcome is recorded only in `entity_checks` (`attachment_text`), which holds the latest attempt |
 | `text_succeeded_at` | Nullable UTC time of the retained successful text |
 
 Existing extraction without a receipt stays `unknown` with nullable timestamps;

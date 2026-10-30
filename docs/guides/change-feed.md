@@ -1,14 +1,27 @@
 # Source change feed
 
-Discrawl records a durable change feed for four tables so that a reader can
-copy only changed rows instead of rereading whole tables:
+Discrawl records a durable change feed so that a reader can copy only changed
+rows instead of rereading whole tables. The archive serves two contracts side
+by side. Contract 1 is unchanged; contract 2 adds the content tables and the
+metric series, with the same entry semantics:
 
-| Table | Primary key (`row_key` order) |
-| --- | --- |
-| `message_attachments` | `attachment_id` |
-| `mention_events` | `event_id` |
-| `message_embedding_history` | `message_id, provider, model, input_version, embedded_at` |
-| `attachment_text_history` | `attachment_id, text_sha256` |
+| Table | Primary key (`row_key` order) | Contract |
+| --- | --- | --- |
+| `message_attachments` | `attachment_id` | 1 |
+| `mention_events` | `event_id` | 1 |
+| `message_embedding_history` | `message_id, provider, model, input_version, embedded_at` | 1 |
+| `attachment_text_history` | `attachment_id, text_sha256` | 1 |
+| `guilds` | `id` | 2 |
+| `channels` | `id` | 2 |
+| `members` | `guild_id, user_id` | 2 |
+| `messages` | `id` | 2 |
+| `entity_metrics` | `entity_type, entity_id, metric, observed_at` | 2 |
+| `entity_evidence` | `evidence_hash` | 2 |
+| `entity_observations` | `observation_id` | 2 |
+| `entity_check_history` | `check_id` | 2 |
+| `mention_event_history` | `event_id` | 2 |
+
+A contract-2 reader reads every table of both contracts.
 
 The feed is local archive state. It is not exported to Git snapshots and does
 not change the columns of any tracked table or any existing reader contract.
@@ -28,9 +41,16 @@ not change the columns of any tracked table or any existing reader contract.
 `change_feed_tables` has one row per tracked table: `generation` (counter),
 `generation_id` (random 128-bit hex), `generation_seq` (feed head when the
 generation started), `reason`, `schema_sha256` (hash of the table's
-`sqlite_master.sql`), `contract_version` and `updated_at`.
+`sqlite_master.sql`), `contract_version` (the contract that introduced the
+table: 1 or 2) and `updated_at`.
 
-`change_feed_meta` is a singleton: `contract_version` (currently 1),
+`change_feed_contracts` lists the contracts the archive serves:
+`contract_version` and `tables_json` (the JSON array of that contract's tables,
+in the order above) and `updated_at`. Discrawl 0.20.0 and later write rows 1
+and 2.
+
+`change_feed_meta` is a singleton: `contract_version` (the baseline contract,
+which stays 1 so contract-1 readers keep working),
 `compacted_through` (highest compacted `seq`), `compacted_entry` (the digest of
 that compacted entry, or null), `compacted_at` and `retention_seconds` (604800).
 
@@ -58,10 +78,17 @@ Because SQLite admits one writer at a time, a reader transaction sees a
 sequence prefix: every later commit allocates larger `seq` values. Entries do
 not copy row contents. A reader rereads the native row by key.
 
-Ordinary writers rewrite relationship rows: storing a message deletes and
-reinserts its attachments, then updates their text status, and deletes and
-reinserts its mention events with new `event_id` values. The feed records
-these native changes faithfully, so `mention_events` is not insert-only.
+Since 0.20.0 writers change content rows only when their content changes (see
+[Data storage](data-storage.md#content-rows-checks-and-metrics)). An
+unchanged repair, member refresh or Gateway replay writes no content row, so
+it writes no content entry. Evidence/check entries still record the check. Storing a message reconciles its relationship rows in place:
+an attachment row is updated in one statement only when one of its content
+columns changes, and a mention keeps its `event_id` for the same
+`(message_id, target_type, target_id)`. Only mentions and attachments that
+appear or disappear are inserted or deleted. `mention_events` is therefore
+still not insert-only (an in-place update writes `u`). Older binaries opening
+the same file delete and reinsert these rows; the feed records that
+faithfully too.
 
 The two history tables are only written by `insert or ignore` in current code
 (`archiveMessageEmbeddings`, `retainAttachmentText`) and have no update,
@@ -80,7 +107,7 @@ log cannot express what happened:
 | `triggers_restored` | A trigger was missing or different at open, so writes may be unrecorded |
 | `contract_upgraded` | The feed contract version changed |
 | `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start, and the head becomes the new floor |
-| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored `message_attachments` and `mention_events` |
+| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored the tracked snapshot tables (`guilds`, `channels`, `members`, `messages`, `message_attachments`, `mention_events`). Their triggers are suspended during the replacement, so the import writes no per-row entries |
 
 Writable opens check the feed after every migration. When the installed
 triggers already match, the check issues no DDL, so routine opens do not change
@@ -101,6 +128,38 @@ whatever the archive accumulates until the next tail run.
 
 `discrawl status --json` reports `change_feed` with the contract version, head,
 compaction floor and each table's generation.
+
+## Contract 2
+
+Contract 2 keeps every contract-1 rule: the entry format, generations,
+compaction, digest and reader algorithm are identical, and contract-1 tables
+keep their generations when an archive gains contract 2. A reader selects a
+contract as follows:
+
+- **Contract 1 reader** (unchanged): require `change_feed_meta.contract_version
+  = 1` and read only the four contract-1 tables.
+- **Contract 2 reader**: require `change_feed_meta.contract_version = 1` and a
+  `change_feed_contracts` row with `contract_version = 2` whose `tables_json`
+  lists the table. Otherwise treat the table as untracked (full read), exactly
+  as for an absent feed.
+
+What contract 2 adds for readers:
+
+- `messages`, `members`, `channels` and `guilds` entries mean a content change
+  (or a tombstone, scope or relationship-owner update). A reader can replace
+  `updated_at >= cursor` scans with changed keys. `messages.updated_at` still
+  advances when a message's attachments or mentions change, so the existing
+  owner rebinding remains valid; the feed now also covers it directly.
+- `entity_metrics` is an append-only value-change series. Each entry is an
+  insert of a new value; rows are never updated by Discrawl.
+- `entity_checks` (latest check per entity) is deliberately **not** tracked:
+  it changes on every observation. Read it directly by `checked_at` if check
+  clocks are needed.
+
+An older (contract-1) binary that opens an archive with contract 2 leaves the
+contract-2 triggers in place, so its writes are still recorded (including its
+unconditional rewrites). If it recreates a lost log, the compaction floor
+moves to the head, so contract-2 cursors below it reconcile.
 
 ## Reader algorithm
 
@@ -149,13 +208,16 @@ compaction, generation changes and an in-place restore.
 - **Scope.** Entries are not filtered. Collection scope lives in `channels`;
   a reader that filters by allowed channels must recompute its allowed set on
   every capture and backfill or remove whole channels whose admission changed.
-- **Owning messages.** `mention_events` and `message_attachments` join to
-  `messages`. Message writes that change relationship rows produce entries,
-  but owner-only changes (for example a deletion tombstone or a text repair)
-  do not. A reader that embeds owner state must rebind it from its own message
-  change source, such as the existing `messages.updated_at` cursor. An owner
-  stream was measured and rejected because its triggers ran on every message
-  write and cost about 62% of message write time.
+- **Owning messages (contract 1).** `mention_events` and `message_attachments`
+  join to `messages`. Message writes that change relationship rows produce
+  entries, but owner-only changes (for example a deletion tombstone or a text
+  repair) do not. A contract-1 reader that embeds owner state must rebind it
+  from its own message change source, such as the existing
+  `messages.updated_at` cursor. Contract 2 tracks `messages` itself. An owner
+  stream was rejected before 0.20.0 because its triggers ran on every
+  unconditional message write; with conditional writes, unchanged rereads no
+  longer execute a message statement at all.
+- **Check clocks.** `entity_checks` is not tracked (see Contract 2).
 
 ## Writer cost
 

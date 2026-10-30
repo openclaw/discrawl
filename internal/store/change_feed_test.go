@@ -255,15 +255,20 @@ func TestChangeFeedRecordsInsertsUpdatesAndDeletes(t *testing.T) {
 	seedChangeFeedGuild(t, s)
 
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("m1", "c1", "hello", []string{"a1"}, 1)}))
-	// The writer inserts the attachment and then records its text status.
-	require.Equal(t, [][2]string{{"i", `["a1"]`}, {"u", `["a1"]`}}, changeFeedEntries(t, s, "message_attachments"))
+	// The writer inserts the attachment with its text status in one statement.
+	require.Equal(t, [][2]string{{"i", `["a1"]`}}, changeFeedEntries(t, s, "message_attachments"))
 	require.Equal(t, [][2]string{{"i", `[1]`}}, changeFeedEntries(t, s, "mention_events"))
 
-	// Rewrites replace relationship rows; every native row change is
-	// visible, including the newly allocated mention event ID.
+	// An identical rewrite changes no relationship row and logs nothing.
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("m1", "c1", "hello", []string{"a1"}, 1)}))
+	require.Len(t, changeFeedEntries(t, s, "message_attachments"), 1)
+	require.Equal(t, [][2]string{{"i", `[1]`}}, changeFeedEntries(t, s, "mention_events"))
+
+	// An edit updates relationship rows in place: the attachment keeps its
+	// row and the mention keeps its event ID.
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("m1", "c1", "edited", []string{"a1"}, 1)}))
-	require.Equal(t, [][2]string{{"d", `["a1"]`}, {"i", `["a1"]`}, {"u", `["a1"]`}}, lastEntries(changeFeedEntries(t, s, "message_attachments"), 3))
-	require.Equal(t, [][2]string{{"i", `[1]`}, {"d", `[1]`}, {"i", `[2]`}}, changeFeedEntries(t, s, "mention_events"))
+	require.Equal(t, [][2]string{{"i", `["a1"]`}, {"u", `["a1"]`}}, changeFeedEntries(t, s, "message_attachments"))
+	require.Equal(t, [][2]string{{"i", `[1]`}, {"u", `[1]`}}, changeFeedEntries(t, s, "mention_events"))
 	// The previous successful extraction is retained once.
 	require.Len(t, changeFeedEntries(t, s, "attachment_text_history"), 1)
 
@@ -283,9 +288,9 @@ func TestChangeFeedRecordsInsertsUpdatesAndDeletes(t *testing.T) {
 	require.Len(t, changeFeedEntries(t, s, "message_attachments"), before+1)
 
 	// A key change records the old key's deletion and the new key.
-	_, err = s.DB().ExecContext(ctx, `update mention_events set event_id=100 where event_id=2`)
+	_, err = s.DB().ExecContext(ctx, `update mention_events set event_id=100 where event_id=1`)
 	require.NoError(t, err)
-	require.Equal(t, [][2]string{{"d", `[2]`}, {"u", `[100]`}}, lastEntries(changeFeedEntries(t, s, "mention_events"), 2))
+	require.Equal(t, [][2]string{{"d", `[1]`}, {"u", `[100]`}}, lastEntries(changeFeedEntries(t, s, "mention_events"), 2))
 
 	// Ignored history inserts write nothing.
 	historyBefore := len(changeFeedEntries(t, s, "attachment_text_history"))
@@ -366,7 +371,8 @@ func TestChangeFeedBumpsGenerationWhenItCannotExpressHistory(t *testing.T) {
 	tx, err := reopened.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
 	require.NoError(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "mention_events"))
-	require.Error(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "messages"))
+	require.NoError(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "messages"))
+	require.Error(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "sync_state"))
 	require.NoError(t, tx.Rollback())
 }
 
@@ -412,7 +418,8 @@ func TestChangeFeedRecoveryAfterCompactionKeepsSequencesAboveFloor(t *testing.T)
 	require.NoError(t, err)
 	r := &feedReader{table: "mention_events"}
 	r.capture(ctx, t, s.DB())
-	require.Equal(t, int64(5), r.cursor.Seq)
+	head := feedHead(t, s)
+	require.Equal(t, head, r.cursor.Seq)
 	for _, tracked := range ChangeFeedTables() {
 		for _, suffix := range []string{"ai", "au", "ad"} {
 			_, err := s.DB().ExecContext(ctx, `drop trigger `+quoteIdent("change_feed_"+tracked+"_"+suffix))
@@ -430,7 +437,7 @@ func TestChangeFeedRecoveryAfterCompactionKeepsSequencesAboveFloor(t *testing.T)
 	require.NoError(t, reopened.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("late", "c1", "x", nil, 1)}))
 	var seq int64
 	require.NoError(t, reopened.DB().QueryRowContext(ctx, `select min(seq) from change_log`).Scan(&seq))
-	require.Equal(t, int64(6), seq)
+	require.Equal(t, head+1, seq)
 	r.capture(ctx, t, reopened.DB())
 	require.Equal(t, 2, r.reconciles)
 	require.Equal(t, snapshotTable(ctx, t, reopened.DB(), "mention_events"), r.rows)
@@ -448,6 +455,7 @@ func TestChangeFeedRecoveredEmptyHeadIsAStableCursor(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.CompactChangeFeed(ctx, time.Now(), ChangeFeedRetention)
 	require.NoError(t, err)
+	head := feedHead(t, s)
 	_, err = s.DB().ExecContext(ctx, `delete from change_feed_meta`)
 	require.NoError(t, err)
 	require.NoError(t, s.Close())
@@ -459,7 +467,7 @@ func TestChangeFeedRecoveredEmptyHeadIsAStableCursor(t *testing.T) {
 	r.capture(ctx, t, reopened.DB())
 	r.capture(ctx, t, reopened.DB())
 	require.Equal(t, 1, r.reconciles)
-	require.Equal(t, int64(5), r.cursor.Seq)
+	require.Equal(t, head, r.cursor.Seq)
 }
 
 // A reader parked exactly on the floor still detects an in-place restore
@@ -478,7 +486,7 @@ func TestChangeFeedRestoreDetectedAfterCompactionRemovesCursorEntry(t *testing.T
 	require.NoError(t, err)
 	r := &feedReader{table: "mention_events"}
 	r.capture(ctx, t, s.DB())
-	require.Equal(t, int64(3), r.cursor.Seq)
+	require.Equal(t, feedHead(t, s), r.cursor.Seq)
 	require.NoError(t, s.Close())
 
 	body, err := os.ReadFile(backup)
@@ -532,28 +540,29 @@ func TestChangeFeedCompactionKeepsRetentionWindowAndNeverReusesSequences(t *test
 	// stamp (a clock step), so only the prefix 1-2 may be removed.
 	_, err := s.DB().ExecContext(ctx, `update change_log set recorded_at_ms=? where seq in (1,2,4)`, old)
 	require.NoError(t, err)
+	head := feedHead(t, s)
 	deleted, err := s.CompactChangeFeed(ctx, now, ChangeFeedRetention)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), deleted)
 	status, err := s.ChangeFeedStatus(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), status.CompactedThrough)
-	require.Equal(t, int64(6), status.HeadSeq)
+	require.Equal(t, head, status.HeadSeq)
 
 	_, err = s.DB().ExecContext(ctx, `update change_log set recorded_at_ms=?`, old)
 	require.NoError(t, err)
 	deleted, err = s.CompactChangeFeed(ctx, now, ChangeFeedRetention)
 	require.NoError(t, err)
-	require.Equal(t, int64(4), deleted)
+	require.Equal(t, head-2, deleted)
 	status, err = s.ChangeFeedStatus(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(6), status.CompactedThrough)
-	require.Equal(t, int64(6), status.HeadSeq)
+	require.Equal(t, head, status.CompactedThrough)
+	require.Equal(t, head, status.HeadSeq)
 
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{changeFeedMutation("late", "c1", "x", nil, 1)}))
 	var seq int64
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select min(seq) from change_log`).Scan(&seq))
-	require.Equal(t, int64(7), seq)
+	require.Equal(t, head+1, seq)
 	_, err = s.CompactChangeFeed(ctx, now, 0)
 	require.Error(t, err)
 }
@@ -615,7 +624,7 @@ func TestChangeFeedReaderReconstructsSnapshots(t *testing.T) {
 	for step := range 400 {
 		id := fmt.Sprintf("m%d", rng.IntN(40))
 		channel := []string{"c1", "c2"}[rng.IntN(2)]
-		switch op := rng.IntN(10); {
+		switch op := rng.IntN(11); {
 		case op < 5:
 			var attachments []string
 			for a := range rng.IntN(3) {
@@ -638,6 +647,14 @@ func TestChangeFeedReaderReconstructsSnapshots(t *testing.T) {
 			require.NoError(t, err)
 		case op == 8:
 			require.NoError(t, s.UpdateAttachmentFetchStatus(ctx, id+"-a0", "2026-10-28T01:00:00Z", "fetched", ""))
+		case op == 9:
+			user := fmt.Sprintf("u%d", rng.IntN(5))
+			name := contents[rng.IntN(len(contents))]
+			require.NoError(t, s.UpsertMember(ctx, MemberRecord{GuildID: "g", UserID: user, Username: name, RoleIDsJSON: "[]", RawJSON: `{"nick":"` + name + `"}`}))
+			require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{
+				ID: channel, GuildID: "g", Kind: "text", Name: channel,
+				RawJSON: fmt.Sprintf(`{"id":%q,"message_count":%d,"topic":%q}`, channel, 100+rng.IntN(4), contents[rng.IntN(2)]),
+			}))
 		default:
 			if rng.IntN(4) == 0 {
 				tx, err := s.DB().BeginTx(ctx, nil)
@@ -650,6 +667,13 @@ func TestChangeFeedReaderReconstructsSnapshots(t *testing.T) {
 				_, err = s.CompactChangeFeed(ctx, time.Now(), ChangeFeedRetention)
 				require.NoError(t, err)
 			}
+		}
+		if step == 200 {
+			// Every table also reconciles across a generation change.
+			tx, err := s.DB().BeginTx(ctx, nil)
+			require.NoError(t, err)
+			require.NoError(t, BumpChangeFeedGenerationTx(ctx, tx, "test_restore", ChangeFeedTables()...))
+			require.NoError(t, tx.Commit())
 		}
 		if rng.IntN(3) == 0 {
 			check(step)
@@ -678,7 +702,7 @@ func TestChangeFeedReaderDetectsRewoundHistory(t *testing.T) {
 	r := &feedReader{table: "mention_events"}
 	r.capture(ctx, t, s.DB())
 	require.Equal(t, 1, r.reconciles)
-	require.Equal(t, int64(2), r.cursor.Seq)
+	require.Equal(t, feedHead(t, s), r.cursor.Seq)
 	require.NoError(t, s.Close())
 
 	// Restore the earlier file in place, then write again: the generation is
@@ -697,4 +721,11 @@ func TestChangeFeedReaderDetectsRewoundHistory(t *testing.T) {
 	r.capture(ctx, t, restored.DB())
 	require.Equal(t, 2, r.reconciles)
 	require.Equal(t, snapshotTable(ctx, t, restored.DB(), "mention_events"), r.rows)
+}
+
+func feedHead(t *testing.T, s *Store) int64 {
+	t.Helper()
+	head, err := changeFeedHead(t.Context(), s.DB())
+	require.NoError(t, err)
+	return head
 }

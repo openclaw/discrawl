@@ -46,4 +46,4 @@ job; preserve the running collector and existing identity/security policy.
 
 When continuous embeddings have been used, `background_work` reports worker lifecycle, pending and in-flight work, queue age, last completion, and safe error codes. A missing heartbeat is reported as stale, rather than claiming a stopped worker is healthy.
 
-`change_feed` (`--json`) reports the [source change feed](../guides/change-feed.html) contract version, head sequence, compaction floor and each tracked table's generation. It reads only small state rows.
+`change_feed` (`--json`) reports the [source change feed](../guides/change-feed.html) baseline contract version, the served `contract_versions`, head sequence, compaction floor and each tracked table's contract and generation. It reads only small state rows.

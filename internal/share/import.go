@@ -78,6 +78,12 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 			if err != nil {
 				return err
 			}
+			// A replacement restores whole tables; do not log a delete and an
+			// insert per row. AfterImport reinstalls the triggers and starts
+			// new generations.
+			if err := store.SuspendChangeFeedTx(ctx, tx, store.ChangeFeedReplacedTables(SnapshotTables)...); err != nil {
+				return err
+			}
 			for _, table := range []string{"message_fts", "member_fts"} {
 				if _, err := tx.ExecContext(ctx, "drop table if exists "+table); err != nil {
 					return fmt.Errorf("drop %s: %w", table, err)
@@ -101,7 +107,7 @@ func importSnapshot(ctx context.Context, s *store.Store, opts Options, manifest 
 			}
 			// A replacement restores whole tables. Change readers reconcile
 			// once instead of replaying a delete and insert for every row.
-			if err := store.BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "message_attachments", "mention_events"); err != nil {
+			if err := store.BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", store.ChangeFeedReplacedTables(SnapshotTables)...); err != nil {
 				return err
 			}
 			if opts.IncludeEmbeddings {
