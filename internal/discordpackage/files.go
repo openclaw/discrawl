@@ -113,7 +113,7 @@ func packageDirectories(files fs.FS) (string, string, error) {
 		base, messages = entry.Name(), dir
 	}
 	if base == "" {
-		return "", "", errors.New("Discord package messages directory not found")
+		return "", "", errors.New("discord package messages directory not found")
 	}
 	return base, messages, nil
 }
