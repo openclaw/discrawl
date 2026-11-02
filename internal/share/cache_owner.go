@@ -22,7 +22,8 @@ func requireWritableRepo(ctx context.Context, opts Options) error {
 	} else if err != nil {
 		return fmt.Errorf("inspect share checkout ownership: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", opts.RepoPath, "config", "--local", "--default", "", "--get", "crawlkit.snapshot-cache-owner")
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "--default", "", "--get", "crawlkit.snapshot-cache-owner")
+	cmd.Dir = opts.RepoPath
 	body, err := cmd.Output()
 	if err != nil {
 		return errors.New("cannot verify share checkout ownership")
