@@ -1,6 +1,6 @@
 # `dms`
 
-Lists local wiretap DM conversations or reads one DM thread. Convenience layer over the synthetic `@me` guild id.
+Lists local DM conversations or reads one DM thread. Convenience layer over the synthetic `@me` guild id.
 
 ## Usage
 
@@ -29,7 +29,7 @@ discrawl dms --with Molty --search "invoice"
 
 ## Notes
 
-- only sees data imported by [`wiretap`](wiretap.html) - Discord Desktop cache, not live DM history
+- sees data imported by [`wiretap`](wiretap.html) and [`import-package`](import-package.html); neither provides complete live DM history
 - skips Git snapshot auto-update because DMs are never imported from the shared mirror
 - DMs are local-only and never published
 

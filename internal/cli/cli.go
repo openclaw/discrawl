@@ -111,7 +111,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 		plain:      global.Plain,
 		logger:     slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})),
 	}
-	runtime.maybeNotifyRelease(rest)
+	if rest[0] != "import-package" {
+		runtime.maybeNotifyRelease(rest)
+	}
 	return runtime.dispatch(rest)
 }
 
@@ -150,6 +152,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "tap", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "cache-import", description: "Import Discord Desktop cache data (wiretap alias)."},
 	{name: "wiretap", description: "Import Discord Desktop cache data."},
+	{name: "import-package", description: "Import sent DMs from a Discord account data package."},
 	{name: "search", description: "Search archived messages."},
 	{name: "lexical", description: "Rebuild optional language search indexes."},
 	{name: "tui", description: "Explore the archive in an interactive terminal UI."},
@@ -377,6 +380,8 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withServicesLockedOperation(true, operation, func() error { return r.runTail(rest[1:]) })
 	case "wiretap", "tap", "cache-import":
 		return r.withConfig(func() error { return r.runWiretap(rest[1:]) })
+	case "import-package":
+		return r.withConfig(func() error { return r.runImportPackage(rest[1:]) })
 	case "search":
 		if hasHelpFlag(rest[1:]) {
 			return printCommandUsage(r.stdout, []string{"search"})

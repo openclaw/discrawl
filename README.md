@@ -53,6 +53,8 @@ discrawl search --dm "launch checklist"
 
 Wiretap imports only messages already cached by Discord Desktop; it is not a complete account-history fetch. Direct messages stay local and are excluded from shared snapshots. See [wiretap](docs/commands/wiretap.md) for cache paths and scan controls.
 
+To add your sent DMs from a Discord account export, use [`import-package`](docs/commands/import-package.md). It accepts a ZIP or extracted JSON package without a token, preserves existing messages, and reports sent-only coverage. It does not recover incoming replies.
+
 ## Choose an archive source
 
 | Source | Setup | What it provides |
