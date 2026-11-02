@@ -13,10 +13,16 @@ func EnsureRepo(ctx context.Context, opts Options) error {
 	if strings.TrimSpace(opts.RepoPath) == "" {
 		return errors.New("share repo path is empty")
 	}
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return err
+	}
 	return mirror.EnsureRepo(ctx, mirrorOptions(opts))
 }
 
 func Pull(ctx context.Context, opts Options) error {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return err
+	}
 	if strings.TrimSpace(opts.Remote) == "" && strings.TrimSpace(opts.RepoPath) == "" {
 		return nil
 	}
@@ -32,10 +38,16 @@ func Pull(ctx context.Context, opts Options) error {
 }
 
 func Commit(ctx context.Context, opts Options, message string) (bool, error) {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return false, err
+	}
 	return commitPublication(ctx, opts, message)
 }
 
 func Push(ctx context.Context, opts Options) error {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return err
+	}
 	manifest, receipt, err := workingPublicationBinding(opts.RepoPath, opts.Producer)
 	if err != nil {
 		return err
@@ -59,6 +71,9 @@ func Push(ctx context.Context, opts Options) error {
 }
 
 func ValidateTag(ctx context.Context, opts Options) error {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return err
+	}
 	if strings.TrimSpace(opts.Tag) == "" {
 		return nil
 	}
@@ -79,6 +94,9 @@ func ValidateTag(ctx context.Context, opts Options) error {
 }
 
 func CreateImmutableTag(ctx context.Context, opts Options) (string, error) {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return "", err
+	}
 	return mirror.CreateImmutableTag(ctx, mirrorOptions(opts), opts.Tag)
 }
 

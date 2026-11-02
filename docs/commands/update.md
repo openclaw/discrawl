@@ -13,6 +13,7 @@ discrawl update \
   --remote https://github.com/example/discord-archive.git
 discrawl update --with-embeddings
 discrawl update --no-media
+discrawl update --no-fetch
 discrawl update --force
 discrawl update --force --ref backup-2026-06-19
 ```
@@ -24,6 +25,7 @@ discrawl update --force --ref backup-2026-06-19
 - `--branch <name>` - snapshot branch (defaults to `[share].branch`)
 - `--force` - replace the public snapshot tables and rebuild search indexes so the local database exactly matches the snapshot; local DM rows remain untouched
 - `--ref <tag-or-commit>` - import a historical snapshot without changing the share checkout; requires `--force`
+- `--no-fetch` - import the current checkout without Git fetch or pull; cannot be combined with `--ref`. The configured merge/exact mode still applies.
 - `--with-embeddings` - also import vectors that match your local `[search.embeddings]` identity
 - `--no-media` - skip restoring cached attachment media files into `cache_dir/media`
 
@@ -41,6 +43,22 @@ Normal updates preserve rows learned from live Discord or the desktop cache, eve
 ## How `sync` interacts
 
 `discrawl sync` does **not** auto-import the share unless `--update=auto` (configured update mode when stale) or `--update=force` (exact replacement before live deltas). Routine live refreshes stay fast; explicit imports happen via `update`.
+
+## Externally managed snapshot caches
+
+A scheduler may own a depth-1, current-only Git cache and replace it on each
+refresh. Such a cache declares a nonempty local Git configuration value
+`crawlkit.snapshot-cache-owner`. Discrawl refuses Git-mutating operations on
+that checkout, including ordinary updates, automatic updates, publishing and
+historical restores, so it cannot grow the owner's retained history.
+
+Set `share.auto_update = false` for that subscription. Its owner must hold one
+exclusive lock across snapshot refresh and `discrawl update --no-fetch`; Discrawl
+then takes its normal database lock inside that scope. Keep the configured remote
+and branch identity. Do not use `--force` unless exact replacement is intended.
+Before retiring an older checkout's history, verify that the database has its
+previous imported manifest and shard fingerprints; legacy timestamp-only imports
+can still need the old Git manifest to plan a safe merge.
 
 ## See also
 
