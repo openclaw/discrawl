@@ -146,6 +146,18 @@ Use --repair-on-start to catch up missed history as soon as the Gateway is conne
 The sync.include_category_ids, sync.exclude_channel_ids, and
 sync.exclude_channel_kinds settings apply to live events and repair syncs.
 `,
+	"import-package": `Usage:
+  discrawl import-package --path PATH [flags]
+
+Import sent DMs from a Discord account data package. No token or network required.
+Existing messages and tombstones are preserved. This is not complete DM history.
+
+Flags:
+  --path PATH                  Package ZIP or extracted directory.
+  --account-id ID              Confirm account/user.json, or identify a messages-only package.
+  --dry-run                    Validate without opening or creating an archive.
+  --json                       Write JSON progress and explicit sent-only coverage.
+`,
 	"wiretap": `Usage:
   discrawl wiretap [flags]
 
