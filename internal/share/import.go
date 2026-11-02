@@ -332,6 +332,9 @@ func ImportAt(ctx context.Context, s *store.Store, opts Options, ref string) (Ma
 	if ref == "" {
 		return Import(ctx, s, opts)
 	}
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return Manifest{}, err
+	}
 	if err := mirror.Fetch(ctx, mirrorOptions(opts)); err != nil {
 		return Manifest{}, err
 	}

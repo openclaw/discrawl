@@ -301,6 +301,7 @@ func (r *runtime) runUpdate(args []string) error {
 	remote := fs.String("remote", r.cfg.Share.Remote, "")
 	branch := fs.String("branch", r.cfg.Share.Branch, "")
 	ref := fs.String("ref", "", "")
+	noFetch := fs.Bool("no-fetch", false, "")
 	force := fs.Bool("force", false, "")
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	noMedia := fs.Bool("no-media", !r.cfg.ShareMediaEnabled(), "")
@@ -312,6 +313,9 @@ func (r *runtime) runUpdate(args []string) error {
 	}
 	if strings.TrimSpace(*ref) != "" && !*force {
 		return usageErr(errors.New("update --ref requires --force because historical imports replace local cache rows"))
+	}
+	if *noFetch && strings.TrimSpace(*ref) != "" {
+		return usageErr(errors.New("update --no-fetch cannot be combined with --ref"))
 	}
 	opts, err := shareOptionsFromFlags(*repoPath, *remote, *branch)
 	if err != nil {
@@ -327,9 +331,11 @@ func (r *runtime) runUpdate(args []string) error {
 	var manifest share.Manifest
 	var imported bool
 	if strings.TrimSpace(*ref) == "" {
-		r.setSyncLockPhase("share pull")
-		if err := share.Pull(r.ctx, opts); err != nil {
-			return err
+		if !*noFetch {
+			r.setSyncLockPhase("share pull")
+			if err := share.Pull(r.ctx, opts); err != nil {
+				return err
+			}
 		}
 		r.setSyncLockPhase("share import")
 		exact := *force || r.cfg.ShareUpdatesExact()
@@ -361,6 +367,7 @@ func (r *runtime) runUpdate(args []string) error {
 		"embeddings":   manifest.Embeddings,
 		"imported":     imported,
 		"ref":          strings.TrimSpace(*ref),
+		"fetched":      !*noFetch,
 		"forced":       *force,
 		"update_mode":  r.cfg.Share.UpdateMode,
 	})

@@ -225,9 +225,10 @@ Check configuration, storage, credentials, and optional services.
 
 Configure and optionally import a read-only snapshot subscription.
 `,
-	"update": `Usage: discrawl update [--repo PATH] [--remote URL] [--branch NAME] [--force] [--ref REF] [--with-embeddings] [--no-media]
+	"update": `Usage: discrawl update [--repo PATH] [--remote URL] [--branch NAME] [--force] [--ref REF] [--no-fetch] [--with-embeddings] [--no-media]
 
 Update the configured snapshot subscription. Historical --ref imports require --force.
+Use --no-fetch to import an externally refreshed checkout while holding its owner's lock; it cannot be combined with --ref.
 `,
 	"whoami": "Usage: discrawl whoami\n\nShow the configured remote identity.\n",
 	"failures": `Usage:

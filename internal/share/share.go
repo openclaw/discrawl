@@ -62,6 +62,9 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 }
 
 func exportPublication(ctx context.Context, s *store.Store, opts Options, before publicationStep) (Manifest, error) {
+	if err := requireWritableRepo(ctx, opts); err != nil {
+		return Manifest{}, err
+	}
 	if err := opts.Producer.validate(); err != nil {
 		return Manifest{}, err
 	}
