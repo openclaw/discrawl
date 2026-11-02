@@ -2166,6 +2166,8 @@ func TestRepoCommandEdges(t *testing.T) {
 
 	repo := filepath.Join(t.TempDir(), "repo")
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".git"), 0o755))
+	require.ErrorContains(t, EnsureRepo(ctx, Options{RepoPath: repo}), "cannot verify share checkout ownership")
+	testGitRun(t, ctx, repo, "init", "--initial-branch=main")
 	require.NoError(t, EnsureRepo(ctx, Options{RepoPath: repo}))
 
 	err := Push(ctx, Options{RepoPath: repo, Branch: "main"})
