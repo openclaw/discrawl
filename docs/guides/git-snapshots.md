@@ -100,6 +100,34 @@ the receipt unchanged.
 Crawlkit v0.15.0 also rejects authenticated cross-origin HTTP redirects. Configure
 the final HTTPS endpoint instead of depending on an authenticated redirect.
 
+## Current-only local publication stages
+
+Operators that retain only the latest snapshot can install
+`scripts/clone-current-snapshot.sh` from a pinned Discrawl source revision:
+
+```bash
+clone-current-snapshot.sh "$current_archive" "$stage_repo" main
+# Export, validate and commit the next snapshot in stage_repo.
+clone-current-snapshot.sh "$stage_repo" "$final_candidate" main
+```
+
+Both sources are local Git repositories. Each destination must not exist.
+The helper copies the selected branch's committed snapshot with one reachable
+commit, no tags and no dependency on the source's object store. It verifies that
+the branch did not advance during cloning. It prints the copied commit ID.
+Uncommitted files are not copied. A failure can leave a partial destination;
+the caller owns disposal of that task-created path.
+
+Clone again after committing: adding commits to a shallow checkout still grows
+its history. Local paths need `--no-local` for Git to honor depth, so a normal
+local clone or repeated fetch is not a current-only cache.
+
+The producer still owns locking, privacy validation, source stability, final
+origin configuration, atomic activation and retirement of the old cache. Use
+this helper only for disposable local snapshots, not historical backups or
+development checkouts. Ordinary Discrawl publish and subscribe behavior is
+unchanged; this helper does not fetch, push or rewrite a remote repository.
+
 ## Subscriber
 
 ```bash

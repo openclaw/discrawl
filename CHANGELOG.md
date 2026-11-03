@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an operator helper for cloning only the current committed snapshot, keeping local publication stages from accumulating archive history.
+
 - Add `update --no-fetch` for externally refreshed snapshot caches and refuse Git mutations on owner-marked checkouts, preventing ordinary or automatic updates from rebuilding their Git history.
 
 - Add a read-only hosted history diagnostic for an exact published private checkpoint, with authenticated restore, bounded anonymous channel and failure-ledger evidence, and no collection or publication changes.
