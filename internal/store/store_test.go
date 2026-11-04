@@ -2786,3 +2786,51 @@ func TestMessageScopeStatsCataloguedChannelsOnlyMatchesTheConversationListing(t 
 	require.Equal(t, 1, stats.Count)
 	require.Equal(t, parseTime("2026-01-02T00:00:00Z"), stats.Newest)
 }
+
+func TestEnsureFTSVersionPreservesMarkerOnNoOpAndFailure(t *testing.T) {
+	for _, name := range []string{"current", "rebuild failure", "stamp failure"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "version.db"))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			_, err = db.ExecContext(ctx, `create table sync_state(scope text primary key, cursor text, updated_at text)`)
+			require.NoError(t, err)
+			version := "old"
+			if name == "current" {
+				version = "expected"
+			}
+			_, err = db.ExecContext(ctx, `insert into sync_state values(?, ?, ?)`, "test:fts", version, "original stamp")
+			require.NoError(t, err)
+			if name == "stamp failure" {
+				_, err = db.ExecContext(ctx, `create trigger reject_stamp before insert on sync_state begin select raise(abort, 'stamp refused'); end`)
+				require.NoError(t, err)
+			}
+			rebuildErr := errors.New("rebuild refused")
+			calls := 0
+			err = (&Store{db: db}).ensureFTSVersion(ctx, "test:fts", "expected", "member fts", func(context.Context) error {
+				calls++
+				if name == "rebuild failure" {
+					return rebuildErr
+				}
+				return nil
+			})
+			switch name {
+			case "current":
+				require.NoError(t, err)
+				require.Zero(t, calls)
+			case "rebuild failure":
+				require.Same(t, rebuildErr, err)
+				require.Equal(t, 1, calls)
+			case "stamp failure":
+				require.ErrorContains(t, err, "stamp member fts schema version:")
+				require.ErrorContains(t, err, "stamp refused")
+				require.Equal(t, 1, calls)
+			}
+			var gotVersion, stamp string
+			require.NoError(t, db.QueryRowContext(ctx, `select cursor, updated_at from sync_state where scope = ?`, "test:fts").Scan(&gotVersion, &stamp))
+			require.Equal(t, version, gotVersion)
+			require.Equal(t, "original stamp", stamp)
+		})
+	}
+}

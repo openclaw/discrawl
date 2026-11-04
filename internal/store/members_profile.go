@@ -21,31 +21,7 @@ type MemberProfile struct {
 }
 
 func (s *Store) ensureMemberFTSRowIDs(ctx context.Context) error {
-	var version sql.NullString
-	err := s.db.QueryRowContext(ctx, `
-		select cursor
-		from sync_state
-		where scope = 'schema:member_fts_rowid_version'
-	`).Scan(&version)
-	if err == nil && version.String == memberFTSVersion {
-		return nil
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("check member fts schema version: %w", err)
-	}
-	if err := s.rebuildMemberFTS(ctx); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		insert into sync_state(scope, cursor, updated_at)
-		values(?, ?, ?)
-		on conflict(scope) do update set
-			cursor=excluded.cursor,
-			updated_at=excluded.updated_at
-	`, "schema:member_fts_rowid_version", memberFTSVersion, time.Now().UTC().Format(timeLayout)); err != nil {
-		return fmt.Errorf("stamp member fts schema version: %w", err)
-	}
-	return nil
+	return s.ensureFTSVersion(ctx, "schema:member_fts_rowid_version", memberFTSVersion, "member fts", s.rebuildMemberFTS)
 }
 
 func (s *Store) rebuildMemberFTS(ctx context.Context) error {
