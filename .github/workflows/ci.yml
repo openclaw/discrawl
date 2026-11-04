@@ -92,6 +92,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          # Let the race build cache grow independently of faster analysis jobs.
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/ci.yml
 
       - name: Test private checkpoint transport
         run: |
