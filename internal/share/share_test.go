@@ -2184,9 +2184,6 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, "_", safePathSegment(".."))
 	require.Equal(t, "OpenAI_compatible-v1.2", safePathSegment("OpenAI compatible-v1.2"))
 	require.Equal(t, `"weird""table"`, quoteIdent(`weird"table`))
-	require.Equal(t, `insert into "messages"("id","weird""column") values(?,?)`, insertSQL("messages", []string{"id", `weird"column`}))
-	require.Equal(t, "blob", exportValue([]byte("blob")))
-	require.Equal(t, "plain", exportValue("plain"))
 	require.Equal(t, int64(42), importValue(json.Number("42")))
 	require.InDelta(t, 3.5, importValue(json.Number("3.5")), 0)
 	require.Equal(t, "nope", importValue(json.Number("nope")))
@@ -2195,20 +2192,7 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.Equal(t, "42", stringValue(json.Number("42")))
 	require.Empty(t, stringValue(42))
 
-	query, args := snapshotExportQuery("messages")
-	require.Equal(t, "select * from messages where guild_id != ?", query)
-	require.Equal(t, []any{directMessageGuildID}, args)
-	query, args = snapshotExportQuery("guilds")
-	require.Equal(t, "select * from guilds where id != ?", query)
-	require.Equal(t, []any{directMessageGuildID}, args)
-	query, args = snapshotExportQuery("sync_state")
-	require.Equal(t, "select * from sync_state where scope not like 'wiretap:%' and scope not like 'worker:%'", query)
-	require.Nil(t, args)
-	query, args = snapshotExportQuery("custom")
-	require.Equal(t, "select * from custom", query)
-	require.Nil(t, args)
-
-	query, args = snapshotDeleteQuery("channels")
+	query, args := snapshotDeleteQuery("channels")
 	require.Equal(t, "delete from channels where guild_id != ?", query)
 	require.Equal(t, []any{directMessageGuildID}, args)
 	query, args = snapshotDeleteQuery("guilds")
@@ -2232,8 +2216,6 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	require.True(t, isLocalOnlyGuildID(directMessageGuildID))
 	require.False(t, isLocalOnlyGuildID("g1"))
 
-	require.Equal(t, []string{"message_id", "guild_id"}, importColumns(TableManifest{Name: "message_events", Columns: []string{"event_id", "message_id", "guild_id"}}))
-	require.Equal(t, []string{"event_id", "message_id"}, importColumns(TableManifest{Name: "messages", Columns: []string{"event_id", "message_id"}}))
 	require.Equal(t, 7, manifestRowCount(Manifest{
 		Tables:     []TableManifest{{Rows: 2}, {Rows: 3}},
 		Embeddings: []EmbeddingManifest{{Rows: 2}},
@@ -2266,11 +2248,6 @@ func TestShareSmallHelpersAndValidation(t *testing.T) {
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
-	tx, err := s.DB().BeginTx(ctx, nil)
-	require.NoError(t, err)
-	require.ErrorContains(t, importTable(ctx, tx, Options{RepoPath: t.TempDir()}, TableManifest{Name: "messages", Columns: []string{"id"}}), "has no files")
-	require.NoError(t, tx.Rollback())
-
 	require.ErrorContains(t, ImportEmbeddings(ctx, s, Options{
 		RepoPath:              t.TempDir(),
 		IncludeEmbeddings:     true,
@@ -2320,14 +2297,14 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	writeGzipJSONLines(t, filepath.Join(repo, filepath.FromSlash(tableRel)), []string{
 		`{"id":"g1","name":"Guild","icon":null,"raw_json":"{}","updated_at":"2026-04-22T12:00:00Z"}`,
 	})
-	tx, err := s.DB().BeginTx(ctx, nil)
-	require.NoError(t, err)
-	require.NoError(t, importTable(ctx, tx, Options{RepoPath: repo}, TableManifest{
-		Name:    "guilds",
-		File:    tableRel,
+	manifestJSON, err := json.Marshal(Manifest{Version: 1, Tables: []TableManifest{{
+		Name: "guilds", File: tableRel,
 		Columns: []string{"id", "name", "icon", "raw_json", "updated_at"},
-	}))
-	require.NoError(t, tx.Commit())
+	}}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ManifestName), manifestJSON, 0o600))
+	_, err = Import(ctx, s, Options{RepoPath: repo})
+	require.NoError(t, err)
 
 	_, rows, err := s.ReadOnlyQuery(ctx, "select id, name from guilds")
 	require.NoError(t, err)
@@ -2338,7 +2315,7 @@ func TestLegacyManifestFileImportAndEmbeddingDecodeErrors(t *testing.T) {
 	writeGzipJSONLines(t, filepath.Join(repo, filepath.FromSlash(embeddingRel)), []string{
 		`{"message_id":"m1","provider":"openai","model":"model","input_version":"` + store.EmbeddingInputVersion + `","dimensions":3.5,"embedding_blob":"AAAA","embedded_at":"2026-04-22T12:00:00Z"}`,
 	})
-	tx, err = s.DB().BeginTx(ctx, nil)
+	tx, err := s.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
 	require.ErrorContains(t, importEmbeddings(ctx, tx, Options{
 		RepoPath:              repo,
@@ -2406,19 +2383,18 @@ func TestValidateSnapshotRowRejectsMalformedDeletedAtBeforeImport(t *testing.T) 
 		`{"id":"m1","guild_id":"g1","channel_id":"c1","author_id":null,"message_type":0,"created_at":"2026-07-14T12:00:00Z","edited_at":null,"deleted_at":null,"content":"one","normalized_content":"one","reply_to_message_id":null,"pinned":0,"has_attachments":0,"raw_json":"{}","updated_at":"2026-07-14T12:00:00Z"}`,
 		`{"id":"m2","guild_id":"g1","channel_id":"c1","author_id":null,"message_type":0,"created_at":"2026-07-14T12:00:00Z","edited_at":null,"deleted_at":"not-a-timestamp","content":"two","normalized_content":"two","reply_to_message_id":null,"pinned":0,"has_attachments":0,"raw_json":"{}","updated_at":"2026-07-14T12:00:00Z"}`,
 	})
-	tx, err := s.DB().BeginTx(ctx, nil)
-	require.NoError(t, err)
-	err = importTable(ctx, tx, Options{RepoPath: repo}, TableManifest{
+	manifestJSON, err := json.Marshal(Manifest{Version: 1, Tables: []TableManifest{{
 		Name: "messages", File: rel,
 		Columns: []string{"id", "guild_id", "channel_id", "author_id", "message_type", "created_at", "edited_at", "deleted_at", "content", "normalized_content", "reply_to_message_id", "pinned", "has_attachments", "raw_json", "updated_at"},
-	})
+	}}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ManifestName), manifestJSON, 0o600))
+	_, err = Import(ctx, s, Options{RepoPath: repo})
 	require.ErrorContains(t, err, "messages.deleted_at must be RFC3339")
 	var count int
-	require.NoError(t, tx.QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
-	require.Equal(t, 1, count)
-	require.NoError(t, tx.Rollback())
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
 	require.Zero(t, count)
+
 }
 
 func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {

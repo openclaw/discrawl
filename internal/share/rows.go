@@ -1,95 +1,18 @@
 package share
 
 import (
-	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
-
-func importTable(ctx context.Context, tx *sql.Tx, opts Options, table TableManifest) error {
-	files := table.Files
-	if len(files) == 0 && strings.TrimSpace(table.File) != "" {
-		files = []string{table.File}
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("manifest table %s has no files", table.Name)
-	}
-	columns := importColumns(table)
-	stmt, err := tx.PrepareContext(ctx, insertSQL(table.Name, columns))
-	if err != nil {
-		return fmt.Errorf("prepare import %s: %w", table.Name, err)
-	}
-	defer func() { _ = stmt.Close() }()
-	for i, rel := range files {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		opts.reportProgress(ImportProgress{Phase: "file_start", Table: table.Name, File: rel, FileIndex: i + 1, FileCount: len(files), TotalRows: table.Rows})
-		rows, err := importTableFile(ctx, stmt, opts.RepoPath, table, columns, rel)
-		if err != nil {
-			return err
-		}
-		opts.reportProgress(ImportProgress{Phase: "file_done", Table: table.Name, File: rel, FileIndex: i + 1, FileCount: len(files), Rows: rows, TotalRows: table.Rows})
-	}
-	return nil
-}
-
-func importTableFile(ctx context.Context, stmt *sql.Stmt, repoPath string, table TableManifest, columns []string, rel string) (int, error) {
-	path := filepath.Join(repoPath, filepath.FromSlash(rel))
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", rel, err)
-	}
-	defer func() { _ = file.Close() }()
-	gz, err := gzip.NewReader(file)
-	if err != nil {
-		return 0, fmt.Errorf("read gzip %s: %w", rel, err)
-	}
-	defer func() { _ = gz.Close() }()
-	dec := json.NewDecoder(gz)
-	dec.UseNumber()
-	count := 0
-	for {
-		if err := ctx.Err(); err != nil {
-			return count, err
-		}
-		row := map[string]any{}
-		err := dec.Decode(&row)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return count, fmt.Errorf("decode %s: %w", rel, err)
-		}
-		if isDirectMessageSnapshotRow(table.Name, row) {
-			continue
-		}
-		if err := validateSnapshotRow(table.Name, row); err != nil {
-			return count, fmt.Errorf("validate %s: %w", rel, err)
-		}
-		values := make([]any, len(columns))
-		for i, column := range columns {
-			values[i] = importValue(row[column])
-		}
-		if _, err := stmt.ExecContext(ctx, values...); err != nil {
-			return count, fmt.Errorf("insert %s: %w", table.Name, err)
-		}
-		count++
-	}
-	return count, nil
-}
 
 func validateSnapshotRow(table string, row map[string]any) error {
 	if table != "messages" && table != "guilds" && table != "members" {
@@ -229,19 +152,6 @@ func repairImportedGuildIDs(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
-}
-
-func importColumns(table TableManifest) []string {
-	if table.Name != "message_events" && table.Name != "mention_events" {
-		return table.Columns
-	}
-	columns := make([]string, 0, len(table.Columns))
-	for _, column := range table.Columns {
-		if column != "event_id" {
-			columns = append(columns, column)
-		}
-	}
-	return columns
 }
 
 func upsertMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[string]any) (bool, error) {
@@ -442,16 +352,6 @@ func stringValue(value any) string {
 	default:
 		return ""
 	}
-}
-
-func insertSQL(table string, columns []string) string {
-	quoted := make([]string, len(columns))
-	placeholders := make([]string, len(columns))
-	for i, column := range columns {
-		quoted[i] = quoteIdent(column)
-		placeholders[i] = "?"
-	}
-	return "insert into " + quoteIdent(table) + "(" + strings.Join(quoted, ",") + ") values(" + strings.Join(placeholders, ",") + ")"
 }
 
 func quoteIdent(s string) string {

@@ -462,19 +462,6 @@ func stringSet(in []string) map[string]struct{} {
 	return out
 }
 
-func snapshotExportQuery(table string) (string, []any) {
-	switch table {
-	case "guilds":
-		return "select * from guilds where id != ?", []any{directMessageGuildID}
-	case "channels", "members", "messages", "message_events", "message_attachments", "mention_events":
-		return "select * from " + table + " where guild_id != ?", []any{directMessageGuildID}
-	case "sync_state":
-		return "select * from sync_state where scope not like 'wiretap:%' and scope not like 'worker:%'", nil
-	default:
-		return "select * from " + table, nil
-	}
-}
-
 func snapshotDeleteQuery(table string) (string, []any) {
 	switch table {
 	case "guilds":
