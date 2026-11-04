@@ -1344,7 +1344,7 @@ func TestCloudPublishMissingArchiveDoesNotCreateLocalDB(t *testing.T) {
 	require.NoFileExists(t, dbPath)
 }
 
-func TestOpenExistingLocalStoreReadOnlyMissingArchiveDoesNotOpenWritableStore(t *testing.T) {
+func TestOpenLocalStoreReadOnlyMissingArchiveDoesNotOpenWritableStore(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "archive", "discrawl.db")
@@ -1358,7 +1358,7 @@ func TestOpenExistingLocalStoreReadOnlyMissingArchiveDoesNotOpenWritableStore(t 
 			return nil, errors.New("unexpected writable open")
 		},
 	}
-	err := r.openExistingLocalStoreReadOnly(dbPath, func() error {
+	err := r.openLocalStoreReadOnly(dbPath, func() error {
 		require.Nil(t, r.store)
 		return nil
 	})
@@ -1368,7 +1368,7 @@ func TestOpenExistingLocalStoreReadOnlyMissingArchiveDoesNotOpenWritableStore(t 
 	require.NoFileExists(t, dbPath)
 }
 
-func TestOpenExistingLocalStoreReadOnlySchemaMismatchDoesNotOpenWritableStore(t *testing.T) {
+func TestOpenLocalStoreReadOnlySchemaMismatchDoesNotOpenWritableStore(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "discrawl.db")
 	s, err := store.Open(ctx, dbPath)
@@ -1385,7 +1385,7 @@ func TestOpenExistingLocalStoreReadOnlySchemaMismatchDoesNotOpenWritableStore(t 
 			return nil, errors.New("unexpected writable open")
 		},
 	}
-	err = r.openExistingLocalStoreReadOnly(dbPath, func() error {
+	err = r.openLocalStoreReadOnly(dbPath, func() error {
 		t.Fatal("read callback should not run on schema mismatch")
 		return nil
 	})

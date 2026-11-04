@@ -671,43 +671,7 @@ func (r *runtime) withLocalStoreReadOnly(fn func() error) error {
 	return r.openLocalStoreReadOnly(dbPath, fn)
 }
 
-func (r *runtime) withExistingLocalStoreReadOnly(fn func() error) error {
-	cfg, err := config.Load(r.configPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return configErr(err)
-		}
-		cfg = config.Default()
-		if err := cfg.Normalize(); err != nil {
-			return configErr(err)
-		}
-	}
-	dbPath, err := config.ExpandPath(cfg.DBPath)
-	if err != nil {
-		return configErr(err)
-	}
-	r.cfg = cfg
-	return r.openExistingLocalStoreReadOnly(dbPath, fn)
-}
-
 func (r *runtime) openLocalStoreReadOnly(dbPath string, fn func() error) error {
-	r.store = nil
-	s, err := r.openConfiguredReadOnlyStore(dbPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fn()
-		}
-		return dbErr(err)
-	}
-	r.store = s
-	defer func() {
-		_ = r.store.Close()
-		r.store = nil
-	}()
-	return fn()
-}
-
-func (r *runtime) openExistingLocalStoreReadOnly(dbPath string, fn func() error) error {
 	r.store = nil
 	s, err := r.openConfiguredReadOnlyStore(dbPath)
 	if err != nil {
