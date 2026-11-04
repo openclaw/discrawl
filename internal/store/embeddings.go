@@ -383,70 +383,41 @@ func (s *Store) storeEmbeddingBatch(ctx context.Context, opts EmbeddingDrainOpti
 }
 
 func (s *Store) markEmbeddingJobsDone(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	qtx := s.q.WithTx(tx)
-	now := opts.Now().Format(timeLayout)
-	for _, job := range jobs {
+	return s.updateEmbeddingJobs(ctx, opts, jobs, nil, func(qtx *storedb.Queries, job embeddingJob, now, lastError string) error {
 		if err := qtx.DeleteMessageEmbeddingsByMessage(ctx, job.MessageID); err != nil {
 			return err
 		}
-		if err := qtx.MarkEmptyEmbeddingJobDone(ctx, storedb.MarkEmptyEmbeddingJobDoneParams{
+		return qtx.MarkEmptyEmbeddingJobDone(ctx, storedb.MarkEmptyEmbeddingJobDoneParams{
 			Provider:     opts.Provider,
 			Model:        opts.Model,
 			InputVersion: opts.InputVersion,
 			UpdatedAt:    now,
 			MessageID:    job.MessageID,
-		}); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+		})
+	})
 }
 
 func (s *Store) markEmbeddingJobsRateLimited(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob, cause error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	qtx := s.q.WithTx(tx)
-	now := opts.Now().Format(timeLayout)
-	lastError := trimStoredError(cause)
-	for _, job := range jobs {
-		if err := qtx.MarkEmbeddingJobRateLimited(ctx, storedb.MarkEmbeddingJobRateLimitedParams{
+	return s.updateEmbeddingJobs(ctx, opts, jobs, cause, func(qtx *storedb.Queries, job embeddingJob, now, lastError string) error {
+		return qtx.MarkEmbeddingJobRateLimited(ctx, storedb.MarkEmbeddingJobRateLimitedParams{
 			Provider:     opts.Provider,
 			Model:        opts.Model,
 			InputVersion: opts.InputVersion,
 			LastError:    lastError,
 			UpdatedAt:    now,
 			MessageID:    job.MessageID,
-		}); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+		})
+	})
 }
 
 func (s *Store) markEmbeddingJobsFailed(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob, cause error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	qtx := s.q.WithTx(tx)
-	now := opts.Now().Format(timeLayout)
-	lastError := trimStoredError(cause)
-	for _, job := range jobs {
+	return s.updateEmbeddingJobs(ctx, opts, jobs, cause, func(qtx *storedb.Queries, job embeddingJob, now, lastError string) error {
 		attempts := job.Attempts + 1
 		state := "pending"
 		if attempts >= maxEmbeddingAttempts {
 			state = "failed"
 		}
-		if err := qtx.MarkEmbeddingJobFailed(ctx, storedb.MarkEmbeddingJobFailedParams{
+		return qtx.MarkEmbeddingJobFailed(ctx, storedb.MarkEmbeddingJobFailedParams{
 			State:        state,
 			Attempts:     int64(attempts),
 			Provider:     opts.Provider,
@@ -455,7 +426,23 @@ func (s *Store) markEmbeddingJobsFailed(ctx context.Context, opts EmbeddingDrain
 			LastError:    lastError,
 			UpdatedAt:    now,
 			MessageID:    job.MessageID,
-		}); err != nil {
+		})
+	})
+}
+
+func (s *Store) updateEmbeddingJobs(ctx context.Context, opts EmbeddingDrainOptions, jobs []embeddingJob, cause error,
+	update func(*storedb.Queries, embeddingJob, string, string) error,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	qtx := s.q.WithTx(tx)
+	now := opts.Now().Format(timeLayout)
+	lastError := trimStoredError(cause)
+	for _, job := range jobs {
+		if err := update(qtx, job, now, lastError); err != nil {
 			return err
 		}
 	}
