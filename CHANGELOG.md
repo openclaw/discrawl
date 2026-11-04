@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Give the race-and-coverage CI job its own Go cache so faster dependency and lint jobs cannot reserve its immutable cache entry before race builds finish.
+
 - Run CodeQL daily on main instead of on every main push, preserving pull-request and manual analysis and preventing their cancellation by scheduled runs.
 
 - Add an operator helper for cloning only the current committed snapshot, keeping local publication stages from accumulating archive history.
