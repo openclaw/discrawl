@@ -65,9 +65,12 @@ func TestUpsertMessagesBatch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "2", rows[0][0])
 
-	_, rows, err = s.ReadOnlyQuery(ctx, "select count(*) from message_events")
+	_, rows, err = s.ReadOnlyQuery(ctx, "select guild_id, channel_id, message_id, event_type, payload_json from message_events order by event_id")
 	require.NoError(t, err)
-	require.Equal(t, "2", rows[0][0])
+	require.Equal(t, [][]string{
+		{"g1", "c1", "m1", "upsert", `{"id":"m1"}`},
+		{"g1", "c1", "m2", "upsert", `{"id":"m2"}`},
+	}, rows)
 }
 
 func TestUpsertMessagesRefreshesDuplicateAttachmentID(t *testing.T) {

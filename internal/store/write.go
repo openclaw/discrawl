@@ -979,14 +979,6 @@ func (s *Store) markMessageDeleted(
 	return tx.Commit()
 }
 
-func (s *Store) AppendMessageEvent(ctx context.Context, guildID, channelID, messageID, eventType string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return appendEventTx(ctx, s.q, guildID, channelID, messageID, eventType, string(body))
-}
-
 func appendEventTx(ctx context.Context, q *storedb.Queries, guildID, channelID, messageID, eventType, payload string) error {
 	return q.InsertMessageEvent(ctx, storedb.InsertMessageEventParams{
 		GuildID:     guildID,
