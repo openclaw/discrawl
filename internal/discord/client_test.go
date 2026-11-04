@@ -1379,49 +1379,10 @@ func TestUniqueChannels(t *testing.T) {
 }
 
 func TestTailReceivesGatewayEvents(t *testing.T) {
-	mux := http.NewServeMux()
-	upgrader := websocket.Upgrader{}
-	gatewayURL := ""
-	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"url": gatewayURL})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	gatewayURL = "ws" + server.URL[len("http"):] + "/gateway"
-	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade gateway: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		if err := conn.WriteJSON(map[string]any{
-			"op": 10,
-			"d":  map[string]any{"heartbeat_interval": 1000},
-		}); err != nil {
-			t.Errorf("write hello: %v", err)
-			return
-		}
-		_, _, err = conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read identify: %v", err)
-			return
-		}
-		if err := conn.WriteJSON(map[string]any{
-			"op": 0,
-			"t":  "READY",
-			"s":  1,
-			"d": map[string]any{
-				"session_id": "session",
-				"user":       map[string]any{"id": "bot", "username": "bot"},
-			},
-		}); err != nil {
-			t.Errorf("write ready: %v", err)
-			return
-		}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		events := []map[string]any{
 			{"op": 0, "t": "MESSAGE_CREATE", "s": 2, "d": map[string]any{"id": "m1", "guild_id": "g1", "channel_id": "c1", "content": "hello", "timestamp": now, "author": map[string]any{"id": "u1", "username": "user"}}},
@@ -1439,10 +1400,9 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	mux.HandleFunc("/gateway", gatewayHandler)
-	mux.HandleFunc("/gateway/", gatewayHandler)
+		<-ctx.Done()
+	})
+	t.Cleanup(server.Close)
 
 	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
 	defer restore()
@@ -1453,23 +1413,29 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	client.session.ShouldReconnectOnError = false
 	require.Zero(t, discordSessionHandlerCount(client.session))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	handler := &observingRecordingHandler{
+	wantEvents := []string{"ready", "create", "update", "delete", "channel", "channel", "channel", "member_upsert", "member_delete"}
+	handler := &gatewayRecordingHandler{
+		events:       make(chan string, len(wantEvents)),
 		observations: make(chan TailEventObservation, 3),
 	}
+	received := make(chan []string, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
+		defer cancel()
+		var events []string
+		for range wantEvents {
+			select {
+			case event := <-handler.events:
+				events = append(events, event)
+			case <-ctx.Done():
+				received <- events
+				return
+			}
+		}
+		received <- events
 	}()
 	require.NoError(t, client.Tail(ctx, handler))
-	require.Equal(t, 1, handler.creates)
-	require.Equal(t, 1, handler.updates)
-	require.Equal(t, 1, handler.deletes)
-	require.Equal(t, 3, handler.channels)
-	require.Equal(t, 1, handler.memberUpserts)
-	require.Equal(t, 1, handler.memberDeletes)
-	require.Equal(t, 1, handler.ready)
+	cancel()
+	require.ElementsMatch(t, wantEvents, <-received)
 	require.Len(t, handler.observations, 3)
 	require.Equal(t, TailEventObservation{
 		EventType: "MESSAGE_CREATE",
@@ -3752,13 +3718,48 @@ type recordingHandler struct {
 	ready         int
 }
 
-type observingRecordingHandler struct {
-	recordingHandler
+type gatewayRecordingHandler struct {
+	events       chan string
 	observations chan TailEventObservation
 }
 
-func (h *observingRecordingHandler) OnTailEventObserved(event TailEventObservation) {
+func (h *gatewayRecordingHandler) OnTailEventObserved(event TailEventObservation) {
 	h.observations <- event
+}
+
+func (h *gatewayRecordingHandler) OnTailReady(context.Context) error {
+	h.events <- "ready"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
+	h.events <- "create"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnMessageUpdate(context.Context, *discordgo.Message) error {
+	h.events <- "update"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
+	h.events <- "delete"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnChannelUpsert(context.Context, *discordgo.Channel) error {
+	h.events <- "channel"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
+	h.events <- "member_upsert"
+	return nil
+}
+
+func (h *gatewayRecordingHandler) OnMemberDelete(context.Context, string, string) error {
+	h.events <- "member_delete"
+	return nil
 }
 
 type gatewayOpenFailureHandler struct {
