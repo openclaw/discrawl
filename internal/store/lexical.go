@@ -249,7 +249,7 @@ func (s *Store) upsertLexicalMessageTx(
 ) error {
 	for _, language := range s.lexicalLanguages() {
 		table := lexicalFTSTable(language)
-		rowID, ok := messageFTSRowID(message.ID)
+		rowID, ok := MessageFTSRowID(message.ID)
 		if !ok {
 			continue
 		}
@@ -278,7 +278,7 @@ func (s *Store) deleteLexicalMessagesTx(ctx context.Context, tx *sql.Tx, column 
 }
 
 func insertLexicalMessageTx(ctx context.Context, tx *sql.Tx, table string, message MessageRecord, content string) error {
-	rowID, ok := messageFTSRowID(message.ID)
+	rowID, ok := MessageFTSRowID(message.ID)
 	if !ok {
 		return nil
 	}
