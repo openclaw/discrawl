@@ -2582,45 +2582,25 @@ func seedStore(t *testing.T, path string) *store.Store {
 
 func addCachedAttachment(ctx context.Context, s *store.Store, mediaPath, hash string, size int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.UpsertMessages(ctx, []store.MessageMutation{{
-		Record: store.MessageRecord{
-			ID:                "m1",
-			GuildID:           "g1",
-			ChannelID:         "c1",
-			ChannelName:       "general",
-			AuthorID:          "u1",
-			AuthorName:        "Peter",
-			MessageType:       0,
-			CreatedAt:         now,
-			Content:           "launch checklist ready",
-			NormalizedContent: "launch checklist ready file.png",
-			HasAttachments:    true,
-			RawJSON:           `{}`,
-		},
-		Attachments: []store.AttachmentRecord{{
-			AttachmentID:  "a1",
-			MessageID:     "m1",
-			GuildID:       "g1",
-			ChannelID:     "c1",
-			AuthorID:      "u1",
-			Filename:      "file.png",
-			ContentType:   "image/png",
-			Size:          size,
-			URL:           "https://cdn.example/file.png",
-			MediaPath:     mediaPath,
-			ContentSHA256: hash,
-			ContentSize:   size,
-			FetchedAt:     now,
-			FetchStatus:   "fetched",
-		}},
-	}}); err != nil {
-		return err
-	}
-	return nil
+	return addAttachment(ctx, s, now, store.AttachmentRecord{
+		Size: size, MediaPath: mediaPath, ContentSHA256: hash, ContentSize: size,
+		FetchedAt: now, FetchStatus: "fetched",
+	})
 }
 
 func addUncachedAttachment(ctx context.Context, s *store.Store) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return addAttachment(ctx, s, time.Now().UTC().Format(time.RFC3339Nano), store.AttachmentRecord{Size: 11})
+}
+
+func addAttachment(ctx context.Context, s *store.Store, createdAt string, attachment store.AttachmentRecord) error {
+	attachment.AttachmentID = "a1"
+	attachment.MessageID = "m1"
+	attachment.GuildID = "g1"
+	attachment.ChannelID = "c1"
+	attachment.AuthorID = "u1"
+	attachment.Filename = "file.png"
+	attachment.ContentType = "image/png"
+	attachment.URL = "https://cdn.example/file.png"
 	return s.UpsertMessages(ctx, []store.MessageMutation{{
 		Record: store.MessageRecord{
 			ID:                "m1",
@@ -2630,23 +2610,13 @@ func addUncachedAttachment(ctx context.Context, s *store.Store) error {
 			AuthorID:          "u1",
 			AuthorName:        "Peter",
 			MessageType:       0,
-			CreatedAt:         now,
+			CreatedAt:         createdAt,
 			Content:           "launch checklist ready",
 			NormalizedContent: "launch checklist ready file.png",
 			HasAttachments:    true,
 			RawJSON:           `{}`,
 		},
-		Attachments: []store.AttachmentRecord{{
-			AttachmentID: "a1",
-			MessageID:    "m1",
-			GuildID:      "g1",
-			ChannelID:    "c1",
-			AuthorID:     "u1",
-			Filename:     "file.png",
-			ContentType:  "image/png",
-			Size:         11,
-			URL:          "https://cdn.example/file.png",
-		}},
+		Attachments: []store.AttachmentRecord{attachment},
 	}})
 }
 
