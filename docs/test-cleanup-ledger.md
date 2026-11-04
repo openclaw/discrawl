@@ -1,5 +1,21 @@
 # Test cleanup ledger
 
+## Test-only formatters
+
+- Removed the unused `clipWhitespace` formatter and its two assertions from
+  the report helper test. No report rendering path called it.
+- Removed the test-only `normalizeMessage`/`normalizeMessageParts` chain and
+  its obsolete attachment-adapter test. Production derives attributed message
+  parts directly through `messagetext`.
+- Updated the rich-message and Unicode tests to exercise `buildMessageMutation`,
+  requiring the actual archived normalized content. Their attachment fixtures
+  now carry IDs so the real extraction path includes them.
+- Kept raw-message round-trip checks on the real `messagetext` API.
+- Retained the SQLite-backed report rendering and Components V2 round-trip/search
+  tests, plus rich-message and malformed-Unicode normalization checks.
+
+No report output, message content, schema, or release artifacts changed.
+
 ## Gateway event delivery
 
 - Reused the existing gateway handshake helper instead of maintaining a second

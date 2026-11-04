@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -73,8 +72,6 @@ func TestHelpersHandleEmptyAndLongContent(t *testing.T) {
 	require.Equal(t, "a\\|b", escapeMD("a|b"))
 	require.Equal(t, "_No activity._", MarkdownTable(nil, "Name"))
 	require.Contains(t, MarkdownTable([]RankedCount{{Name: "a|b", Count: 1000}}, "Name"), "a\\|b")
-	require.True(t, strings.HasSuffix(clipWhitespace(strings.Repeat("x", 300), 20), "..."))
-	require.Equal(t, "short", clipWhitespace("short", 20))
 	require.Equal(t, "n/a", formatTime(time.Time{}))
 	require.False(t, parseTime("2026-04-22 12:00:00").IsZero())
 	require.True(t, parseTime("nope").IsZero())
