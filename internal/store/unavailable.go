@@ -18,22 +18,6 @@ func UnavailableMarkerActive(updatedAt, now time.Time) bool {
 	return !updatedAt.IsZero() && updatedAt.After(now.Add(-UnavailableMarkerWindow))
 }
 
-func (s *Store) IncompleteMessageChannelIDs(ctx context.Context, guildID string) ([]string, error) {
-	ids, err := s.AllIncompleteMessageChannelIDs(ctx, guildID)
-	if err != nil || len(ids) == 0 {
-		return ids, err
-	}
-	fresh, err := s.FreshUnavailableChannelIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	blocked := make(map[string]struct{}, len(fresh))
-	for _, id := range fresh {
-		blocked[id] = struct{}{}
-	}
-	return slices.DeleteFunc(ids, func(id string) bool { _, skip := blocked[id]; return skip }), nil
-}
-
 func (s *Store) AllIncompleteMessageChannelIDs(ctx context.Context, guildID string) ([]string, error) {
 	if guildID != "" {
 		return s.q.ListAllIncompleteMessageChannelIDsByGuild(ctx, guildID)
