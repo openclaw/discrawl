@@ -186,20 +186,27 @@ func TestThreadsArchivedStopsAtAfterCursor(t *testing.T) {
 			"has_more": true,
 		})(w, r)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	threads, err := client.ThreadsArchived(context.Background(), "c1", false, after)
 	require.NoError(t, err)
 	require.Len(t, threads, 1)
 	require.Equal(t, "new", threads[0].ID)
 	require.Equal(t, 1, requests)
+}
+
+func newRESTTestClient(t *testing.T, handler http.Handler) *Client {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	return client
 }
 
 func archivedThreadJSON(id string, archiveAt time.Time) map[string]any {
@@ -231,17 +238,10 @@ func TestGuildMembersRejectsIncompleteUserIdentity(t *testing.T) {
 			"roles":    []string{},
 		},
 	}))
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	var members []*discordgo.Member
+	var err error
 	require.NotPanics(t, func() {
 		members, err = client.GuildMembers(context.Background(), "g1")
 	})
@@ -278,17 +278,10 @@ func TestGuildMembersPaginatesFromLastValidUser(t *testing.T) {
 			writeJSON([]map[string]any{})(w, r)
 		}
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	var members []*discordgo.Member
+	var err error
 	require.NotPanics(t, func() {
 		members, err = client.GuildMembers(context.Background(), "g1")
 	})
@@ -307,17 +300,10 @@ func TestGuildMembersErrorsWhenFullPageHasNoUser(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v10/guilds/g1/members", writeJSON(page))
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	var members []*discordgo.Member
+	var err error
 	require.NotPanics(t, func() {
 		members, err = client.GuildMembers(context.Background(), "g1")
 	})
@@ -342,15 +328,7 @@ func TestGuildMembersErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 		requests++
 		writeJSON(page)(w, r)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	members, err := client.GuildMembers(context.Background(), "g1")
 	require.ErrorContains(t, err, "member page cursor did not advance")
@@ -377,15 +355,7 @@ func TestGuildsErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 		}
 		writeJSON(page)(w, r)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	guilds, err := client.Guilds(context.Background())
 	require.ErrorContains(t, err, "guild page cursor did not advance")
@@ -413,15 +383,7 @@ func TestGuildsErrorsWhenFullPageHasEmptyID(t *testing.T) {
 		}
 		writeJSON(page)(w, r)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	guilds, err := client.Guilds(context.Background())
 	require.ErrorContains(t, err, "guild page missing id")
@@ -466,15 +428,7 @@ func TestThreadsArchivedErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 		}
 		writeJSON(page)(w, r)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	t.Cleanup(restore)
-
-	client, err := New("token")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
+	client := newRESTTestClient(t, mux)
 
 	threads, err := client.ThreadsArchived(context.Background(), "c1", false, time.Time{})
 	require.ErrorContains(t, err, "archived thread page cursor did not advance")
