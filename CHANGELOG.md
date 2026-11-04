@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Share Linux CI setup and Go caches across Japanese, Chinese, and Korean helper tests while retaining native macOS Kiwi validation.
+
 - Give the race-and-coverage CI job its own Go cache so faster dependency and lint jobs cannot reserve its immutable cache entry before race builds finish.
 
 - Run CodeQL daily on main instead of on every main push, preserving pull-request and manual analysis and preventing their cancellation by scheduled runs.
