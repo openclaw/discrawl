@@ -396,10 +396,7 @@ func (s *Store) resolveInlineDiscordMentions(ctx context.Context, rows []Message
 }
 
 func (s *Store) discordMemberDisplayNames(ctx context.Context, ids map[string]struct{}) (map[string]string, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	query := `
+	return s.queryDiscordNames(ctx, `
 		select guild_id, user_id,
 			coalesce(
 				nullif(display_name, ''),
@@ -410,28 +407,17 @@ func (s *Store) discordMemberDisplayNames(ctx context.Context, ids map[string]st
 			)
 		from members
 		where deleted_at is null and user_id in (select value from json_each(?))
-	`
-	rows, err := s.queryMessageIDs(ctx, query, slices.Collect(maps.Keys(ids)))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[string]string{}
-	for rows.Next() {
-		var guildID, userID, name string
-		if err := rows.Scan(&guildID, &userID, &name); err != nil {
-			return nil, err
-		}
-		rememberResolvedDiscordName(out, guildID, userID, name)
-	}
-	return out, rows.Err()
+	`, ids)
 }
 
 func (s *Store) discordChannelNames(ctx context.Context, ids map[string]struct{}) (map[string]string, error) {
+	return s.queryDiscordNames(ctx, `select guild_id, id, coalesce(nullif(name, ''), '') from channels where id in (select value from json_each(?))`, ids)
+}
+
+func (s *Store) queryDiscordNames(ctx context.Context, query string, ids map[string]struct{}) (map[string]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	query := `select guild_id, id, coalesce(nullif(name, ''), '') from channels where id in (select value from json_each(?))`
 	rows, err := s.queryMessageIDs(ctx, query, slices.Collect(maps.Keys(ids)))
 	if err != nil {
 		return nil, err
@@ -439,11 +425,11 @@ func (s *Store) discordChannelNames(ctx context.Context, ids map[string]struct{}
 	defer func() { _ = rows.Close() }()
 	out := map[string]string{}
 	for rows.Next() {
-		var guildID, channelID, name string
-		if err := rows.Scan(&guildID, &channelID, &name); err != nil {
+		var guildID, id, name string
+		if err := rows.Scan(&guildID, &id, &name); err != nil {
 			return nil, err
 		}
-		rememberResolvedDiscordName(out, guildID, channelID, name)
+		rememberResolvedDiscordName(out, guildID, id, name)
 	}
 	return out, rows.Err()
 }
