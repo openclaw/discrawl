@@ -3026,6 +3026,13 @@ func writeSyncLockMetadata(t *testing.T, path, operation string, pid int) {
 	require.NoError(t, writeSyncLockMetadataFiles(path, []byte(body)))
 }
 
+func writeSyncLockMetadataFiles(path string, metadata []byte) error {
+	if err := os.WriteFile(path, metadata, 0o600); err != nil {
+		return err
+	}
+	return writeSyncLockMetadataSidecar(path, metadata)
+}
+
 func holdSyncLockToken(t *testing.T, ctx context.Context, lockPath, token string) func() {
 	t.Helper()
 	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
@@ -4899,6 +4906,10 @@ func TestPrintJSONAndPlain(t *testing.T) {
 	rt = &runtime{stdout: &bytes.Buffer{}}
 	require.NoError(t, rt.print(struct{ OK bool }{OK: true}))
 	require.Contains(t, rt.stdout.(*bytes.Buffer).String(), "\"OK\": true")
+}
+
+func (r *runtime) withServices(withDiscord bool, fn func() error) error {
+	return r.withServicesAutoLocked(withDiscord, !withDiscord, false, fn)
 }
 
 func TestWithServicesErrors(t *testing.T) {

@@ -267,13 +267,6 @@ func writeSyncLockMetadataRecord(file *os.File, path string, metadata []byte) er
 	return writeSyncLockMetadataSidecar(path, metadata)
 }
 
-func writeSyncLockMetadataFiles(path string, metadata []byte) error {
-	if err := os.WriteFile(path, metadata, 0o600); err != nil {
-		return err
-	}
-	return writeSyncLockMetadataSidecar(path, metadata)
-}
-
 func writeSyncLockMetadataSidecar(path string, metadata []byte) error {
 	return os.WriteFile(syncLockMetadataPath(path), metadata, 0o600)
 }
