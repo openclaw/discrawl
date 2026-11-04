@@ -107,3 +107,19 @@ or release artifacts changed.
   both messages and now rejects incorrectly wired event contents.
 
 No production event behavior, archive format, or release artifacts changed.
+
+## Retired incomplete-channel filter
+
+- Removed `IncompleteMessageChannelIDs`, called only by tests. Full sync plans
+  with `AllIncompleteMessageChannelIDs`; routine sync filters provider channels
+  through `FreshUnavailableChannelIDs` in the syncer.
+- Removed two tests of the retired composition and its assertions in the TTL
+  tests. Keep production timestamp parsing, marker-window edges, refresh,
+  clearing, suffix matching, and malformed/offset timestamp coverage.
+- Preserved completed-thread coverage on the active full-sync listing and
+  added an incomplete thread alongside guild, voice/stage, and marker cases.
+  Closed-store error coverage now calls that same production query.
+- Retained real syncer entrypoint and message-sync tests for routine skip/retry,
+  explicit requests, full sync, and catalog progress using temporary archives.
+
+No sync behavior, query/schema format, live archive data, or release changes.

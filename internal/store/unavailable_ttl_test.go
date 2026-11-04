@@ -14,7 +14,7 @@ import (
 // fractional digits, and a trailing 'Z'. Production rows look like
 // 2026-05-20T03:09:04.033368707Z, so the TTL comparison must hold for that
 // shape rather than for a synthetic 'YYYY-MM-DD HH:MM:SS' value.
-func ageSyncStateMarker(ctx context.Context, t *testing.T, s *Store, scope, cursor string, age time.Duration) string {
+func ageSyncStateMarker(ctx context.Context, t *testing.T, s *Store, scope, cursor string, age time.Duration) {
 	t.Helper()
 	stamp := time.Now().UTC().Add(-age).Format(timeLayout)
 	_, err := s.db.ExecContext(ctx, `
@@ -23,45 +23,6 @@ values(?, ?, ?)
 on conflict(scope) do update set cursor = excluded.cursor, updated_at = excluded.updated_at
 `, scope, cursor, stamp)
 	require.NoError(t, err)
-	return stamp
-}
-
-func TestUnavailableMarkerExpiresFromIncompleteListing(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
-	defer func() { _ = s.Close() }()
-
-	for _, id := range []string{"stale", "fresh", "clean"} {
-		require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: id, GuildID: "g1", Kind: "text", Name: id, RawJSON: `{}`}))
-	}
-
-	staleStamp := ageSyncStateMarker(ctx, t, s, "channel:stale:unavailable", "missing_access", 30*24*time.Hour)
-	freshStamp := ageSyncStateMarker(ctx, t, s, "channel:fresh:unavailable", "missing_access", 24*time.Hour)
-
-	// Guard the format itself: nanosecond precision, 'T', trailing 'Z'.
-	require.Len(t, staleStamp, 30, "stale marker must use the production timestamp shape: %s", staleStamp)
-	require.Len(t, freshStamp, 30, "fresh marker must use the production timestamp shape: %s", freshStamp)
-	require.Contains(t, staleStamp, "T")
-	require.Equal(t, byte('Z'), staleStamp[len(staleStamp)-1])
-
-	ids, err := s.IncompleteMessageChannelIDs(ctx, "")
-	require.NoError(t, err)
-	require.Contains(t, ids, "stale", "a 30-day-old marker must expire and let the channel back into backfill")
-	require.NotContains(t, ids, "fresh", "a 1-day-old marker must still exclude the channel")
-	require.Contains(t, ids, "clean")
-
-	byGuild, err := s.IncompleteMessageChannelIDs(ctx, "g1")
-	require.NoError(t, err)
-	require.Equal(t, ids, byGuild, "the per-guild query must apply the same window")
-
-	// A marker written by the normal path is fresh, so it excludes immediately.
-	require.NoError(t, s.SetSyncState(ctx, "channel:clean:unavailable", "missing_access"))
-	ids, err = s.IncompleteMessageChannelIDs(ctx, "g1")
-	require.NoError(t, err)
-	require.NotContains(t, ids, "clean")
 }
 
 func TestFreshUnavailableChannelIDsWindow(t *testing.T) {
@@ -124,10 +85,8 @@ func TestSyncStateBySuffix(t *testing.T) {
 	require.False(t, entries[1].UpdatedAt.IsZero())
 }
 
-// TestAllIncompleteMessageChannelIDsKeepsMarkedChannels covers the listing a
-// full sync plans from. Unlike IncompleteMessageChannelIDs it keeps channels
-// carrying a marker of any age, so a full run has every channel to visit; a
-// completed history still drops out.
+// Full sync plans from every incomplete channel, including marked channels.
+// Completed history and channels outside the requested guild drop out.
 func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 	t.Parallel()
 
@@ -143,23 +102,22 @@ func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-voice", GuildID: "g1", Kind: "voice", Name: "voice", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c-stage", GuildID: "g1", Kind: "type_13", Name: "stage", RawJSON: `{}`}))
 
+	for _, id := range []string{"c-thread", "c-thread-done"} {
+		require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: id, GuildID: "g1", Kind: "thread_public", Name: id, RawJSON: `{}`}))
+	}
+
 	require.NoError(t, s.SetSyncState(ctx, "channel:c-done:history_complete", "1"))
+	require.NoError(t, s.SetSyncState(ctx, "channel:c-thread-done:history_complete", "1"))
 	ageSyncStateMarker(ctx, t, s, "channel:c-stale:unavailable", "missing_access", 30*24*time.Hour)
 	ageSyncStateMarker(ctx, t, s, "channel:c-fresh:unavailable", "missing_access", time.Hour)
 
 	byGuild, err := s.AllIncompleteMessageChannelIDs(ctx, "g1")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c-clean", "c-fresh", "c-stage", "c-stale", "c-voice"}, byGuild)
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-stage", "c-stale", "c-thread", "c-voice"}, byGuild)
 
 	all, err := s.AllIncompleteMessageChannelIDs(ctx, "")
 	require.NoError(t, err)
-	require.Equal(t, []string{"c-clean", "c-fresh", "c-other", "c-stage", "c-stale", "c-voice"}, all)
-
-	// The narrower listing still holds the fresh marker back, which is what the
-	// routine path relies on.
-	narrow, err := s.IncompleteMessageChannelIDs(ctx, "g1")
-	require.NoError(t, err)
-	require.NotContains(t, narrow, "c-fresh")
+	require.Equal(t, []string{"c-clean", "c-fresh", "c-other", "c-stage", "c-stale", "c-thread", "c-voice"}, all)
 }
 
 func TestUnavailableMarkerTimestampsUseParsedInstants(t *testing.T) {
@@ -175,16 +133,10 @@ func TestUnavailableMarkerTimestampsUseParsedInstants(t *testing.T) {
 		"malformed": "not-a-timestamp",
 	}
 	for id, stamp := range timestamps {
-		require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: id, GuildID: "g1", Kind: "text", Name: id, RawJSON: `{}`}))
 		_, err := s.DB().ExecContext(ctx, `insert into sync_state(scope,cursor,updated_at) values(?, 'missing_access', ?)`, "channel:"+id+":unavailable", stamp)
 		require.NoError(t, err)
 	}
 	fresh, err := s.FreshUnavailableChannelIDs(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []string{"inside"}, fresh, "compare timestamp instants, not their text or malformed values")
-	for _, guild := range []string{"", "g1"} {
-		incomplete, err := s.IncompleteMessageChannelIDs(ctx, guild)
-		require.NoError(t, err)
-		require.Equal(t, []string{"malformed", "outside"}, incomplete)
-	}
 }
