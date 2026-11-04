@@ -3,10 +3,8 @@ package cli
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
@@ -62,34 +60,9 @@ func (r *runtime) runMessages(args []string) error {
 		*limit = 0
 	}
 
-	var sinceTime time.Time
-	var beforeTime time.Time
-	var err error
-	if *hours > 0 {
-		now := time.Now().UTC()
-		if r.now != nil {
-			now = r.now().UTC()
-		}
-		sinceTime = now.Add(-time.Duration(*hours) * time.Hour)
-	}
-	if *days > 0 {
-		now := time.Now().UTC()
-		if r.now != nil {
-			now = r.now().UTC()
-		}
-		sinceTime = now.Add(-time.Duration(*days) * 24 * time.Hour)
-	}
-	if strings.TrimSpace(*since) != "" {
-		sinceTime, err = time.Parse(time.RFC3339, *since)
-		if err != nil {
-			return usageErr(fmt.Errorf("invalid --since: %w", err))
-		}
-	}
-	if strings.TrimSpace(*before) != "" {
-		beforeTime, err = time.Parse(time.RFC3339, *before)
-		if err != nil {
-			return usageErr(fmt.Errorf("invalid --before: %w", err))
-		}
+	sinceTime, beforeTime, err := r.parseMessageWindow(*hours, *days, *since, *before)
+	if err != nil {
+		return err
 	}
 
 	guildIDs, err := directMessageGuildScope(*dm, *guildFlag, *guildsFlag)
