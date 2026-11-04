@@ -1095,6 +1095,8 @@ func TestEmbeddingHelpersAndIdentityResetBranches(t *testing.T) {
 	_, err = validateEmbeddingBatch(embed.EmbeddingBatch{Vectors: [][]float32{{}}}, 1)
 	require.ErrorContains(t, err, "empty vector")
 	require.Empty(t, trimStoredError(nil))
+	require.Equal(t, "short error", trimStoredError(errors.New("  short error\n")))
+	require.Equal(t, strings.Repeat("界", maxStoredErrorChars), trimStoredError(errors.New("  "+strings.Repeat("界", maxStoredErrorChars+1)+"\n")))
 	require.Len(t, []rune(trimStoredError(errors.New(strings.Repeat("x", maxStoredErrorChars+10)))), maxStoredErrorChars)
 	require.Equal(t, "abcdef", capRunes("abcdef", 0))
 	require.Equal(t, "abc", capRunes("abcdef", 3))
