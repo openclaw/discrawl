@@ -164,30 +164,11 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 			stats.FilesSkipped++
 			return ignoreCacheFileError(err)
 		}
-		stats.FilesScanned++
-		stats.BytesScanned += int64(len(data))
-		collectChannelRoutes(snap, bytes.ToValidUTF8(data, nil))
-		objects := extractJSONValues(bytes.ToValidUTF8(data, nil))
-		for _, payload := range extractGzipPayloads(data, maxBytes) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			collectChannelRoutes(snap, bytes.ToValidUTF8(payload, nil))
-			objects = append(objects, extractJSONValues(bytes.ToValidUTF8(payload, nil))...)
-		}
-		stats.JSONObjects += len(objects)
 		// Share channel context while retaining each message's source files.
 		fileSnap := snap
 		fileSnap.messages = make(map[string]store.MessageMutation)
-		for _, raw := range objects {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			var value any
-			if err := json.Unmarshal(raw, &value); err != nil {
-				continue
-			}
-			collectValue(fileSnap, state.channels, value, info.ModTime().UTC())
+		if err := scanFileData(ctx, data, info, maxBytes, fileSnap, state.channels, &stats); err != nil {
+			return err
 		}
 		for id, message := range fileSnap.messages {
 			snap.messages[id] = message
@@ -307,28 +288,35 @@ func scanCandidates(ctx context.Context, rootFS *os.Root, opts Options, candidat
 			}
 			continue
 		}
-		stats.FilesScanned++
-		stats.BytesScanned += int64(len(data))
-		collectChannelRoutes(snap, bytes.ToValidUTF8(data, nil))
-		objects := extractJSONValues(bytes.ToValidUTF8(data, nil))
-		for _, payload := range extractGzipPayloads(data, maxBytes) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			collectChannelRoutes(snap, bytes.ToValidUTF8(payload, nil))
-			objects = append(objects, extractJSONValues(bytes.ToValidUTF8(payload, nil))...)
+		if err := scanFileData(ctx, data, candidate.info, maxBytes, snap, channelLookup, stats); err != nil {
+			return err
 		}
-		stats.JSONObjects += len(objects)
-		for _, raw := range objects {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			var value any
-			if err := json.Unmarshal(raw, &value); err != nil {
-				continue
-			}
-			collectValue(snap, channelLookup, value, candidate.info.ModTime().UTC())
+	}
+	return nil
+}
+
+func scanFileData(ctx context.Context, data []byte, info fs.FileInfo, maxBytes int64, snap snapshot, channelLookup map[string]store.ChannelRecord, stats *Stats) error {
+	stats.FilesScanned++
+	stats.BytesScanned += int64(len(data))
+	collectChannelRoutes(snap, bytes.ToValidUTF8(data, nil))
+	objects := extractJSONValues(bytes.ToValidUTF8(data, nil))
+	for _, payload := range extractGzipPayloads(data, maxBytes) {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
+		collectChannelRoutes(snap, bytes.ToValidUTF8(payload, nil))
+		objects = append(objects, extractJSONValues(bytes.ToValidUTF8(payload, nil))...)
+	}
+	stats.JSONObjects += len(objects)
+	for _, raw := range objects {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		collectValue(snap, channelLookup, value, info.ModTime().UTC())
 	}
 	return nil
 }
