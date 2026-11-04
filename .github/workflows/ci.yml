@@ -103,8 +103,9 @@ jobs:
 
       # Durable SQLite fixtures accumulate across an entire package. Bound
       # that aggregate run explicitly; individual behavioral deadlines stay intact.
+      # Limit concurrent packages competing for durable SQLite fixture writes.
       - name: Test with race detector and coverage
-        run: go test -count=1 -race -timeout=25m ./... -coverprofile=coverage.out
+        run: go test -p=2 -count=1 -race -timeout=25m ./... -coverprofile=coverage.out
 
       - name: Exclude generated code from coverage
         run: grep -v '^github.com/openclaw/discrawl/internal/store/storedb/' coverage.out > coverage.filtered.out

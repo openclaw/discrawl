@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Limit CI race-and-coverage testing to two concurrent packages to reduce contention between durable SQLite fixtures while retaining all tests and the coverage floor.
+
 - Run CodeQL daily on main instead of on every main push, preserving pull-request and manual analysis and preventing their cancellation by scheduled runs.
 
 - Add an operator helper for cloning only the current committed snapshot, keeping local publication stages from accumulating archive history.
