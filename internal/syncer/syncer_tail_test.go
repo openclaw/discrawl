@@ -1763,7 +1763,8 @@ func TestRunTailPreservesGatewayOpenErrorWithoutMessageFailure(t *testing.T) {
 	client := &gatewayOpenTailClient{}
 	err = New(client, s, nil).RunTail(ctx, nil, 0)
 	require.Error(t, err)
-	require.True(t, discordclient.IsGatewayOpenError(err))
+	var gatewayErr *discordclient.GatewayOpenError
+	require.ErrorAs(t, err, &gatewayErr)
 	report, reportErr := s.ListFailures(ctx, store.FailureListOptions{}, time.Now())
 	require.NoError(t, reportErr)
 	require.Empty(t, report.Failures)
