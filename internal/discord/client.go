@@ -32,11 +32,6 @@ func IsFatalTailError(err error) bool {
 	return errors.Is(err, ErrFatalTail)
 }
 
-func IsGatewayOpenError(err error) bool {
-	var gatewayErr *GatewayOpenError
-	return errors.As(err, &gatewayErr)
-}
-
 type Client struct {
 	session              *discordgo.Session
 	requestTimeout       time.Duration

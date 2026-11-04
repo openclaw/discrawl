@@ -23,23 +23,7 @@ func withTailFailureMetadata(ctx context.Context, metadata *tailFailureMetadata)
 	return context.WithValue(ctx, tailFailureMetadataContextKey{}, metadata)
 }
 
-// SetTailFailureStage installs or updates the current tail handler stage.
-func SetTailFailureStage(ctx context.Context, stage TailFailureStage) context.Context {
-	if ctx == nil {
-		return nil
-	}
-	metadata, _ := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
-	if metadata == nil {
-		metadata = &tailFailureMetadata{}
-		ctx = withTailFailureMetadata(ctx, metadata)
-	}
-	if ctx.Err() == nil {
-		metadata.setStageAt(stage, time.Now())
-	}
-	return ctx
-}
-
-// UpdateTailFailureStage updates a stage installed by Tail or SetTailFailureStage.
+// UpdateTailFailureStage updates the current tail event's handler stage.
 func UpdateTailFailureStage(ctx context.Context, stage TailFailureStage) {
 	if ctx == nil || ctx.Err() != nil {
 		return

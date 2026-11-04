@@ -545,7 +545,8 @@ func TestTailClassifiesLocalTLSGatewayOpenFailureWithoutRecordingOrLoggingDetail
 	handler := &gatewayOpenFailureHandler{}
 	err = client.Tail(context.Background(), handler)
 	require.EqualError(t, err, "open discord gateway")
-	require.True(t, IsGatewayOpenError(err))
+	var gatewayErr *GatewayOpenError
+	require.ErrorAs(t, err, &gatewayErr)
 	require.False(t, IsFatalTailError(err))
 	require.Error(t, errors.Unwrap(err))
 	require.NotContains(t, err.Error(), sensitiveToken)
@@ -1188,13 +1189,13 @@ func TestTailTaskMetadataIsNilSafe(t *testing.T) {
 
 func TestTailFailureStageContextIsSafeAndSnapshotsElapsedTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		ctx := SetTailFailureStage(context.Background(), TailFailureStageHandler)
+		metadata := &tailFailureMetadata{}
+		ctx := withTailFailureMetadata(context.Background(), metadata)
+		UpdateTailFailureStage(ctx, TailFailureStageHandler)
 		time.Sleep(2 * time.Second)
 		UpdateTailFailureStage(ctx, TailFailureStageMessageUpdateRefetch)
 		time.Sleep(3 * time.Second)
 
-		metadata, ok := ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
-		require.True(t, ok)
 		snapshot := metadata.snapshot(time.Now())
 		require.Equal(t, TailFailureStageMessageUpdateRefetch, snapshot.handlerStage)
 		require.Equal(t, 3*time.Second, snapshot.handlerStageElapsed)
@@ -1212,12 +1213,12 @@ func TestTailFailureStageContextIsSafeAndSnapshotsElapsedTime(t *testing.T) {
 		snapshot = metadata.snapshot(time.Now())
 		require.Equal(t, TailFailureStageMessageUpdateRefetch, snapshot.handlerStage)
 
-		ctx = SetTailFailureStage(context.Background(), TailFailureStage("sensitive raw stage"))
-		metadata, ok = ctx.Value(tailFailureMetadataContextKey{}).(*tailFailureMetadata)
-		require.True(t, ok)
+		metadata = &tailFailureMetadata{}
+		ctx = withTailFailureMetadata(context.Background(), metadata)
+		UpdateTailFailureStage(ctx, TailFailureStageHandler)
+		UpdateTailFailureStage(ctx, TailFailureStage("sensitive raw stage"))
 		require.Equal(t, TailFailureStageUnknown, metadata.snapshot(time.Now()).handlerStage)
 		var nilContext context.Context
-		require.Nil(t, SetTailFailureStage(nilContext, TailFailureStageHandler))
 		UpdateTailFailureStage(nilContext, TailFailureStageHandler)
 
 		var nilMetadata *tailFailureMetadata

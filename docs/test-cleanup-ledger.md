@@ -56,3 +56,16 @@ No import planning, stored state format, archive data, or release artifacts chan
 - Retained the separate concurrent-revocation and incomplete-ancestry tests.
 
 No production event handling, archive format, or release artifacts changed.
+
+## Retired tail test adapters
+
+- Removed `SetTailFailureStage`, whose only callers were tests. Tail execution
+  already installs failure metadata before invoking handlers.
+- Changed the stage-context test to use that active metadata context and
+  `UpdateTailFailureStage`. Keep virtual-time elapsed checks, canceled-context
+  rejection, frozen stages, unknown-stage normalization, and nil safety.
+- Removed `IsGatewayOpenError`, whose only callers were two error-path tests.
+  Both now use `errors.As` assertions on the real `GatewayOpenError` type.
+  Gateway startup sanitization, error chaining, and failure-report checks remain.
+
+No gateway behavior, failure metadata, or release artifacts changed.
