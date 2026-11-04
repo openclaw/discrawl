@@ -150,23 +150,20 @@ func TestSyncAppliesCategoryAndChannelExclusions(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC()
-	client := &fakeClient{
-		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
-		channels: map[string][]*discordgo.Channel{"g1": {
-			{ID: "category-a", GuildID: "g1", Type: discordgo.ChannelTypeGuildCategory},
-			{ID: "category-b", GuildID: "g1", Type: discordgo.ChannelTypeGuildCategory},
-			{ID: "allowed", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildText},
-			{ID: "blocked-id", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildText},
-			{ID: "blocked-kind", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildNews},
-			{ID: "outside", GuildID: "g1", ParentID: "category-b", Type: discordgo.ChannelTypeGuildText},
-		}},
-		messages: map[string][]*discordgo.Message{
-			"allowed":      {{ID: "1", GuildID: "g1", ChannelID: "allowed", Content: "keep", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
-			"blocked-id":   {{ID: "2", GuildID: "g1", ChannelID: "blocked-id", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
-			"blocked-kind": {{ID: "3", GuildID: "g1", ChannelID: "blocked-kind", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
-			"outside":      {{ID: "4", GuildID: "g1", ChannelID: "outside", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{"g1": {
+		{ID: "category-a", GuildID: "g1", Type: discordgo.ChannelTypeGuildCategory},
+		{ID: "category-b", GuildID: "g1", Type: discordgo.ChannelTypeGuildCategory},
+		{ID: "allowed", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildText},
+		{ID: "blocked-id", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildText},
+		{ID: "blocked-kind", GuildID: "g1", ParentID: "category-a", Type: discordgo.ChannelTypeGuildNews},
+		{ID: "outside", GuildID: "g1", ParentID: "category-b", Type: discordgo.ChannelTypeGuildText},
+	}}
+	client.messages = map[string][]*discordgo.Message{
+		"allowed":      {{ID: "1", GuildID: "g1", ChannelID: "allowed", Content: "keep", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
+		"blocked-id":   {{ID: "2", GuildID: "g1", ChannelID: "blocked-id", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
+		"blocked-kind": {{ID: "3", GuildID: "g1", ChannelID: "blocked-kind", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
+		"outside":      {{ID: "4", GuildID: "g1", ChannelID: "outside", Content: "drop", Timestamp: now, Author: &discordgo.User{ID: "u1"}}},
 	}
 
 	svc := New(client, s, nil)

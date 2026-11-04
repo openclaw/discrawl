@@ -31,20 +31,15 @@ func TestSyncFullBackfillResumesFromCheckpoint(t *testing.T) {
 		})
 	}
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": messages,
-		},
-		beforeErrors: map[string]map[string]error{
-			"c1": {"151": context.DeadlineExceeded},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": messages,
+	}
+	client.beforeErrors = map[string]map[string]error{
+		"c1": {"151": context.DeadlineExceeded},
 	}
 
 	svc := New(client, s, nil)
@@ -115,20 +110,15 @@ func TestSyncFullBackfillDoesNotRegressLatestPointer(t *testing.T) {
 		})
 	}
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": messages,
-		},
-		beforeErrors: map[string]map[string]error{
-			"c1": {"100": context.DeadlineExceeded},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": messages,
+	}
+	client.beforeErrors = map[string]map[string]error{
+		"c1": {"100": context.DeadlineExceeded},
 	}
 
 	svc := New(client, s, nil)
@@ -209,20 +199,15 @@ func TestSyncFullBackfillLargeResumeDoesNotRecrawlHeadSpan(t *testing.T) {
 		})
 	}
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": messages,
-		},
-		beforeErrors: map[string]map[string]error{
-			"c1": {interruptBeforeID: context.DeadlineExceeded},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": messages,
+	}
+	client.beforeErrors = map[string]map[string]error{
+		"c1": {interruptBeforeID: context.DeadlineExceeded},
 	}
 
 	svc := New(client, s, nil)
@@ -306,17 +291,12 @@ func TestSyncFullSeedsBackfillFromStoredMessages(t *testing.T) {
 		})
 	}
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": messages,
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": messages,
 	}
 
 	svc := New(client, s, nil)
@@ -356,24 +336,19 @@ func TestSyncMarksLegacyLatestStateAsComplete(t *testing.T) {
 	}))
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("c1"), "250"))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "250",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "msg-250",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "250",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "msg-250",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -393,19 +368,14 @@ func TestSyncMarksEmptyChannelComplete(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "quiet", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "quiet", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {},
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {},
 	}
 
 	svc := New(client, s, nil)
@@ -436,40 +406,35 @@ func TestSyncSinceLimitsInitialBootstrap(t *testing.T) {
 
 	now := time.Now().UTC()
 	cutoff := now.Add(-3 * time.Hour)
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {
-				{
-					ID:        "300",
-					GuildID:   "g1",
-					ChannelID: "c1",
-					Content:   "msg-300",
-					Timestamp: now.Add(-1 * time.Hour),
-					Author:    &discordgo.User{ID: "u1", Username: "user"},
-				},
-				{
-					ID:        "200",
-					GuildID:   "g1",
-					ChannelID: "c1",
-					Content:   "msg-200",
-					Timestamp: now.Add(-2 * time.Hour),
-					Author:    &discordgo.User{ID: "u1", Username: "user"},
-				},
-				{
-					ID:        "100",
-					GuildID:   "g1",
-					ChannelID: "c1",
-					Content:   "msg-100",
-					Timestamp: now.Add(-5 * time.Hour),
-					Author:    &discordgo.User{ID: "u1", Username: "user"},
-				},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {
+			{
+				ID:        "300",
+				GuildID:   "g1",
+				ChannelID: "c1",
+				Content:   "msg-300",
+				Timestamp: now.Add(-1 * time.Hour),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			},
+			{
+				ID:        "200",
+				GuildID:   "g1",
+				ChannelID: "c1",
+				Content:   "msg-200",
+				Timestamp: now.Add(-2 * time.Hour),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
+			},
+			{
+				ID:        "100",
+				GuildID:   "g1",
+				ChannelID: "c1",
+				Content:   "msg-100",
+				Timestamp: now.Add(-5 * time.Hour),
+				Author:    &discordgo.User{ID: "u1", Username: "user"},
 			},
 		},
 	}
@@ -548,17 +513,12 @@ func TestSyncFullSinceStopsBackfillAtCutoff(t *testing.T) {
 		},
 	}
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": messages,
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": messages,
 	}
 
 	svc := New(client, s, nil)
