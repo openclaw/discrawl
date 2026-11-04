@@ -1405,13 +1405,8 @@ func TestTailReceivesGatewayEvents(t *testing.T) {
 	})
 	t.Cleanup(server.Close)
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	require.Zero(t, discordSessionHandlerCount(client.session))
 
 	wantEvents := []string{"ready", "create", "update", "delete", "channel", "channel", "channel", "member_upsert", "member_delete"}
@@ -1503,13 +1498,8 @@ func TestTailReportsScopedChannelAndMemberUpdateFailures(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 2
 
@@ -1587,13 +1577,8 @@ func TestTailContinuesAfterNonMessagePanicWithoutRecorder(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 
@@ -1867,13 +1852,9 @@ func TestTailPanicRecordsBeforeReportingAndContinuation(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 
@@ -1971,13 +1952,9 @@ func TestTailPanicRecorderFailureIsGenericFatal(t *testing.T) {
 	defer cancel()
 	defer cancel()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 
@@ -2013,13 +1990,9 @@ func TestTailMessageFailureWithoutRecorderFailsClosed(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 
@@ -2065,13 +2038,9 @@ func TestTailMessagePanicRecorderFailureAfterParentCancellationIsGenericFatal(t 
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 
@@ -2138,13 +2107,8 @@ func TestTailParentCancellationPreservesReturnedMessageFailureExactlyOnce(t *tes
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 30 * time.Second
@@ -2306,13 +2270,9 @@ func TestTailMessageFailureCircuitIgnoresMemberSuccesses(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = defaultTailHandlerFailureLimit
 
@@ -2370,13 +2330,9 @@ func TestTailTimeoutStopsOrderedWorkAndReturnsAfterDurableReport(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = defaultTailHandlerFailureLimit
 	client.tailHandlerTimeout = 25 * time.Millisecond
@@ -2467,13 +2423,9 @@ func TestTailLocalTimeoutIdentitySurvivesParentCancellationRace(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 25 * time.Millisecond
@@ -2556,13 +2508,9 @@ func TestTailParentCancellationForcesFallbackWhenHandlerDoesNotJoin(t *testing.T
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 30 * time.Second
@@ -2622,13 +2570,9 @@ func TestTailParentCancellationWaitsForCooperativeHandlerJoin(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 30 * time.Second
@@ -2707,13 +2651,9 @@ func TestTailTimeoutSurfacesFailureRecorderError(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 25 * time.Millisecond
@@ -2768,13 +2708,9 @@ func TestTailAggregatesQueueOverflowWithPostDeadlinePersistenceFailure(t *testin
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 0
 	client.tailHandlerTimeout = 25 * time.Millisecond
@@ -2978,13 +2914,8 @@ func TestTailMessageUpdateRefetchTimeoutReportsRefetchStage(t *testing.T) {
 	)
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = 25 * time.Millisecond
@@ -3058,13 +2989,8 @@ func TestTailMessageUpdateImmediateHTTPRefetchFailureStillInvokesHandlerAndRecor
 	)
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.session.MaxRestRetries = 0
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
@@ -3328,13 +3254,9 @@ func TestTailReadyHandlerFailureRemainsTerminal(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 
 	readyErr := errors.New("ready failed")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3345,49 +3267,7 @@ func TestTailReadyHandlerFailureRemainsTerminal(t *testing.T) {
 }
 
 func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
-	mux := http.NewServeMux()
-	upgrader := websocket.Upgrader{}
-	gatewayURL := ""
-	mux.HandleFunc("/api/v10/gateway", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"url": gatewayURL})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	gatewayURL = "ws" + server.URL[len("http"):] + "/gateway"
-	gatewayHandler := func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade gateway: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		if err := conn.WriteJSON(map[string]any{
-			"op": 10,
-			"d":  map[string]any{"heartbeat_interval": 1000},
-		}); err != nil {
-			t.Errorf("write hello: %v", err)
-			return
-		}
-		_, _, err = conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read identify: %v", err)
-			return
-		}
-		if err := conn.WriteJSON(map[string]any{
-			"op": 0,
-			"t":  "READY",
-			"s":  1,
-			"d": map[string]any{
-				"session_id": "session",
-				"user":       map[string]any{"id": "bot", "username": "bot"},
-			},
-		}); err != nil {
-			t.Errorf("write ready: %v", err)
-			return
-		}
+	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		for i := range 4 {
 			if err := conn.WriteJSON(map[string]any{
@@ -3408,17 +3288,12 @@ func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-	mux.HandleFunc("/gateway", gatewayHandler)
-	mux.HandleFunc("/gateway/", gatewayHandler)
+	})
+	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	var err error
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailHandlerTimeout = time.Second
@@ -3461,13 +3336,8 @@ func TestTailDoesNotStartLaterOrderedHandlerCanceledAfterDequeue(t *testing.T) {
 	})
 	defer server.Close()
 
-	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
-	defer restore()
-
-	client, err := New("token")
-	require.NoError(t, err)
-	defer func() { _ = client.Close() }()
-	client.session.ShouldReconnectOnError = false
+	client, closeClient := newTailTestClient(t, server.URL)
+	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
 	client.tailTaskDequeuedHook = func(ctx context.Context) {
@@ -3484,6 +3354,21 @@ func TestTailDoesNotStartLaterOrderedHandlerCanceledAfterDequeue(t *testing.T) {
 	require.EqualValues(t, 2, handler.dequeueCalls.Load())
 	require.EqualValues(t, 1, handler.calls.Load())
 	require.Zero(t, handler.laterCalls.Load())
+}
+
+func newTailTestClient(t *testing.T, serverURL string) (*Client, func()) {
+	t.Helper()
+	restore := patchDiscordEndpoints(serverURL + "/api/v10/")
+	client, err := New("token")
+	if err != nil {
+		restore()
+	}
+	require.NoError(t, err)
+	client.session.ShouldReconnectOnError = false
+	return client, func() {
+		defer restore()
+		_ = client.Close()
+	}
 }
 
 func newTailTestGateway(t *testing.T, afterReady func(*websocket.Conn)) *httptest.Server {
