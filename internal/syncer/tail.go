@@ -446,7 +446,7 @@ func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.
 		return nil, fmt.Errorf("fetch message update %s/%s: %w", msg.ChannelID, msg.ID, err)
 	}
 	if full != nil {
-		if err := validateMessageUpdateSnapshotIdentity(msg, full); err != nil {
+		if err := discordclient.ValidateMessageUpdateIdentity(msg, full, "fetched message update"); err != nil {
 			return nil, err
 		}
 		if full.ID == "" {
@@ -465,33 +465,6 @@ func (t *tailHandler) messageUpdateSnapshot(ctx context.Context, msg *discordgo.
 		return nil, nil
 	}
 	return msg, nil
-}
-
-func validateMessageUpdateSnapshotIdentity(partial, full *discordgo.Message) error {
-	switch {
-	case partial == nil || full == nil:
-		return nil
-	case full.ID != "" && partial.ID != "" && full.ID != partial.ID:
-		return fmt.Errorf(
-			"fetched message update returned different message id: event=%s fetched=%s",
-			partial.ID,
-			full.ID,
-		)
-	case full.ChannelID != "" && partial.ChannelID != "" && full.ChannelID != partial.ChannelID:
-		return fmt.Errorf(
-			"fetched message update returned different channel id: event=%s fetched=%s",
-			partial.ChannelID,
-			full.ChannelID,
-		)
-	case full.GuildID != "" && partial.GuildID != "" && full.GuildID != partial.GuildID:
-		return fmt.Errorf(
-			"fetched message update returned different guild id: event=%s fetched=%s",
-			partial.GuildID,
-			full.GuildID,
-		)
-	default:
-		return nil
-	}
 }
 
 func isPartialMessageUpdate(msg *discordgo.Message) bool {

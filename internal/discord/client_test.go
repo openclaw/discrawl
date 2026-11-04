@@ -3202,7 +3202,7 @@ func TestTailMessageUpdateRejectsConflictingRefetchIdentity(t *testing.T) {
 	}
 }
 
-func TestValidateRefetchedMessageIdentity(t *testing.T) {
+func TestValidateMessageUpdateIdentity(t *testing.T) {
 	t.Parallel()
 
 	partial := &discordgo.Message{ID: "m1", GuildID: "g1", ChannelID: "c1"}
@@ -3237,7 +3237,7 @@ func TestValidateRefetchedMessageIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRefetchedMessageIdentity(partial, tt.full)
+			err := ValidateMessageUpdateIdentity(partial, tt.full, "refetched message update")
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
