@@ -532,10 +532,6 @@ func (r *runtime) withConfig(fn func() error) error {
 	return fn()
 }
 
-func (r *runtime) withServices(withDiscord bool, fn func() error) error {
-	return r.withServicesAuto(withDiscord, !withDiscord, fn)
-}
-
 func (r *runtime) withServicesLockedOperation(withDiscord bool, operation string, fn func() error) error {
 	return r.withServicesUpdateLockedOperation(withDiscord, boolShareUpdateMode(!withDiscord), true, operation, fn)
 }
@@ -699,10 +695,6 @@ func (r *runtime) openConfiguredReadOnlyStore(path string) (*store.Store, error)
 		LexicalJaCommand:   r.cfg.Search.Lexical.JaCommand,
 		LexicalZhCommand:   r.cfg.Search.Lexical.ZhCommand,
 	})
-}
-
-func (r *runtime) withServicesAuto(withDiscord, autoShareUpdate bool, fn func() error) error {
-	return r.withServicesAutoLocked(withDiscord, autoShareUpdate, false, fn)
 }
 
 func (r *runtime) withServicesAutoLocked(withDiscord, autoShareUpdate, lockDB bool, fn func() error) error {

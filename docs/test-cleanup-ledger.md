@@ -1,5 +1,17 @@
 # Test cleanup ledger
 
+## CLI fixture scaffolding
+
+- Moved the test-only `withServices` fixture wrapper into `cli_test.go` and
+  removed its redundant `withServicesAuto` forwarding layer. Fixtures still
+  call the active service lifecycle with the same arguments.
+- Moved `writeSyncLockMetadataFiles` into the test file. Its callers construct
+  legacy or malformed lock fixtures; production writes through an open record.
+- Kept all CLI fixture callers and their lock, startup, query, and error checks.
+  Production retains the active locked-service and lock-record implementations.
+
+No CLI service behavior, lock format, or release artifacts changed.
+
 ## Test-only formatters
 
 - Removed the unused `clipWhitespace` formatter and its two assertions from
