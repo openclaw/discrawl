@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -141,22 +139,6 @@ func (r *runtime) runCloudPublish(args []string) error {
 			"sqlite_bundle": sqliteBundle,
 		})
 	})
-}
-
-func cloudPublishCounts(ctx context.Context, db *sql.DB) (guilds int64, channels int64, members int64, messages int64, err error) {
-	if guilds, err = countCloudRows(ctx, db, "select count(*) from guilds where id != '@me' and deleted_at is null"); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if channels, err = countCloudRows(ctx, db, "select count(*) from channels where guild_id != '@me'"); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if members, err = countCloudRows(ctx, db, "select count(*) from members where guild_id != '@me' and deleted_at is null"); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if messages, err = countCloudRows(ctx, db, "select count(*) from messages where guild_id != '@me' and deleted_at is null"); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	return guilds, channels, members, messages, nil
 }
 
 func countCloudRows(ctx context.Context, db *sql.DB, query string) (int64, error) {
@@ -431,19 +413,6 @@ func sqlPlaceholders(n int) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-func cloudFileSHA256(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open sqlite snapshot for hash: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", fmt.Errorf("hash sqlite snapshot: %w", err)
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 var discrawlCloudSQLiteSchema = []string{

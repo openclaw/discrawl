@@ -1893,12 +1893,6 @@ func TestCloudSQLiteExportHelpers(t *testing.T) {
 	require.NoError(t, writeCloudSQLiteExport(ctx, s.DB(), exportPath))
 	require.NoError(t, s.Close())
 
-	sum, err := cloudFileSHA256(exportPath)
-	require.NoError(t, err)
-	require.Len(t, sum, 64)
-	_, err = cloudFileSHA256(filepath.Join(dir, "missing.db"))
-	require.Error(t, err)
-
 	cloudDB, err := sql.Open("sqlite", exportPath)
 	require.NoError(t, err)
 	defer func() { _ = cloudDB.Close() }()

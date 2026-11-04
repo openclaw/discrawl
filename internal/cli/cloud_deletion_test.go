@@ -97,9 +97,6 @@ func TestCloudPublishReplacesDeletedMessages(t *testing.T) {
 			require.NoError(t, source.DB().QueryRowContext(ctx, `select content, deleted_at from messages where id = '1'`).Scan(&body, &deleted))
 			require.Equal(t, "retained body", body)
 			require.NotEmpty(t, deleted)
-			_, _, _, messages, err := cloudPublishCounts(ctx, source.DB())
-			require.NoError(t, err)
-			require.Equal(t, int64(live), messages)
 
 			path, cleanup, err := sqliteSnapshotPath(ctx, source.DB())
 			require.NoError(t, err)
@@ -115,7 +112,7 @@ func TestCloudPublishReplacesDeletedMessages(t *testing.T) {
 	}
 }
 
-func TestCloudPublishCountsMatchLiveExportScope(t *testing.T) {
+func TestCloudSnapshotCountsMatchLiveExportScope(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "archive.db"))
 	require.NoError(t, err)
@@ -127,10 +124,17 @@ func TestCloudPublishCountsMatchLiveExportScope(t *testing.T) {
 	_, err = s.DB().ExecContext(ctx, `update guilds set deleted_at = '2026-01-01T00:00:00Z' where id = 'deleted';
 		update members set deleted_at = '2026-01-01T00:00:00Z' where guild_id = 'deleted'`)
 	require.NoError(t, err)
-	guilds, _, members, _, err := cloudPublishCounts(ctx, s.DB())
+	path, cleanup, err := sqliteSnapshotPath(ctx, s.DB())
 	require.NoError(t, err)
-	require.Equal(t, int64(1), guilds)
-	require.Equal(t, int64(1), members)
+	defer cleanup()
+	snapshot, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer func() { _ = snapshot.Close() }()
+	for _, table := range []string{"guilds", "members"} {
+		count, err := countCloudRows(ctx, snapshot, "select count(*) from "+table)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), count, table)
+	}
 }
 
 func TestCloudPublishEmptyResetFailureIsNotSuccess(t *testing.T) {
