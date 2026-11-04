@@ -99,15 +99,6 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func exportValue(value any) any {
-	switch v := value.(type) {
-	case []byte:
-		return string(v)
-	default:
-		return v
-	}
-}
-
 func importValue(value any) any {
 	switch v := value.(type) {
 	case json.Number:
