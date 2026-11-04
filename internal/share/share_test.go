@@ -2394,7 +2394,6 @@ func TestValidateSnapshotRowRejectsMalformedDeletedAtBeforeImport(t *testing.T) 
 	var count int
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
 	require.Zero(t, count)
-
 }
 
 func TestImportEmbeddingsRejectsUnsafeManifestFiles(t *testing.T) {
