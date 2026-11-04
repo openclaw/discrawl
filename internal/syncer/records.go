@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/openclaw/discrawl/internal/messagetext"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -93,33 +92,6 @@ func marshalMessageJSON(message *discordgo.Message) string {
 		*discordgo.Message
 		Components []discordgo.MessageComponent `json:"components,omitempty"`
 	}{message, message.Components}, "{}")
-}
-
-func normalizeMessage(message *discordgo.Message) string {
-	return normalizeMessageParts(message, nil)
-}
-
-func normalizeMessageParts(message *discordgo.Message, attachmentParts []string) string {
-	parts := messagetext.Parts(message, nil)
-	if len(attachmentParts) > 0 {
-		out := []messagetext.Part{}
-		for _, p := range parts {
-			if !strings.HasPrefix(p.Kind, "attachment_") {
-				out = append(out, p)
-			}
-		}
-		at := 0
-		if len(out) > 0 && out[0].Kind == "authored" {
-			at = 1
-		}
-		additions := make([]messagetext.Part, 0, len(attachmentParts))
-		for _, text := range attachmentParts {
-			additions = append(additions, messagetext.Part{Kind: "attachment_text", Text: text})
-		}
-		out = append(out[:at], append(additions, out[at:]...)...)
-		parts = out
-	}
-	return messagetext.Normalize(parts)
 }
 
 func displayName(member *discordgo.Member) string {

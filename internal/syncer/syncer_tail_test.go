@@ -25,14 +25,13 @@ import (
 	"github.com/openclaw/discrawl/internal/store"
 )
 
-func TestNormalizeMessageIncludesRichFields(t *testing.T) {
+func TestBuildMessageMutationNormalizesRichFields(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now().UTC()
 	message := &discordgo.Message{
 		Content: "base",
 		Attachments: []*discordgo.MessageAttachment{
-			{Filename: "trace.txt"},
+			{ID: "a1", Filename: "trace.txt"},
 		},
 		Embeds: []*discordgo.MessageEmbed{
 			{Title: "title", Description: "desc"},
@@ -44,24 +43,19 @@ func TestNormalizeMessageIncludesRichFields(t *testing.T) {
 				{Media: &discordgo.PollMedia{Text: "answer"}},
 			},
 		},
-		Timestamp: now,
 	}
-	content := normalizeMessage(message)
-	require.Contains(t, content, "base")
-	require.Contains(t, content, "trace.txt")
-	require.Contains(t, content, "title")
-	require.Contains(t, content, "reply:prior")
-	require.Contains(t, content, "question")
-	require.Contains(t, content, "answer")
+	mutation, err := buildMessageMutation(t.Context(), message, "general", "g1", false, false)
+	require.NoError(t, err)
+	require.Equal(t, "base\ntrace.txt\ntitle\ndesc\nreply:prior\nquestion\nanswer", mutation.Record.NormalizedContent)
 }
 
-func TestNormalizeMessageSanitizesMalformedUnicodeAndWhitespace(t *testing.T) {
+func TestBuildMessageMutationSanitizesMalformedUnicodeAndWhitespace(t *testing.T) {
 	t.Parallel()
 
 	message := &discordgo.Message{
 		Content: string([]byte{'h', 'i', 0xff, ' ', 't', 'h', 'e', 'r', 'e'}) + "\u200b",
 		Attachments: []*discordgo.MessageAttachment{
-			{Filename: "Ｆｏｏ\u200d.txt"},
+			{ID: "a1", Filename: "Ｆｏｏ\u200d.txt"},
 		},
 		Embeds: []*discordgo.MessageEmbed{
 			{Title: " spaced\u00a0out ", Description: "line\u0000break"},
@@ -69,7 +63,9 @@ func TestNormalizeMessageSanitizesMalformedUnicodeAndWhitespace(t *testing.T) {
 		ReferencedMessage: &discordgo.Message{Content: "prior reply"},
 	}
 
-	content := normalizeMessage(message)
+	mutation, err := buildMessageMutation(t.Context(), message, "general", "g1", false, false)
+	require.NoError(t, err)
+	content := mutation.Record.NormalizedContent
 	require.Equal(t, "hi there\nFoo.txt\nspaced out\nlinebreak\nreply:prior reply", content)
 	require.NotContains(t, content, "\u200b")
 	require.NotContains(t, content, "\u200d")

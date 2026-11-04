@@ -19,15 +19,6 @@ func TestAttachmentFailureCodeClassifiesCauses(t *testing.T) {
 	require.Equal(t, "request_failed", attachmentFailureCode(errors.New("boom")))
 }
 
-func TestNormalizeMessagePartsPlacesAttachmentTextAfterAuthoredContent(t *testing.T) {
-	t.Parallel()
-	m := &discordgo.Message{ID: "m", Content: "authored", Attachments: []*discordgo.MessageAttachment{{ID: "a", Filename: "trace.txt"}}}
-	// Extracted text replaces raw attachment parts and follows authored text.
-	require.Equal(t, "authored\nextracted one\nextracted two", normalizeMessageParts(m, []string{"extracted one", "extracted two"}))
-	require.Equal(t, "authored\ntrace.txt", normalizeMessageParts(m, nil))
-	require.Equal(t, "only", normalizeMessageParts(&discordgo.Message{ID: "n"}, []string{"only"}))
-}
-
 func TestThreadParentIDsSelectsThreadCapableChannels(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, []string{"text", "forum"}, threadParentIDs([]*discordgo.Channel{

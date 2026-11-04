@@ -282,14 +282,6 @@ func escapeMD(s string) string {
 	return s
 }
 
-func clipWhitespace(s string, limit int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= limit {
-		return s
-	}
-	return strings.TrimSpace(s[:limit]) + "..."
-}
-
 func parseTime(raw string) time.Time {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

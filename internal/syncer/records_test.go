@@ -9,6 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openclaw/discrawl/internal/messagetext"
 	"github.com/openclaw/discrawl/internal/store"
 )
 
@@ -81,7 +82,7 @@ func TestComponentsV2MessageKeepsCardTextSearchable(t *testing.T) {
 	require.Len(t, stored.Components, 1)
 	var reparsed discordgo.Message
 	require.NoError(t, json.Unmarshal([]byte(raw), &reparsed), "raw_json components must decode as Discord components")
-	require.Equal(t, normalized, normalizeMessage(&reparsed), "raw_json keeps every text-bearing component")
+	require.Equal(t, normalized, messagetext.Normalize(messagetext.Parts(&reparsed, nil)), "raw_json keeps every text-bearing component")
 
 	for _, query := range []string{"160926", "redact gateway tokens", "needs proof"} {
 		results, err := s.SearchMessages(ctx, store.SearchOptions{Query: query, Limit: 10})
@@ -92,7 +93,7 @@ func TestComponentsV2MessageKeepsCardTextSearchable(t *testing.T) {
 
 	classic := *page[0]
 	classic.Flags = 0
-	require.Empty(t, normalizeMessage(&classic), "classic message components are not message bodies")
+	require.Empty(t, messagetext.Normalize(messagetext.Parts(&classic, nil)), "classic message components are not message bodies")
 }
 
 func TestToMemberRecordSkipsNilUser(t *testing.T) {
