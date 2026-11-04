@@ -3,11 +3,9 @@ package cli
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/media"
@@ -130,26 +128,9 @@ func (r *runtime) parseAttachmentListFlags(name string, args []string, defaultLi
 	if countNonZero(*hours > 0, *days > 0, strings.TrimSpace(*since) != "") > 1 {
 		return store.AttachmentListOptions{}, 0, usageErr(errors.New("use only one of --hours, --days, or --since"))
 	}
-	var sinceTime time.Time
-	var beforeTime time.Time
-	var err error
-	if *hours > 0 {
-		sinceTime = r.nowUTC().Add(-time.Duration(*hours) * time.Hour)
-	}
-	if *days > 0 {
-		sinceTime = r.nowUTC().Add(-time.Duration(*days) * 24 * time.Hour)
-	}
-	if strings.TrimSpace(*since) != "" {
-		sinceTime, err = time.Parse(time.RFC3339, *since)
-		if err != nil {
-			return store.AttachmentListOptions{}, 0, usageErr(fmt.Errorf("invalid --since: %w", err))
-		}
-	}
-	if strings.TrimSpace(*before) != "" {
-		beforeTime, err = time.Parse(time.RFC3339, *before)
-		if err != nil {
-			return store.AttachmentListOptions{}, 0, usageErr(fmt.Errorf("invalid --before: %w", err))
-		}
+	sinceTime, beforeTime, err := r.parseMessageWindow(*hours, *days, *since, *before)
+	if err != nil {
+		return store.AttachmentListOptions{}, 0, err
 	}
 	guildIDs, err := directMessageGuildScope(*dm, *guildFlag, *guildsFlag)
 	if err != nil {
