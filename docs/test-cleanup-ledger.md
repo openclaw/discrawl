@@ -43,3 +43,16 @@ No production behavior or release artifacts changed.
   row preservation, and exact replacement checks.
 
 No import planning, stored state format, archive data, or release artifacts changed.
+
+## Tail ancestor events
+
+- Removed `trackChannelExclusion`, a retired in-memory updater called only by
+  the ancestor-move test. Production persists channel events and refreshes scope.
+- Reworked that test to send actual channel-upsert and message-create events
+  against temporary SQLite storage. It retains child-before-parent ordering and
+  moves a forum into and back out of an excluded category.
+- Requires exactly the two admitted message IDs in the archive, proving both
+  rejection while excluded and collection after readmission.
+- Retained the separate concurrent-revocation and incomplete-ancestry tests.
+
+No production event handling, archive format, or release artifacts changed.

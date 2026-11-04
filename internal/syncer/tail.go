@@ -670,22 +670,6 @@ func (t *tailHandler) excludeChannel(channelID string) bool {
 	return t.exclusions.categoryScopeSet
 }
 
-func (t *tailHandler) trackChannelExclusion(channel *discordgo.Channel) {
-	if channel == nil {
-		return
-	}
-	t.exclusionMu.Lock()
-	defer t.exclusionMu.Unlock()
-	if t.channelScopeCatalog == nil {
-		t.channelScopeCatalog = map[string]store.ChannelRow{}
-	}
-	// Resolve ancestry when an event is checked, so parent moves and metadata
-	// arriving after a child also update that child's effective scope.
-	t.channelScopeCatalog[channel.ID] = store.ChannelRow{
-		ID: channel.ID, ParentID: channel.ParentID, Kind: channelKind(channel),
-	}
-}
-
 func nextTailRepairDelay(now time.Time, repairEvery, repairOffset time.Duration) time.Duration {
 	if repairEvery <= 0 || repairOffset <= 0 {
 		return repairEvery
