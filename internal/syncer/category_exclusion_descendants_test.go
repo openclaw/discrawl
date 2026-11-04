@@ -75,19 +75,34 @@ func TestCategoryExclusionAppliesToStoredRepairAndTail(t *testing.T) {
 
 func TestTailCategoryExclusionTracksAncestorUpdates(t *testing.T) {
 	t.Parallel()
-	handler := &tailHandler{exclusions: newChannelScope([]string{"blocked-category"}, nil, nil)}
-	thread := &discordgo.Channel{ID: "thread", ParentID: "forum", Type: discordgo.ChannelTypeGuildPublicThread}
-	forum := &discordgo.Channel{ID: "forum", ParentID: "new-category", Type: discordgo.ChannelTypeGuildForum}
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	handler := &tailHandler{store: s, exclusions: newChannelScope([]string{"blocked-category"}, nil, nil)}
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID: "new-category", GuildID: "g1", Type: discordgo.ChannelTypeGuildCategory,
+	}))
 	// Child metadata can arrive before its parent.
-	handler.trackChannelExclusion(thread)
-	handler.trackChannelExclusion(forum)
-	require.False(t, handler.excludeChannel(thread.ID))
-	forum.ParentID = "blocked-category"
-	handler.trackChannelExclusion(forum)
-	require.True(t, handler.excludeChannel(thread.ID))
-	forum.ParentID = "new-category"
-	handler.trackChannelExclusion(forum)
-	require.False(t, handler.excludeChannel(thread.ID))
+	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+		ID: "thread", GuildID: "g1", ParentID: "forum", Type: discordgo.ChannelTypeGuildPublicThread,
+	}))
+	for _, tc := range []struct{ messageID, parentID string }{
+		{"1", "new-category"},
+		{"2", "blocked-category"},
+		{"3", "new-category"},
+	} {
+		require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{
+			ID: "forum", GuildID: "g1", ParentID: tc.parentID, Type: discordgo.ChannelTypeGuildForum,
+		}))
+		require.NoError(t, handler.OnMessageCreate(ctx, &discordgo.Message{
+			ID: tc.messageID, GuildID: "g1", ChannelID: "thread", Content: "thread message",
+			Timestamp: time.Date(2026, 4, 21, 5, 0, 0, 0, time.UTC),
+		}), tc.messageID)
+	}
+	_, rows, err := s.ReadOnlyQuery(ctx, `select id from messages order by id`)
+	require.NoError(t, err)
+	require.Equal(t, [][]string{{"1"}, {"3"}}, rows, "moving the forum excludes and then readmits its thread")
 }
 
 func TestCategoryExclusionHandlesIncompleteAndCyclicAncestry(t *testing.T) {
