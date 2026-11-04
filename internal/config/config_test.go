@@ -37,9 +37,9 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	require.False(t, cfg.ShareEnabled())
 	cfg.Share.Remote = "git@example.com:org/archive.git"
 	require.True(t, cfg.ShareEnabled())
-	require.False(t, cfg.RemoteEnabled())
+	require.False(t, cfg.Remote.Enabled())
 	cfg.Remote.Mode = "cloud"
-	require.True(t, cfg.RemoteEnabled())
+	require.True(t, cfg.Remote.Enabled())
 	require.True(t, cfg.RemoteCloudReadOnly())
 	require.Equal(t, "openai", cfg.Search.Embeddings.Provider)
 	require.Equal(t, "text-embedding-3-small", cfg.Search.Embeddings.Model)
@@ -588,7 +588,6 @@ func TestEffectiveDefaultGuildAndDirs(t *testing.T) {
 	require.Equal(t, []string{"c1", "c2"}, cfg.Share.Filter.IncludeChannelIDs)
 	require.Equal(t, []string{"c3"}, cfg.Share.Filter.ExcludeChannelIDs)
 	require.Equal(t, "g1", cfg.EffectiveDefaultGuildID())
-	require.Nil(t, cfg.SearchGuildDefaults())
 
 	cfg.CacheDir = filepath.Join(t.TempDir(), "cache")
 	cfg.LogDir = filepath.Join(t.TempDir(), "logs")

@@ -81,3 +81,17 @@ No production event handling, archive format, or release artifacts changed.
   Gateway startup sanitization, error chaining, and failure-report checks remain.
 
 No gateway behavior, failure metadata, or release artifacts changed.
+
+## Retired config test adapters
+
+- Removed `SearchGuildDefaults`, a constant-nil method with no production
+  callers, and its only nil assertion. Effective default-guild, normalization,
+  search/filter, and runtime-directory tests remain.
+- Removed the test-only `RemoteEnabled` forwarding method. The existing default
+  and cloud-mode checks now call `cfg.Remote.Enabled()` on the embedded
+  crawlkit config.
+  The cloud read-only assertion and remote config fields remain unchanged.
+
+Validation: config race tests, module consistency, formatting, vet, independent
+P0–P3 review, and full PR CI. No config format, CLI behavior, live archive data,
+or release artifacts changed.

@@ -462,10 +462,6 @@ func (c Config) EffectiveDefaultGuildID() string {
 	return ""
 }
 
-func (c Config) SearchGuildDefaults() []string {
-	return nil
-}
-
 func (c Config) AttachmentTextEnabled() bool {
 	return c.Sync.AttachmentText == nil || *c.Sync.AttachmentText
 }
@@ -484,10 +480,6 @@ func (c Config) ShareUpdatesExact() bool {
 
 func (c Config) ShareEnabled() bool {
 	return strings.TrimSpace(c.Share.Remote) != ""
-}
-
-func (c Config) RemoteEnabled() bool {
-	return c.Remote.Enabled()
 }
 
 func (c Config) RemoteCloudReadOnly() bool {
