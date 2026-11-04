@@ -444,10 +444,6 @@ select attachment_id, coalesce(media_path, '') as media_path,
 from message_attachments
 where message_id = ?;
 
--- name: DeleteAttachmentsByMessage :exec
-delete from message_attachments
-where message_id = ?;
-
 -- name: InsertMessageAttachment :exec
 insert into message_attachments(
 	attachment_id, message_id, guild_id, channel_id, author_id, filename,
@@ -481,15 +477,6 @@ on conflict(attachment_id) do update set
 		else message_attachments.fetch_error
 	end,
 	updated_at = excluded.updated_at;
-
--- name: DeleteMentionEventsByMessage :exec
-delete from mention_events
-where message_id = ?;
-
--- name: InsertMentionEvent :exec
-insert into mention_events(
-	message_id, guild_id, channel_id, author_id, target_type, target_id, target_name, event_at
-) values(?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: InsertMissingEmbeddingJobs :exec
 insert or ignore into embedding_jobs(
