@@ -15,8 +15,7 @@ func TestCatalogIntegrityReportsOrphanedMessageChannels(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	created := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
@@ -86,8 +85,7 @@ func TestCatalogIntegrityOrdersVariablePrecisionTimestampsChronologically(t *tes
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, message := range []MessageRecord{
@@ -123,8 +121,7 @@ func TestCatalogIntegrityProbeLargeCompleteFixture(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "catalog-channel", GuildID: "guild-1", Kind: "text", Name: "catalog", RawJSON: `{}`}))
 

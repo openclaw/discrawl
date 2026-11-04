@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,8 +10,7 @@ import (
 
 func TestExpandAttachmentChannelIDsIncludesForumThreads(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -26,8 +24,7 @@ func TestExpandAttachmentChannelIDsIncludesForumThreads(t *testing.T) {
 
 func TestListAttachmentsCanExcludeGuilds(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, seedAttachmentForGuild(ctx, s, "g1", "c1", "m1", "a1"))
@@ -41,8 +38,7 @@ func TestListAttachmentsCanExcludeGuilds(t *testing.T) {
 
 func TestAttachmentMediaUpdatesAndFilters(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, seedAttachmentForGuild(ctx, s, "g1", "c1", "m1", "a1"))
@@ -92,8 +88,7 @@ func TestAttachmentMediaUpdatesAndFilters(t *testing.T) {
 
 func TestAttachmentUpsertMovesDuplicateIDAndKeepsMedia(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, seedAttachmentForGuild(ctx, s, "g1", "c1", "m1", "a1"))

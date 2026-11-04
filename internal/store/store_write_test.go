@@ -19,8 +19,7 @@ func TestUpsertMessagesBatch(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -77,8 +76,7 @@ func TestUpsertMessagesRefreshesDuplicateAttachmentID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -141,8 +139,7 @@ func TestUpsertMessagesNormalizesTimestampStrings(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{
@@ -201,13 +198,12 @@ func TestUpsertMessagesHonorsCanceledContext(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	err = s.UpsertMessages(canceled, []MessageMutation{{
+	err := s.UpsertMessages(canceled, []MessageMutation{{
 		Record: MessageRecord{
 			ID:                "m1",
 			GuildID:           "g1",
@@ -230,8 +226,7 @@ func TestUpsertMessagesSkipsEventsAndEmbeddingsByDefault(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -263,8 +258,7 @@ func TestUpsertMessageWithEmbeddingsQueuesJob(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -287,8 +281,7 @@ func TestUpsertMessageWithEmbeddingsQueuesExistingMessageWithoutJob(t *testing.T
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	record := MessageRecord{
@@ -313,8 +306,7 @@ func TestMarkMessageDeletedClearsSearchAndEmbeddingState(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -416,8 +408,7 @@ func TestMarkMessageDeletedWithoutEventClearsStateAndSuppressesEvent(t *testing.
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -430,7 +421,7 @@ func TestMarkMessageDeletedWithoutEventClearsStateAndSuppressesEvent(t *testing.
 		NormalizedContent: "recoverable delete",
 		RawJSON:           `{}`,
 	}, WriteOptions{EnqueueEmbedding: true}))
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		insert into message_embeddings(
 			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
 		) values(?, 'provider', 'model', 'v1', 1, x'00000000', ?)
@@ -512,8 +503,7 @@ func TestMarkMessageDeletedWithoutEventRejectsAbsentOrMismatchedMessage(t *testi
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
 		ID:                "m1",
@@ -548,8 +538,7 @@ func TestMarkMessageDeletedWithoutEventRollsBackCleanupFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
 		ID:                "m1",
@@ -560,7 +549,7 @@ func TestMarkMessageDeletedWithoutEventRollsBackCleanupFailure(t *testing.T) {
 		NormalizedContent: "rollback delete",
 		RawJSON:           `{}`,
 	}, WriteOptions{EnqueueEmbedding: true}))
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		insert into message_embeddings(
 			message_id, provider, model, input_version, dimensions, embedding_blob, embedded_at
 		) values('m1', 'provider', 'model', 'v1', 1, x'00000000', ?)
@@ -604,8 +593,7 @@ func TestDeleteMessageFTSByRowIDUsesConstrainedVirtualTablePlan(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	populateMessageFTSFiller(t, s, 2048)
 	var count int
@@ -661,8 +649,7 @@ func TestDrainEmbeddingJobsStoresVectorsAndSkipsEmptyInput(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -728,8 +715,7 @@ func TestUpsertMessageWithEmbeddingsDoesNotRequeueUnchangedDoneJob(t *testing.T)
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	record := MessageRecord{
@@ -771,8 +757,7 @@ func TestEmbeddingSuccessResolvesOnlyCurrentIdentityFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -815,8 +800,7 @@ func TestDrainEmbeddingJobsFailsWholeBatchOnDimensionMismatch(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -854,8 +838,7 @@ func TestDrainEmbeddingJobsMarksFailedAfterMaxAttempts(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -868,7 +851,7 @@ func TestDrainEmbeddingJobsMarksFailedAfterMaxAttempts(t *testing.T) {
 		NormalizedContent: "hello",
 		RawJSON:           `{}`,
 	}, WriteOptions{EnqueueEmbedding: true}))
-	_, err = s.DB().ExecContext(ctx, `update embedding_jobs set attempts = 2 where message_id = 'm1'`)
+	_, err := s.DB().ExecContext(ctx, `update embedding_jobs set attempts = 2 where message_id = 'm1'`)
 	require.NoError(t, err)
 
 	stats, err := s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{err: errors.New("provider down")}, EmbeddingDrainOptions{
@@ -888,8 +871,7 @@ func TestDrainEmbeddingJobsStopsOnRateLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, id := range []string{"m1", "m2"} {
@@ -932,8 +914,7 @@ func TestDrainEmbeddingJobsDeletesStaleVectorsForEmptyContent(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	record := MessageRecord{
@@ -948,7 +929,7 @@ func TestDrainEmbeddingJobsDeletesStaleVectorsForEmptyContent(t *testing.T) {
 	}
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, record, WriteOptions{EnqueueEmbedding: true}))
 
-	_, err = s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{
+	_, err := s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{
 		batches: []embed.EmbeddingBatch{{Vectors: [][]float32{{1, 2}}}},
 	}, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 1})
 	require.NoError(t, err)
@@ -980,8 +961,7 @@ func TestPendingEmbeddingJobsSkipsFreshLocks(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
@@ -1018,8 +998,7 @@ func TestRequeueAllEmbeddingJobsUsesCurrentIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, id := range []string{"m1", "m2"} {
@@ -1034,7 +1013,7 @@ func TestRequeueAllEmbeddingJobsUsesCurrentIdentity(t *testing.T) {
 			RawJSON:           `{}`,
 		}))
 	}
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		insert into embedding_jobs(message_id, state, attempts, provider, model, input_version, last_error, updated_at)
 		values('m1', 'failed', 3, 'old', 'old-model', 'old-input', 'old error', ?)
 	`, time.Now().UTC().Format(timeLayout))
@@ -1060,8 +1039,7 @@ func TestEmbeddingHelpersAndIdentityResetBranches(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -1128,8 +1106,7 @@ func TestConcurrentMessageUpsertsShareSingleWriter(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	var wg sync.WaitGroup
@@ -1185,8 +1162,7 @@ func TestMessageFTSUsesSnowflakeRowID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	record := MessageRecord{
@@ -1217,8 +1193,7 @@ func TestMemberFTSUpdatesOnUpsert(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	record := MemberRecord{

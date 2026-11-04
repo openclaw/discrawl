@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,13 +12,12 @@ func TestMessageHydrationBeyondSQLiteVariableLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 
 	// SQLite permits 32766 bound parameters; uncapped archive slices can exceed it.
 	const count = 32767
-	_, err = s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		with recursive sequence(n) as (select 1 union all select n + 1 from sequence where n < ?)
 		insert into messages (id, guild_id, channel_id, message_type, created_at, content, normalized_content, raw_json, updated_at)
 		select printf('m%05d', n), 'g1', 'archive', 0, '2026-09-01T00:00:00.000000000Z',
