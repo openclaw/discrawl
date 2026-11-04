@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -79,8 +78,7 @@ func TestChannelSyncStateStoreHelpers(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertMessage(ctx, store.MessageRecord{
@@ -118,8 +116,7 @@ func TestMessageChannelSyncBranches(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	svc := New(&fakeClient{}, s, nil)
@@ -163,8 +160,7 @@ func TestMessageChannelConcurrentErrorAndProgressBranches(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	channels := []*discordgo.Channel{
@@ -201,8 +197,7 @@ func TestMessageChannelConcurrentFatalErrorCancelsPeers(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	channels := []*discordgo.Channel{

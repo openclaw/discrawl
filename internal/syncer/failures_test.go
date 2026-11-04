@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +16,7 @@ import (
 func TestTailFailureLedgerHelpers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 
 	var nilSyncer *Syncer
@@ -35,8 +33,7 @@ func TestTailFailureLedgerHelpers(t *testing.T) {
 func TestRecordTailFailurePersistsExactEventAwareIdentities(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 
 	handler := &tailHandler{store: st}
@@ -111,8 +108,7 @@ func TestRecordTailFailurePersistsExactEventAwareIdentities(t *testing.T) {
 func TestRecordTailFailureRecoversCanonicalMessageScope(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -146,8 +142,7 @@ func TestRecordTailFailureRecoversCanonicalMessageScope(t *testing.T) {
 
 func TestRecordTailFailurePoolStarvationFallsBack(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 	st.DB().SetMaxOpenConns(1)
 
@@ -186,8 +181,7 @@ func TestRecordTailFailurePoolStarvationFallsBack(t *testing.T) {
 func TestRecordTailFailureForcedFallbackSkipsLedger(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 
 	handler := &tailHandler{store: st}
@@ -216,8 +210,7 @@ func TestRecordTailFailureForcedFallbackSkipsLedger(t *testing.T) {
 func TestRecordTailFailureLogsOnlySafeStructuredDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 
 	out := &lockedBuffer{}
@@ -338,8 +331,7 @@ func TestValidateTailMessageReplayRequiresExactIdentity(t *testing.T) {
 func TestRecordTailFailureRejectsInvalidMessageMetadata(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	st := openTestStore(t, ctx)
 	defer func() { _ = st.Close() }()
 	handler := &tailHandler{store: st}
 

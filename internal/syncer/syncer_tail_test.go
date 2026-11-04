@@ -75,8 +75,7 @@ func TestTailHandlerWritesEvents(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	handler := &tailHandler{store: s}
@@ -154,8 +153,7 @@ func TestTailHandlerQueuesEmbeddingsWhenEnabled(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	handler := &tailHandler{
@@ -184,8 +182,7 @@ func TestTailHandlerMessageUpdateFetchesFullMessageBeforeUpsert(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	createdAt := time.Now().UTC()
@@ -528,8 +525,7 @@ func TestRunTail(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	handled := make(chan struct{}, 1)
@@ -542,7 +538,7 @@ func TestRunTail(t *testing.T) {
 		}
 		cancel()
 	}()
-	err = svc.RunTail(ctx, nil, 0)
+	err := svc.RunTail(ctx, nil, 0)
 	require.True(t, err == nil || errors.Is(err, context.Canceled))
 
 	status, err := s.Status(context.Background(), "db", "")
@@ -555,8 +551,7 @@ func TestRunTailWithRepairLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	client := &fakeClient{
@@ -776,8 +771,7 @@ func TestReplayTailMessageFailuresRecoversBelowCursorWithoutTailSideEffects(t *t
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", "100"))
@@ -857,8 +851,7 @@ func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *t
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, messageID := range []string{"10", "20"} {
@@ -872,7 +865,7 @@ func TestReplayTailMessageFailuresDefersMissingMessagesAndRotatesCandidates(t *t
 			RelatedID:   "create",
 		}, context.DeadlineExceeded))
 	}
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		update failure_ledger
 		set last_seen_at = case message_id
 			when '10' then '2026-07-13 00:00:01.000000000'
@@ -916,8 +909,7 @@ func TestReplayTailMessageFailuresLeavesOutOfScopeGuildVisibleWithoutFetching(t 
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
 		Operation:   tailMessageFailureOperation,
@@ -968,8 +960,7 @@ func TestReplayTailMessageFailuresRetainsFetchAndIdentityFailures(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-			require.NoError(t, err)
+			s := openTestStore(t, ctx)
 			defer func() { _ = s.Close() }()
 			require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
 				Operation:   tailMessageFailureOperation,
@@ -1006,8 +997,7 @@ func TestReplayTailMessageFailuresDoesNotRewriteLedgerOnParentCancellation(t *te
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	ref := store.FailureRef{
@@ -1044,8 +1034,7 @@ func TestPersistMessagePageResolvesCreateButLeavesNewerUpdateFailure(t *testing.
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	for _, ref := range []store.FailureRef{
 		tailMessageFailureIdentity("g1", "c1", "40", "create"),
@@ -1093,8 +1082,7 @@ func TestTailHandlersResolveOnlySuccessfulEventIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, eventKind := range []string{"create", "update", "delete"} {
@@ -1128,10 +1116,9 @@ func TestTailHandlerReturnedErrorIsRecordedOnlyByOuterOwner(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		create trigger fail_tail_message_event
 		before insert on message_events
 		begin
@@ -1171,8 +1158,7 @@ func TestRunTailImportsFallbackBeforeOpeningGatewayExactlyOnce(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.PersistTailMessageFailureFallback(store.TailMessageFailureFallback{
 		EventKind:   "update",
@@ -1199,8 +1185,7 @@ func TestReplayTailMessageFailuresImportsFallbackBeforeCandidateSelection(t *tes
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.PersistTailMessageFailureFallback(store.TailMessageFailureFallback{
 		EventKind:   "create",
@@ -1230,8 +1215,7 @@ func TestReplayTailMessageUpdateIsEventAware(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.RecordFailure(
 		ctx,
@@ -1266,8 +1250,7 @@ func TestReplayTailMessageDeleteDoesNotFetchOrCreateTailSideEffects(t *testing.T
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	require.NoError(t, s.UpsertMessages(ctx, []store.MessageMutation{{
@@ -1324,8 +1307,7 @@ func TestReplayTailMessageFailuresLeavesUnsupportedIdentitiesUntouched(t *testin
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	for _, ref := range []store.FailureRef{
 		{
@@ -1370,8 +1352,7 @@ func TestReplayTailMessageFailuresSelectsOnlyValidEventAwareIdentity(t *testing.
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	legacy := store.FailureRef{
@@ -1394,7 +1375,7 @@ func TestReplayTailMessageFailuresSelectsOnlyValidEventAwareIdentity(t *testing.
 	require.NoError(t, s.RecordFailure(ctx, legacy, errors.New("legacy failure")))
 	require.NoError(t, s.RecordFailure(ctx, invalid, errors.New("invalid failure")))
 	require.NoError(t, s.RecordFailure(ctx, eventAware, errTailMessageHandlerTimeout))
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		update failure_ledger
 		set last_seen_at = case message_id
 			when 'legacy' then '2026-07-13 00:00:01.000000000'
@@ -1454,8 +1435,7 @@ func TestReplayTailMessageFailuresKeepsIncompleteIdentityVisible(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.RecordFailure(ctx, store.FailureRef{
 		Operation:   tailMessageFailureOperation,
@@ -1483,8 +1463,7 @@ func TestRunTailWithRepairLoopJoinsTailOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	client := &joiningTailClient{
@@ -1521,8 +1500,7 @@ func TestRunTailPreservesFatalHandlerErrorDuringRequestedShutdown(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	tailErr := fmt.Errorf("%w: detached ordered handler timeout", discordclient.ErrFatalTail)
@@ -1556,8 +1534,7 @@ func TestRunTailCancelsAndJoinsSerializedRepairBeforeClientClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	repairStarted := make(chan struct{})
@@ -1616,8 +1593,7 @@ func TestRunTailRepairJoinIsBoundedAndLogsSafeDiagnostics(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	out := &lockedBuffer{}
@@ -1669,8 +1645,7 @@ func TestRunTailRepairJoinTimeoutIsFatalWhenTailReturns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	out := &lockedBuffer{}
@@ -1756,12 +1731,11 @@ func TestRunTailPreservesGatewayOpenErrorWithoutMessageFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	client := &gatewayOpenTailClient{}
-	err = New(client, s, nil).RunTail(ctx, nil, 0)
+	err := New(client, s, nil).RunTail(ctx, nil, 0)
 	require.Error(t, err)
 	var gatewayErr *discordclient.GatewayOpenError
 	require.ErrorAs(t, err, &gatewayErr)
@@ -1789,8 +1763,7 @@ func TestTailReadyCallback(t *testing.T) {
 
 func TestTailEventTraceLogsSafeStagesAndScopeOutcomes(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	out := &lockedBuffer{}

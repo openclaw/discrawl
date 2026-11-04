@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -57,8 +56,7 @@ func verificationFixtureAt(t *testing.T, messages []*discordgo.Message, head str
 	t.Helper()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
 
@@ -243,8 +241,7 @@ func TestChannelHasMessagesProbe(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	has, err := s.ChannelHasMessages(ctx, "")

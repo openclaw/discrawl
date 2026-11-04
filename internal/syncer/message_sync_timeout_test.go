@@ -2,22 +2,18 @@ package syncer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
-
-	"github.com/openclaw/discrawl/internal/store"
 )
 
 func TestSyncDefersSlowChannelAfterChannelTimeout(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	client := &fakeClient{

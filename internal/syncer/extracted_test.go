@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -60,8 +59,7 @@ func TestSeedChannelSyncStateUsesStoredBounds(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
@@ -121,8 +119,7 @@ func TestTailHandlerIgnoresFilteredGuildAndIncompleteMember(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	handler := &tailHandler{guilds: makeGuildSet([]string{"g1"}), store: s}
@@ -145,8 +142,7 @@ func TestSyncerMemberRefreshAndCatalogDecisions(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	svc := New(&fakeClient{}, s, nil)
