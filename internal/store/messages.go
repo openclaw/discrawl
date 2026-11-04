@@ -158,6 +158,9 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 	if err != nil {
 		return nil, err
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, s.resolveMessageDisplayMentions(ctx, out)
 }
 
@@ -209,6 +212,9 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 	if err != nil {
 		return nil, err
 	}
+	if err := contextRows.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.resolveMessageDisplayMentions(ctx, extra); err != nil {
 		return nil, err
 	}
@@ -248,16 +254,12 @@ func scanMessageRows(rows rowScanner) ([]MessageRow, error) {
 		row.DisplayContent = row.Content
 		out = append(out, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 
 type rowScanner interface {
 	Next() bool
 	Scan(dest ...any) error
-	Err() error
 }
 
 func mergeMessageRows(primary, extra []MessageRow) []MessageRow {
