@@ -58,36 +58,7 @@ type MessageRow struct {
 	Pinned                 bool      `json:"pinned"`
 }
 
-func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]MessageRow, error) {
-	args := []any{}
-	clauses := []string{"1=1"}
-	if len(opts.GuildIDs) > 0 {
-		clauses = append(clauses, "m.guild_id in ("+placeholders(len(opts.GuildIDs))+")")
-		for _, guildID := range opts.GuildIDs {
-			args = append(args, guildID)
-		}
-	}
-	if channel := normalizeChannelFilter(opts.Channel); channel != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name = ? or c.name like ?)")
-		args = append(args, channel, channel, "%"+channel+"%")
-	}
-	if author := strings.TrimSpace(opts.Author); author != "" {
-		clauses = append(clauses, `(m.author_id = ? or coalesce(mem.username, '') = ? or coalesce(mem.display_name, '') = ? or coalesce(mem.username, '') like ? or coalesce(mem.display_name, '') like ? or json_extract(m.raw_json, '$.author.username') = ?)`)
-		args = append(args, author, author, author, "%"+author+"%", "%"+author+"%", author)
-	}
-	if !opts.Since.IsZero() {
-		clauses = append(clauses, "m.created_at >= ?")
-		args = append(args, opts.Since.UTC().Format(timeLayout))
-	}
-	if !opts.Before.IsZero() {
-		clauses = append(clauses, "m.created_at < ?")
-		args = append(args, opts.Before.UTC().Format(timeLayout))
-	}
-	if !opts.IncludeEmpty {
-		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")
-	}
-
-	baseQuery := `
+const messageRowsSelectSQL = `
 		select
 			m.id,
 			m.guild_id,
@@ -120,7 +91,38 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 		left join guilds g on g.id = m.guild_id and g.deleted_at is null
 		left join channels c on c.id = m.channel_id
 		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
-		where ` + strings.Join(clauses, " and ") + `
+`
+
+func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]MessageRow, error) {
+	args := []any{}
+	clauses := []string{"1=1"}
+	if len(opts.GuildIDs) > 0 {
+		clauses = append(clauses, "m.guild_id in ("+placeholders(len(opts.GuildIDs))+")")
+		for _, guildID := range opts.GuildIDs {
+			args = append(args, guildID)
+		}
+	}
+	if channel := normalizeChannelFilter(opts.Channel); channel != "" {
+		clauses = append(clauses, "(m.channel_id = ? or c.name = ? or c.name like ?)")
+		args = append(args, channel, channel, "%"+channel+"%")
+	}
+	if author := strings.TrimSpace(opts.Author); author != "" {
+		clauses = append(clauses, `(m.author_id = ? or coalesce(mem.username, '') = ? or coalesce(mem.display_name, '') = ? or coalesce(mem.username, '') like ? or coalesce(mem.display_name, '') like ? or json_extract(m.raw_json, '$.author.username') = ?)`)
+		args = append(args, author, author, author, "%"+author+"%", "%"+author+"%", author)
+	}
+	if !opts.Since.IsZero() {
+		clauses = append(clauses, "m.created_at >= ?")
+		args = append(args, opts.Since.UTC().Format(timeLayout))
+	}
+	if !opts.Before.IsZero() {
+		clauses = append(clauses, "m.created_at < ?")
+		args = append(args, opts.Before.UTC().Format(timeLayout))
+	}
+	if !opts.IncludeEmpty {
+		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")
+	}
+
+	baseQuery := messageRowsSelectSQL + `where ` + strings.Join(clauses, " and ") + `
 	`
 
 	query := baseQuery
@@ -152,37 +154,9 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []MessageRow
-	for rows.Next() {
-		var row MessageRow
-		var created string
-		var hasAttachments int
-		var pinned int
-		if err := rows.Scan(
-			&row.MessageID,
-			&row.GuildID,
-			&row.GuildName,
-			&row.ChannelID,
-			&row.ChannelName,
-			&row.ChannelMetadataPresent,
-			&row.AuthorID,
-			&row.AuthorName,
-			&row.Content,
-			&created,
-			&row.ReplyToMessage,
-			&row.Source,
-			&hasAttachments,
-			&row.AttachmentNames,
-			&row.AttachmentText,
-			&pinned,
-		); err != nil {
-			return nil, err
-		}
-		row.CreatedAt = parseTime(created)
-		row.HasAttachments = hasAttachments == 1
-		row.Pinned = pinned == 1
-		row.DisplayContent = row.Content
-		out = append(out, row)
+	out, err := scanMessageRows(rows)
+	if err != nil {
+		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -227,40 +201,7 @@ func (s *Store) hydrateMessageThreadContext(ctx context.Context, rows []MessageR
 	if len(rootIDs) == 0 {
 		return rows, nil
 	}
-	query := `
-		select
-			m.id,
-			m.guild_id,
-			coalesce(g.name, ''),
-			m.channel_id,
-			coalesce(c.name, ''),
-			c.id is not null,
-			coalesce(m.author_id, ''),
-			coalesce(
-				nullif(mem.display_name, ''),
-				nullif(mem.nick, ''),
-				nullif(mem.global_name, ''),
-				nullif(mem.username, ''),
-				nullif(json_extract(m.raw_json, '$.author.global_name'), ''),
-				nullif(json_extract(m.raw_json, '$.author.username'), ''),
-				''
-			),
-			case
-				when trim(coalesce(m.content, '')) <> '' then m.content
-				else m.normalized_content
-			end,
-			m.created_at,
-			coalesce(m.reply_to_message_id, ''),
-			coalesce(json_extract(m.raw_json, '$.source'), ''),
-			m.has_attachments,
-			coalesce((select group_concat(a.filename, ', ') from message_attachments a where a.message_id = m.id), ''),
-			coalesce((select group_concat(a.text_content, char(10)) from message_attachments a where a.message_id = m.id and trim(a.text_content) <> ''), ''),
-			m.pinned
-		from messages m
-		left join guilds g on g.id = m.guild_id and g.deleted_at is null
-		left join channels c on c.id = m.channel_id
-		left join members mem on mem.guild_id = m.guild_id and mem.user_id = m.author_id and mem.deleted_at is null
-		where m.id in (select value from json_each(?))
+	query := messageRowsSelectSQL + `where m.id in (select value from json_each(?))
 		order by m.created_at asc, m.id asc`
 	contextRows, err := s.queryMessageIDs(ctx, query, rootIDs)
 	if err != nil {
@@ -313,16 +254,12 @@ func scanMessageRows(rows rowScanner) ([]MessageRow, error) {
 		row.DisplayContent = row.Content
 		out = append(out, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 
 type rowScanner interface {
 	Next() bool
 	Scan(dest ...any) error
-	Err() error
 }
 
 func mergeMessageRows(primary, extra []MessageRow) []MessageRow {
