@@ -804,19 +804,23 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, 
 }
 
 func (s *Store) ensureFTSRowIDs(ctx context.Context) error {
+	return s.ensureFTSVersion(ctx, "schema:message_fts_rowid_version", messageFTSVersion, "fts", s.rebuildFTS)
+}
+
+func (s *Store) ensureFTSVersion(ctx context.Context, scope, expected, label string, rebuild func(context.Context) error) error {
 	var version sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		select cursor
 		from sync_state
-		where scope = 'schema:message_fts_rowid_version'
-	`).Scan(&version)
-	if err == nil && version.String == messageFTSVersion {
+		where scope = ?
+	`, scope).Scan(&version)
+	if err == nil && version.String == expected {
 		return nil
 	}
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("check fts schema version: %w", err)
+		return fmt.Errorf("check %s schema version: %w", label, err)
 	}
-	if err := s.rebuildFTS(ctx); err != nil {
+	if err := rebuild(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `
@@ -825,8 +829,8 @@ func (s *Store) ensureFTSRowIDs(ctx context.Context) error {
 		on conflict(scope) do update set
 			cursor=excluded.cursor,
 			updated_at=excluded.updated_at
-	`, "schema:message_fts_rowid_version", messageFTSVersion, time.Now().UTC().Format(timeLayout)); err != nil {
-		return fmt.Errorf("stamp fts schema version: %w", err)
+	`, scope, expected, time.Now().UTC().Format(timeLayout)); err != nil {
+		return fmt.Errorf("stamp %s schema version: %w", label, err)
 	}
 	return nil
 }
