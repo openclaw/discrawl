@@ -2503,10 +2503,7 @@ func TestMessagesSyncFailsFastWhenTailOwnsSyncLock(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2530,10 +2527,7 @@ func TestMessagesSyncFailsFastDuringTailLockMetadataStartup(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2562,10 +2556,7 @@ func TestMessagesSyncIgnoresStaleTailLockMetadata(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	writeSyncLockMetadata(t, filepath.Join(dir, ".discrawl-sync.lock"), "tail", os.Getpid())
@@ -2581,10 +2572,7 @@ func TestMessagesSyncTreatsStaleTailMetadataHeldByNonTailAsWriter(t *testing.T) 
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2607,10 +2595,7 @@ func TestMessagesSyncWaitsDuringTailStartup(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2632,10 +2617,7 @@ func TestMessagesSyncWaitsForNonTailSyncLockOwner(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2657,10 +2639,7 @@ func TestMessagesSyncWaitsForLegacySyncLockMetadata(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2683,10 +2662,7 @@ func TestMessagesSyncWaitsForMalformedSyncLockMetadata(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2708,10 +2684,7 @@ func TestMessagesSyncPreservesCancellationWhileWaitingForSyncLock(t *testing.T) 
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2733,10 +2706,7 @@ func TestPlainMessagesStillReadsWhileTailOwnsSyncLock(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
 	release, err := acquireSyncLock(ctx, lockPath)
@@ -2759,10 +2729,7 @@ func TestMessagesSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
 	release, err := acquireSyncLock(ctx, lockPath)
@@ -2785,10 +2752,7 @@ func TestMessagesRepeatedSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) 
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
 	release, err := acquireSyncLock(ctx, lockPath)
@@ -2811,10 +2775,7 @@ func TestTailOpenFailureDoesNotPublishActiveTailOwner(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	fakeSync := &fakeSyncService{tailErr: errors.New("gateway open failed")}
@@ -2836,10 +2797,7 @@ func TestTailFailureReplayUsesExclusiveWriterLockWithoutStartingGateway(t *testi
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
@@ -2864,10 +2822,7 @@ func TestTailReadyPromotesOnceAndCleansUpOnCancellation(t *testing.T) {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
 	ctx := context.Background()
-	dir := t.TempDir()
-	cfg, cfgPath := writeTestConfig(t, dir)
-	s := seedCLIStore(t, cfg.DBPath)
-	require.NoError(t, s.Close())
+	dir, cfgPath := writeSeededTestConfig(t)
 	t.Setenv(config.DefaultTokenEnv, "env-token")
 
 	fakeSync := &fakeSyncService{callTailReady: true, tailErr: context.Canceled}
@@ -3004,6 +2959,15 @@ func seedCLIStore(t *testing.T, path string) *store.Store {
 		RawJSON:           `{}`,
 	}))
 	return s
+}
+
+func writeSeededTestConfig(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg, cfgPath := writeTestConfig(t, dir)
+	s := seedCLIStore(t, cfg.DBPath)
+	require.NoError(t, s.Close())
+	return dir, cfgPath
 }
 
 func writeTestConfig(t *testing.T, dir string) (config.Config, string) {
