@@ -1,5 +1,15 @@
 # Test cleanup ledger
 
+## Sync option error fixtures
+
+- Consolidated the missing-scope and unknown-channel tests into parallel table
+  cases. Both used identical config, temporary SQLite, and runtime scaffolding.
+- Keep independent config/store paths per case, the actual service lifecycle and
+  message sync option resolver, and both error assertions. Numeric channel IDs,
+  guild inference, and Discord-service admission tests remain unchanged.
+
+No sync behavior, provider calls, archive schema, or release changes.
+
 ## Publication transport Git shim
 
 - Restore the original PATH when the transport-budget shim delegates to the

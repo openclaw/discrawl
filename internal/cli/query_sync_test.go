@@ -43,60 +43,45 @@ func TestMessageSyncOptionsNumericChannelID(t *testing.T) {
 	}))
 }
 
-func TestMessageSyncOptionsRequiresScopeWithoutDefaults(t *testing.T) {
+func TestMessageSyncOptionsRejectsUnresolvedScope(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	dbPath := filepath.Join(dir, "discrawl.db")
+	for _, tc := range []struct {
+		name      string
+		channel   string
+		wantError string
+	}{
+		{name: "missing scope", wantError: "--channel or --guild"},
+		{name: "unknown channel", channel: "ghost-town", wantError: "cannot resolve channel"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	cfg := config.Default()
-	cfg.DBPath = dbPath
-	cfg.DefaultGuildID = ""
-	require.NoError(t, config.Write(cfgPath, cfg))
+			ctx := context.Background()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.toml")
+			dbPath := filepath.Join(dir, "discrawl.db")
 
-	rt := &runtime{
-		ctx:        ctx,
-		configPath: cfgPath,
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		logger:     discardLogger(),
+			cfg := config.Default()
+			cfg.DBPath = dbPath
+			cfg.DefaultGuildID = ""
+			require.NoError(t, config.Write(cfgPath, cfg))
+
+			rt := &runtime{
+				ctx:        ctx,
+				configPath: cfgPath,
+				stdout:     &bytes.Buffer{},
+				stderr:     &bytes.Buffer{},
+				logger:     discardLogger(),
+			}
+			require.NoError(t, rt.withServices(false, func() error {
+				_, err := rt.messageSyncOptions(tc.channel, "", "")
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantError)
+				return nil
+			}))
+		})
 	}
-	require.NoError(t, rt.withServices(false, func() error {
-		_, err := rt.messageSyncOptions("", "", "")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "--channel or --guild")
-		return nil
-	}))
-}
-
-func TestMessageSyncOptionsErrorsWhenChannelCannotResolve(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	dbPath := filepath.Join(dir, "discrawl.db")
-
-	cfg := config.Default()
-	cfg.DBPath = dbPath
-	cfg.DefaultGuildID = ""
-	require.NoError(t, config.Write(cfgPath, cfg))
-
-	rt := &runtime{
-		ctx:        ctx,
-		configPath: cfgPath,
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		logger:     discardLogger(),
-	}
-	require.NoError(t, rt.withServices(false, func() error {
-		_, err := rt.messageSyncOptions("ghost-town", "", "")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "cannot resolve channel")
-		return nil
-	}))
 }
 
 func TestSyncMessagesQueryRequiresDiscordServices(t *testing.T) {
