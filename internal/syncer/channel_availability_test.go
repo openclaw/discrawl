@@ -25,19 +25,16 @@ func newUnknownChannelSyncFixture(t *testing.T) (*store.Store, *fakeClient) {
 	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 	gone := &discordgo.Channel{ID: "c2", GuildID: "g1", Name: "gone", Type: discordgo.ChannelTypeGuildText}
-	client := &fakeClient{
-		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
-		channels: map[string][]*discordgo.Channel{"g1": {
-			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-			gone,
-		}},
-		channelByID: map[string]*discordgo.Channel{"c2": gone},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageErrors: map[string]error{"c2": errors.New(unknownChannelMessageErr)},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{"g1": {
+		{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
+		gone,
+	}}
+	client.channelByID = map[string]*discordgo.Channel{"c2": gone}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
+	client.messageErrors = map[string]error{"c2": errors.New(unknownChannelMessageErr)}
 	return s, client
 }
 

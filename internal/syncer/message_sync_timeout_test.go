@@ -16,26 +16,21 @@ func TestSyncDefersSlowChannelAfterChannelTimeout(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "slow", Type: discordgo.ChannelTypeGuildText}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "100",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "hello",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
-		messageDelay: 100 * time.Millisecond,
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "slow", Type: discordgo.ChannelTypeGuildText}},
 	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "100",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "hello",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
+	}
+	client.messageDelay = 100 * time.Millisecond
 
 	svc := New(client, s, nil)
 	svc.messageChannelTimeout = 20 * time.Millisecond

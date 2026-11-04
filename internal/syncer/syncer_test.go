@@ -368,23 +368,18 @@ func TestSyncUsesConfiguredConcurrency(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "one", Type: discordgo.ChannelTypeGuildText},
+			{ID: "c2", GuildID: "g1", Name: "two", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "one", Type: discordgo.ChannelTypeGuildText},
-				{ID: "c2", GuildID: "g1", Name: "two", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "one", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-			"c2": {{ID: "20", GuildID: "g1", ChannelID: "c2", Content: "two", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageDelay: 40 * time.Millisecond,
 	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "one", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+		"c2": {{ID: "20", GuildID: "g1", ChannelID: "c2", Content: "two", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+	}
+	client.messageDelay = 40 * time.Millisecond
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 2})
@@ -406,28 +401,23 @@ func TestSyncMemberRefreshTimeoutStillMarksSuccess(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "100",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "hello",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "peter"},
-			}},
-		},
-		memberDelay: 100 * time.Millisecond,
 	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "100",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "hello",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "peter"},
+		}},
+	}
+	client.memberDelay = 100 * time.Millisecond
 
 	svc := New(client, s, nil)
 	svc.memberRefreshTimeout = 10 * time.Millisecond
@@ -450,16 +440,11 @@ func TestSyncRequiredMemberRefreshFailsOnCrawlError(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		memberErr: errors.New("rate limited"),
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
 	}
+	client.memberErr = errors.New("rate limited")
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, RequireMembers: true})
@@ -484,17 +469,12 @@ func TestSyncRequiredMemberRefreshBypassesFreshSnapshot(t *testing.T) {
 		guildMemberSyncSuccessScope("g1"),
 		time.Now().UTC().Format(time.RFC3339Nano),
 	))
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
-		},
-		members: map[string][]*discordgo.Member{
-			"g1": {{User: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText}},
+	}
+	client.members = map[string][]*discordgo.Member{
+		"g1": {{User: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
 
 	svc := New(client, s, nil)
@@ -541,26 +521,21 @@ func TestSyncRefreshesExistingRowsWithoutCompletionReceipt(t *testing.T) {
 		RawJSON:     `{"user":{"id":"u1"}}`,
 	}))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "100",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "hello",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "100",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "hello",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -581,31 +556,26 @@ func TestSyncSkipMembersFlagSkipsMemberRefresh(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		members: map[string][]*discordgo.Member{
-			"g1": {{
-				User: &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "100",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "hello",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
+	}
+	client.members = map[string][]*discordgo.Member{
+		"g1": {{
+			User: &discordgo.User{ID: "u1", Username: "user"},
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "100",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "hello",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -633,26 +603,21 @@ func TestSyncLatestOnlyCompletesNewThreadHistory(t *testing.T) {
 			Author:    &discordgo.User{ID: "u1", Username: "user"},
 		})
 	}
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
-		},
-		guildThreads: map[string][]*discordgo.Channel{
-			"g1": {{
-				ID:            "thread",
-				GuildID:       "g1",
-				ParentID:      "forum",
-				Name:          "Beta Feedback",
-				Type:          discordgo.ChannelTypeGuildPublicThread,
-				LastMessageID: "200",
-			}},
-		},
-		messages: map[string][]*discordgo.Message{"thread": messages},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
 	}
+	client.guildThreads = map[string][]*discordgo.Channel{
+		"g1": {{
+			ID:            "thread",
+			GuildID:       "g1",
+			ParentID:      "forum",
+			Name:          "Beta Feedback",
+			Type:          discordgo.ChannelTypeGuildPublicThread,
+			LastMessageID: "200",
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{"thread": messages}
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, SkipMembers: true})
@@ -692,15 +657,10 @@ func TestSyncLatestOnlySkipsUnchangedIncompleteChannel(t *testing.T) {
 
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("c1"), "200"))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText, LastMessageID: "200"},
-			},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText, LastMessageID: "200"},
 		},
 	}
 
@@ -731,26 +691,21 @@ func TestSyncLatestOnlyResumesIncompleteThreadHistory(t *testing.T) {
 			Author:    &discordgo.User{ID: "u1", Username: "user"},
 		})
 	}
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
-		},
-		guildThreads: map[string][]*discordgo.Channel{
-			"g1": {{
-				ID:            "thread",
-				GuildID:       "g1",
-				ParentID:      "forum",
-				Name:          "feedback",
-				Type:          discordgo.ChannelTypeGuildPublicThread,
-				LastMessageID: "200",
-			}},
-		},
-		messages: map[string][]*discordgo.Message{"thread": messages},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
 	}
+	client.guildThreads = map[string][]*discordgo.Channel{
+		"g1": {{
+			ID:            "thread",
+			GuildID:       "g1",
+			ParentID:      "forum",
+			Name:          "feedback",
+			Type:          discordgo.ChannelTypeGuildPublicThread,
+			LastMessageID: "200",
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{"thread": messages}
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, GuildIDs: []string{"g1"}, SkipMembers: true})
@@ -783,40 +738,35 @@ func TestSyncLatestOnlyUsesIncrementalCatalog(t *testing.T) {
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("archived"), "300"))
 
 	now := time.Now().UTC()
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{
-				ID:            "c1",
-				GuildID:       "g1",
-				Name:          "general",
-				Type:          discordgo.ChannelTypeGuildText,
-				LastMessageID: "100",
-			}},
-		},
-		guildThreads: map[string][]*discordgo.Channel{
-			"g1": {{
-				ID:            "active",
-				GuildID:       "g1",
-				ParentID:      "c1",
-				Name:          "active-thread",
-				Type:          discordgo.ChannelTypeGuildPublicThread,
-				LastMessageID: "201",
-			}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"active": {{
-				ID:        "201",
-				GuildID:   "g1",
-				ChannelID: "active",
-				Content:   "new active thread message",
-				Timestamp: now,
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{
+			ID:            "c1",
+			GuildID:       "g1",
+			Name:          "general",
+			Type:          discordgo.ChannelTypeGuildText,
+			LastMessageID: "100",
+		}},
+	}
+	client.guildThreads = map[string][]*discordgo.Channel{
+		"g1": {{
+			ID:            "active",
+			GuildID:       "g1",
+			ParentID:      "c1",
+			Name:          "active-thread",
+			Type:          discordgo.ChannelTypeGuildPublicThread,
+			LastMessageID: "201",
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"active": {{
+			ID:        "201",
+			GuildID:   "g1",
+			ChannelID: "active",
+			Content:   "new active thread message",
+			Timestamp: now,
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -850,30 +800,25 @@ func TestSyncLatestOnlyDiscoversAndCompletesNewArchivedThread(t *testing.T) {
 			Author:    &discordgo.User{ID: "u1", Username: "user"},
 		})
 	}
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
-		},
-		publicArchived: map[string][]*discordgo.Channel{
-			"forum": {{
-				ID:            "archived",
-				GuildID:       "g1",
-				ParentID:      "forum",
-				Name:          "archived feedback",
-				Type:          discordgo.ChannelTypeGuildPublicThread,
-				LastMessageID: "200",
-				ThreadMetadata: &discordgo.ThreadMetadata{
-					Archived:         true,
-					ArchiveTimestamp: lastSync.Add(45 * time.Minute),
-				},
-			}},
-		},
-		messages: map[string][]*discordgo.Message{"archived": messages},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{ID: "forum", GuildID: "g1", Name: "development-areas", Type: discordgo.ChannelTypeGuildForum}},
 	}
+	client.publicArchived = map[string][]*discordgo.Channel{
+		"forum": {{
+			ID:            "archived",
+			GuildID:       "g1",
+			ParentID:      "forum",
+			Name:          "archived feedback",
+			Type:          discordgo.ChannelTypeGuildPublicThread,
+			LastMessageID: "200",
+			ThreadMetadata: &discordgo.ThreadMetadata{
+				Archived:         true,
+				ArchiveTimestamp: lastSync.Add(45 * time.Minute),
+			},
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{"archived": messages}
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{LatestOnly: true, GuildIDs: []string{"g1"}, SkipMembers: true})
@@ -926,20 +871,15 @@ func TestSyncFullAutoBatchesIncompleteStoredChannels(t *testing.T) {
 	}))
 
 	now := time.Now().UTC()
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		members: map[string][]*discordgo.Member{
-			"g1": {{
-				User: &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"t1": {{ID: "10", GuildID: "g1", ChannelID: "t1", Content: "first", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
-			"t2": {{ID: "20", GuildID: "g1", ChannelID: "t2", Content: "second", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
+	client := newGuildTestClient()
+	client.members = map[string][]*discordgo.Member{
+		"g1": {{
+			User: &discordgo.User{ID: "u1", Username: "user"},
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"t1": {{ID: "10", GuildID: "g1", ChannelID: "t1", Content: "first", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
+		"t2": {{ID: "20", GuildID: "g1", ChannelID: "t2", Content: "second", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
 
 	svc := New(client, s, nil)
@@ -971,19 +911,14 @@ func TestSyncFullAutoBatchHonorsSkipMembers(t *testing.T) {
 	}))
 
 	now := time.Now().UTC()
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		members: map[string][]*discordgo.Member{
-			"g1": {{
-				User: &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "first", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
+	client := newGuildTestClient()
+	client.members = map[string][]*discordgo.Member{
+		"g1": {{
+			User: &discordgo.User{ID: "u1", Username: "user"},
+		}},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "first", Timestamp: now, Author: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
 
 	svc := New(client, s, nil)
@@ -1022,20 +957,15 @@ func TestSyncFullUsesIncrementalCatalogWhenArchiveAlreadyComplete(t *testing.T) 
 	require.NoError(t, s.SetSyncState(ctx, channelLatestScope("t1"), "300"))
 	require.NoError(t, s.SetSyncState(ctx, channelHistoryCompleteScope("t1"), "1"))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {{
-				ID:            "c1",
-				GuildID:       "g1",
-				Name:          "general",
-				Type:          discordgo.ChannelTypeGuildText,
-				LastMessageID: "200",
-			}},
-		},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {{
+			ID:            "c1",
+			GuildID:       "g1",
+			Name:          "general",
+			Type:          discordgo.ChannelTypeGuildText,
+			LastMessageID: "200",
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -1074,21 +1004,16 @@ func TestSyncChannelSubsetUsesStoredMetadata(t *testing.T) {
 		RawJSON: `{"id":"c1"}`,
 	}))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{
-				ID:        "10",
-				GuildID:   "g1",
-				ChannelID: "c1",
-				Content:   "hello",
-				Timestamp: time.Now().UTC(),
-				Author:    &discordgo.User{ID: "u1", Username: "user"},
-			}},
-		},
+	client := newGuildTestClient()
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{
+			ID:        "10",
+			GuildID:   "g1",
+			ChannelID: "c1",
+			Content:   "hello",
+			Timestamp: time.Now().UTC(),
+			Author:    &discordgo.User{ID: "u1", Username: "user"},
+		}},
 	}
 
 	svc := New(client, s, nil)
@@ -1111,23 +1036,18 @@ func TestSyncSkipsMissingAccessChannels(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
+			{ID: "c2", GuildID: "g1", Name: "private", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-				{ID: "c2", GuildID: "g1", Name: "private", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageErrors: map[string]error{
-			"c2": errors.New("HTTP 403 Forbidden, {\"message\": \"Missing Access\", \"code\": 50001}"),
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+	}
+	client.messageErrors = map[string]error{
+		"c2": errors.New("HTTP 403 Forbidden, {\"message\": \"Missing Access\", \"code\": 50001}"),
 	}
 
 	out := &lockedBuffer{}
@@ -1154,23 +1074,18 @@ func TestSyncSuppressesRepeatedMissingAccessWarnings(t *testing.T) {
 
 	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("c2"), "missing_access"))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
+			{ID: "c2", GuildID: "g1", Name: "private", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-				{ID: "c2", GuildID: "g1", Name: "private", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageErrors: map[string]error{
-			"c2": errors.New("HTTP 403 Forbidden, {\"message\": \"Missing Access\", \"code\": 50001}"),
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+	}
+	client.messageErrors = map[string]error{
+		"c2": errors.New("HTTP 403 Forbidden, {\"message\": \"Missing Access\", \"code\": 50001}"),
 	}
 
 	out := &lockedBuffer{}
@@ -1195,23 +1110,18 @@ func TestSyncSkipsUnknownChannels(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
+			{ID: "c2", GuildID: "g1", Name: "gone", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-				{ID: "c2", GuildID: "g1", Name: "gone", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageErrors: map[string]error{
-			"c2": errors.New("HTTP 404 Not Found, {\"message\": \"Unknown Channel\", \"code\": 10003}"),
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+	}
+	client.messageErrors = map[string]error{
+		"c2": errors.New("HTTP 404 Not Found, {\"message\": \"Unknown Channel\", \"code\": 10003}"),
 	}
 
 	svc := New(client, s, nil)
@@ -1231,23 +1141,18 @@ func TestSyncSkipsRetryableChannelErrors(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
+			{ID: "c2", GuildID: "g1", Name: "flaky", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-				{ID: "c2", GuildID: "g1", Name: "flaky", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
-		messageErrors: map[string]error{
-			"c2": context.DeadlineExceeded,
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
+	}
+	client.messageErrors = map[string]error{
+		"c2": context.DeadlineExceeded,
 	}
 
 	svc := New(client, s, nil)
@@ -1291,19 +1196,14 @@ func TestSyncClearsUnavailableMarkerAfterSuccessfulRead(t *testing.T) {
 
 	require.NoError(t, s.SetSyncState(ctx, "channel:c1:unavailable", "missing_access"))
 
-	client := &fakeClient{
-		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{
-			"g1": {ID: "g1", Name: "Guild"},
+	client := newGuildTestClient()
+	client.channels = map[string][]*discordgo.Channel{
+		"g1": {
+			{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
 		},
-		channels: map[string][]*discordgo.Channel{
-			"g1": {
-				{ID: "c1", GuildID: "g1", Name: "general", Type: discordgo.ChannelTypeGuildText},
-			},
-		},
-		messages: map[string][]*discordgo.Message{
-			"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
-		},
+	}
+	client.messages = map[string][]*discordgo.Message{
+		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "ok", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
 
 	svc := New(client, s, nil)
@@ -1314,6 +1214,15 @@ func TestSyncClearsUnavailableMarkerAfterSuccessfulRead(t *testing.T) {
 	unavailable, err := s.GetSyncState(ctx, "channel:c1:unavailable")
 	require.NoError(t, err)
 	require.Empty(t, unavailable)
+}
+
+func newGuildTestClient() *fakeClient {
+	return &fakeClient{
+		guilds: []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
+		guildByID: map[string]*discordgo.Guild{
+			"g1": {ID: "g1", Name: "Guild"},
+		},
+	}
 }
 
 func openTestStore(t *testing.T, ctx context.Context) *store.Store {

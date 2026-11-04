@@ -191,15 +191,12 @@ func TestFullSyncEntrypointReachesChannelWithFreshUnavailableMarker(t *testing.T
 	require.NoError(t, s.SetSyncState(ctx, channelMessageUnavailableScope("c2"), "missing_access"))
 	backdateMarker(ctx, t, dbPath, channelMessageUnavailableScope("c2"), 8*24*time.Hour)
 
-	client := &fakeClient{
-		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
-		channelByID: map[string]*discordgo.Channel{
-			"c1": {ID: "c1", GuildID: "g1", Name: "restored", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
-			"c2": {ID: "c2", GuildID: "g1", Name: "still-blocked", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
-		},
-		messages: map[string][]*discordgo.Message{},
+	client := newGuildTestClient()
+	client.channelByID = map[string]*discordgo.Channel{
+		"c1": {ID: "c1", GuildID: "g1", Name: "restored", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
+		"c2": {ID: "c2", GuildID: "g1", Name: "still-blocked", Type: discordgo.ChannelTypeGuildText, LastMessageID: "10"},
 	}
+	client.messages = map[string][]*discordgo.Message{}
 	svc := New(client, s, nil)
 
 	_, err = svc.Sync(ctx, SyncOptions{Full: true})
@@ -226,16 +223,13 @@ func TestFullSyncUnavailableBacklogDoesNotStarveCatalog(t *testing.T) {
 			require.NoError(t, st.UpsertChannel(ctx, store.ChannelRecord{ID: "blocked", GuildID: "g1", Kind: "text", Name: "blocked", RawJSON: `{}`}))
 			require.NoError(t, st.SetSyncState(ctx, channelMessageUnavailableScope("blocked"), "missing_access"))
 			backdateMarker(ctx, t, dbPath, channelMessageUnavailableScope("blocked"), age)
-			client := &fakeClient{
-				guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-				guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
-				channels: map[string][]*discordgo.Channel{"g1": {
-					{ID: "blocked", GuildID: "g1", Name: "blocked", Type: discordgo.ChannelTypeGuildText},
-					{ID: "new", GuildID: "g1", Name: "new", Type: discordgo.ChannelTypeGuildText, LastMessageID: "20"},
-				}},
-				messageErrors: map[string]error{"blocked": errors.New("HTTP 403 Forbidden: Missing Access")},
-				messages:      map[string][]*discordgo.Message{"new": {{ID: "20", GuildID: "g1", ChannelID: "new", Content: "discovered checklist", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "fixture"}}}},
-			}
+			client := newGuildTestClient()
+			client.channels = map[string][]*discordgo.Channel{"g1": {
+				{ID: "blocked", GuildID: "g1", Name: "blocked", Type: discordgo.ChannelTypeGuildText},
+				{ID: "new", GuildID: "g1", Name: "new", Type: discordgo.ChannelTypeGuildText, LastMessageID: "20"},
+			}}
+			client.messageErrors = map[string]error{"blocked": errors.New("HTTP 403 Forbidden: Missing Access")}
+			client.messages = map[string][]*discordgo.Message{"new": {{ID: "20", GuildID: "g1", ChannelID: "new", Content: "discovered checklist", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "fixture"}}}}
 			svc := New(client, st, nil)
 			for run := 1; run <= 2; run++ {
 				stats, err := svc.Sync(ctx, SyncOptions{Full: true, SkipMembers: true, Concurrency: 1})
@@ -263,11 +257,8 @@ func TestFullSyncRetriesUnavailableCompletedChannelAlongsideBackfill(t *testing.
 	require.NoError(t, st.SetSyncState(ctx, channelHistoryCompleteScope("complete"), "1"))
 	require.NoError(t, st.SetSyncState(ctx, channelLatestScope("complete"), "10"))
 	require.NoError(t, st.SetSyncState(ctx, channelMessageUnavailableScope("complete"), "missing_access"))
-	client := &fakeClient{
-		guilds:    []*discordgo.UserGuild{{ID: "g1", Name: "Guild"}},
-		guildByID: map[string]*discordgo.Guild{"g1": {ID: "g1", Name: "Guild"}},
-		messages:  map[string][]*discordgo.Message{},
-	}
+	client := newGuildTestClient()
+	client.messages = map[string][]*discordgo.Message{}
 	_, err = New(client, st, nil).Sync(ctx, SyncOptions{Full: true, SkipMembers: true, Concurrency: 1})
 	require.NoError(t, err)
 	require.Equal(t, 1, client.messageCalls["complete"], "a completed history must not hide an explicit permission retry")
