@@ -55,7 +55,7 @@ func (r *runtime) runCloudPublish(args []string) error {
 	if fs.NArg() != 0 {
 		return usageErr(errors.New("cloud publish takes flags only"))
 	}
-	return r.withExistingLocalStoreReadOnly(func() error {
+	return r.withLocalStoreReadOnly(func() error {
 		if r.store == nil {
 			return dbErr(errors.New("cloud publish requires a local SQLite archive"))
 		}
