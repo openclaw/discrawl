@@ -73,10 +73,12 @@ if [ "$size" -gt 2048 ]; then
   printf 'synthetic Git argv budget exceeded: %s\n' "$size" >&2
   exit 93
 fi
-exec "$DISCRAWL_TEST_REAL_GIT" "$@"
+PATH="$DISCRAWL_TEST_REAL_GIT_PATH" exec "$DISCRAWL_TEST_REAL_GIT" "$@"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(shim, "git"), []byte(wrapper), 0o700)) // #nosec G306 -- executable test-owned wrapper delegates only to the resolved Git binary.
 	t.Setenv("DISCRAWL_TEST_REAL_GIT", realGit)
+	// A PATH-dispatching Git wrapper must not rediscover this test shim.
+	t.Setenv("DISCRAWL_TEST_REAL_GIT_PATH", os.Getenv("PATH"))
 	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	assertUnrelated := func() {

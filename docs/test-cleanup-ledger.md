@@ -1,5 +1,14 @@
 # Test cleanup ledger
 
+## Publication transport Git shim
+
+- Restore the original PATH when the transport-budget shim delegates to the
+  resolved Git command. A PATH-dispatching Git wrapper otherwise rediscovers
+  the test shim and recurses instead of running Git.
+- Keep the full synthetic publication proof: bounded literal arguments,
+  unrelated staged/unstaged content, deletion handling, output errors, and
+  cancellation. Production Git selection and publication behavior are unchanged.
+
 ## CLI fixture scaffolding
 
 - Moved the test-only `withServices` fixture wrapper into `cli_test.go` and
