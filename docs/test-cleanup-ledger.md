@@ -15,3 +15,15 @@
 
 This is a bounded gateway-test cleanup, not a complete repository audit.
 No production behavior or release artifacts changed.
+
+## Retired manifest timestamp predicates
+
+- Removed `ManifestAlreadyImported` and `ManifestAlreadyMerged`. Production
+  import/merge paths no longer call these timestamp-only predicates.
+- Replaced their integration-test uses with exact persisted marker assertions
+  after actual export, merge, and forced replacement operations.
+- Removed malformed-marker fixtures and predicate-only assertions. Retained
+  empty-manifest handling, pending-replacement clearing, import freshness, local
+  row preservation, and exact replacement checks.
+
+No import planning, stored state format, archive data, or release artifacts changed.
