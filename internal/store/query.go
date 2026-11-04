@@ -855,6 +855,25 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 	return out, rows.Err()
 }
 
+func memberRowFromSQL(row storedb.ListMembersRow) MemberRow {
+	member := MemberRow{
+		GuildID:       row.GuildID,
+		UserID:        row.UserID,
+		Username:      row.Username,
+		GlobalName:    row.GlobalName,
+		DisplayName:   row.DisplayName,
+		Nick:          row.Nick,
+		Discriminator: row.Discriminator,
+		Avatar:        row.Avatar,
+		RoleIDsJSON:   row.RoleIdsJson,
+		Bot:           row.Bot == 1,
+		JoinedAt:      parseTime(row.JoinedAt),
+		RawJSON:       row.RawJson,
+	}
+	enrichMemberRow(&member)
+	return member
+}
+
 func (s *Store) Members(ctx context.Context, guildID, query string, limit int) ([]MemberRow, error) {
 	if strings.TrimSpace(query) != "" {
 		return s.searchMembers(ctx, guildID, query, limit)
@@ -870,22 +889,7 @@ func (s *Store) Members(ctx context.Context, guildID, query string, limit int) (
 		}
 		out = make([]MemberRow, 0, len(rows))
 		for _, row := range rows {
-			member := MemberRow{
-				GuildID:       row.GuildID,
-				UserID:        row.UserID,
-				Username:      row.Username,
-				GlobalName:    row.GlobalName,
-				DisplayName:   row.DisplayName,
-				Nick:          row.Nick,
-				Discriminator: row.Discriminator,
-				Avatar:        row.Avatar,
-				RoleIDsJSON:   row.RoleIdsJson,
-				Bot:           row.Bot == 1,
-				JoinedAt:      parseTime(row.JoinedAt),
-				RawJSON:       row.RawJson,
-			}
-			enrichMemberRow(&member)
-			out = append(out, member)
+			out = append(out, memberRowFromSQL(storedb.ListMembersRow(row)))
 		}
 		return out, nil
 	}
@@ -895,22 +899,7 @@ func (s *Store) Members(ctx context.Context, guildID, query string, limit int) (
 	}
 	out = make([]MemberRow, 0, len(rows))
 	for _, row := range rows {
-		member := MemberRow{
-			GuildID:       row.GuildID,
-			UserID:        row.UserID,
-			Username:      row.Username,
-			GlobalName:    row.GlobalName,
-			DisplayName:   row.DisplayName,
-			Nick:          row.Nick,
-			Discriminator: row.Discriminator,
-			Avatar:        row.Avatar,
-			RoleIDsJSON:   row.RoleIdsJson,
-			Bot:           row.Bot == 1,
-			JoinedAt:      parseTime(row.JoinedAt),
-			RawJSON:       row.RawJson,
-		}
-		enrichMemberRow(&member)
-		out = append(out, member)
+		out = append(out, memberRowFromSQL(row))
 	}
 	return out, nil
 }
@@ -922,22 +911,7 @@ func (s *Store) MemberByID(ctx context.Context, userID string) ([]MemberRow, err
 	}
 	out := make([]MemberRow, 0, len(rows))
 	for _, row := range rows {
-		member := MemberRow{
-			GuildID:       row.GuildID,
-			UserID:        row.UserID,
-			Username:      row.Username,
-			GlobalName:    row.GlobalName,
-			DisplayName:   row.DisplayName,
-			Nick:          row.Nick,
-			Discriminator: row.Discriminator,
-			Avatar:        row.Avatar,
-			RoleIDsJSON:   row.RoleIdsJson,
-			Bot:           row.Bot == 1,
-			JoinedAt:      parseTime(row.JoinedAt),
-			RawJSON:       row.RawJson,
-		}
-		enrichMemberRow(&member)
-		out = append(out, member)
+		out = append(out, memberRowFromSQL(storedb.ListMembersRow(row)))
 	}
 	return out, nil
 }
