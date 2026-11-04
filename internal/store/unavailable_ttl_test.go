@@ -29,8 +29,7 @@ func TestFreshUnavailableChannelIDsWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	ageSyncStateMarker(ctx, t, s, "channel:stale:unavailable", "missing_access", 30*24*time.Hour)
@@ -63,8 +62,7 @@ func TestSyncStateBySuffix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	empty, err := s.SyncStateBySuffix(ctx, "")
@@ -91,8 +89,7 @@ func TestAllIncompleteMessageChannelIDsKeepsMarkedChannels(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, id := range []string{"c-clean", "c-done", "c-fresh", "c-stale"} {

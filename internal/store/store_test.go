@@ -71,8 +71,7 @@ func TestQueryHelpersAndEmbeddingPresence(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
@@ -123,8 +122,7 @@ func TestSearchFallbackFilters(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -265,8 +263,7 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	require.NoError(t, s.Close())
 
 	require.Error(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1"}))
@@ -280,7 +277,7 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 	require.Error(t, s.MarkMessageDeleted(ctx, "g1", "c1", "m1", map[string]any{}))
 	require.Error(t, s.SetSyncState(ctx, "scope", "cursor"))
 	require.Error(t, s.DeleteSyncState(ctx, "scope"))
-	_, err = s.GetSyncState(ctx, "scope")
+	_, err := s.GetSyncState(ctx, "scope")
 	require.Error(t, err)
 	_, _, err = s.ChannelMessageBounds(ctx, "c1")
 	require.Error(t, err)
@@ -466,8 +463,7 @@ func TestListMessagesWithThreadContextAndMentionLabels(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
@@ -606,8 +602,7 @@ func TestSearchMessagesSemanticRanksAndFilters(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -759,8 +754,7 @@ func TestSearchMessagesSemanticTurboVecBackend(t *testing.T) {
 	t.Setenv("CRAWLKIT_TURBOVEC_PYTHON", python)
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -904,8 +898,7 @@ func TestSearchMessagesSemanticScoresOlderMatchesBeyondRecentWindow(t *testing.T
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -961,8 +954,7 @@ func TestSearchMessagesSemanticErrors(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
@@ -976,7 +968,7 @@ func TestSearchMessagesSemanticErrors(t *testing.T) {
 		RawJSON:           `{}`,
 	}))
 
-	_, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+	_, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
 		QueryVector:  []float32{1, 0},
 		Provider:     "ollama",
 		Model:        "missing-model",
@@ -1049,8 +1041,7 @@ func TestSearchMessagesSemanticZeroStoredVector(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-			require.NoError(t, err)
+			s := openTestStore(t, ctx)
 			defer func() { _ = s.Close() }()
 
 			require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
@@ -1064,7 +1055,7 @@ func TestSearchMessagesSemanticZeroStoredVector(t *testing.T) {
 			}))
 			require.NoError(t, insertTestEmbedding(ctx, s, "zero-vector", "ollama", "nomic-embed-text", make([]float32, 8)))
 
-			_, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
+			_, err := s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
 				QueryVector:   []float32{1, 0, 0, 0, 0, 0, 0, 0},
 				Provider:      "ollama",
 				Model:         "nomic-embed-text",
@@ -1082,8 +1073,7 @@ func TestSearchMessagesHybridFusesAndDeduplicates(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -1167,8 +1157,7 @@ func TestSearchMessagesHybridPropagatesCorruptEmbeddings(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
@@ -1183,7 +1172,7 @@ func TestSearchMessagesHybridPropagatesCorruptEmbeddings(t *testing.T) {
 	}))
 	require.NoError(t, insertTestEmbeddingBlob(ctx, s, "m1", "ollama", "nomic-embed-text", 2, []byte{0, 0, 0, 0}))
 
-	_, err = s.SearchMessagesHybrid(ctx, SearchOptions{
+	_, err := s.SearchMessagesHybrid(ctx, SearchOptions{
 		Query: "panic",
 		Limit: 10,
 	}, SemanticSearchOptions{
@@ -1266,8 +1255,7 @@ func TestRebuildSearchIndexesAndGuildCounts(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -1294,7 +1282,7 @@ func TestRebuildSearchIndexesAndGuildCounts(t *testing.T) {
 		RawJSON:           `{}`,
 	}))
 
-	_, err = s.DB().ExecContext(ctx, `delete from message_fts`)
+	_, err := s.DB().ExecContext(ctx, `delete from message_fts`)
 	require.NoError(t, err)
 	_, err = s.DB().ExecContext(ctx, `delete from member_fts`)
 	require.NoError(t, err)
@@ -1318,8 +1306,7 @@ func TestOpenSetsSchemaVersion(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	var version int
@@ -1549,8 +1536,7 @@ func TestReadOnlyQueryGuards(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	cols, rows, err := s.ReadOnlyQuery(ctx, "select 1 as one")
@@ -1702,8 +1688,7 @@ func TestQueryAndExec(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	affected, err := s.Exec(ctx, `
@@ -1729,8 +1714,7 @@ func TestUpsertAndTombstoneMember(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMember(ctx, MemberRecord{
@@ -1771,8 +1755,7 @@ func TestMemberAndGuildTombstonesRestoreAndMissingRowsStayLive(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
 	require.NoError(t, s.MarkGuildDeleted(ctx, "unseen-guild", "discord-gateway", "guild-delete-event"))
@@ -1856,8 +1839,7 @@ func TestOpenCreatesQueryIndexes(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	messageIndexes := indexNames(t, ctx, s.DB(), "messages")
@@ -1962,8 +1944,7 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NotNil(t, s.DB())
@@ -2036,8 +2017,7 @@ func TestAdvanceChannelLatestMessageIDKeepsSnowflakeMax(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.AdvanceChannelLatestMessageID(ctx, "c1", ""))
@@ -2073,8 +2053,7 @@ func TestAdvanceChannelLatestMessageIDRejectsMalformedCursors(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.Error(t, s.AdvanceChannelLatestMessageID(ctx, "", "1"))
@@ -2098,8 +2077,7 @@ func TestAdvanceChannelLatestMessageIDConcurrentWrites(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	ids := []string{
@@ -2134,8 +2112,7 @@ func TestListMessagesFiltersAndLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "maintainers", RawJSON: `{}`}))
@@ -2293,8 +2270,7 @@ func TestListMessagesWithThreadContextHydratesReplyRoot(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -2363,8 +2339,7 @@ func TestSearchMessagesTreatsFTSSyntaxAsTerms(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
@@ -2473,8 +2448,7 @@ func TestMessageScopeStats(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	stats, err := s.MessageScopeStats(ctx, MessageScopeOptions{ChannelID: "empty-channel"})
@@ -2521,8 +2495,7 @@ func TestMessageScopeStatsSeparatesEmptyContentFromNoMessages(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "")))
@@ -2545,8 +2518,7 @@ func TestMessageEmbeddingCoverage(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "one")))
@@ -2585,8 +2557,7 @@ func TestChannelByID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	_, found, err := s.ChannelByID(ctx, "missing")
@@ -2631,8 +2602,7 @@ func TestMessagePendingEmbeddingJobsCountsWhatEmbedWouldDrain(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertMessage(ctx, msgAt("m1", "c1", "2026-01-01T00:00:00Z", "one")))
@@ -2701,8 +2671,7 @@ func TestMessageScopeStatsCataloguedChannelsOnlyMatchesTheConversationListing(t 
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: DirectMessageGuildID, Name: "Direct Messages", RawJSON: `{}`}))
@@ -2805,4 +2774,11 @@ func TestEnsureFTSVersionPreservesMarkerOnNoOpAndFailure(t *testing.T) {
 			require.Equal(t, "original stamp", stamp)
 		})
 	}
+}
+
+func openTestStore(t *testing.T, ctx context.Context) *Store {
+	t.Helper()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	return st
 }

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,8 +12,7 @@ func TestDirectMessageConversations(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	base := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
@@ -117,8 +115,7 @@ func TestDeleteGuildDataAndOrphanChannels(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Date(2026, 4, 24, 13, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +13,7 @@ import (
 func TestCoverageReportsGuildChannelAndWiretapState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild One", RawJSON: `{}`}))
@@ -118,8 +116,7 @@ func TestCoverageQueryTimeoutsAndCancellation(t *testing.T) {
 	require.Equal(t, parentDeadline, childDeadline)
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, guildID := range []string{"", "g1"} {
@@ -132,8 +129,7 @@ func TestCoverageQueryTimeoutsAndCancellation(t *testing.T) {
 
 func TestCoverageGlobalQueryPlanMaterializesSequentialMessageScan(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { require.NoError(t, s.Close()) }()
 
 	rows, err := s.DB().QueryContext(ctx, "explain query plan "+globalCoverageChannelQuery)

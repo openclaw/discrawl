@@ -16,8 +16,7 @@ import (
 func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	ref := FailureRef{Operation: "sync_messages", Source: "discord", GuildID: "g1", ChannelID: "c1"}
@@ -66,8 +65,7 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 func TestRecordFailureWithMessageScope(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
 		ID:                "m1",
@@ -128,8 +126,7 @@ func TestRecordFailureWithMessageScope(t *testing.T) {
 func TestRecordFailureWithMessageScopeTimedDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	deadline := time.Now().Add(time.Minute)
@@ -234,10 +231,9 @@ func (e *codedFailureError) Code() int {
 func TestAttachmentWriteErrorIncludesSafeRowContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		create trigger fail_attachment before insert on message_attachments
 		begin select raise(abort, 'forced attachment failure'); end
 	`)
@@ -298,8 +294,7 @@ func TestOpenMigratesSchemaV3FailureLedger(t *testing.T) {
 func TestFailureLedgerFiltersLimitsAndBulkResolution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	refs := []FailureRef{
@@ -338,8 +333,7 @@ func TestFailureLedgerFiltersLimitsAndBulkResolution(t *testing.T) {
 func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	refs := []FailureRef{
@@ -351,7 +345,7 @@ func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T
 	for i, ref := range refs {
 		require.NoError(t, s.RecordFailure(ctx, ref, fmt.Errorf("failure %d", i)))
 	}
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		update failure_ledger
 		set last_seen_at = case message_id
 			when 'm1' then '2026-07-13 00:00:03.000000000'
@@ -392,8 +386,7 @@ func TestFailureReplayCandidatesAreBoundedAndLeastRecentlyAttempted(t *testing.T
 func TestFailureReplayCandidatesCanMatchRelatedIDs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, ref := range []FailureRef{
@@ -434,7 +427,7 @@ func TestFailureReplayCandidatesCanMatchRelatedIDs(t *testing.T) {
 	} {
 		require.NoError(t, s.RecordFailure(ctx, ref, errors.New(ref.MessageID)))
 	}
-	_, err = s.DB().ExecContext(ctx, `
+	_, err := s.DB().ExecContext(ctx, `
 		update failure_ledger
 		set last_seen_at = case message_id
 			when 'legacy' then '2026-07-13 00:00:01.000000000'
@@ -499,15 +492,14 @@ func TestFailureReplayCandidatesCanMatchRelatedIDs(t *testing.T) {
 func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	oldRef := FailureRef{Operation: "sync", Source: "discord", MessageID: "old"}
 	require.NoError(t, s.RecordFailure(ctx, oldRef, errors.New("old failure")))
 	require.NoError(t, s.ResolveFailures(ctx, oldRef))
 	oldResolvedAt := time.Now().Add(-resolvedFailureMaxAge - time.Hour).UTC().Format(timeLayout)
-	_, err = s.DB().ExecContext(ctx, `update failure_ledger set resolved_at = ? where message_id = 'old'`, oldResolvedAt)
+	_, err := s.DB().ExecContext(ctx, `update failure_ledger set resolved_at = ? where message_id = 'old'`, oldResolvedAt)
 	require.NoError(t, err)
 
 	require.NoError(t, s.RecordFailure(ctx, FailureRef{Operation: "sync", Source: "discord", MessageID: "new"}, errors.New("new failure")))
@@ -519,8 +511,7 @@ func TestFailureLedgerPrunesOldResolvedRows(t *testing.T) {
 func TestResolveFailureIdentityDoesNotClearScopedFailures(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	unscoped := FailureRef{Operation: "import_messages", Source: "wiretap"}
@@ -564,14 +555,13 @@ func TestFailureHelpersHandleNilContextsAndBounds(t *testing.T) {
 func TestFailureLedgerReportsClosedDatabaseErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	require.NoError(t, s.Close())
 	ref := FailureRef{Operation: "sync", Source: "discord", MessageID: "m1"}
 
 	require.ErrorContains(t, s.RecordFailure(ctx, ref, errors.New("boom")), "record discord/sync failure")
 	require.ErrorContains(t, s.ResolveFailures(ctx, ref), "resolve discord/sync failures")
 	require.ErrorContains(t, s.ResolveMessageFailures(ctx, ref, []string{"m1"}), "resolve discord/sync message failures")
-	_, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
+	_, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
 	require.ErrorContains(t, err, "count unresolved failures")
 }

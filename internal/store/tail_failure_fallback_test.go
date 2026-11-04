@@ -89,8 +89,7 @@ func TestPersistTailMessageFailureFallbackIsCanonicalPrivateAndPoolIndependent(t
 func TestPersistTailMessageFailureFallbackConcurrentOccurrences(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	fallback := TailMessageFailureFallback{
@@ -246,8 +245,7 @@ func TestTailMessageFailureFallbackNoopAndHookFailures(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	imported, err := s.ImportTailMessageFailureFallbacks(ctx)
@@ -456,8 +454,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 				t.Skip("POSIX permission fixture")
 			}
 			ctx := context.Background()
-			s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-			require.NoError(t, err)
+			s := openTestStore(t, ctx)
 			defer func() { _ = s.Close() }()
 			dir, err := s.tailMessageFailureFallbackDir()
 			require.NoError(t, err)
@@ -480,8 +477,7 @@ func TestImportTailMessageFailureFallbacksRejectUnsafeCommittedFiles(t *testing.
 func TestImportTailMessageFailureFallbacksValidatesAllBeforeMutation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.PersistTailMessageFailureFallback(TailMessageFailureFallback{
 		EventKind: "create", FailureKind: "timeout",
@@ -509,8 +505,7 @@ func TestImportTailMessageFailureFallbacksValidatesAllBeforeMutation(t *testing.
 func TestImportTailMessageFailureFallbacksRetainsFilesWhenDBMutationFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	require.NoError(t, s.PersistTailMessageFailureFallback(TailMessageFailureFallback{
 		EventKind: "delete", FailureKind: "panic",
@@ -554,8 +549,7 @@ func TestImportTailMessageFailureFallbackRecordsRejectInvalidInputsAndReceiptFai
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 
 	imported, err := s.importTailMessageFailureFallbackRecords(ctx, nil, time.Now())
 	require.NoError(t, err)
@@ -618,8 +612,7 @@ func TestImportTailMessageFailureFallbackRecordsRejectInvalidInputsAndReceiptFai
 func TestImportTailMessageFailureFallbacksMapsEventIdentityAndCleansFiles(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, fallback := range []TailMessageFailureFallback{
@@ -672,8 +665,7 @@ func TestImportTailMessageFailureFallbacksAdvancesRepeatedUnresolvedOccurrence(t
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	fallback := TailMessageFailureFallback{
@@ -723,8 +715,7 @@ func TestImportTailMessageFailureFallbacksAdvancesRepeatedUnresolvedOccurrence(t
 
 func TestImportTailMessageFailureFallbacksIsExactlyOnceAcrossRemovalFailure(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	fallback := TailMessageFailureFallback{
@@ -771,8 +762,7 @@ func TestImportTailMessageFailureFallbacksIsExactlyOnceAcrossRemovalFailure(t *t
 
 func TestImportTailMessageFailureFallbacksIsExactlyOnceAcrossDirectorySyncFailure(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	fallback := TailMessageFailureFallback{
@@ -825,8 +815,7 @@ func TestTailMessageFailureFallbackOperationsStayAnchoredToOpenedDirectory(t *te
 	}
 	t.Run("persist", func(t *testing.T) {
 		ctx := context.Background()
-		s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-		require.NoError(t, err)
+		s := openTestStore(t, ctx)
 		defer func() { _ = s.Close() }()
 		dir, err := s.tailMessageFailureFallbackDir()
 		require.NoError(t, err)
@@ -855,8 +844,7 @@ func TestTailMessageFailureFallbackOperationsStayAnchoredToOpenedDirectory(t *te
 
 	t.Run("import", func(t *testing.T) {
 		ctx := context.Background()
-		s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-		require.NoError(t, err)
+		s := openTestStore(t, ctx)
 		defer func() { _ = s.Close() }()
 		require.NoError(t, s.PersistTailMessageFailureFallback(TailMessageFailureFallback{
 			EventKind: "delete", FailureKind: "returned_error",
