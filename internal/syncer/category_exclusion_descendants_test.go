@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,8 +37,7 @@ func TestCategoryExclusionFiltersDescendantsWithoutAllowlist(t *testing.T) {
 func TestCategoryExclusionAppliesToStoredRepairAndTail(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 	for _, channel := range categoryExclusionFixture() {
 		require.NoError(t, s.UpsertChannel(ctx, toChannelRecord(channel, "{}")))
@@ -76,8 +74,7 @@ func TestCategoryExclusionAppliesToStoredRepairAndTail(t *testing.T) {
 func TestTailCategoryExclusionTracksAncestorUpdates(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 	handler := &tailHandler{store: s, exclusions: newChannelScope([]string{"blocked-category"}, nil, nil)}
 	require.NoError(t, handler.OnChannelUpsert(ctx, &discordgo.Channel{

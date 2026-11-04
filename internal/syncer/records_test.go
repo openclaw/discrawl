@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -50,8 +49,7 @@ func TestComponentsV2MessageKeepsCardTextSearchable(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 
 	var page []*discordgo.Message
@@ -125,8 +123,7 @@ func TestRefreshGuildMembersRejectsIncompleteIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 
 	client := &fakeClient{
@@ -141,6 +138,7 @@ func TestRefreshGuildMembersRejectsIncompleteIdentity(t *testing.T) {
 	svc := New(client, s, nil)
 
 	var count int
+	var err error
 	require.NotPanics(t, func() {
 		count, err = svc.refreshGuildMembers(ctx, "g1", true)
 	})

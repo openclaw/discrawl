@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -62,8 +61,7 @@ func TestSyncChannelSubsetExpandsRequestedForumThreads(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -127,8 +125,7 @@ func TestSyncChannelSubsetFetchesRequestedArchivedThreadDirectly(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -225,8 +222,7 @@ func TestSyncToleratesArchivedThread403(t *testing.T) {
 	// and repeat unavailable warnings should be suppressed until the catalog
 	// succeeds again.
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -304,8 +300,7 @@ func TestSyncSkipsInaccessibleForumThreadCatalog(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -352,8 +347,7 @@ func TestSyncKeepsThreadCatalogUnavailableMarkerAfterMessageRead(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -432,8 +426,7 @@ func TestSyncChannelSubsetMergesStoredAndLiveTargets(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -493,8 +486,7 @@ func TestSyncSkipsUnchangedThreadsWhenHistoryComplete(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -549,8 +541,7 @@ func TestSyncSkipsUnchangedTextChannelsWhenHistoryComplete(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -598,8 +589,7 @@ func TestFullSyncReusesStoredThreadParents(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -655,8 +645,7 @@ func TestFullSyncUsesGuildActiveThreadsForStoredParents(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -702,7 +691,7 @@ func TestFullSyncUsesGuildActiveThreadsForStoredParents(t *testing.T) {
 	}
 
 	svc := New(client, s, nil)
-	_, err = svc.Sync(ctx, SyncOptions{Full: true, GuildIDs: []string{"g1"}})
+	_, err := svc.Sync(ctx, SyncOptions{Full: true, GuildIDs: []string{"g1"}})
 	require.NoError(t, err)
 	require.Equal(t, 1, client.guildThreadCalls)
 	require.Equal(t, 2, client.threadCalls)
@@ -712,8 +701,7 @@ func TestFullSyncDiscoversActiveThreadUnderNewParent(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -799,8 +787,7 @@ func TestFullSyncFallsBackToBroadThreadDiscoveryWithoutStoredThreads(t *testing.
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -819,7 +806,7 @@ func TestFullSyncFallsBackToBroadThreadDiscoveryWithoutStoredThreads(t *testing.
 	}
 
 	svc := New(client, s, nil)
-	_, err = svc.Sync(ctx, SyncOptions{Full: true, GuildIDs: []string{"g1"}})
+	_, err := svc.Sync(ctx, SyncOptions{Full: true, GuildIDs: []string{"g1"}})
 	require.NoError(t, err)
 	require.Equal(t, 6, client.threadCalls)
 }

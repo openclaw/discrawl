@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +16,7 @@ func TestVoiceAndStageMessagesUseHistorySync(t *testing.T) {
 	for _, channelType := range []discordgo.ChannelType{discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildStageVoice} {
 		t.Run(channelKind(&discordgo.Channel{Type: channelType}), func(t *testing.T) {
 			ctx := context.Background()
-			s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-			require.NoError(t, err)
+			s := openTestStore(t, ctx)
 			defer func() { require.NoError(t, s.Close()) }()
 
 			channel := &discordgo.Channel{ID: "c1", GuildID: "g1", Type: channelType, LastMessageID: "10"}

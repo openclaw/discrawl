@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,8 +22,7 @@ func discordRESTErr(status, code int) error {
 func newUnknownChannelSyncFixture(t *testing.T) (*store.Store, *fakeClient) {
 	t.Helper()
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	t.Cleanup(func() { _ = s.Close() })
 	gone := &discordgo.Channel{ID: "c2", GuildID: "g1", Name: "gone", Type: discordgo.ChannelTypeGuildText}
 	client := &fakeClient{
@@ -164,8 +162,7 @@ func TestUnknownChannelConfirmedIsProviderUnavailableAndRecovers(t *testing.T) {
 func TestReconcileChannelMessageFailuresSettlesOnlySupersededOrConfirmed(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	for _, c := range []store.ChannelRecord{
 		{ID: "cat-x", GuildID: "g1", Kind: "category", RawJSON: `{}`},
@@ -188,7 +185,7 @@ func TestReconcileChannelMessageFailuresSettlesOnlySupersededOrConfirmed(t *test
 	}
 	svc := New(client, s, nil)
 	svc.SetChannelExclusions([]string{"cat-x"}, nil)
-	_, err = refreshCollectionScopes(ctx, s, svc.channelExclusions)
+	_, err := refreshCollectionScopes(ctx, s, svc.channelExclusions)
 	require.NoError(t, err)
 	require.NoError(t, s.MarkChannelDeleted(ctx, "g1", "deleted-parent", "discord-gateway"))
 	for id, cause := range map[string]string{
@@ -230,8 +227,7 @@ func TestReconcileChannelMessageFailuresSettlesOnlySupersededOrConfirmed(t *test
 func TestReconcileChannelMessageFailuresRotatesPastPendingRows(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 	for i := range unknownChannelReplayLimit + 50 {
 		require.NoError(t, s.RecordFailure(ctx, store.FailureRef{Operation: syncMessagesFailureOperation, Source: "discord", GuildID: "g1", ChannelID: fmt.Sprintf("slow-%03d", i)}, errors.New("context deadline exceeded")))

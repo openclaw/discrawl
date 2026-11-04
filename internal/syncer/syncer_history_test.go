@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +16,7 @@ func TestSyncFullBackfillResumesFromCheckpoint(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	messages := make([]*discordgo.Message, 0, 150)
@@ -97,8 +95,7 @@ func TestSyncFullBackfillDoesNotRegressLatestPointer(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	// Resume state for a half-backfilled channel: head already synced up to
@@ -173,8 +170,7 @@ func TestSyncFullBackfillLargeResumeDoesNotRecrawlHeadSpan(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -278,8 +274,7 @@ func TestSyncFullSeedsBackfillFromStoredMessages(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -342,8 +337,7 @@ func TestSyncMarksLegacyLatestStateAsComplete(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -396,8 +390,7 @@ func TestSyncMarksEmptyChannelComplete(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	client := &fakeClient{
@@ -438,8 +431,7 @@ func TestSyncSinceLimitsInitialBootstrap(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC()
@@ -508,8 +500,7 @@ func TestSyncFullSinceStopsBackfillAtCutoff(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC()

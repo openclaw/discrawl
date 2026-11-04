@@ -102,8 +102,7 @@ func TestRoutineSyncSkipsFreshUnavailableMarkerAndRetriesAfterWindow(t *testing.
 
 func TestExplicitChannelRequestIgnoresUnavailableMarker(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertChannel(ctx, store.ChannelRecord{ID: "blocked", GuildID: "g1", Kind: "text", Name: "mods", RawJSON: `{}`}))
@@ -114,7 +113,7 @@ func TestExplicitChannelRequestIgnoresUnavailableMarker(t *testing.T) {
 	svc := New(client, s, nil)
 
 	// Naming the channel explicitly must attempt it despite the fresh marker.
-	_, err = svc.syncMessageChannels(ctx, "g1", []*discordgo.Channel{blocked}, SyncOptions{ChannelIDs: []string{"blocked"}})
+	_, err := svc.syncMessageChannels(ctx, "g1", []*discordgo.Channel{blocked}, SyncOptions{ChannelIDs: []string{"blocked"}})
 	require.NoError(t, err)
 	require.Equal(t, 1, client.messageCalls["blocked"])
 }
@@ -142,8 +141,7 @@ func TestFilterFreshUnavailableChannelsDegradesSafely(t *testing.T) {
 
 func TestFullSyncAttemptsChannelWithFreshUnavailableMarker(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	require.NoError(t, s.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
@@ -156,7 +154,7 @@ func TestFullSyncAttemptsChannelWithFreshUnavailableMarker(t *testing.T) {
 	svc := New(client, s, nil)
 
 	// A routine run passes over the channel while the marker is inside the window.
-	_, err = svc.syncMessageChannels(ctx, "g1", channels, SyncOptions{})
+	_, err := svc.syncMessageChannels(ctx, "g1", channels, SyncOptions{})
 	require.NoError(t, err)
 	require.Equal(t, 0, client.messageCalls["blocked"])
 

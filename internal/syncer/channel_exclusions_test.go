@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -46,8 +45,7 @@ func TestCategoryScopeFiltersIncompleteStoredChannels(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, channel := range []store.ChannelRecord{
@@ -116,8 +114,7 @@ func TestTargetedStoredThreadUsesFullCategoryAncestry(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, channel := range []store.ChannelRecord{
@@ -149,8 +146,7 @@ func TestSyncAppliesCategoryAndChannelExclusions(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	now := time.Now().UTC()
@@ -189,8 +185,7 @@ func TestTailAppliesCategoryAndChannelExclusions(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
+	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
 	for _, channel := range []store.ChannelRecord{

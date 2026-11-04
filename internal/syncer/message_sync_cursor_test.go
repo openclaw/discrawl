@@ -149,13 +149,12 @@ func TestMessagePagesErrorWhenCursorDoesNotAdvance(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-			require.NoError(t, err)
+			s := openTestStore(t, ctx)
 			t.Cleanup(func() { _ = s.Close() })
 
 			client := &repeatingMessagePageClient{page: tt.page}
 			svc := New(client, s, nil)
-			err = tt.run(svc, channel)
+			err := tt.run(svc, channel)
 			require.ErrorContains(t, err, tt.wantErr)
 			require.Equal(t, tt.wantCalls, client.requests)
 		})
