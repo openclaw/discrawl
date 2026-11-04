@@ -95,3 +95,15 @@ No gateway behavior, failure metadata, or release artifacts changed.
 Validation: config race tests, module consistency, formatting, vet, independent
 P0–P3 review, and full PR CI. No config format, CLI behavior, live archive data,
 or release artifacts changed.
+
+## Retired standalone event writer
+
+- Removed `AppendMessageEvent`, whose only callers were tests. Production
+  message updates and deletions append events through their transactions.
+- Removed the adapter's closed-store assertion and an unused event fixture
+  from the mixed sync-state/helper test. Its real message deletion remains.
+- Strengthened the existing batched-write test from an event count to exact
+  persisted guild, channel, message, type, and payload rows. It still checks
+  both messages and now rejects incorrectly wired event contents.
+
+No production event behavior, archive format, or release artifacts changed.

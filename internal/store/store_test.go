@@ -278,7 +278,6 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 	require.Error(t, s.UpsertMessages(ctx, []MessageMutation{{Record: MessageRecord{ID: "m1"}}}))
 	require.NoError(t, s.UpsertMessages(ctx, nil))
 	require.Error(t, s.MarkMessageDeleted(ctx, "g1", "c1", "m1", map[string]any{}))
-	require.Error(t, s.AppendMessageEvent(ctx, "g1", "c1", "m1", "create", map[string]any{}))
 	require.Error(t, s.SetSyncState(ctx, "scope", "cursor"))
 	require.Error(t, s.DeleteSyncState(ctx, "scope"))
 	_, err = s.GetSyncState(ctx, "scope")
@@ -1978,7 +1977,6 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 		NormalizedContent: "hello",
 		RawJSON:           `{}`,
 	}))
-	require.NoError(t, s.AppendMessageEvent(ctx, "g1", "c1", "m1", "create", map[string]string{"ok": "1"}))
 	require.NoError(t, s.MarkMessageDeleted(ctx, "g1", "c1", "m1", map[string]string{"deleted": "1"}))
 	require.NoError(t, s.SetSyncState(ctx, "scope:test", "cursor-1"))
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
