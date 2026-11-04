@@ -206,16 +206,6 @@ func (q *Queries) DeleteAttachmentsByGuild(ctx context.Context, guildID string) 
 	return err
 }
 
-const deleteAttachmentsByMessage = `-- name: DeleteAttachmentsByMessage :exec
-delete from message_attachments
-where message_id = ?
-`
-
-func (q *Queries) DeleteAttachmentsByMessage(ctx context.Context, messageID string) error {
-	_, err := q.db.ExecContext(ctx, deleteAttachmentsByMessage, messageID)
-	return err
-}
-
 const deleteChannelsByGuild = `-- name: DeleteChannelsByGuild :exec
 delete from channels
 where guild_id = ?
@@ -263,16 +253,6 @@ where guild_id = ?
 
 func (q *Queries) DeleteMentionEventsByGuild(ctx context.Context, guildID string) error {
 	_, err := q.db.ExecContext(ctx, deleteMentionEventsByGuild, guildID)
-	return err
-}
-
-const deleteMentionEventsByMessage = `-- name: DeleteMentionEventsByMessage :exec
-delete from mention_events
-where message_id = ?
-`
-
-func (q *Queries) DeleteMentionEventsByMessage(ctx context.Context, messageID string) error {
-	_, err := q.db.ExecContext(ctx, deleteMentionEventsByMessage, messageID)
 	return err
 }
 
@@ -450,37 +430,6 @@ func (q *Queries) HasOrphanedMessageChannels(ctx context.Context) (bool, error) 
 	var present bool
 	err := row.Scan(&present)
 	return present, err
-}
-
-const insertMentionEvent = `-- name: InsertMentionEvent :exec
-insert into mention_events(
-	message_id, guild_id, channel_id, author_id, target_type, target_id, target_name, event_at
-) values(?, ?, ?, ?, ?, ?, ?, ?)
-`
-
-type InsertMentionEventParams struct {
-	MessageID  string
-	GuildID    string
-	ChannelID  string
-	AuthorID   sql.NullString
-	TargetType string
-	TargetID   string
-	TargetName string
-	EventAt    string
-}
-
-func (q *Queries) InsertMentionEvent(ctx context.Context, arg InsertMentionEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertMentionEvent,
-		arg.MessageID,
-		arg.GuildID,
-		arg.ChannelID,
-		arg.AuthorID,
-		arg.TargetType,
-		arg.TargetID,
-		arg.TargetName,
-		arg.EventAt,
-	)
-	return err
 }
 
 const insertMessageAttachment = `-- name: InsertMessageAttachment :exec
