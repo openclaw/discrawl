@@ -136,11 +136,6 @@ select count(*) as count
 from channels
 where guild_id = ?;
 
--- name: CountMembersByGuild :one
-select count(*) as count
-from members
-where guild_id = ? and deleted_at is null;
-
 -- name: ListMembers :many
 select guild_id, user_id, username, coalesce(global_name, '') as global_name,
        coalesce(display_name, '') as display_name, coalesce(nick, '') as nick,

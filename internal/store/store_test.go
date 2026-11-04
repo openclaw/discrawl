@@ -316,8 +316,6 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 	require.Error(t, err)
 	_, err = s.GuildChannelCount(ctx, "g1")
 	require.Error(t, err)
-	_, err = s.GuildMemberCount(ctx, "g1")
-	require.Error(t, err)
 	_, err = s.AllIncompleteMessageChannelIDs(ctx, "g1")
 	require.Error(t, err)
 	_, err = s.Status(ctx, "db", "g1")
@@ -1309,9 +1307,6 @@ func TestRebuildSearchIndexesAndGuildCounts(t *testing.T) {
 	channelCount, err := s.GuildChannelCount(ctx, "g1")
 	require.NoError(t, err)
 	require.Equal(t, 1, channelCount)
-	memberCount, err := s.GuildMemberCount(ctx, "g1")
-	require.NoError(t, err)
-	require.Equal(t, 1, memberCount)
 }
 
 func TestOpenSetsSchemaVersion(t *testing.T) {
