@@ -226,7 +226,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 				case err != nil:
 					refetchErr = fmt.Errorf("refetch message update: %w", err)
 				case full != nil:
-					if err := validateRefetchedMessageIdentity(msg, full); err != nil {
+					if err := ValidateMessageUpdateIdentity(msg, full, "refetched message update"); err != nil {
 						refetchErr = err
 					} else {
 						msg = full

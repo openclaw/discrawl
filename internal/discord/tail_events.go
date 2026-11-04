@@ -8,25 +8,30 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func validateRefetchedMessageIdentity(partial, full *discordgo.Message) error {
+// ValidateMessageUpdateIdentity rejects conflicting known IDs before a fetched update is accepted.
+// description identifies the fetch path in diagnostic messages.
+func ValidateMessageUpdateIdentity(partial, full *discordgo.Message, description string) error {
 	switch {
 	case partial == nil || full == nil:
 		return nil
 	case full.ID != "" && partial.ID != "" && full.ID != partial.ID:
 		return fmt.Errorf(
-			"refetched message update returned different message id: event=%s fetched=%s",
+			"%s returned different message id: event=%s fetched=%s",
+			description,
 			partial.ID,
 			full.ID,
 		)
 	case full.ChannelID != "" && partial.ChannelID != "" && full.ChannelID != partial.ChannelID:
 		return fmt.Errorf(
-			"refetched message update returned different channel id: event=%s fetched=%s",
+			"%s returned different channel id: event=%s fetched=%s",
+			description,
 			partial.ChannelID,
 			full.ChannelID,
 		)
 	case full.GuildID != "" && partial.GuildID != "" && full.GuildID != partial.GuildID:
 		return fmt.Errorf(
-			"refetched message update returned different guild id: event=%s fetched=%s",
+			"%s returned different guild id: event=%s fetched=%s",
+			description,
 			partial.GuildID,
 			full.GuildID,
 		)
