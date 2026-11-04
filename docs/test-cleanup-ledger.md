@@ -123,3 +123,16 @@ No production event behavior, archive format, or release artifacts changed.
   explicit requests, full sync, and catalog progress using temporary archives.
 
 No sync behavior, query/schema format, live archive data, or release changes.
+
+## Test-only guild member count
+
+- Removed `GuildMemberCount`, whose only callers were two store tests, and its
+  dedicated `CountMembersByGuild` SQL definition. Regenerated sqlc output with
+  the repository's pinned generator.
+- Removed the closed-store error check and rebuild-test count assertion for
+  that unused API. Keep the rebuild test's actual member-search assertion,
+  channel count, and message-search assertion.
+- Retained the active `Members` and `Status` paths, including existing member
+  count assertions and the global `CountMembers` SQL query.
+
+No member storage, search, status, archive schema, or CLI behavior changed.

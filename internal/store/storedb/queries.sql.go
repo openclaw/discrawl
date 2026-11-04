@@ -159,19 +159,6 @@ func (q *Queries) CountMembers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const countMembersByGuild = `-- name: CountMembersByGuild :one
-select count(*) as count
-from members
-where guild_id = ? and deleted_at is null
-`
-
-func (q *Queries) CountMembersByGuild(ctx context.Context, guildID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countMembersByGuild, guildID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countMessages = `-- name: CountMessages :one
 select count(*) as count from messages
 `

@@ -995,11 +995,6 @@ func (s *Store) GuildChannelCount(ctx context.Context, guildID string) (int, err
 	return int(count), err
 }
 
-func (s *Store) GuildMemberCount(ctx context.Context, guildID string) (int, error) {
-	count, err := s.q.CountMembersByGuild(ctx, guildID)
-	return int(count), err
-}
-
 func (s *Store) Status(ctx context.Context, dbPath, defaultGuildID string) (Status, error) {
 	status := Status{DBPath: dbPath, DefaultGuildID: defaultGuildID}
 	var repairErr error
