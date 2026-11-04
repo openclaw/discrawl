@@ -62,37 +62,24 @@ func (r *runtime) runSearch(args []string) error {
 			opts.Channel = resolution.Selected.ChannelID
 		}
 	}
+	var results []store.SearchResult
 	switch normalizedMode {
 	case "", "fts":
-		results, err := r.store.SearchMessages(r.ctx, opts)
-		if err != nil {
-			return err
-		}
-		if len(results) == 0 {
-			r.explainEmptySearch(opts, normalizedMode)
-		}
-		return r.print(results)
+		results, err = r.store.SearchMessages(r.ctx, opts)
 	case "semantic":
-		results, err := r.searchMessagesSemantic(opts)
-		if err != nil {
-			return err
-		}
-		if len(results) == 0 {
-			r.explainEmptySearch(opts, normalizedMode)
-		}
-		return r.print(results)
+		results, err = r.searchMessagesSemantic(opts)
 	case "hybrid":
-		results, err := r.searchMessagesHybrid(opts)
-		if err != nil {
-			return err
-		}
-		if len(results) == 0 {
-			r.explainEmptySearch(opts, normalizedMode)
-		}
-		return r.print(results)
+		results, err = r.searchMessagesHybrid(opts)
 	default:
 		return usageErr(fmt.Errorf("unsupported search mode %q", *mode))
 	}
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		r.explainEmptySearch(opts, normalizedMode)
+	}
+	return r.print(results)
 }
 
 func permuteSearchFlags(args []string) []string {
