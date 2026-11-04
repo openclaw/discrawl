@@ -453,12 +453,7 @@ func trimStoredError(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := strings.TrimSpace(err.Error())
-	runes := []rune(msg)
-	if len(runes) > maxStoredErrorChars {
-		msg = string(runes[:maxStoredErrorChars])
-	}
-	return msg
+	return capRunes(strings.TrimSpace(err.Error()), maxStoredErrorChars)
 }
 
 func capRunes(value string, maxChars int) string {
