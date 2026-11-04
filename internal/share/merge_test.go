@@ -26,7 +26,9 @@ func TestMergeIfChangedPreservesLocalRowsUntilForcedReplacement(t *testing.T) {
 	_, changed, err := MergeIfChanged(ctx, dst, Options{RepoPath: repo, Branch: "main"})
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.True(t, ManifestAlreadyMerged(ctx, dst, initial))
+	lastMerged, err := dst.GetSyncState(ctx, LastMergeManifestSyncScope)
+	require.NoError(t, err)
+	require.Equal(t, initial.GeneratedAt.Format(time.RFC3339Nano), lastMerged)
 
 	require.NoError(t, dst.UpsertMessage(ctx, store.MessageRecord{
 		ID:                "local-only",
@@ -98,7 +100,9 @@ func TestMergeIfChangedPreservesLocalRowsUntilForcedReplacement(t *testing.T) {
 	_, rows, err = dst.ReadOnlyQuery(ctx, `select count(*) from message_events`)
 	require.NoError(t, err)
 	require.Equal(t, "1", rows[0][0], "routine merge must not replay generated event IDs")
-	require.True(t, ManifestAlreadyMerged(ctx, dst, updated))
+	lastMerged, err = dst.GetSyncState(ctx, LastMergeManifestSyncScope)
+	require.NoError(t, err)
+	require.Equal(t, updated.GeneratedAt.Format(time.RFC3339Nano), lastMerged)
 	lastExact, err := dst.GetSyncState(ctx, LastImportManifestSyncScope)
 	require.NoError(t, err)
 	require.Empty(t, lastExact)
@@ -112,7 +116,9 @@ func TestMergeIfChangedPreservesLocalRowsUntilForcedReplacement(t *testing.T) {
 	_, rows, err = dst.ReadOnlyQuery(ctx, `select count(*) from message_events`)
 	require.NoError(t, err)
 	require.Equal(t, "2", rows[0][0])
-	require.True(t, ManifestAlreadyImported(ctx, dst, updated))
+	lastImported, err := dst.GetSyncState(ctx, LastImportManifestSyncScope)
+	require.NoError(t, err)
+	require.Equal(t, updated.GeneratedAt.Format(time.RFC3339Nano), lastImported)
 
 	require.NoError(t, dst.UpsertMessage(ctx, store.MessageRecord{
 		ID:                "local-after-force",
@@ -423,17 +429,15 @@ func TestMergeStateTracksChecksAndPendingReplacement(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	manifest := Manifest{Version: 1, GeneratedAt: time.Now().UTC().Truncate(time.Nanosecond)}
 
-	require.False(t, ManifestAlreadyMerged(ctx, s, Manifest{}))
-	require.False(t, ManifestAlreadyMerged(ctx, s, manifest))
 	require.NoError(t, MarkReplacementPending(ctx, s, manifest, "table removed"))
 	require.True(t, HasPendingReplacement(ctx, s))
 	require.NoError(t, MarkMerged(ctx, s, manifest))
 	require.False(t, HasPendingReplacement(ctx, s))
-	require.True(t, ManifestAlreadyMerged(ctx, s, manifest))
+	lastMerged, err := s.GetSyncState(ctx, LastMergeManifestSyncScope)
+	require.NoError(t, err)
+	require.Equal(t, manifest.GeneratedAt.Format(time.RFC3339Nano), lastMerged)
 	require.False(t, NeedsImport(ctx, s, 15*time.Minute))
 
-	require.NoError(t, s.SetSyncState(ctx, LastMergeManifestSyncScope, "not-a-time"))
-	require.False(t, ManifestAlreadyMerged(ctx, s, manifest))
 	empty, err := eventTablesEmpty(ctx, s)
 	require.NoError(t, err)
 	require.True(t, empty)

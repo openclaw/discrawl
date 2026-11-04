@@ -2137,14 +2137,14 @@ func TestManifestStateAndReadEdges(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Nanosecond)
 	manifest := Manifest{Version: 1, GeneratedAt: now}
-	require.False(t, ManifestAlreadyImported(ctx, s, Manifest{}))
-	require.False(t, ManifestAlreadyImported(ctx, s, manifest))
-	require.NoError(t, s.SetSyncState(ctx, LastImportManifestSyncScope, "not-time"))
-	require.False(t, ManifestAlreadyImported(ctx, s, manifest))
 	require.NoError(t, MarkImported(ctx, s, Manifest{}))
-	require.False(t, ManifestAlreadyImported(ctx, s, manifest))
+	lastImported, err := s.GetSyncState(ctx, LastImportManifestSyncScope)
+	require.NoError(t, err)
+	require.Empty(t, lastImported)
 	require.NoError(t, MarkImported(ctx, s, manifest))
-	require.True(t, ManifestAlreadyImported(ctx, s, manifest))
+	lastImported, err = s.GetSyncState(ctx, LastImportManifestSyncScope)
+	require.NoError(t, err)
+	require.Equal(t, now.Format(time.RFC3339Nano), lastImported)
 
 	require.False(t, NeedsImport(ctx, s, 15*time.Minute))
 	require.NoError(t, s.SetSyncState(ctx, LastCheckSyncScope, "bad-time"))

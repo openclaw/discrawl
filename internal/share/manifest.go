@@ -41,21 +41,6 @@ type MediaManifest struct {
 	Bytes       int64                   `json:"bytes"`
 }
 
-func ManifestAlreadyImported(ctx context.Context, s *store.Store, manifest Manifest) bool {
-	if manifest.GeneratedAt.IsZero() {
-		return false
-	}
-	last, err := s.GetSyncState(ctx, LastImportManifestSyncScope)
-	if err != nil || strings.TrimSpace(last) == "" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339Nano, last)
-	if err != nil {
-		return false
-	}
-	return t.Equal(manifest.GeneratedAt)
-}
-
 func MarkImported(ctx context.Context, s *store.Store, manifest Manifest) error {
 	if err := s.SetSyncState(ctx, LastImportSyncScope, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err

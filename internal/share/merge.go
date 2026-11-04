@@ -254,18 +254,6 @@ func importMergeSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row m
 	return nil
 }
 
-func ManifestAlreadyMerged(ctx context.Context, s *store.Store, manifest Manifest) bool {
-	if manifest.GeneratedAt.IsZero() {
-		return false
-	}
-	last, err := s.GetSyncState(ctx, LastMergeManifestSyncScope)
-	if err != nil || strings.TrimSpace(last) == "" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339Nano, last)
-	return err == nil && t.Equal(manifest.GeneratedAt)
-}
-
 func PreviousMergedManifest(ctx context.Context, s *store.Store, opts Options) (Manifest, bool) {
 	body, err := s.GetSyncState(ctx, LastMergeManifestJSONScope)
 	if err == nil && strings.TrimSpace(body) != "" {
