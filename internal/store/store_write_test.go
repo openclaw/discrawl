@@ -628,7 +628,7 @@ func TestDeleteMessageFTSByRowIDUsesConstrainedVirtualTablePlan(t *testing.T) {
 
 func mustMessageFTSRowID(t *testing.T, messageID string) int64 {
 	t.Helper()
-	rowID, ok := messageFTSRowID(messageID)
+	rowID, ok := MessageFTSRowID(messageID)
 	require.True(t, ok)
 	return rowID
 }

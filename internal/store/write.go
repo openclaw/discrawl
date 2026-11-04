@@ -830,7 +830,7 @@ func (s *Store) upsertMessageTx(
 		// import) supersedes earlier parts; never keep stale provenance.
 		return true, err
 	}
-	if rowID, ok := messageFTSRowID(message.ID); ok {
+	if rowID, ok := MessageFTSRowID(message.ID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return true, err
 		}
@@ -950,7 +950,7 @@ func (s *Store) markMessageDeleted(
 			return err
 		}
 	}
-	if rowID, ok := messageFTSRowID(messageID); ok {
+	if rowID, ok := MessageFTSRowID(messageID); ok {
 		if _, err := tx.ExecContext(ctx, deleteMessageFTSByRowIDSQL, rowID); err != nil {
 			return err
 		}
@@ -1542,7 +1542,7 @@ func (s *Store) refreshUnchangedMessageTx(ctx context.Context, tx *sql.Tx, qtx *
 	if stored.deletedAt != "" {
 		return nil
 	}
-	if rowID, ok := messageFTSRowID(message.ID); ok {
+	if rowID, ok := MessageFTSRowID(message.ID); ok {
 		var authorName, channelName sql.NullString
 		err := tx.QueryRowContext(ctx, `select author_name,channel_name from message_fts where rowid=?`, rowID).Scan(&authorName, &channelName)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {

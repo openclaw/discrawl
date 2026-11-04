@@ -149,7 +149,7 @@ func (s *Store) RepairMessageTextBatch(ctx context.Context, policy string, limit
 		if m.DeletedAt != "" {
 			continue
 		}
-		if rowID, ok := messageFTSRowID(m.ID); ok {
+		if rowID, ok := MessageFTSRowID(m.ID); ok {
 			if _, err = tx.ExecContext(ctx, `update message_fts set content=? where rowid=?`, normalized, rowID); err != nil {
 				return p, err
 			}

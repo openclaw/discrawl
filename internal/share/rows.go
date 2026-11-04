@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openclaw/discrawl/internal/store"
 )
 
 func validateSnapshotRow(table string, row map[string]any) error {
@@ -276,7 +276,7 @@ func upsertSnapshotRow(ctx context.Context, tx *sql.Tx, table string, row map[st
 }
 
 func upsertMessageFTSRow(ctx context.Context, tx *sql.Tx, messageID string) error {
-	rowID, ok := messageFTSRowID(messageID)
+	rowID, ok := store.MessageFTSRowID(messageID)
 	if !ok {
 		return nil
 	}
@@ -317,23 +317,6 @@ func upsertMessageFTSRow(ctx context.Context, tx *sql.Tx, messageID string) erro
 		return fmt.Errorf("insert message_fts %s: %w", messageID, err)
 	}
 	return nil
-}
-
-func messageFTSRowID(messageID string) (int64, bool) {
-	if messageID == "" {
-		return 0, false
-	}
-	rowID, err := strconv.ParseInt(messageID, 10, 64)
-	if err == nil && rowID > 0 {
-		return rowID, true
-	}
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(messageID))
-	rowID = int64(hash.Sum64() & ((uint64(1) << 63) - 1))
-	if rowID == 0 {
-		rowID = 1
-	}
-	return rowID, true
 }
 
 func nullIfEmpty(value string) any {

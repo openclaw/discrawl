@@ -500,13 +500,13 @@ func TestMergeIfChangedRestoresMediaWhenTablesUnchanged(t *testing.T) {
 }
 
 func TestMessageFTSHelpers(t *testing.T) {
-	id, ok := messageFTSRowID("42")
+	id, ok := store.MessageFTSRowID("42")
 	require.True(t, ok)
 	require.Equal(t, int64(42), id)
-	id, ok = messageFTSRowID("18446744073709551615")
+	id, ok = store.MessageFTSRowID("18446744073709551615")
 	require.True(t, ok)
 	require.NotZero(t, id)
-	_, ok = messageFTSRowID("")
+	_, ok = store.MessageFTSRowID("")
 	require.False(t, ok)
 	require.Nil(t, nullIfEmpty(""))
 	require.Equal(t, "value", nullIfEmpty("value"))

@@ -908,7 +908,7 @@ func (s *Store) rebuildFTS(ctx context.Context) error {
 		if err := rows.Scan(&messageID, &guildID, &channelID, &authorID, &authorName, &channelName, &content); err != nil {
 			return fmt.Errorf("scan fts rebuild row: %w", err)
 		}
-		rowID, ok := messageFTSRowID(messageID)
+		rowID, ok := MessageFTSRowID(messageID)
 		if !ok {
 			continue
 		}
@@ -952,7 +952,8 @@ func optimizeFTS(ctx context.Context, tx *sql.Tx, table string) error {
 	return nil
 }
 
-func messageFTSRowID(messageID string) (int64, bool) {
+// MessageFTSRowID maps a message ID to its stable positive FTS row ID.
+func MessageFTSRowID(messageID string) (int64, bool) {
 	if messageID == "" {
 		return 0, false
 	}
