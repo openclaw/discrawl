@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/openclaw/discrawl/internal/config"
 	"github.com/openclaw/discrawl/internal/store"
+	"modernc.org/sqlite"
 )
 
 func TestMainHelpAndVersion(t *testing.T) {
@@ -133,12 +135,16 @@ func TestMainCancelsWiretapImportOnShutdownWithoutCorruptingDB(t *testing.T) {
 	cmd := shutdownTestCommand(t, exe, "TestMainCancelsWiretapImportOnShutdownWithoutCorruptingDB")
 	cmd.Env = append(os.Environ(), "DISCRAWL_MAIN_IMPORT_SIGNAL_DIR="+dir)
 	output, err := cmd.CombinedOutput()
+	started, startErr := os.ReadFile(filepath.Join(dir, "import-started"))
+	if startErr != nil || string(started) != "message insert\n" {
+		t.Fatalf("import did not reach a message insert: err=%v output=%s", startErr, output)
+	}
 	if !isContextCanceledExit(err, output) {
 		t.Fatalf("expected context-canceled exit from shutdown, got err=%v output=%s", err, output)
 	}
 
 	ctx := t.Context()
-	s, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	s, err := store.OpenReadOnly(ctx, filepath.Join(dir, "discrawl.db"))
 	if err != nil {
 		t.Fatalf("open db after shutdown: %v output=%s", err, output)
 	}
@@ -149,6 +155,13 @@ func TestMainCancelsWiretapImportOnShutdownWithoutCorruptingDB(t *testing.T) {
 	}
 	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] != "ok" {
 		t.Fatalf("quick_check after shutdown = %#v output=%s", rows, output)
+	}
+	var messages int
+	if err := s.DB().QueryRowContext(ctx, "SELECT count(*) FROM messages").Scan(&messages); err != nil {
+		t.Fatal(err)
+	}
+	if messages != 0 {
+		t.Fatal("interrupted message insert committed", messages)
 	}
 }
 
@@ -166,39 +179,31 @@ func runWiretapImportSignalChild(t *testing.T, dir string) {
 	cachePath := filepath.Join(cfg.Desktop.Path, "Local Storage", "leveldb")
 	requireNoError(t, os.MkdirAll(cachePath, 0o755))
 	requireNoError(t, config.Write(cfgPath, cfg))
-	writeLargeWiretapCache(t, filepath.Join(cachePath, "000001.log"), 50000)
+	requireNoError(t, os.WriteFile(filepath.Join(cachePath, "000001.log"), []byte(`
+{"id":"111111111111111111","type":1,"recipients":[{"id":"222222222222222222","username":"alice"}]}
+{"id":"333333333333333333","channel_id":"111111111111111111","content":"signal import fixture","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222222","username":"alice"}}
+`), 0o600))
+	requireNoError(t, sqlite.RegisterScalarFunction("signal_import_fixture", 0, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		if err := os.WriteFile(filepath.Join(dir, "import-started"), []byte("message insert\n"), 0o600); err != nil {
+			return nil, err
+		}
+		return nil, sendShutdownSignal()
+	}))
+	fixture, err := store.Open(t.Context(), cfg.DBPath)
+	requireNoError(t, err)
+	t.Cleanup(func() { _ = fixture.Close() })
+	// Keep the first import write in flight until its real context is canceled.
+	_, err = fixture.DB().ExecContext(t.Context(), `CREATE TRIGGER interrupt_import BEFORE INSERT ON messages BEGIN
+SELECT signal_import_fixture();
+SELECT count(*) FROM (WITH RECURSIVE waiting(n) AS (SELECT 1 UNION ALL SELECT 1 FROM waiting) SELECT n FROM waiting);
+END`)
+	requireNoError(t, err)
+	requireNoError(t, fixture.Close())
 
 	oldArgs := os.Args
 	t.Cleanup(func() { os.Args = oldArgs })
 	os.Args = []string{"discrawl", "--config", cfgPath, "wiretap", "--path", cfg.Desktop.Path}
-	go func() {
-		time.Sleep(15 * time.Millisecond)
-		if err := sendShutdownSignal(); err != nil {
-			panic(fmt.Sprintf("send shutdown signal: %v", err))
-		}
-	}()
 	main()
-}
-
-func writeLargeWiretapCache(t *testing.T, path string, count int) {
-	t.Helper()
-
-	file, err := os.Create(path)
-	requireNoError(t, err)
-	defer func() { requireNoError(t, file.Close()) }()
-	writer := bufio.NewWriter(file)
-	_, err = fmt.Fprintln(writer, `{"id":"111111111111111117","guild_id":"999999999999999997","type":0,"name":"sigterm-import"}`)
-	requireNoError(t, err)
-	for i := range count {
-		_, err = fmt.Fprintf(
-			writer,
-			`{"id":"3333333333%09d","channel_id":"111111111111111117","content":"sigterm import message %d","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222228","username":"alice"}}`+"\n",
-			i,
-			i,
-		)
-		requireNoError(t, err)
-	}
-	requireNoError(t, writer.Flush())
 }
 
 func isContextCanceledExit(err error, output []byte) bool {

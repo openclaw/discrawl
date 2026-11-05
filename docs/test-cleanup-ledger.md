@@ -251,3 +251,17 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   cannot pass; check delayed startup and missing-signal controls. Run scoped race
   tests, static checks, independent review and platform CI. No production code,
   live archives, providers, deployment or releases change.
+
+## Import shutdown verifies an interrupted write
+
+- Replace the 15 ms startup guess and 50,000-message cache with one recognized
+  DM fixture. A temporary SQLite trigger records its first message-insert attempt,
+  sends the existing native shutdown signal, and keeps that statement active
+  until the real CLI context interrupts it. The parent deadline remains 30 seconds.
+- Require the insert marker, reopen the existing archive read-only, retain
+  quick_check and verify no interrupted message insert committed. Verification
+  must not create or migrate the archive it claims to inspect.
+- Prove early-cancellation false greens, delayed startup, marker/row assertions
+  and missing-signal controls with temporary overlays. Run scoped race tests,
+  static checks, independent review and platform CI. No production code, live
+  archives, provider calls, deployment or releases change.
