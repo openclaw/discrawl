@@ -45,6 +45,33 @@ func feedCount(t *testing.T, s *Store, table string) int {
 	return n
 }
 
+// MetricValue is one entity_metrics row.
+type MetricValue struct {
+	EntityType string
+	EntityID   string
+	Metric     string
+	ObservedAt string
+	Value      string
+}
+
+// EntityMetrics returns the metric series of one entity in observation order.
+func (s *Store) EntityMetrics(ctx context.Context, entityType, entityID string) ([]MetricValue, error) {
+	rows, err := s.db.QueryContext(ctx, `select entity_type,entity_id,metric,observed_at,value from entity_metrics where entity_type=? and entity_id=? order by metric,observed_at`, entityType, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []MetricValue
+	for rows.Next() {
+		var m MetricValue
+		if err := rows.Scan(&m.EntityType, &m.EntityID, &m.Metric, &m.ObservedAt, &m.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func metricRows(t *testing.T, s *Store, entityType, id, metric string) []string {
 	t.Helper()
 	metrics, err := s.EntityMetrics(t.Context(), entityType, id)

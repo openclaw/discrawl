@@ -1,5 +1,16 @@
 # Test cleanup ledger
 
+## Metric-reading test oracle
+
+- Move EntityMetrics and MetricValue unchanged into the existing record-efficiency
+  test file. Their only consumer is the metric assertion helper; production has
+  no callers. Keep the independent SQL read oracle and every test assertion.
+- Keep metric persistence and the documented SeedEntityMetrics manual backfill
+  unchanged. No public module API, providers, live archives or releases change.
+- Validate the same eight real temporary-SQLite record-efficiency cases before
+  and after with the race detector, an exact source-move proof, static checks,
+  independent review and CI.
+
 ## Deterministic gateway queue overflow
 
 - Keep the real WebSocket queue-overflow test, its four events, one-worker/

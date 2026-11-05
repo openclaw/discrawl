@@ -200,33 +200,6 @@ func recordMetricsTx(ctx context.Context, tx *sql.Tx, entityType, entityID strin
 	return nil
 }
 
-// MetricValue is one entity_metrics row.
-type MetricValue struct {
-	EntityType string
-	EntityID   string
-	Metric     string
-	ObservedAt string
-	Value      string
-}
-
-// EntityMetrics returns the metric series of one entity in observation order.
-func (s *Store) EntityMetrics(ctx context.Context, entityType, entityID string) ([]MetricValue, error) {
-	rows, err := s.db.QueryContext(ctx, `select entity_type,entity_id,metric,observed_at,value from entity_metrics where entity_type=? and entity_id=? order by metric,observed_at`, entityType, entityID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []MetricValue
-	for rows.Next() {
-		var m MetricValue
-		if err := rows.Scan(&m.EntityType, &m.EntityID, &m.Metric, &m.ObservedAt, &m.Value); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
 // SeedEntityMetrics is the cutover backfill: it records the live counters
 // still embedded in stored guild and channel raw_json as initial metric
 // values, without touching any content row. It is idempotent and writes only
