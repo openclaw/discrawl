@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,13 +65,39 @@ func TestMainCancelsWatchOnShutdownSignal(t *testing.T) {
 		oldArgs := os.Args
 		t.Cleanup(func() { os.Args = oldArgs })
 		os.Args = []string{"discrawl", "--config", cfgPath, "wiretap", "--dry-run", "--watch-every", "1s"}
+		reader, writer, err := os.Pipe()
+		requireNoError(t, err)
+		stdout := os.Stdout
+		os.Stdout = writer
+		t.Cleanup(func() {
+			os.Stdout = stdout
+			_ = writer.Close()
+			_ = reader.Close()
+		})
+		done := make(chan error, 1)
 		go func() {
-			time.Sleep(50 * time.Millisecond)
-			if err := sendShutdownSignal(); err != nil {
-				panic(fmt.Sprintf("send shutdown signal: %v", err))
+			scanner := bufio.NewScanner(io.TeeReader(reader, stdout))
+			signaled := false
+			for scanner.Scan() {
+				if !signaled && scanner.Text() == "dry_run=true" {
+					if err := sendShutdownSignal(); err != nil {
+						done <- fmt.Errorf("send shutdown signal: %w", err)
+						return
+					}
+					signaled = true
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				done <- err
+			} else if !signaled {
+				done <- errors.New("watch did not complete its first dry run")
+			} else {
+				done <- nil
 			}
 		}()
 		main()
+		requireNoError(t, writer.Close())
+		requireNoError(t, <-done)
 		return
 	}
 
@@ -81,6 +108,9 @@ func TestMainCancelsWatchOnShutdownSignal(t *testing.T) {
 	cmd := shutdownTestCommand(t, exe, "TestMainCancelsWatchOnShutdownSignal")
 	cmd.Env = append(os.Environ(), "DISCRAWL_MAIN_SIGNAL_CHILD=1")
 	output, err := cmd.CombinedOutput()
+	if !bytes.Contains(output, []byte("\ndry_run=true\n")) {
+		t.Fatalf("watch did not complete its first dry run: err=%v output=%s", err, output)
+	}
 	if isContextCanceledExit(err, output) {
 		return
 	}
