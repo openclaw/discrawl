@@ -155,3 +155,14 @@ No sync behavior, query/schema format, live archive data, or release changes.
   count assertions and the global `CountMembers` SQL query.
 
 No member storage, search, status, archive schema, or CLI behavior changed.
+
+## Publication fixture database cleanup
+
+- Close the synthetic publication database after its setup transaction commits.
+  The three real local-Git cases pass before the fix while leaving their fixture
+  connections usable; afterward they pass with those connections closed.
+- Remove the exact duplicate `save` helper import. Preserve every test body,
+  fixture value and the custom collection hook that excludes imported base tests.
+- Validate the publication cases, complete checkpoint Python suite, independent
+  review and platform CI using temporary databases and local Git remotes only.
+  No provider, live archive or release behavior changes.
