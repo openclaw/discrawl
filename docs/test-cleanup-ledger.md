@@ -1,5 +1,19 @@
 # Test cleanup ledger
 
+## Deterministic gateway queue overflow
+
+- Keep the real WebSocket queue-overflow test, its four events, one-worker/
+  one-slot configuration, and fatal-error assertion. Hold its worker with the
+  existing dequeue hook until cancellation and its gateway until teardown.
+- Remove the single-use sleeping handler and its six methods. Replace the
+  50 ms gateway and 200 ms handler timing assumptions with synchronization;
+  bound the Tail call with a five-second context.
+- Delaying the same frames by 250 ms reproduces a global timeout before the
+  change and passes afterward. Disabling production overflow signaling makes
+  the fixed test fail its original error assertion within the context deadline.
+  Validate normal and delayed delivery, the Discord race suite, static checks,
+  independent review, and CI. All gateway traffic is local; no releases.
+
 ## Sync option error fixtures
 
 - Consolidated the missing-scope and unknown-channel tests into parallel table

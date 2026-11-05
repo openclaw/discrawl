@@ -3221,6 +3221,9 @@ func TestTailReadyHandlerFailureRemainsTerminal(t *testing.T) {
 }
 
 func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gatewayDone := make(chan struct{})
 	server := newTailTestGateway(t, func(conn *websocket.Conn) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		for i := range 4 {
@@ -3241,18 +3244,21 @@ func TestTailFailsFastWhenWorkerQueueFills(t *testing.T) {
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-gatewayDone
 	})
 	defer server.Close()
+	defer close(gatewayDone)
 
 	client, closeClient := newTailTestClient(t, server.URL)
 	var err error
 	defer closeClient()
 	client.tailWorkerCount = 1
 	client.tailQueueSize = 1
-	client.tailHandlerTimeout = time.Second
+	client.tailTaskDequeuedHook = func(ctx context.Context) {
+		<-ctx.Done()
+	}
 
-	err = client.Tail(context.Background(), &slowHandler{sleep: 200 * time.Millisecond})
+	err = client.Tail(ctx, &recordingHandler{})
 	require.ErrorContains(t, err, "tail worker queue full")
 }
 
@@ -4158,10 +4164,6 @@ func (h *messageUpdateFailureHandler) OnMessageUpdate(ctx context.Context, msg *
 	return h.fail(ctx)
 }
 
-type slowHandler struct {
-	sleep time.Duration
-}
-
 type dequeuedCancellationHandler struct {
 	recordingHandler
 	firstHandled chan struct{}
@@ -4184,30 +4186,5 @@ func (h *dequeuedCancellationHandler) OnMessageCreate(
 			close(h.firstHandled)
 		})
 	}
-	return nil
-}
-
-func (s *slowHandler) OnMessageCreate(context.Context, *discordgo.Message) error {
-	time.Sleep(s.sleep)
-	return nil
-}
-
-func (s *slowHandler) OnMessageUpdate(context.Context, *discordgo.Message) error {
-	return nil
-}
-
-func (s *slowHandler) OnMessageDelete(context.Context, *discordgo.MessageDelete) error {
-	return nil
-}
-
-func (s *slowHandler) OnChannelUpsert(context.Context, *discordgo.Channel) error {
-	return nil
-}
-
-func (s *slowHandler) OnMemberUpsert(context.Context, string, *discordgo.Member) error {
-	return nil
-}
-
-func (s *slowHandler) OnMemberDelete(context.Context, string, string) error {
 	return nil
 }
