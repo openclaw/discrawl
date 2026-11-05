@@ -938,6 +938,24 @@ func (s *Store) DesktopChannelIDs(ctx context.Context, guildID string) ([]string
 	return ids, rows.Err()
 }
 
+func channelRowFromSQL(row storedb.ListChannelsRow) ChannelRow {
+	return ChannelRow{
+		ID:               row.ID,
+		GuildID:          row.GuildID,
+		ParentID:         row.ParentID,
+		Kind:             row.Kind,
+		Name:             row.Name,
+		Topic:            row.Topic,
+		Position:         int(row.Position.Int64),
+		IsNSFW:           row.IsNsfw == 1,
+		IsArchived:       row.IsArchived == 1,
+		IsLocked:         row.IsLocked == 1,
+		IsPrivateThread:  row.IsPrivateThread == 1,
+		ThreadParentID:   row.ThreadParentID,
+		ArchiveTimestamp: parseTime(row.ArchiveTimestamp),
+	}
+}
+
 func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, error) {
 	var out []ChannelRow
 	if guildID != "" {
@@ -947,21 +965,7 @@ func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, err
 		}
 		out = make([]ChannelRow, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, ChannelRow{
-				ID:               row.ID,
-				GuildID:          row.GuildID,
-				ParentID:         row.ParentID,
-				Kind:             row.Kind,
-				Name:             row.Name,
-				Topic:            row.Topic,
-				Position:         int(row.Position.Int64),
-				IsNSFW:           row.IsNsfw == 1,
-				IsArchived:       row.IsArchived == 1,
-				IsLocked:         row.IsLocked == 1,
-				IsPrivateThread:  row.IsPrivateThread == 1,
-				ThreadParentID:   row.ThreadParentID,
-				ArchiveTimestamp: parseTime(row.ArchiveTimestamp),
-			})
+			out = append(out, channelRowFromSQL(storedb.ListChannelsRow(row)))
 		}
 		return out, nil
 	}
@@ -971,21 +975,7 @@ func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, err
 	}
 	out = make([]ChannelRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, ChannelRow{
-			ID:               row.ID,
-			GuildID:          row.GuildID,
-			ParentID:         row.ParentID,
-			Kind:             row.Kind,
-			Name:             row.Name,
-			Topic:            row.Topic,
-			Position:         int(row.Position.Int64),
-			IsNSFW:           row.IsNsfw == 1,
-			IsArchived:       row.IsArchived == 1,
-			IsLocked:         row.IsLocked == 1,
-			IsPrivateThread:  row.IsPrivateThread == 1,
-			ThreadParentID:   row.ThreadParentID,
-			ArchiveTimestamp: parseTime(row.ArchiveTimestamp),
-		})
+		out = append(out, channelRowFromSQL(row))
 	}
 	return out, nil
 }
