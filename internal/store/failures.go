@@ -157,19 +157,9 @@ func (s *Store) RecordEventFailure(ctx context.Context, ref FailureRef, failure 
 	return s.pruneResolvedFailures(ctx, now)
 }
 
-// RecordFailureWithMessageScope atomically validates an existing message's scope
-// and records the failure under either that scope or the complete supplied scope.
-func (s *Store) RecordFailureWithMessageScope(
-	ctx context.Context,
-	ref FailureRef,
-	failure error,
-) error {
-	_, err := s.RecordFailureWithMessageScopeTimed(ctx, ref, failure)
-	return err
-}
-
-// RecordFailureWithMessageScopeTimed is RecordFailureWithMessageScope with
-// pool, transaction, deadline, and numeric SQLite diagnostics for safe logging.
+// RecordFailureWithMessageScopeTimed atomically validates an existing message's
+// scope and records the failure under that scope or the complete supplied scope.
+// It reports pool, transaction, deadline, and numeric SQLite diagnostics for safe logging.
 func (s *Store) RecordFailureWithMessageScopeTimed(
 	ctx context.Context,
 	ref FailureRef,

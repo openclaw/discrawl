@@ -62,7 +62,7 @@ func TestFailureLedgerRetriesResolvesReopensAndRedacts(t *testing.T) {
 	require.True(t, report.Failures[0].ResolvedAt.IsZero())
 }
 
-func TestRecordFailureWithMessageScope(t *testing.T) {
+func TestRecordFailureWithMessageScopeTimed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s := openTestStore(t, ctx)
@@ -78,11 +78,12 @@ func TestRecordFailureWithMessageScope(t *testing.T) {
 	}))
 
 	failure := context.DeadlineExceeded
-	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+	_, err := s.RecordFailureWithMessageScopeTimed(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
 		MessageID: "m1",
-	}, failure))
+	}, failure)
+	require.NoError(t, err)
 	report, err := s.ListFailures(ctx, FailureListOptions{}, time.Now())
 	require.NoError(t, err)
 	require.Len(t, report.Failures, 1)
@@ -90,33 +91,37 @@ func TestRecordFailureWithMessageScope(t *testing.T) {
 	require.Equal(t, "c1", report.Failures[0].ChannelID)
 	require.Equal(t, "m1", report.Failures[0].MessageID)
 
-	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+	_, err = s.RecordFailureWithMessageScopeTimed(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
 		GuildID:   "wrong-guild",
 		ChannelID: "c1",
 		MessageID: "m1",
-	}, failure), "guild mismatch")
-	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+	}, failure)
+	require.ErrorContains(t, err, "guild mismatch")
+	_, err = s.RecordFailureWithMessageScopeTimed(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
 		GuildID:   "g1",
 		ChannelID: "wrong-channel",
 		MessageID: "m1",
-	}, failure), "channel mismatch")
+	}, failure)
+	require.ErrorContains(t, err, "channel mismatch")
 
-	require.NoError(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+	_, err = s.RecordFailureWithMessageScopeTimed(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
 		GuildID:   "g2",
 		ChannelID: "c2",
 		MessageID: "new-message",
-	}, failure))
-	require.ErrorContains(t, s.RecordFailureWithMessageScope(ctx, FailureRef{
+	}, failure)
+	require.NoError(t, err)
+	_, err = s.RecordFailureWithMessageScopeTimed(ctx, FailureRef{
 		Operation: "tail_message",
 		Source:    "discord",
 		MessageID: "missing-scope",
-	}, failure), "identity is incomplete")
+	}, failure)
+	require.ErrorContains(t, err, "identity is incomplete")
 
 	report, err = s.ListFailures(ctx, FailureListOptions{}, time.Now())
 	require.NoError(t, err)
