@@ -203,3 +203,15 @@ No member storage, search, status, archive schema, or CLI behavior changed.
 - Validate the same three real failure-persistence cases before and after under
   the race detector, plus static checks, independent review, and CI. No provider
   calls, live archives, release behavior, or public module API changes.
+
+## Retired member batch API
+
+- Remove MergeMembers, an internal batch API with five test callers and no
+  production callers. Production refreshes use MergeObservedMembers.
+- Seed search and tombstone fixtures through UpsertMember. Move the omitted-member
+  preservation check onto the production refresh API; retain every fixture and
+  behavioral assertion. Drop only the removed API's closed-store assertion.
+- Preserve the production upsert and observed-refresh implementations. Validate
+  the same seven temporary-SQLite cases before and after under the race detector,
+  check omitted-member deletion sensitivity with a disposable fault overlay,
+  and run static checks, independent review and CI. No releases or live archives.

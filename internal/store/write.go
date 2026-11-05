@@ -357,25 +357,6 @@ type storedChannel struct {
 	position, nsfw, archived, locked, private                                      int64
 }
 
-// MergeMembers refreshes observed members without treating absence as deletion.
-func (s *Store) MergeMembers(ctx context.Context, guildID string, members []MemberRecord) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	qtx := s.q.WithTx(tx)
-	for _, member := range members {
-		if member.GuildID != guildID {
-			return fmt.Errorf("member guild %q does not match refresh guild %q", member.GuildID, guildID)
-		}
-		if _, err := upsertMemberTx(ctx, tx, qtx, member); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 func (s *Store) MarkMemberDeleted(ctx context.Context, guildID, userID, source, reason string) error {
 	return s.MarkObservedMemberDeleted(ctx, guildID, userID, source, reason, time.Time{})
 }
