@@ -238,3 +238,16 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   repaired poll keeps failing while reads fail. Keep the healthy integration
   cases at their original timing; run race, static, independent-review and PR
   CI checks. No production code, live archives, deployment or releases change.
+
+## Watch shutdown waits for a completed dry run
+
+- Replace the watch signal fixture's 50 ms startup guess with its real completed
+  dry-run output. Drain and forward child output, then send the existing native
+  shutdown signal. Require that readiness evidence in the parent before accepting
+  either successful or context-canceled shutdown.
+- Keep the real CLI, child process, temporary config/cache, signal isolation and
+  30-second parent deadline. Preserve the separate import/SQLite integrity test.
+- Use disposable overlays to verify bypassed and prematurely canceled commands
+  cannot pass; check delayed startup and missing-signal controls. Run scoped race
+  tests, static checks, independent review and platform CI. No production code,
+  live archives, providers, deployment or releases change.
