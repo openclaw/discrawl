@@ -268,7 +268,6 @@ func TestClosedStoreOperationsReturnErrors(t *testing.T) {
 
 	require.Error(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1"}))
 	require.Error(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1"}))
-	require.Error(t, s.MergeMembers(ctx, "g1", nil))
 	require.Error(t, s.UpsertMember(ctx, MemberRecord{GuildID: "g1", UserID: "u1"}))
 	require.Error(t, s.MarkMemberDeleted(ctx, "g1", "u1", "test", "closed-store"))
 	require.Error(t, s.UpsertMessageWithOptions(ctx, MessageRecord{ID: "m1"}, WriteOptions{}))
@@ -343,14 +342,14 @@ func TestStoreReadWriteAndSearch(t *testing.T) {
 	require.NoError(t, s.UpsertGuild(ctx, GuildRecord{ID: "g1", Name: "Guild", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "c1", GuildID: "g1", Kind: "text", Name: "general", RawJSON: `{}`}))
 	require.NoError(t, s.UpsertChannel(ctx, ChannelRecord{ID: "t1", GuildID: "g1", Kind: "thread_public", Name: "thread", RawJSON: `{}`}))
-	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
+	require.NoError(t, s.UpsertMember(ctx, MemberRecord{
 		GuildID:     "g1",
 		UserID:      "u1",
 		Username:    "peter",
 		DisplayName: "Peter",
 		RoleIDsJSON: `["r1"]`,
 		RawJSON:     `{"bio":"Maintainer at Example","website":"https://steipete.me","github":"steipete","twitter":"steipete"}`,
-	}}))
+	}))
 	require.NoError(t, s.UpsertMessage(ctx, MessageRecord{
 		ID:                "m1",
 		GuildID:           "g1",
@@ -1732,13 +1731,13 @@ func TestUpsertAndTombstoneMember(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rows)
 
-	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
+	require.NoError(t, s.UpsertMember(ctx, MemberRecord{
 		GuildID:     "g1",
 		UserID:      "u2",
 		Username:    "other",
 		RoleIDsJSON: `[]`,
 		RawJSON:     `{"bio":"Other bio"}`,
-	}}))
+	}))
 	rows, err = s.Members(ctx, "g1", "", 10)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
@@ -1767,10 +1766,11 @@ func TestMemberAndGuildTombstonesRestoreAndMissingRowsStayLive(t *testing.T) {
 			RoleIDsJSON: `[]`, RawJSON: `{}`,
 		}))
 	}
-	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{{
+	_, err := s.MergeObservedMembers(ctx, "g1", []MemberRecord{{
 		GuildID: "g1", UserID: "u1", Username: "u1-new", DisplayName: "U1 New",
 		RoleIDsJSON: `[]`, RawJSON: `{}`,
-	}}))
+	}}, time.Now())
+	require.NoError(t, err)
 	members, err := s.Members(ctx, "g1", "", 10)
 	require.NoError(t, err)
 	require.Len(t, members, 2, "an omitted member is not an explicit deletion")

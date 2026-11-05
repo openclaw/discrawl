@@ -15,7 +15,7 @@ func TestMembersSearchesArchivedProfileText(t *testing.T) {
 	s := openTestStore(t, ctx)
 	defer func() { _ = s.Close() }()
 
-	require.NoError(t, s.MergeMembers(ctx, "g1", []MemberRecord{
+	for _, member := range []MemberRecord{
 		{
 			GuildID:     "g1",
 			UserID:      "u1",
@@ -32,7 +32,9 @@ func TestMembersSearchesArchivedProfileText(t *testing.T) {
 			RoleIDsJSON: `[]`,
 			RawJSON:     `{"bio":"Designer"}`,
 		},
-	}))
+	} {
+		require.NoError(t, s.UpsertMember(ctx, member))
+	}
 
 	rows, err := s.Members(ctx, "g1", "Platform", 10)
 	require.NoError(t, err)
