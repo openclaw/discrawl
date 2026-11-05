@@ -517,16 +517,24 @@ func (r *runtime) configuredForCloudReadOnly() bool {
 	return err == nil && cfg.RemoteCloudReadOnly()
 }
 
-func (r *runtime) withConfig(fn func() error) error {
+func (r *runtime) loadConfigOrDefault() (config.Config, error) {
 	cfg, err := config.Load(r.configPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return configErr(err)
+			return config.Config{}, configErr(err)
 		}
 		cfg = config.Default()
 		if err := cfg.Normalize(); err != nil {
-			return configErr(err)
+			return config.Config{}, configErr(err)
 		}
+	}
+	return cfg, nil
+}
+
+func (r *runtime) withConfig(fn func() error) error {
+	cfg, err := r.loadConfigOrDefault()
+	if err != nil {
+		return err
 	}
 	r.cfg = cfg
 	return fn()
@@ -545,15 +553,9 @@ func (r *runtime) withLocalStoreRead(autoShareUpdate bool, fn func() error) erro
 }
 
 func (r *runtime) withLocalStoreReadUpdate(updateMode shareUpdateMode, fn func() error) error {
-	cfg, err := config.Load(r.configPath)
+	cfg, err := r.loadConfigOrDefault()
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return configErr(err)
-		}
-		cfg = config.Default()
-		if err := cfg.Normalize(); err != nil {
-			return configErr(err)
-		}
+		return err
 	}
 	if err := config.EnsureRuntimeDirs(cfg); err != nil {
 		return configErr(err)
@@ -577,15 +579,9 @@ func (r *runtime) withLocalStoreReadUpdate(updateMode shareUpdateMode, fn func()
 }
 
 func (r *runtime) withLocalStoreUpdateLocked(updateMode shareUpdateMode, lockDB bool, fn func() error) error {
-	cfg, err := config.Load(r.configPath)
+	cfg, err := r.loadConfigOrDefault()
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return configErr(err)
-		}
-		cfg = config.Default()
-		if err := cfg.Normalize(); err != nil {
-			return configErr(err)
-		}
+		return err
 	}
 	if err := config.EnsureRuntimeDirs(cfg); err != nil {
 		return configErr(err)
@@ -649,15 +645,9 @@ func (r *runtime) openLocalStore(dbPath string, updateMode shareUpdateMode, fn f
 }
 
 func (r *runtime) withLocalStoreReadOnly(fn func() error) error {
-	cfg, err := config.Load(r.configPath)
+	cfg, err := r.loadConfigOrDefault()
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return configErr(err)
-		}
-		cfg = config.Default()
-		if err := cfg.Normalize(); err != nil {
-			return configErr(err)
-		}
+		return err
 	}
 	dbPath, err := config.ExpandPath(cfg.DBPath)
 	if err != nil {
