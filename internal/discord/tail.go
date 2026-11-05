@@ -268,18 +268,22 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 		reportTailEventObserved(eventObserver, task, "gateway_received", "")
 		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, task)
 	})
+	enqueueChannelUpsert := func(eventType string, channels ...*discordgo.Channel) {
+		channel := channels[0]
+		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
+			eventType,
+			func(taskCtx context.Context) error {
+				return handler.OnChannelUpsert(taskCtx, channel)
+			},
+			channels...,
+		))
+	}
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelCreate) {
 		var channel *discordgo.Channel
 		if evt != nil {
 			channel = evt.Channel
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
-			"CHANNEL_CREATE",
-			func(taskCtx context.Context) error {
-				return handler.OnChannelUpsert(taskCtx, channel)
-			},
-			channel,
-		))
+		enqueueChannelUpsert("CHANNEL_CREATE", channel)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ChannelUpdate) {
 		var channel, before *discordgo.Channel
@@ -287,27 +291,14 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			channel = evt.Channel
 			before = evt.BeforeUpdate
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
-			"CHANNEL_UPDATE",
-			func(taskCtx context.Context) error {
-				return handler.OnChannelUpsert(taskCtx, channel)
-			},
-			channel,
-			before,
-		))
+		enqueueChannelUpsert("CHANNEL_UPDATE", channel, before)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ThreadCreate) {
 		var channel *discordgo.Channel
 		if evt != nil {
 			channel = evt.Channel
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
-			"THREAD_CREATE",
-			func(taskCtx context.Context) error {
-				return handler.OnChannelUpsert(taskCtx, channel)
-			},
-			channel,
-		))
+		enqueueChannelUpsert("THREAD_CREATE", channel)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.ThreadUpdate) {
 		var channel, before *discordgo.Channel
@@ -315,14 +306,7 @@ func (c *Client) Tail(ctx context.Context, handler EventHandler) error {
 			channel = evt.Channel
 			before = evt.BeforeUpdate
 		}
-		c.enqueueTailTask(tailCtx, orderedWorkCh, fatal, newChannelTailTask(
-			"THREAD_UPDATE",
-			func(taskCtx context.Context) error {
-				return handler.OnChannelUpsert(taskCtx, channel)
-			},
-			channel,
-			before,
-		))
+		enqueueChannelUpsert("THREAD_UPDATE", channel, before)
 	})
 	addHandler(func(_ *discordgo.Session, evt *discordgo.GuildCreate) {
 		guildHandler, ok := handler.(guildEventHandler)
