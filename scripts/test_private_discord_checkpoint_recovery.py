@@ -1,4 +1,3 @@
-from test_private_discord_checkpoint import save
 import base64
 import contextlib
 import copy
@@ -784,7 +783,7 @@ class PublicationTests(unittest.TestCase):
         self.git("-C", str(self.seed), "remote", "add", "origin", str(self.remote))
         self.git("-C", str(self.seed), "push", "origin", "HEAD:refs/heads/main")
         self.database = self.root / "native.sqlite"
-        with sqlite3.connect(self.database) as db:
+        with contextlib.closing(sqlite3.connect(self.database)) as db, db:
             for table in ("guilds", "channels", "members", "messages", "message_attachments", "message_events",
                           "mention_events", "sync_state", "failure_ledger"):
                 db.execute(f"CREATE TABLE {table}(id INTEGER PRIMARY KEY, value TEXT)")
