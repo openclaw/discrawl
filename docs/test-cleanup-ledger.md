@@ -166,3 +166,15 @@ No member storage, search, status, archive schema, or CLI behavior changed.
 - Validate the publication cases, complete checkpoint Python suite, independent
   review and platform CI using temporary databases and local Git remotes only.
   No provider, live archive or release behavior changes.
+
+## Test-only sync lock fixture
+
+- Move the acquireSyncLock convenience wrapper out of the three platform
+  production files into the existing CLI test fixture. Production uses the
+  metadata-aware lock APIs; all twelve wrapper callers are tests.
+- Keep every test body and PID metadata value unchanged. The shared fixture
+  delegates to the same platform implementation, including the unsupported-OS
+  no-op. Keep acquisition, cancellation, handoff, reader, and release behavior.
+- Validate the same 17 real temporary-file lock/reader cases before and after
+  with the race detector, plus static checks, independent review, and CI.
+  Tests use temporary archive paths and test-owned locks; no releases.

@@ -11,10 +11,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
-	return acquireSyncLockWithMetadata(ctx, path, fmt.Sprintf("pid=%d\n", os.Getpid()))
-}
-
 func acquireSyncLockWithMetadata(ctx context.Context, path string, metadata string) (func() error, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

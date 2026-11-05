@@ -2433,6 +2433,10 @@ func TestSyncSkipsGitShareByDefaultAndCanImportBeforeLiveDiscord(t *testing.T) {
 	require.Contains(t, contents, "live discord filled the delta")
 }
 
+func acquireSyncLock(ctx context.Context, path string) (func() error, error) {
+	return acquireSyncLockWithMetadata(ctx, path, fmt.Sprintf("pid=%d\n", os.Getpid()))
+}
+
 func TestSyncLockSerializesConcurrentRuns(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("lock timing coverage is not enabled on Windows")
