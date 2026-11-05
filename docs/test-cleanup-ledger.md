@@ -192,3 +192,14 @@ No member storage, search, status, archive schema, or CLI behavior changed.
 - Validate the same 17 real temporary-file lock/reader cases before and after
   with the race detector, plus static checks, independent review, and CI.
   Tests use temporary archive paths and test-owned locks; no releases.
+
+## Test-only message failure forwarding method
+
+- Remove RecordFailureWithMessageScope, an internal forwarding method used only
+  by five test calls. Use the production RecordFailureWithMessageScopeTimed
+  method directly and check the same returned errors.
+- Preserve every scope value, error message, durable-ledger assertion, diagnostic
+  case and temporary SQLite fixture. The persistence implementation is unchanged.
+- Validate the same three real failure-persistence cases before and after under
+  the race detector, plus static checks, independent review, and CI. No provider
+  calls, live archives, release behavior, or public module API changes.
