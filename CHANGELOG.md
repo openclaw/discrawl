@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh Kong, SQLite, analyzer dependencies, Node and GoReleaser; retain the Go 1.27.0 minimum and Go 1.27.3 toolchain.
+
 - Share Linux CI setup and Go caches across Japanese, Chinese, and Korean helper tests while retaining native macOS Kiwi validation.
 
 - Give the race-and-coverage CI job its own Go cache so faster dependency and lint jobs cannot reserve its immutable cache entry before race builds finish.
