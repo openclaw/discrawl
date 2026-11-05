@@ -167,8 +167,9 @@ func TestTailNativeKeyringRecoveryKeepsCaptureRunning(t *testing.T) {
 			require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from messages`).Scan(&count))
 			require.Equal(t, 2, count)
 			require.Eventually(t, func() bool {
-				_ = s.DB().QueryRowContext(ctx, `select count(*) from message_embeddings`).Scan(&count)
-				return count == 2
+				var embedded int
+				err := s.DB().QueryRowContext(ctx, `select count(*) from message_embeddings`).Scan(&embedded)
+				return err == nil && embedded == 2
 			}, 65*time.Second, 50*time.Millisecond)
 			return nil
 		}}

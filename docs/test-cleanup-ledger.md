@@ -226,3 +226,15 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   the same seven temporary-SQLite cases before and after under the race detector,
   check omitted-member deletion sensitivity with a disposable fault overlay,
   and run static checks, independent review and CI. No releases or live archives.
+
+## Embedding recovery poll read errors
+
+- Use a fresh embedding count for each recovery poll and require a successful
+  SQL read before reporting two embeddings. A failed read must not reuse the
+  earlier count of two captured messages and falsely certify recovery.
+- Preserve the real tail, mock-keyring and local HTTP provider path, temporary
+  archive writes, normal retry timer, poll interval and deadlines.
+- Disposable Go overlays reproduce the broken-read false green and verify the
+  repaired poll keeps failing while reads fail. Keep the healthy integration
+  cases at their original timing; run race, static, independent-review and PR
+  CI checks. No production code, live archives, deployment or releases change.
