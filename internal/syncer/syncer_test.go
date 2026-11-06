@@ -51,8 +51,6 @@ type fakeClient struct {
 	guildThreadCalls  int
 	memberCalls       int
 	mu                sync.Mutex
-	inFlight          int
-	maxInFlight       int
 }
 
 type messageRequest struct {
@@ -202,25 +200,13 @@ func (f *fakeClient) ChannelMessages(ctx context.Context, channelID string, limi
 		return nil, err
 	}
 	if f.messageDelay > 0 {
-		f.mu.Lock()
-		f.inFlight++
-		if f.inFlight > f.maxInFlight {
-			f.maxInFlight = f.inFlight
-		}
-		f.mu.Unlock()
 		timer := time.NewTimer(f.messageDelay)
+		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			timer.Stop()
-			f.mu.Lock()
-			f.inFlight--
-			f.mu.Unlock()
 			return nil, ctx.Err()
 		case <-timer.C:
 		}
-		f.mu.Lock()
-		f.inFlight--
-		f.mu.Unlock()
 	}
 	all := f.messages[channelID]
 	if afterID != "" {
@@ -379,17 +365,38 @@ func TestSyncUsesConfiguredConcurrency(t *testing.T) {
 		"c1": {{ID: "10", GuildID: "g1", ChannelID: "c1", Content: "one", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 		"c2": {{ID: "20", GuildID: "g1", ChannelID: "c2", Content: "two", Timestamp: time.Now().UTC(), Author: &discordgo.User{ID: "u1", Username: "user"}}},
 	}
-	client.messageDelay = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	release := make(chan struct{})
+	client.messageBlocks = map[string]chan struct{}{"c1": release, "c2": release}
+	client.messageStarted = make(chan string, 2)
+	observed := make(chan []string, 1)
+	go func() {
+		defer close(release)
+		var ids []string
+		seen := make(map[string]bool, 2)
+		for len(ids) < 2 {
+			select {
+			case id := <-client.messageStarted:
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+			case <-ctx.Done():
+				observed <- ids
+				return
+			}
+		}
+		observed <- ids
+	}()
 
 	svc := New(client, s, nil)
 	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 2})
+	cancel()
+	started := <-observed
+	require.ElementsMatch(t, []string{"c1", "c2"}, started, "both channel requests must start before either is released")
 	require.NoError(t, err)
 	require.Equal(t, 2, stats.Messages)
-
-	client.mu.Lock()
-	maxInFlight := client.maxInFlight
-	client.mu.Unlock()
-	require.GreaterOrEqual(t, maxInFlight, 2)
 }
 
 func TestSyncMemberRefreshTimeoutStillMarksSuccess(t *testing.T) {
