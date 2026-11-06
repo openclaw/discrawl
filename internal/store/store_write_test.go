@@ -799,39 +799,56 @@ func TestEmbeddingSuccessResolvesOnlyCurrentIdentityFailure(t *testing.T) {
 func TestDrainEmbeddingJobsFailsWholeBatchOnDimensionMismatch(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	s := openTestStore(t, ctx)
-	defer func() { _ = s.Close() }()
+	for _, dimensions := range []int{3, 0} {
+		t.Run(fmt.Sprintf("dimensions=%d", dimensions), func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
-		ID:                "m1",
-		GuildID:           "g1",
-		ChannelID:         "c1",
-		MessageType:       0,
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
-		Content:           "hello",
-		NormalizedContent: "hello",
-		RawJSON:           `{}`,
-	}, WriteOptions{EnqueueEmbedding: true}))
+			ctx := context.Background()
+			s := openTestStore(t, ctx)
+			defer func() { _ = s.Close() }()
 
-	stats, err := s.DrainEmbeddingJobs(ctx, &fakeEmbeddingProvider{
-		batches: []embed.EmbeddingBatch{{
-			Dimensions: 3,
-			Vectors:    [][]float32{{1, 2}},
-		}},
-	}, EmbeddingDrainOptions{Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 1})
-	require.NoError(t, err)
-	require.Equal(t, 1, stats.Failed)
+			for _, id := range []string{"m1", "m2"} {
+				require.NoError(t, s.UpsertMessageWithOptions(ctx, MessageRecord{
+					ID:                id,
+					GuildID:           "g1",
+					ChannelID:         "c1",
+					MessageType:       0,
+					CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+					Content:           "hello",
+					NormalizedContent: "hello",
+					RawJSON:           `{}`,
+				}, WriteOptions{EnqueueEmbedding: true}))
+			}
 
-	_, rows, err := s.ReadOnlyQuery(ctx, "select state, attempts, last_error from embedding_jobs where message_id = 'm1'")
-	require.NoError(t, err)
-	require.Equal(t, "pending", rows[0][0])
-	require.Equal(t, "1", rows[0][1])
-	require.Contains(t, rows[0][2], "dimensions mismatch")
+			provider := &fakeEmbeddingProvider{
+				batches: []embed.EmbeddingBatch{{
+					Dimensions: dimensions,
+					Vectors:    [][]float32{{1, 2, 3}, {1, 2}},
+				}},
+			}
+			stats, err := s.DrainEmbeddingJobs(ctx, provider, EmbeddingDrainOptions{
+				Provider: "ollama", Model: "nomic-embed-text", Limit: 10, BatchSize: 2,
+			})
+			require.NoError(t, err)
+			require.Equal(t, [][]string{{"hello", "hello"}}, provider.inputs)
+			require.Equal(t, 2, stats.Processed)
+			require.Equal(t, 2, stats.Failed)
+			require.Zero(t, stats.Succeeded)
+			require.Equal(t, 2, stats.RemainingBacklog)
 
-	_, rows, err = s.ReadOnlyQuery(ctx, "select count(*) from message_embeddings")
-	require.NoError(t, err)
-	require.Equal(t, "0", rows[0][0])
+			_, rows, err := s.ReadOnlyQuery(ctx, "select message_id, state, attempts, coalesce(locked_at, ''), last_error from embedding_jobs order by message_id")
+			require.NoError(t, err)
+			require.Len(t, rows, 2)
+			for i, id := range []string{"m1", "m2"} {
+				require.Equal(t, []string{id, "pending", "1", ""}, rows[i][:4])
+				require.Contains(t, rows[i][4], "dimensions mismatch")
+			}
+
+			_, rows, err = s.ReadOnlyQuery(ctx, "select count(*) from message_embeddings")
+			require.NoError(t, err)
+			require.Equal(t, [][]string{{"0"}}, rows)
+		})
+	}
 }
 
 func TestDrainEmbeddingJobsMarksFailedAfterMaxAttempts(t *testing.T) {

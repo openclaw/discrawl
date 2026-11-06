@@ -72,6 +72,17 @@ No CLI service behavior, lock format, or release artifacts changed.
 
 No report output, message content, schema, or release artifacts changed.
 
+## Embedding batch dimension failures
+
+- Replace the one-job whole-batch fixture with two jobs: a valid vector followed
+  by an invalid one. Cover both declared and inferred dimensions.
+- Require one provider batch, both jobs retried once with locks cleared, zero
+  successes, and no persisted vectors. A valid prefix must not escape a rejected
+  batch. Keep the existing provider-error and retry-limit tests.
+- Validate healthy fixtures and a disposable partial-write fault with the race
+  detector, store checks, independent review, and CI. Temporary SQLite and a fake
+  provider only; no production behavior, live archive, or release changes.
+
 ## Gateway event delivery
 
 - Reused the existing gateway handshake helper instead of maintaining a second
