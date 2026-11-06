@@ -213,6 +213,23 @@ No sync behavior, query/schema format, live archive data, or release changes.
 
 No member storage, search, status, archive schema, or CLI behavior changed.
 
+## CLI fixture and assertion owners
+
+[PR 404](https://github.com/openclaw/discrawl/pull/404).
+
+- Table the three read-only message flag forms with independent temporary
+  archives, real tail locks and unchanged output checks. Reuse the existing
+  fake-runtime builder for all twelve sync/tail fixture callers.
+- Remove ten exact argv duplicates from the broad error loop; the retained
+  usage owner requires exit code 2 and the specific diagnostic. Keep all unique
+  variants and the separate cancellation error category.
+- Move the init DB-path and guild-output assertions into the existing full
+  init/sync/tail workflow before removing the duplicate init setup. Close the
+  reopened stdin reader while retaining restoration of process stdin.
+- Old and new owners pass race checks. Forcing read-only queries into sync,
+  writing the wrong temporary DB path and suppressing init output still fail
+  mapped owners. No production behavior, provider calls or releases change.
+
 ## Publication fixture database cleanup
 
 - Close the synthetic publication database after its setup transaction commits.
