@@ -1013,6 +1013,23 @@ func (p *messageSyncProgress) recordSkip(channel *discordgo.Channel, err error) 
 	p.complete(channel, 0, outcome)
 }
 
+// logAttrsLocked requires p.mu to be held.
+func (p *messageSyncProgress) logAttrsLocked() []any {
+	return []any{
+		"guild_id", p.guildID,
+		"processed_channels", p.processed,
+		"total_channels", p.totalChannels,
+		"remaining_channels", p.totalChannels - p.processed,
+		"percent", progress.Percent(int64(p.processed), int64(p.totalChannels)),
+		"completion", progress.Completion(int64(p.processed), int64(p.totalChannels)),
+		"active_channels", len(p.inflight),
+		"messages_written", p.messages,
+		"deferred_channels", p.deferredRetryable,
+		"skipped_missing_access_channels", p.skippedMissingAccess,
+		"skipped_unknown_channel_channels", p.skippedUnknownChannel,
+	}
+}
+
 func (p *messageSyncProgress) complete(channel *discordgo.Channel, count int, outcome string) {
 	if p == nil || p.syncer == nil || p.syncer.logger == nil {
 		return
@@ -1040,35 +1057,16 @@ func (p *messageSyncProgress) complete(channel *discordgo.Channel, count int, ou
 		channelID = channel.ID
 		channelName = channel.Name
 	}
-	activeChannels := len(p.inflight)
-	deferred := p.deferredRetryable
-	missingAccess := p.skippedMissingAccess
-	unknownChannel := p.skippedUnknownChannel
-	processed := p.processed
-	totalChannels := p.totalChannels
-	messages := p.messages
+	attrs := p.logAttrsLocked()
 	elapsed := now.Sub(p.startedAt).Round(time.Second).String()
-	percent := progress.Percent(int64(processed), int64(totalChannels))
-	completion := progress.Completion(int64(processed), int64(totalChannels))
 	p.mu.Unlock()
-	p.syncer.logger.Info(
-		"message sync progress",
-		"guild_id", p.guildID,
-		"processed_channels", processed,
-		"total_channels", totalChannels,
-		"remaining_channels", totalChannels-processed,
-		"percent", percent,
-		"completion", completion,
-		"active_channels", activeChannels,
-		"messages_written", messages,
-		"deferred_channels", deferred,
-		"skipped_missing_access_channels", missingAccess,
-		"skipped_unknown_channel_channels", unknownChannel,
+	attrs = append(attrs,
 		"last_channel_id", channelID,
 		"last_channel_name", channelName,
 		"last_outcome", outcome,
 		"elapsed", elapsed,
 	)
+	p.syncer.logger.Info("message sync progress", attrs...)
 }
 
 func (p *messageSyncProgress) finish(err error) {
@@ -1079,32 +1077,11 @@ func (p *messageSyncProgress) finish(err error) {
 		close(p.done)
 		now := time.Now()
 		p.mu.Lock()
-		activeChannels := len(p.inflight)
-		deferred := p.deferredRetryable
-		missingAccess := p.skippedMissingAccess
-		unknownChannel := p.skippedUnknownChannel
-		processed := p.processed
-		totalChannels := p.totalChannels
-		messages := p.messages
+		attrs := p.logAttrsLocked()
 		elapsed := now.Sub(p.startedAt).Round(time.Second).String()
-		percent := progress.Percent(int64(processed), int64(totalChannels))
-		completion := progress.Completion(int64(processed), int64(totalChannels))
 		oldestID, oldestName, oldestElapsed, oldestIdle, oldestPages, oldestPageMessages := oldestInflightDetails(p.inflight, now)
 		p.mu.Unlock()
-		attrs := []any{
-			"guild_id", p.guildID,
-			"processed_channels", processed,
-			"total_channels", totalChannels,
-			"remaining_channels", totalChannels - processed,
-			"percent", percent,
-			"completion", completion,
-			"active_channels", activeChannels,
-			"messages_written", messages,
-			"deferred_channels", deferred,
-			"skipped_missing_access_channels", missingAccess,
-			"skipped_unknown_channel_channels", unknownChannel,
-			"elapsed", elapsed,
-		}
+		attrs = append(attrs, "elapsed", elapsed)
 		if oldestID != "" {
 			attrs = append(
 				attrs,
@@ -1151,32 +1128,12 @@ func (p *messageSyncProgress) logWaitHeartbeat() {
 		p.mu.Unlock()
 		return
 	}
-	activeChannels := len(p.inflight)
-	deferred := p.deferredRetryable
-	missingAccess := p.skippedMissingAccess
-	unknownChannel := p.skippedUnknownChannel
-	processed := p.processed
-	totalChannels := p.totalChannels
-	messages := p.messages
+	attrs := p.logAttrsLocked()
 	idleFor := now.Sub(p.lastProgressAt).Round(time.Second).String()
 	elapsed := now.Sub(p.startedAt).Round(time.Second).String()
-	percent := progress.Percent(int64(processed), int64(totalChannels))
-	completion := progress.Completion(int64(processed), int64(totalChannels))
 	oldestID, oldestName, oldestElapsed, oldestIdle, oldestPages, oldestPageMessages := oldestInflightDetails(p.inflight, now)
 	p.mu.Unlock()
-	p.syncer.logger.Info(
-		"message sync waiting",
-		"guild_id", p.guildID,
-		"processed_channels", processed,
-		"total_channels", totalChannels,
-		"remaining_channels", totalChannels-processed,
-		"percent", percent,
-		"completion", completion,
-		"active_channels", activeChannels,
-		"messages_written", messages,
-		"deferred_channels", deferred,
-		"skipped_missing_access_channels", missingAccess,
-		"skipped_unknown_channel_channels", unknownChannel,
+	attrs = append(attrs,
 		"idle_for", idleFor,
 		"oldest_active_channel_id", oldestID,
 		"oldest_active_channel_name", oldestName,
@@ -1186,6 +1143,7 @@ func (p *messageSyncProgress) logWaitHeartbeat() {
 		"oldest_active_page_messages", oldestPageMessages,
 		"elapsed", elapsed,
 	)
+	p.syncer.logger.Info("message sync waiting", attrs...)
 }
 
 func oldestInflightDetails(channels map[string]messageSyncInFlight, now time.Time) (string, string, string, string, int, int) {
