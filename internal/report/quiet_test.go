@@ -24,28 +24,14 @@ func TestBuildQuiet(t *testing.T) {
 		require.Equal(t, now.Add(-30*24*time.Hour), quiet.Since)
 		require.Equal(t, now, quiet.Until)
 		require.Equal(t, 3, quiet.Totals.Channels)
+		require.Len(t, quiet.Channels, 3)
 
 		ids := []string{quiet.Channels[0].ChannelID, quiet.Channels[1].ChannelID, quiet.Channels[2].ChannelID}
 		require.Equal(t, []string{"c0", "c2", "c9"}, ids)
+		require.Empty(t, quiet.Channels[0].LastMessage)
 		require.Equal(t, -1, quiet.Channels[0].DaysSilent)
 		require.Equal(t, 45, quiet.Channels[1].DaysSilent)
 		require.Equal(t, 40, quiet.Channels[2].DaysSilent)
-	})
-
-	t.Run("zero activity channel inclusion", func(t *testing.T) {
-		quiet, err := BuildQuiet(ctx, s, QuietOptions{Now: now, Since: 30 * 24 * time.Hour})
-		require.NoError(t, err)
-
-		var never *QuietChannel
-		for i := range quiet.Channels {
-			if quiet.Channels[i].ChannelID == "c0" {
-				never = &quiet.Channels[i]
-				break
-			}
-		}
-		require.NotNil(t, never)
-		require.Empty(t, never.LastMessage)
-		require.Equal(t, -1, never.DaysSilent)
 	})
 
 	t.Run("guild filter", func(t *testing.T) {
@@ -68,14 +54,6 @@ func TestBuildQuiet(t *testing.T) {
 		require.NoError(t, err)
 		require.WithinDuration(t, quiet.GeneratedAt.Add(-30*24*time.Hour), quiet.Since, 2*time.Second)
 		require.WithinDuration(t, quiet.GeneratedAt, quiet.Until, 2*time.Second)
-	})
-
-	t.Run("sort order most silent first with never-active first", func(t *testing.T) {
-		quiet, err := BuildQuiet(ctx, s, QuietOptions{Now: now, Since: 30 * 24 * time.Hour})
-		require.NoError(t, err)
-		require.Len(t, quiet.Channels, 3)
-		require.Equal(t, "c0", quiet.Channels[0].ChannelID)
-		require.Greater(t, quiet.Channels[1].DaysSilent, quiet.Channels[2].DaysSilent)
 	})
 
 	t.Run("future messages do not hide quiet channels", func(t *testing.T) {
