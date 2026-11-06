@@ -265,3 +265,16 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   and missing-signal controls with temporary overlays. Run scoped race tests,
   static checks, independent review and platform CI. No production code, live
   archives, provider calls, deployment or releases change.
+
+## Quiet report fixture consolidation
+
+- Fold the repeated zero-activity and sort-order cases into the existing mixed
+  active/silent case, which uses the same SQLite fixture and report options.
+- Keep exact channel order and silence counts, require the channel slice length,
+  and transfer the unique never-active empty timestamp assertion before removing
+  its separate traversal. Guild filtering, normalization/defaults, future-skew
+  and legacy timestamp comparisons remain distinct.
+- Validate healthy before/after cases and sorting/timestamp faults with disposable
+  Go overlays and the race detector, then the report suite, static checks,
+  independent P0–P3 review and exact-head CI. No production, live archive or release
+  changes. The wider repository audit remains open.
