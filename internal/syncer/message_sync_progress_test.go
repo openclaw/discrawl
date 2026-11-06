@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -47,9 +46,6 @@ func newTestLogger(w io.Writer) *slog.Logger {
 func TestMessageSyncProgressFinishReportsSummaryCounts(t *testing.T) {
 	t.Parallel()
 
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	out := &lockedBuffer{}
 	svc := New(&fakeClient{}, nil, newTestLogger(out))
 	svc.messageSyncLogEvery = time.Hour
@@ -83,9 +79,6 @@ func TestMessageSyncProgressFinishReportsSummaryCounts(t *testing.T) {
 
 func TestMessageSyncProgressReportsWaitingHeartbeat(t *testing.T) {
 	t.Parallel()
-
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	out := &lockedBuffer{}
 	svc := New(&fakeClient{}, nil, newTestLogger(out))
