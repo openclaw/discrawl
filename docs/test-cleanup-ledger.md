@@ -331,3 +331,17 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   metrics assertions.
 - Run the affected existing tests under the race detector, static checks and
   independent P0–P3 review. No production code, live archives or releases change.
+
+## Sync concurrency start barrier
+
+[PR 399](https://github.com/openclaw/discrawl/pull/399).
+
+- Replace the configured-concurrency fixture's 40 ms overlap delay with existing
+  per-channel start signals and a shared release gate. Require both distinct
+  requests to start before either can finish, then retain the two-message count.
+- Bound and cancel the observer, keep store work synchronous, and remove its
+  now-unused fake in-flight counters. Keep real fake delays for channel-timeout
+  and repair-loop fixtures.
+- Run healthy and forced-serial controls under the race detector, retain timeout
+  and repair-loop tests, and run static checks plus independent P0–P3 review.
+  No production code, providers, live archives or releases change.
