@@ -134,6 +134,19 @@ No production behavior or release artifacts changed.
   then run the share race suite, static checks and independent P0–P3 review.
   These are local integration/helper checks; no provider or live archive use.
 
+## Cached media refresh cases
+
+[PR 402](https://github.com/openclaw/discrawl/pull/402).
+
+- Consolidate the identical corrupt-cache fixtures into named default and force
+  cases, and add an intact-cache force case with a changed response body.
+- Check the initial cached bytes before corruption, then require a fetch with
+  no reuse and read the refreshed path from SQLite before checking its bytes.
+  Keep the separate missing-only force behavior.
+- Healthy old and new owners pass race checks. Ignoring Force passes both old
+  corruption tests but fails the new intact-cache case. Disposable overlays
+  are removed; production code, provider access and releases do not change.
+
 ## Retired manifest timestamp predicates
 
 - Removed `ManifestAlreadyImported` and `ManifestAlreadyMerged`. Production
