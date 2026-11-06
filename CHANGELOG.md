@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 - 2026-11-06
+
+**Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
+
+- Update CrawlKit to v0.17.4 to preserve literal SQLite paths when opening archives, taking snapshots, and checking freshness; reject ambiguous Windows paths.
 
 - Refresh Kong, SQLite, analyzer dependencies, Node and GoReleaser; retain the Go 1.27.0 minimum and Go 1.27.3 toolchain.
 
