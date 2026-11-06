@@ -2294,7 +2294,7 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 
 	reader, err := store.Open(ctx, readerCfg.DBPath)
 	require.NoError(t, err)
-	require.NoError(t, reader.UpsertMessage(ctx, store.MessageRecord{
+	localOnly := store.MessageRecord{
 		ID:                "local-only",
 		GuildID:           "g1",
 		ChannelID:         "c1",
@@ -2305,7 +2305,8 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 		Content:           "local cache row",
 		NormalizedContent: "local cache row",
 		RawJSON:           `{}`,
-	}))
+	}
+	require.NoError(t, reader.UpsertMessage(ctx, localOnly))
 	require.NoError(t, reader.Close())
 
 	require.NoError(t, publisher.UpsertMessage(ctx, store.MessageRecord{
@@ -2346,6 +2347,17 @@ func TestShareUpdateImportsNewRemoteSnapshot(t *testing.T) {
 	_, rows, err = reader.ReadOnlyQuery(ctx, `select count(*) from messages where id = 'local-only'`)
 	require.NoError(t, err)
 	require.Equal(t, "0", rows[0][0], "configured exact auto-update must remove destination-only rows")
+	require.NoError(t, reader.Close())
+
+	readerCfg.Share.UpdateMode = config.ShareUpdateModeMerge
+	readerCfg.Share.AutoUpdate = false
+	require.NoError(t, config.Write(readerCfgPath, readerCfg))
+	reader, err = store.Open(ctx, readerCfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, reader.UpsertMessage(ctx, localOnly))
+	_, rows, err = reader.ReadOnlyQuery(ctx, `select count(*) from messages where id = 'local-only'`)
+	require.NoError(t, err)
+	require.Equal(t, "1", rows[0][0], "forced update needs a destination-only row to remove")
 	require.NoError(t, reader.Close())
 
 	out.Reset()

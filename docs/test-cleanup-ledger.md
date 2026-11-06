@@ -1,5 +1,15 @@
 # Test cleanup ledger
 
+## Forced share update fixture
+
+- Restore the destination-only message after the exact auto-update assertion,
+  confirm it exists, and switch back to merge mode with auto-update disabled.
+  The final `update --force` must now perform its own exact reconciliation.
+- Keep the real local Git remote and SQLite archives. Use disposable Go overlays
+  to show an ignored force flag passes the old fixture and fails the repaired
+  one; retain healthy checks, scoped race/static checks and independent review.
+  No production code, provider calls, live archives or releases change.
+
 ## Metric-reading test oracle
 
 - Move EntityMetrics and MetricValue unchanged into the existing record-efficiency
