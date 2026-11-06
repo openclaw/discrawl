@@ -1,5 +1,19 @@
 # Test cleanup ledger
 
+## History and voice sync test owners
+
+[PR 400](https://github.com/openclaw/discrawl/pull/400).
+
+- Remove the two-message latest-only recovery duplicate after transferring its
+  direct stored-message check into the existing 250-message, multipage owner.
+  Keep history bounds, completion, empty-marker and next-run skip assertions.
+- Remove the cursor-named voice/stage helper test: the existing real archive
+  sync checks both native kinds, stored cursor, completion and reconstruction.
+  Keep legacy stage aliases, exclusion checks and numeric-kind controls.
+- Old and retained owners pass race checks. Temporary faults returning false
+  for stored messages, rejecting voice/stage, and losing the voice kind fail
+  the mapped owners in both versions. No production behavior or releases change.
+
 ## Forced share update fixture
 
 - Restore the destination-only message after the exact auto-update assertion,
