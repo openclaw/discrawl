@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
