@@ -16,8 +16,6 @@ import (
 func TestTailFailureLedgerHelpers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st := openTestStore(t, ctx)
-	defer func() { _ = st.Close() }()
 
 	var nilSyncer *Syncer
 	require.NoError(t, nilSyncer.recordChannelFailure(ctx, "g", "c", errors.New("ignored")))

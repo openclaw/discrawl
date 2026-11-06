@@ -278,3 +278,12 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   Go overlays and the race detector, then the report suite, static checks,
   independent P0–P3 review and exact-head CI. No production, live archive or release
   changes. The wider repository audit remains open.
+
+## Unused syncer test setup
+
+- Remove two cancellation contexts whose values are discarded and never reach
+  the progress logger. Keep its real heartbeat, shutdown and log assertions.
+- Remove the unused SQLite store from the nil-receiver/error-combiner test;
+  retain the adjacent tests that actually exercise failure persistence.
+- Run the affected tests before the change, then the syncer race suite, static
+  checks and independent P0–P3 review. No production or release changes.
