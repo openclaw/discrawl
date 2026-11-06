@@ -66,6 +66,19 @@ No sync behavior, provider calls, archive schema, or release changes.
 
 No CLI service behavior, lock format, or release artifacts changed.
 
+## Desktop helper test owners
+
+[PR 403](https://github.com/openclaw/discrawl/pull/403).
+
+- Reduce the combined path/import-helper fixture to its platform-specific
+  default-path contract. The dedicated value-helper tests already cover the
+  repeated numeric, timestamp, channel-kind and formatting behavior.
+- Transfer its unique unknown-kind, trimmed-embed, zero-snowflake and invalid
+  numeric-JSON assertions into the corresponding focused owners first.
+- Healthy old and new owners pass race checks. Temporary faults in each of
+  those four transferred behaviors still fail the mapped owners. Cache import,
+  routing and compressed fixture data stay unchanged; no releases.
+
 ## Test-only formatters
 
 - Removed the unused `clipWhitespace` formatter and its two assertions from

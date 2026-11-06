@@ -12,16 +12,17 @@ import (
 
 func TestPrimitiveValueHelpers(t *testing.T) {
 	raw := map[string]any{
-		"string":      "value",
-		"blank":       "  ",
-		"int":         3,
-		"int64":       int64(4),
-		"float":       float64(5),
-		"json_number": json.Number("6"),
-		"numeric":     "7",
-		"bad_numeric": "nope",
-		"truthy":      true,
-		"array":       []any{"one", "two"},
+		"string":         "value",
+		"blank":          "  ",
+		"int":            3,
+		"int64":          int64(4),
+		"float":          float64(5),
+		"json_number":    json.Number("6"),
+		"numeric":        "7",
+		"bad_numeric":    "nope",
+		"invalid_number": json.Number("nope"),
+		"truthy":         true,
+		"array":          []any{"one", "two"},
 	}
 
 	require.Equal(t, "value", stringField(raw, "string"))
@@ -40,6 +41,8 @@ func TestPrimitiveValueHelpers(t *testing.T) {
 		require.Equal(t, want, got, key)
 	}
 	_, ok := intField(raw, "bad_numeric")
+	require.False(t, ok)
+	_, ok = intField(raw, "invalid_number")
 	require.False(t, ok)
 	_, ok = intField(raw, "int64")
 	require.False(t, ok)
@@ -80,6 +83,7 @@ func TestDiscordValueFormatHelpers(t *testing.T) {
 	require.Equal(t, "forum", kindForChannelType(15, false))
 	require.Equal(t, "desktop", kindForChannelType(16, false))
 	require.Equal(t, "text", kindForChannelType(0, false))
+	require.Equal(t, "desktop", kindForChannelType(99, false))
 }
 
 func TestDiscordMessagePayloadHelpers(t *testing.T) {
@@ -135,6 +139,9 @@ func TestDiscordMessagePayloadHelpers(t *testing.T) {
 	}}, mentions)
 
 	require.Equal(t, []string{"Deploy", "Ready"}, embedText(raw))
+	require.Equal(t, []string{"title", "body"}, embedText(map[string]any{"embeds": []any{
+		map[string]any{"title": " title ", "description": "body"},
+	}}))
 	require.Equal(t, "hello world\ntrace.txt\natt2\nDeploy\nReady", normalizeText(raw["content"], attachmentText(attachments), embedText(raw)))
 	require.Equal(t, "hidden text", cleanText("\u200bhidden\x00 text\n"))
 	require.Equal(t, "222222222222222222", messageReferenceID(raw))
@@ -156,6 +163,7 @@ func TestDiscordMessagePayloadHelpers(t *testing.T) {
 	require.True(t, parseDiscordTime("bad").IsZero())
 	require.True(t, parseDiscordTime("").IsZero())
 	require.False(t, snowflakeTime("175928847299117063").IsZero())
+	require.Equal(t, time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC), snowflakeTime("0"))
 	require.True(t, snowflakeTime("bad").IsZero())
 	require.Empty(t, formatOptionalTime(time.Time{}))
 	require.Equal(t, "2026-05-08T12:00:00Z", formatOptionalTime(at))
