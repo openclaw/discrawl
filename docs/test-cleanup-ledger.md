@@ -319,3 +319,15 @@ No member storage, search, status, archive schema, or CLI behavior changed.
   retain the adjacent tests that actually exercise failure persistence.
 - Run the affected tests before the change, then the syncer race suite, static
   checks and independent P0–P3 review. No production or release changes.
+
+## Redundant fixture state
+
+[PR 398](https://github.com/openclaw/discrawl/pull/398).
+
+- Remove an adjacent duplicate default-model assertion and the first of two
+  auto-update assignments before the same configuration is consumed.
+- Remove a discarded background context and a latency-map mutex used only by
+  its test goroutine. Keep all real worker pacing, freshness, publication and
+  metrics assertions.
+- Run the affected existing tests under the race detector, static checks and
+  independent P0–P3 review. No production code, live archives or releases change.

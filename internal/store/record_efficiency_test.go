@@ -477,5 +477,4 @@ func TestCanonicalRawKeepsIncomingBytesWithoutEdits(t *testing.T) {
 	require.Equal(t, "not json", out)
 	require.Equal(t, "2026-10-30T13:11:29.58Z", normalizeProviderTime("2026-10-30T13:11:29.580999+00:00"))
 	require.Equal(t, "bogus", normalizeProviderTime("bogus"))
-	_ = context.Background()
 }
