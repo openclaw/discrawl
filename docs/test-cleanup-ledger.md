@@ -88,6 +88,17 @@ No report output, message content, schema, or release artifacts changed.
 This is a bounded gateway-test cleanup, not a complete repository audit.
 No production behavior or release artifacts changed.
 
+## Share export and scalar conversion duplicates
+
+- Remove the standalone mismatched-media-hash export test; the retained combined
+  export test uses the same real SQLite/cache-file path and checks the same
+  error, alongside its independent invalid-path case. Keep import-hash checks.
+- Remove the repeated JSON-number helper test. The retained helper test already
+  covers integer, float, malformed-number fallback and unchanged string values.
+- Compare healthy and faulted before/after fixtures with disposable Go overlays,
+  then run the share race suite, static checks and independent P0–P3 review.
+  These are local integration/helper checks; no provider or live archive use.
+
 ## Retired manifest timestamp predicates
 
 - Removed `ManifestAlreadyImported` and `ManifestAlreadyMerged`. Production
