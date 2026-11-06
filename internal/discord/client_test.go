@@ -1904,7 +1904,6 @@ func TestTailPanicRecorderFailureIsGenericFatal(t *testing.T) {
 	})
 	defer server.Close()
 	defer cancel()
-	defer cancel()
 
 	client, closeClient := newTailTestClient(t, server.URL)
 	var err error
