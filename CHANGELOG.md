@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep snapshot CI build caches separate from faster checks and refresh them when the release configuration or workflow changes.
+
 - Refresh Kong, SQLite, analyzer dependencies, Node and GoReleaser; retain the Go 1.27.0 minimum and Go 1.27.3 toolchain.
 
 - Share Linux CI setup and Go caches across Japanese, Chinese, and Korean helper tests while retaining native macOS Kiwi validation.

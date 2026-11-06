@@ -217,6 +217,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          # Preserve cross-platform build packages independently of faster checks.
+          cache-dependency-path: |
+            go.sum
+            .goreleaser.yaml
+            .github/workflows/ci.yml
 
       - name: Snapshot release build
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
