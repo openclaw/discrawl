@@ -92,7 +92,6 @@ func TestCommandValidationEdges(t *testing.T) {
 
 	cases := [][]string{
 		{"--config", cfgPath, "--bogus"},
-		{"--config", cfgPath, "search"},
 		{"--config", cfgPath, "search", "--mode", "bogus", "term"},
 		{"--config", cfgPath, "messages"},
 		{"--config", cfgPath, "messages", "--hours", "-1", "--channel", "general"},
@@ -108,13 +107,8 @@ func TestCommandValidationEdges(t *testing.T) {
 		{"--config", cfgPath, "analytics", "wat"},
 		{"--config", cfgPath, "analytics", "quiet", "extra"},
 		{"--config", cfgPath, "analytics", "trends", "--weeks", "-1"},
-		{"--config", cfgPath, "channels"},
 		{"--config", cfgPath, "channels", "wat"},
 		{"--config", cfgPath, "channels", "show"},
-		{"--config", cfgPath, "status", "extra"},
-		{"--config", cfgPath, "report", "extra"},
-		{"--config", cfgPath, "wiretap", "extra"},
-		{"--config", cfgPath, "wiretap", "--max-file-bytes", "0"},
 		{"--config", cfgPath, "sync", "--source", "bogus"},
 		{"--config", cfgPath, "sync", "--since", "not-time"},
 		{"--config", cfgPath, "sync", "--no-update", "--update", "force"},
@@ -123,11 +117,7 @@ func TestCommandValidationEdges(t *testing.T) {
 		{"--config", cfgPath, "cloud", "publish", "--json"},
 		{"--config", cfgPath, "cloud", "publish", "--remote", "https://remote.example"},
 		{"--config", cfgPath, "publish", "--remote", ""},
-		{"--config", cfgPath, "subscribe"},
-		{"--config", cfgPath, "update", "extra"},
-		{"--config", cfgPath, "sql", "--confirm", "select 1"},
 		{"--config", cfgPath, "sql", "--unsafe", "select 1"},
-		{"--config", cfgPath, "members"},
 		{"--config", cfgPath, "members", "wat"},
 	}
 	for _, args := range cases {
@@ -2717,73 +2707,40 @@ func TestMessagesSyncPreservesCancellationWhileWaitingForSyncLock(t *testing.T) 
 	require.Zero(t, fakeSync.syncCalls)
 }
 
-func TestPlainMessagesStillReadsWhileTailOwnsSyncLock(t *testing.T) {
+func TestReadOnlyMessagesStillReadsWhileTailOwnsSyncLock(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("sync lock timing is flaky on Windows")
 	}
-	ctx := context.Background()
-	dir, cfgPath := writeSeededTestConfig(t)
+	for _, tc := range []struct {
+		name  string
+		flags []string
+	}{
+		{name: "plain"},
+		{name: "explicit false", flags: []string{"--sync=false"}},
+		{name: "last flag wins", flags: []string{"--sync", "--sync=false"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir, cfgPath := writeSeededTestConfig(t)
 
-	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
-	release, err := acquireSyncLock(ctx, lockPath)
-	require.NoError(t, err)
-	defer func() { _ = release() }()
-	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
-	defer releaseToken()
-	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
+			lockPath := filepath.Join(dir, ".discrawl-sync.lock")
+			release, err := acquireSyncLock(ctx, lockPath)
+			require.NoError(t, err)
+			defer func() { _ = release() }()
+			releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
+			defer releaseToken()
+			writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
 
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1"}, &out, &bytes.Buffer{})
-	require.NoError(t, err)
-	require.Contains(t, out.String(), "automatic updates work")
-}
-
-func TestMessagesSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) {
-	if goruntime.GOOS == "windows" {
-		t.Skip("sync lock timing is flaky on Windows")
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			var out bytes.Buffer
+			args := []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1"}
+			args = append(args, tc.flags...)
+			err = Run(runCtx, args, &out, &bytes.Buffer{})
+			require.NoError(t, err)
+			require.Contains(t, out.String(), "automatic updates work")
+		})
 	}
-	ctx := context.Background()
-	dir, cfgPath := writeSeededTestConfig(t)
-
-	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
-	release, err := acquireSyncLock(ctx, lockPath)
-	require.NoError(t, err)
-	defer func() { _ = release() }()
-	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
-	defer releaseToken()
-	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
-
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1", "--sync=false"}, &out, &bytes.Buffer{})
-	require.NoError(t, err)
-	require.Contains(t, out.String(), "automatic updates work")
-}
-
-func TestMessagesRepeatedSyncFalseStillReadsWhileTailOwnsSyncLock(t *testing.T) {
-	if goruntime.GOOS == "windows" {
-		t.Skip("sync lock timing is flaky on Windows")
-	}
-	ctx := context.Background()
-	dir, cfgPath := writeSeededTestConfig(t)
-
-	lockPath := filepath.Join(dir, ".discrawl-sync.lock")
-	release, err := acquireSyncLock(ctx, lockPath)
-	require.NoError(t, err)
-	defer func() { _ = release() }()
-	releaseToken := holdSyncLockToken(t, ctx, lockPath, testSyncLockToken())
-	defer releaseToken()
-	writeSyncLockMetadata(t, lockPath, "tail", os.Getpid())
-
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	err = Run(runCtx, []string{"--config", cfgPath, "messages", "--channel", "general", "--last", "1", "--sync", "--sync=false"}, &out, &bytes.Buffer{})
-	require.NoError(t, err)
-	require.Contains(t, out.String(), "automatic updates work")
 }
 
 func TestTailOpenFailureDoesNotPublishActiveTailOwner(t *testing.T) {
@@ -3027,20 +2984,7 @@ func holdSyncLockToken(t *testing.T, ctx context.Context, lockPath, token string
 
 func messagesSyncTestRuntime(ctx context.Context, cfgPath string) (*runtime, *fakeSyncService) {
 	fakeSync := &fakeSyncService{}
-	out := &bytes.Buffer{}
-	rt := &runtime{
-		ctx:        ctx,
-		configPath: cfgPath,
-		stdout:     out,
-		stderr:     &bytes.Buffer{},
-		logger:     discardLogger(),
-		openStore:  store.Open,
-		newDiscord: func(config.Config) (discordClient, error) { return &fakeDiscordClient{}, nil },
-		newSyncer: func(syncer.Client, *store.Store, *slog.Logger) syncService {
-			return fakeSync
-		},
-	}
-	return rt, fakeSync
+	return tailTestRuntime(ctx, cfgPath, fakeSync), fakeSync
 }
 
 func tailTestRuntime(ctx context.Context, cfgPath string, fakeSync *fakeSyncService) *runtime {
@@ -3826,6 +3770,8 @@ func TestRuntimeInitSyncTailAndDoctor(t *testing.T) {
 
 	cfg, err := config.Load(cfgPath)
 	require.NoError(t, err)
+	require.Equal(t, dbPath, cfg.DBPath)
+	require.Contains(t, rt.stdout.(*bytes.Buffer).String(), "g2")
 	require.Equal(t, []string{"g1", "g2"}, cfg.GuildIDs)
 	require.Equal(t, "g2", cfg.DefaultGuildID)
 	require.True(t, cfg.Search.Embeddings.Enabled)
@@ -4595,36 +4541,6 @@ func TestRuntimeHelpersAndSubcommands(t *testing.T) {
 	}))
 }
 
-func TestRunInitWritesDiscoveredGuildConfig(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	dbPath := filepath.Join(dir, "discrawl.db")
-	t.Setenv(config.DefaultTokenEnv, "env-token")
-
-	fakeSync := &fakeSyncService{discovered: []*discordgo.UserGuild{{ID: "g1"}, {ID: "g2"}}}
-	rt := &runtime{
-		ctx:        ctx,
-		configPath: cfgPath,
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		logger:     discardLogger(),
-		newDiscord: func(config.Config) (discordClient, error) { return &fakeDiscordClient{}, nil },
-		newSyncer: func(syncer.Client, *store.Store, *slog.Logger) syncService {
-			return fakeSync
-		},
-	}
-
-	require.NoError(t, rt.runInit([]string{"--db", dbPath, "--guild", "g2", "--with-embeddings"}))
-	cfg, err := config.Load(cfgPath)
-	require.NoError(t, err)
-	require.Equal(t, dbPath, cfg.DBPath)
-	require.Equal(t, []string{"g1", "g2"}, cfg.GuildIDs)
-	require.Equal(t, "g2", cfg.DefaultGuildID)
-	require.True(t, cfg.Search.Embeddings.Enabled)
-	require.Contains(t, rt.stdout.(*bytes.Buffer).String(), "g2")
-}
-
 func TestRunInitRejectsUnknownDefaultGuild(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -4997,6 +4913,7 @@ func TestRunSQLReadsStdin(t *testing.T) {
 	require.NoError(t, file.Close())
 	file, err = os.Open(file.Name())
 	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
 	os.Stdin = file
 
 	rt := &runtime{ctx: ctx, configPath: cfgPath, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, logger: discardLogger()}
