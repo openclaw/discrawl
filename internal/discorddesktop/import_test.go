@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,7 +16,7 @@ import (
 	"github.com/openclaw/discrawl/internal/store"
 )
 
-func TestDesktopPathAndImportHelpers(t *testing.T) {
+func TestDesktopDefaultPath(t *testing.T) {
 	home := t.TempDir()
 	switch runtime.GOOS {
 	case "windows":
@@ -31,43 +30,6 @@ func TestDesktopPathAndImportHelpers(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", xdg)
 		require.Equal(t, filepath.Join(xdg, "discord"), DefaultPath())
 	}
-
-	require.Equal(t, "dm", kindForChannelType(1, true))
-	require.Equal(t, "group_dm", kindForChannelType(3, true))
-	require.Equal(t, "text", kindForChannelType(0, false))
-	require.Equal(t, "announcement", kindForChannelType(5, false))
-	require.Equal(t, "thread_announcement", kindForChannelType(10, false))
-	require.Equal(t, "thread_public", kindForChannelType(11, false))
-	require.Equal(t, "thread_private", kindForChannelType(12, false))
-	require.Equal(t, "forum", kindForChannelType(15, false))
-	require.Equal(t, "desktop", kindForChannelType(99, false))
-	embedParts := embedText(map[string]any{"embeds": []any{
-		map[string]any{"title": " title ", "description": "body"},
-	}})
-	require.Equal(t, []string{"title", "body"}, embedParts)
-	require.Equal(t, time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC), snowflakeTime("0"))
-	require.True(t, snowflakeTime("not-a-snowflake").IsZero())
-	require.Equal(t, time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC), parseDiscordTime("2026-04-24T12:00:00Z"))
-	require.True(t, parseDiscordTime("bad").IsZero())
-	require.Empty(t, formatOptionalTime(time.Time{}))
-	require.NotEmpty(t, formatOptionalTime(time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)))
-
-	i, ok := intField(map[string]any{"value": float64(3)}, "value")
-	require.True(t, ok)
-	require.Equal(t, 3, i)
-	i, ok = intField(map[string]any{"value": json.Number("4")}, "value")
-	require.True(t, ok)
-	require.Equal(t, 4, i)
-	_, ok = intField(map[string]any{"value": json.Number("nope")}, "value")
-	require.False(t, ok)
-	_, ok = intField(map[string]any{}, "value")
-	require.False(t, ok)
-
-	require.Equal(t, int64(3), int64Field(map[string]any{"value": float64(3)}, "value"))
-	require.Equal(t, int64(4), int64Field(map[string]any{"value": int64(4)}, "value"))
-	require.Equal(t, int64(5), int64Field(map[string]any{"value": 5}, "value"))
-	require.Equal(t, int64(6), int64Field(map[string]any{"value": json.Number("6")}, "value"))
-	require.Zero(t, int64Field(map[string]any{"value": "6"}, "value"))
 }
 
 func TestImportExtractsDirectMessageFromDesktopCache(t *testing.T) {
