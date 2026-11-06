@@ -428,10 +428,6 @@ func TestWriteRejectsNonPositiveEmbeddingTimeout(t *testing.T) {
 	cfg.Search.Embeddings.RequestTimeout = "0s"
 	err := Write(filepath.Join(t.TempDir(), "config.toml"), cfg)
 	require.ErrorContains(t, err, "must be positive")
-
-	cfg.Search.Embeddings.RequestTimeout = "not-a-duration"
-	err = cfg.Normalize()
-	require.ErrorContains(t, err, "parse search.embeddings.request_timeout")
 }
 
 func TestNormalizeEmbeddingProviderDefaults(t *testing.T) {
@@ -562,6 +558,8 @@ func TestResolvePath(t *testing.T) {
 	setTestHome(t, dir)
 	t.Setenv(DefaultConfigEnv, envPath)
 	require.Equal(t, "flag.toml", ResolvePath("flag.toml"))
+	flagPath := filepath.Join(dir, "flag.toml")
+	require.Equal(t, flagPath, ResolvePath(flagPath))
 	require.Equal(t, envPath, ResolvePath(""))
 	t.Setenv(DefaultConfigEnv, "")
 	clearXDGEnv(t)
@@ -595,29 +593,11 @@ func TestEffectiveDefaultGuildAndDirs(t *testing.T) {
 	require.NoError(t, EnsureRuntimeDirs(cfg))
 }
 
-func TestResolvePathUsesEnv(t *testing.T) {
-	t.Setenv(DefaultConfigEnv, "/tmp/custom.toml")
-	require.Equal(t, "/tmp/custom.toml", ResolvePath(""))
-	require.Equal(t, "/tmp/flag.toml", ResolvePath("/tmp/flag.toml"))
-}
-
-func TestConfigErrorsAndBackupFallback(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(DefaultTokenEnv, "")
-	stubDiscordTokenKeyring(t, func(_, _ string) (string, error) {
-		return "", keyring.ErrNotFound
-	})
-
-	_, err := ExpandPath("")
-	require.Error(t, err)
-
-	bad := filepath.Join(dir, "bad.toml")
+func TestLoadRejectsMalformedTOML(t *testing.T) {
+	t.Parallel()
+	bad := filepath.Join(t.TempDir(), "bad.toml")
 	require.NoError(t, os.WriteFile(bad, []byte("not = [toml"), 0o600))
-	_, err = Load(bad)
-	require.Error(t, err)
-
-	cfg := Default()
-	_, err = ResolveDiscordToken(cfg)
+	_, err := Load(bad)
 	require.Error(t, err)
 }
 

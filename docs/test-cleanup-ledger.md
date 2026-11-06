@@ -158,6 +158,20 @@ No production event handling, archive format, or release artifacts changed.
 
 No gateway behavior, failure metadata, or release artifacts changed.
 
+## Config error test owners
+
+[PR 401](https://github.com/openclaw/discrawl/pull/401).
+
+- Keep malformed TOML rejection as a dedicated test instead of claiming an
+  unexercised backup fallback. Remove its duplicated empty-path and missing-token
+  checks; stronger existing owners retain exact errors and keyring cause.
+- Move the absolute explicit-path assertion into the isolated precedence test.
+  Remove the repeated malformed-timeout check from the write-only fixture;
+  the normalization test still checks nonpositive and malformed durations.
+- Old and new owners pass race checks. Disposable faults ignoring absolute
+  flags, accepting malformed TOML and accepting malformed timeouts fail the
+  mapped owners in both versions. No production behavior or releases change.
+
 ## Retired config test adapters
 
 - Removed `SearchGuildDefaults`, a constant-nil method with no production
