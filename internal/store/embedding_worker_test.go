@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -281,16 +280,13 @@ func TestEmbeddingWorkerFreshnessUnderCatchup(t *testing.T) {
 		return liveVectors(ctx, text)
 	}))
 	startLive(t, w)
-	var mu sync.Mutex
 	latencies := map[string]time.Time{}
 	for i := range 40 {
 		id := strconv.Itoa(2000 + i)
 		start := time.Now()
 		liveMessage(t, s, id, "fresh content")
 		require.Less(t, time.Since(start), time.Second)
-		mu.Lock()
 		latencies[id] = start
-		mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 	require.Eventually(t, func() bool {

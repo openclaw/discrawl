@@ -262,7 +262,6 @@ func TestOptInScopeAndTags(t *testing.T) {
 	o := FromEnvironment(embed.Config{})
 	require.NotNil(t, o)
 	require.Equal(t, embed.DefaultOpenAIModel, o.model)
-	require.Equal(t, embed.DefaultOpenAIModel, o.model)
 	o = FromEnvironment(embed.Config{Model: "text-embedding-3-large"})
 	require.NotNil(t, o)
 	require.Equal(t, "text-embedding-3-large", o.model)
