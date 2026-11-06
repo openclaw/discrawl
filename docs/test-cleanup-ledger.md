@@ -107,6 +107,22 @@ No report output, message content, schema, or release artifacts changed.
   detector, store checks, independent review, and CI. Temporary SQLite and a fake
   provider only; no production behavior, live archive, or release changes.
 
+## Tail fixture teardown and audit disposition
+
+[PR 405](https://github.com/openclaw/discrawl/pull/405).
+
+- Remove the duplicate deferred cancellation in the panic-recorder failure
+  fixture. The remaining cancel still runs before server shutdown. Keep fatal
+  classification, private-detail exclusion and exact recording/call assertions.
+- Old and new targeted race checks pass. Use static checks, independent review
+  and CI for this one-line test-only change; no releases or provider access.
+- The bounded source audit covered 182 Go test files and 11 supplementary test
+  files. Keep distinct first/repeated warning and unknown-channel contracts,
+  attachment content/binary/size/opt-out cases, and compressed routing fixtures.
+  Keep historical migration states, paced freshness checks and explicit opt-in
+  integration/performance tests; these fixtures exercise separate boundaries.
+  Local synthetic integrations do not establish live-provider or full-app E2E.
+
 ## Gateway event delivery
 
 - Reused the existing gateway handshake helper instead of maintaining a second
