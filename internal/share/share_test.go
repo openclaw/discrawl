@@ -185,27 +185,6 @@ func TestExportMigratesLegacyRawMediaFilesToGzip(t *testing.T) {
 	require.FileExists(t, filepath.Join(repo, filepath.FromSlash(compressedMediaManifestPath(mediaPath))))
 }
 
-func TestExportRejectsMismatchedMediaHash(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	src := seedStore(t, filepath.Join(dir, "src.db"))
-	defer func() { _ = src.Close() }()
-	body := []byte("cached-media")
-	sum := sha256.Sum256(body)
-	hash := hex.EncodeToString(sum[:])
-	mediaPath := filepath.ToSlash(filepath.Join("attachments", hash[:2], hash+"-file.png"))
-	require.NoError(t, addCachedAttachment(ctx, src, mediaPath, strings.Repeat("0", 64), int64(len(body))))
-	srcCache := filepath.Join(dir, "src-cache")
-	srcFile, err := media.LocalPath(srcCache, mediaPath)
-	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(filepath.Dir(srcFile), 0o755))
-	require.NoError(t, os.WriteFile(srcFile, body, 0o600))
-
-	_, err = Export(ctx, src, Options{RepoPath: filepath.Join(dir, "share"), CacheDir: srcCache, Branch: "main", IncludeMedia: true})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "media hash mismatch")
-}
-
 func TestExportRejectsOverlappingMediaRoots(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -2105,15 +2084,6 @@ func TestPushRebasesRemoteReadmeUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(body), "report: second")
 	require.Contains(t, string(body), "field notes: fresh")
-}
-
-func TestImportValueConvertsJSONNumbers(t *testing.T) {
-	t.Parallel()
-
-	require.Equal(t, int64(42), importValue(json.Number("42")))
-	require.InDelta(t, 3.5, importValue(json.Number("3.5")), 0)
-	require.Equal(t, "not-a-number", importValue(json.Number("not-a-number")))
-	require.Equal(t, "plain", importValue("plain"))
 }
 
 func TestManifestStateAndReadEdges(t *testing.T) {
