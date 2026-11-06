@@ -264,28 +264,6 @@ func TestChannelHasMessagesProbe(t *testing.T) {
 	require.True(t, has)
 }
 
-// LatestOnly is the default for routine syncs, so stranded channels reach the
-// verification path through it. Verification ignores latest-only and crawls the
-// whole channel; see TestHistoryVerificationLatestOnlyCrawlsWholeChannel for
-// the multi-page case that separates the two.
-func TestHistoryVerificationUnderLatestOnly(t *testing.T) {
-	t.Parallel()
-
-	ctx, s, _, svc, channel := verificationFixture(t, []*discordgo.Message{storedMessage("300"), storedMessage("100")})
-
-	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
-	require.NoError(t, err)
-	require.Equal(t, 2, count)
-
-	has, err := s.ChannelHasMessages(ctx, "c1")
-	require.NoError(t, err)
-	require.True(t, has)
-
-	marker, err := s.GetSyncState(ctx, channelVerifiedEmptyScope("c1"))
-	require.NoError(t, err)
-	require.Empty(t, marker, "a channel that yielded messages must not be marked verified empty")
-}
-
 func TestHistoryVerificationUnderLatestOnlyMarksEmptyChannel(t *testing.T) {
 	t.Parallel()
 
@@ -340,6 +318,10 @@ func TestHistoryVerificationLatestOnlyCrawlsWholeChannel(t *testing.T) {
 	count, err := svc.syncChannelMessages(ctx, "g1", channel, false, false, time.Time{}, true, nil)
 	require.NoError(t, err)
 	require.Equal(t, 250, count, "a verification must not stop after one page")
+
+	has, err := s.ChannelHasMessages(ctx, "c1")
+	require.NoError(t, err)
+	require.True(t, has)
 
 	// Reaching the oldest message is the proof the crawl ran to the start: the
 	// one-page path leaves the oldest stored id at the 151st message.

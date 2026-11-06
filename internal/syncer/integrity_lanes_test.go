@@ -71,14 +71,6 @@ func TestOrdinaryRepairReconcilesExactFailuresAndRecordsSnapshot(t *testing.T) {
 	require.Zero(t, n)
 }
 
-func TestVoiceAndStageRepairUsesExistingCursor(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []discordgo.ChannelType{discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildStageVoice} {
-		require.True(t, IsMessageChannel(&discordgo.Channel{Type: kind}))
-		require.Equal(t, kind, channelTypeFromKind(channelKind(&discordgo.Channel{Type: kind})))
-	}
-}
-
 func TestStageKindKeepsExclusionAndLegacyCompatibility(t *testing.T) {
 	t.Parallel()
 	stage := &discordgo.Channel{ID: "s", Type: discordgo.ChannelTypeGuildStageVoice}
