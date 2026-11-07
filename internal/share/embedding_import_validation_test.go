@@ -95,8 +95,12 @@ func TestMalformedEmbeddingRowsRollBackEntireDestination(t *testing.T) {
 			invalid := embeddingValidationRow(t, "missing-message", []float32{3, 4})
 			invalid[tc.field] = tc.value
 			writeEmbeddingValidationRows(t, opts, &manifest, []map[string]any{valid, invalid})
+			// Each mode owns its destination. This case waits for its parallel
+			// modes before the next case rewrites the shared snapshot.
 			for _, mode := range []string{"embeddings", "full", "replacement"} {
 				t.Run(mode, func(t *testing.T) {
+					t.Parallel()
+
 					dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
 					t.Cleanup(func() { _ = dst.Close() })
 					seedDirectMessageData(t, t.Context(), dst)
