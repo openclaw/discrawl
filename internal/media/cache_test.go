@@ -117,8 +117,8 @@ func TestFetchLimitAppliesAfterExistingCacheCheck(t *testing.T) {
 	require.Equal(t, 1, stats.Fetched)
 }
 
-func TestFetchForceRewritesCachedMedia(t *testing.T) {
-	t.Parallel()
+func testFetchRepairsCachedMedia(t *testing.T, force bool) {
+	t.Helper()
 
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
@@ -145,13 +145,18 @@ func TestFetchForceRewritesCachedMedia(t *testing.T) {
 		CacheDir:   cacheDir,
 		MaxBytes:   1024,
 		HTTPClient: staticHTTPClient(body),
-		Force:      true,
+		Force:      force,
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.Fetched)
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, body, got)
+}
+
+func TestFetchForceRewritesCachedMedia(t *testing.T) {
+	t.Parallel()
+	testFetchRepairsCachedMedia(t, true)
 }
 
 func TestFetchForceMissingSkipsReusableCachedMedia(t *testing.T) {
@@ -197,38 +202,7 @@ func TestFetchForceMissingSkipsReusableCachedMedia(t *testing.T) {
 
 func TestFetchRepairsCorruptCachedMedia(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
-	require.NoError(t, err)
-	defer func() { _ = s.Close() }()
-	body := []byte("canonical")
-	require.NoError(t, seedAttachment(ctx, s, "https://cdn.discordapp.com/attachments/c1/file.png"))
-
-	cacheDir := t.TempDir()
-	_, err = Fetch(ctx, s, FetchOptions{
-		CacheDir:   cacheDir,
-		MaxBytes:   1024,
-		HTTPClient: staticHTTPClient(body),
-	})
-	require.NoError(t, err)
-	rows, err := s.ListAttachments(ctx, store.AttachmentListOptions{MessageID: "m1"})
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	path, err := LocalPath(cacheDir, rows[0].MediaPath)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte("corrupt"), 0o600))
-
-	stats, err := Fetch(ctx, s, FetchOptions{
-		CacheDir:   cacheDir,
-		MaxBytes:   1024,
-		HTTPClient: staticHTTPClient(body),
-	})
-	require.NoError(t, err)
-	require.Equal(t, 1, stats.Fetched)
-	got, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, body, got)
+	testFetchRepairsCachedMedia(t, false)
 }
 
 func TestFetchCapsLongCacheFilename(t *testing.T) {
