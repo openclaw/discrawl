@@ -391,6 +391,64 @@ func TestGuildsErrorsWhenFullPageHasEmptyID(t *testing.T) {
 	require.Equal(t, 1, requests)
 }
 
+func TestGuildsPagesForwardThroughAscendingGuildList(t *testing.T) {
+	// Discord returns current-user guilds in ascending ID order on every page,
+	// with before/after selecting the window, so a bot in more than 200 guilds
+	// must page forward from the largest ID it has seen.
+	const total = 450
+	ids := make([]string, total)
+	for i := range ids {
+		ids[i] = strconv.FormatUint(100000000000000000+uint64(i)*7, 10)
+	}
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/users/@me/guilds", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		queries = append(queries, r.URL.RawQuery)
+		limit := 200
+		if parsed, err := strconv.Atoi(query.Get("limit")); err == nil {
+			limit = parsed
+		}
+		after, before := query.Get("after"), query.Get("before")
+		var window []string
+		for _, id := range ids {
+			if after != "" && id <= after {
+				continue
+			}
+			if before != "" && id >= before {
+				continue
+			}
+			window = append(window, id)
+		}
+		if len(window) > limit {
+			if before != "" && after == "" {
+				window = window[len(window)-limit:]
+			} else {
+				window = window[:limit]
+			}
+		}
+		page := make([]map[string]any, 0, len(window))
+		for _, id := range window {
+			page = append(page, map[string]any{"id": id, "name": "Guild " + id})
+		}
+		writeJSON(page)(w, r)
+	})
+	client := newRESTTestClient(t, mux)
+
+	guilds, err := client.Guilds(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"limit=200",
+		"after=" + ids[199] + "&limit=200",
+		"after=" + ids[399] + "&limit=200",
+	}, queries)
+	got := make([]string, 0, len(guilds))
+	for _, guild := range guilds {
+		got = append(got, guild.ID)
+	}
+	require.Equal(t, ids, got)
+}
+
 func TestThreadsArchivedErrorsWhenCursorDoesNotAdvance(t *testing.T) {
 	archivedAt := "2024-01-15T12:00:00Z"
 	page := map[string]any{

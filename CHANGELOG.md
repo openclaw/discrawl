@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Find every guild for bots in more than 200 guilds. Guild discovery now pages forward through Discord's ascending guild list, so `init`, `doctor` and `sync` see guilds beyond the first 200 and no longer list 199 of them twice.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.

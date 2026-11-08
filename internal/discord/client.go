@@ -79,10 +79,12 @@ func (c *Client) Self(ctx context.Context) (*discordgo.User, error) {
 
 func (c *Client) Guilds(ctx context.Context) ([]*discordgo.UserGuild, error) {
 	var out []*discordgo.UserGuild
-	before := ""
+	after := ""
 	for {
 		reqCtx, cancel := c.requestContext(ctx)
-		page, err := c.session.UserGuilds(200, before, "", false, discordgo.WithContext(reqCtx))
+		// Discord lists guilds in ascending ID order, so the next page starts
+		// after the last (largest) ID of the current page.
+		page, err := c.session.UserGuilds(200, "", after, false, discordgo.WithContext(reqCtx))
 		cancel()
 		if err != nil {
 			return nil, err
@@ -94,14 +96,14 @@ func (c *Client) Guilds(ctx context.Context) ([]*discordgo.UserGuild, error) {
 		if len(page) < 200 {
 			return out, nil
 		}
-		nextBefore := page[len(page)-1].ID
-		if nextBefore == "" {
+		nextAfter := page[len(page)-1].ID
+		if nextAfter == "" {
 			return nil, errors.New("guild page missing id")
 		}
-		if nextBefore == before {
+		if nextAfter == after {
 			return nil, errors.New("guild page cursor did not advance")
 		}
-		before = nextBefore
+		after = nextAfter
 	}
 }
 
