@@ -76,8 +76,10 @@ Part kinds include `authored`, `embed_author`, `embed_title`,
 `embed_description`, `embed_field_name`, `embed_field_value`, `embed_footer`,
 `attachment_filename`, `attachment_text`, `reply_context`, `forward_context`,
 `poll_question`, and `poll_answer`. Paths identify provider fields (for example
-`/embeds/0/fields/1/value`) or the attachment text column. These are original
-parts, not assertions that bot/embed/file text was written by the message author.
+`/embeds/0/fields/1/value`) or the attachment text column. Forwarded text comes
+from `/message_snapshots/<n>/message/content`, attributed to the forwarded
+message ID. These are original parts, not assertions that bot/embed/file text
+was written by the message author.
 
 `normalized_content` combines searchable parts with Unicode normalization and
 whitespace separation. It includes explicitly labelled reply/forward context

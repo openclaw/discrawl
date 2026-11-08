@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make forwarded messages searchable. Discord sends a forward's text in `message_snapshots`, not `referenced_message`, so forwards were archived with empty searchable text; newly synced and tailed forwards now index that text as labelled forward context.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
