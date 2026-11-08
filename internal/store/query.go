@@ -811,7 +811,7 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 		args = append(args, opts.Channel, "%"+opts.Channel+"%")
 	}
 	if strings.TrimSpace(opts.Author) != "" {
-		clauses = append(clauses, "(m.author_id = ? or m.raw_json like ?)")
+		clauses = append(clauses, "(m.author_id = ? or "+lexicalAuthorNameSQL+" like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
 	}
 	if !opts.IncludeEmpty {

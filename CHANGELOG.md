@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restrict `search --author` to the author when FTS is unavailable. The fallback search matched the name anywhere in the stored message payload, so messages that only mentioned the author were returned too.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
