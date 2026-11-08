@@ -422,14 +422,8 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
 		args = append(args, opts.Channel, "%"+opts.Channel+"%")
 	}
-	authorExpr := `coalesce(
-		json_extract(m.raw_json, '$.member.nick'),
-		json_extract(m.raw_json, '$.author.global_name'),
-		json_extract(m.raw_json, '$.author.username'),
-		''
-	)`
 	if strings.TrimSpace(opts.Author) != "" {
-		clauses = append(clauses, "(m.author_id = ? or "+authorExpr+" like ?)")
+		clauses = append(clauses, "(m.author_id = ? or "+lexicalAuthorNameSQL+" like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
 	}
 	if !opts.IncludeEmpty {
@@ -569,12 +563,6 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 	for _, messageID := range messageIDs {
 		args = append(args, messageID)
 	}
-	authorExpr := `coalesce(
-		json_extract(m.raw_json, '$.member.nick'),
-		json_extract(m.raw_json, '$.author.global_name'),
-		json_extract(m.raw_json, '$.author.username'),
-		''
-	)`
 	rows, err := s.db.QueryContext(ctx, `
 		select
 			m.id,
@@ -583,7 +571,7 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 			coalesce(c.name, ''),
 			c.id is not null,
 			coalesce(m.author_id, ''),
-			`+authorExpr+`,
+			`+lexicalAuthorNameSQL+`,
 			case
 				when trim(coalesce(m.content, '')) <> '' then m.content
 				else m.normalized_content

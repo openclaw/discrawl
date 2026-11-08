@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show and match usernames in semantic and hybrid search for users without a display name. Discord sends an empty `global_name` for them, which blanked the author in results and hid the username from `--author`.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
