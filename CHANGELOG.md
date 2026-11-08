@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Archive posts in Discord media channels. `sync` and tail repair passes now discover active and archived threads in media channels the same way as in forums, and `sync --channels <media channel id>` expands to its posts; previously these posts were never fetched from history.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.

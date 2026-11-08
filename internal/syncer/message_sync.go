@@ -111,8 +111,7 @@ func requestedMessageTarget(channel *discordgo.Channel, channelByID map[string]*
 	if _, ok := requested[channel.ParentID]; !ok {
 		return false
 	}
-	parent := channelByID[channel.ParentID]
-	return parent != nil && parent.Type == discordgo.ChannelTypeGuildForum
+	return isThreadOnlyChannel(channelByID[channel.ParentID])
 }
 
 func (s *Syncer) syncMessageChannelsSerial(ctx context.Context, guildID string, channels []*discordgo.Channel, opts SyncOptions, progress *messageSyncProgress) (int, error) {

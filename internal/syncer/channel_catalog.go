@@ -583,7 +583,7 @@ func canUseStoredTargets(storedByID map[string]*discordgo.Channel, requested map
 		return false
 	}
 	for _, channel := range storedByID {
-		if channel != nil && channel.Type == discordgo.ChannelTypeGuildForum {
+		if isThreadOnlyChannel(channel) {
 			return false
 		}
 	}
@@ -622,7 +622,7 @@ func requestedForumParents(channels map[string]*discordgo.Channel, requested map
 	parents := make(map[string]struct{})
 	for requestedID := range requested {
 		channel := channels[requestedID]
-		if channel != nil && channel.Type == discordgo.ChannelTypeGuildForum {
+		if isThreadOnlyChannel(channel) {
 			parents[requestedID] = struct{}{}
 		}
 	}
@@ -732,11 +732,17 @@ func isThreadParent(channel *discordgo.Channel) bool {
 		return false
 	}
 	switch channel.Type {
-	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews, discordgo.ChannelTypeGuildForum:
+	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews:
 		return true
 	default:
-		return false
+		return isThreadOnlyChannel(channel)
 	}
+}
+
+// isThreadOnlyChannel reports forum and media channels, whose posts are
+// threads and which hold no messages of their own.
+func isThreadOnlyChannel(channel *discordgo.Channel) bool {
+	return channel != nil && (channel.Type == discordgo.ChannelTypeGuildForum || channel.Type == discordgo.ChannelTypeGuildMedia)
 }
 
 // IsMessageChannel is the shared REST-history capability check used by sync
