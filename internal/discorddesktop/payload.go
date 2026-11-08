@@ -235,24 +235,40 @@ func parseAttachments(raw map[string]any, messageID, guildID, channelID, authorI
 }
 
 func parseMentions(raw map[string]any, messageID, guildID, channelID, authorID string, eventAt time.Time) []store.MentionEventRecord {
+	// Match bot sync (syncer.extractMentions): users from mentions, roles
+	// from mention_roles, one row per target.
 	items, _ := raw["mentions"].([]any)
-	out := make([]store.MentionEventRecord, 0, len(items))
-	for _, item := range items {
-		mention, _ := item.(map[string]any)
-		id := stringField(mention, "id")
-		if id == "" {
-			continue
+	roles, _ := raw["mention_roles"].([]any)
+	at := eventAt.UTC().Format(time.RFC3339Nano)
+	out := make([]store.MentionEventRecord, 0, len(items)+len(roles))
+	seen := make(map[string]struct{}, len(items)+len(roles))
+	add := func(targetType, id, name string) {
+		key := targetType + ":" + id
+		if _, ok := seen[key]; ok {
+			return
 		}
+		seen[key] = struct{}{}
 		out = append(out, store.MentionEventRecord{
 			MessageID:  messageID,
 			GuildID:    guildID,
 			ChannelID:  channelID,
 			AuthorID:   authorID,
-			TargetType: "user",
+			TargetType: targetType,
 			TargetID:   id,
-			TargetName: firstNonEmpty(stringField(mention, "global_name"), stringField(mention, "username")),
-			EventAt:    eventAt.UTC().Format(time.RFC3339Nano),
+			TargetName: name,
+			EventAt:    at,
 		})
+	}
+	for _, item := range items {
+		mention, _ := item.(map[string]any)
+		if id := stringField(mention, "id"); id != "" {
+			add("user", id, firstNonEmpty(stringField(mention, "global_name"), stringField(mention, "username")))
+		}
+	}
+	for _, item := range roles {
+		if id, _ := item.(string); strings.TrimSpace(id) != "" {
+			add("role", strings.TrimSpace(id), "")
+		}
 	}
 	return out
 }

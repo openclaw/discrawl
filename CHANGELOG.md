@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record role mentions from Discord Desktop cache imports. `wiretap` read only user mentions, so imported messages had no role mentions, and re-importing a message that bot sync or `tail` had stored removed its role mentions.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
