@@ -195,6 +195,50 @@ func TestThreadsArchivedStopsAtAfterCursor(t *testing.T) {
 	require.Equal(t, 1, requests)
 }
 
+func TestThreadsArchivedKeepsSubsecondPageCursor(t *testing.T) {
+	// Discord orders archived threads by archive_timestamp (sub-second
+	// precision) descending, and before is exclusive. A whole-second cursor
+	// skips threads archived earlier within the page boundary's second.
+	boundary := time.Date(2026, time.August, 19, 12, 0, 0, 600_000_000, time.UTC)
+	stamps := make([]time.Time, 0, 101)
+	for i := range 100 {
+		stamps = append(stamps, boundary.Add(time.Duration(99-i)*time.Second))
+	}
+	stamps = append(stamps, boundary.Add(-300*time.Millisecond))
+	for _, private := range []bool{false, true} {
+		t.Run(fmt.Sprintf("private=%t", private), func(t *testing.T) {
+			path := "/api/v10/channels/c1/threads/archived/public"
+			if private {
+				path = "/api/v10/channels/c1/threads/archived/private"
+			}
+			var cursors []string
+			mux := http.NewServeMux()
+			mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+				raw := r.URL.Query().Get("before")
+				cursors = append(cursors, raw)
+				before, err := time.Parse(time.RFC3339Nano, raw)
+				var threads []map[string]any
+				for i, stamp := range stamps {
+					if raw == "" || (err == nil && stamp.Before(before)) {
+						threads = append(threads, archivedThreadJSON(fmt.Sprintf("t%03d", i), stamp))
+					}
+				}
+				hasMore := len(threads) > 100
+				if hasMore {
+					threads = threads[:100]
+				}
+				writeJSON(map[string]any{"threads": threads, "members": []any{}, "has_more": hasMore})(w, r)
+			})
+			client := newRESTTestClient(t, mux)
+
+			threads, err := client.ThreadsArchived(context.Background(), "c1", private, time.Time{})
+			require.NoError(t, err)
+			require.Equal(t, []string{"", boundary.Format(time.RFC3339Nano)}, cursors)
+			require.Len(t, threads, len(stamps))
+		})
+	}
+}
+
 func newRESTTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)

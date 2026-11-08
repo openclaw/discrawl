@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep archived threads that sit at a page edge. Archived-thread discovery now sends Discord's full-precision `archive_timestamp` as the next page cursor instead of a whole-second value, so channels and forums with more than 100 archived threads no longer skip threads archived earlier in the same second as the last thread on a page.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
