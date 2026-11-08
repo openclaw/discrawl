@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show forum and media post tags. `channels list --json` and `channels show --json` include each post's applied tag names, resolved from the parent channel's `available_tags`; text output is unchanged.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.

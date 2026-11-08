@@ -365,6 +365,9 @@ func (r *runtime) runChannels(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := r.store.AttachChannelTags(r.ctx, rows); err != nil {
+			return err
+		}
 		return r.print(rows)
 	case "show":
 		if len(args) < 2 {
@@ -379,6 +382,9 @@ func (r *runtime) runChannels(args []string) error {
 			if row.ID == args[1] {
 				filtered = append(filtered, row)
 			}
+		}
+		if err := r.store.AttachChannelTags(r.ctx, filtered); err != nil {
+			return err
 		}
 		return r.print(filtered)
 	case "resolve":

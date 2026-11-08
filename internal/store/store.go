@@ -154,6 +154,8 @@ type ChannelRow struct {
 	IsPrivateThread  bool      `json:"is_private_thread"`
 	ThreadParentID   string    `json:"thread_parent_id,omitempty"`
 	ArchiveTimestamp time.Time `json:"archive_timestamp,omitzero"`
+	// Tags are a forum or media post's applied tag names, filled by AttachChannelTags.
+	Tags []string `json:"tags,omitempty"`
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
