@@ -296,8 +296,8 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(message_fts.channel_id = ? or message_fts.channel_name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "message_fts.channel_id", "(message_fts.channel_id = ? or message_fts.channel_name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(message_fts.author_id = ? or message_fts.author_name like ?)")
@@ -419,8 +419,8 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "m.channel_id", "(m.channel_id = ? or c.name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	authorExpr := `coalesce(
 		json_extract(m.raw_json, '$.member.nick'),
@@ -807,8 +807,8 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "m.channel_id", "(m.channel_id = ? or c.name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(m.author_id = ? or m.raw_json like ?)")

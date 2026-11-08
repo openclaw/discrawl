@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restrict `--channel` to the selected channel. A channel ID, or a name that resolves to one, no longer also matches other channels whose names contain that ID in `search` (FTS, semantic, hybrid and multilingual), `messages`, `attachments` and `mentions`. Name and partial-name selectors are unchanged.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
