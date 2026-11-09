@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make poll and embed field text searchable for Discord Desktop cache imports. `wiretap` indexed only embed titles and descriptions; it now also indexes embed author, field and footer text and poll questions and answers, as bot sync does.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
