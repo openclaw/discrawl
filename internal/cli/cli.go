@@ -368,7 +368,7 @@ func (r *runtime) dispatch(rest []string) error {
 		if err != nil {
 			return usageErr(err)
 		}
-		return r.withLocalStoreUpdateLocked(updateMode, true, func() error { return r.runSync(rest[1:]) })
+		return r.withLocalStoreUpdateLocked(updateMode, func() error { return r.runSync(rest[1:]) })
 	case "tail":
 		operation := "tail-starting"
 		if tailReplayOnlyEnabled(rest[1:]) {
@@ -545,7 +545,7 @@ func (r *runtime) withServicesLockedOperation(withDiscord bool, operation string
 }
 
 func (r *runtime) withLocalStoreLocked(autoShareUpdate bool, fn func() error) error {
-	return r.withLocalStoreUpdateLocked(boolShareUpdateMode(autoShareUpdate), true, fn)
+	return r.withLocalStoreUpdateLocked(boolShareUpdateMode(autoShareUpdate), fn)
 }
 
 func (r *runtime) withLocalStoreRead(autoShareUpdate bool, fn func() error) error {
@@ -578,7 +578,7 @@ func (r *runtime) withLocalStoreReadUpdate(updateMode shareUpdateMode, fn func()
 	})
 }
 
-func (r *runtime) withLocalStoreUpdateLocked(updateMode shareUpdateMode, lockDB bool, fn func() error) error {
+func (r *runtime) withLocalStoreUpdateLocked(updateMode shareUpdateMode, fn func() error) error {
 	cfg, err := r.loadConfigOrDefault()
 	if err != nil {
 		return err
@@ -591,12 +591,9 @@ func (r *runtime) withLocalStoreUpdateLocked(updateMode shareUpdateMode, lockDB 
 		return configErr(err)
 	}
 	r.cfg = cfg
-	if lockDB {
-		return r.withSyncLock(func() error {
-			return r.openLocalStore(dbPath, updateMode, fn)
-		})
-	}
-	return r.openLocalStore(dbPath, updateMode, fn)
+	return r.withSyncLock(func() error {
+		return r.openLocalStore(dbPath, updateMode, fn)
+	})
 }
 
 func (r *runtime) shouldAutoUpdateShare(mode shareUpdateMode) bool {
