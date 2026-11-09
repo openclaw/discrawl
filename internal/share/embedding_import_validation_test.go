@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -87,6 +88,18 @@ func TestMalformedEmbeddingRowsRollBackEntireDestination(t *testing.T) {
 	opts := embeddingValidationOptions(t.TempDir())
 	manifest, err := Export(t.Context(), src, opts)
 	require.NoError(t, err)
+	seedPath := filepath.Join(t.TempDir(), "destination.db")
+	seed := seedStore(t, seedPath)
+	t.Cleanup(func() { _ = seed.Close() })
+	seedDirectMessageData(t, t.Context(), seed)
+	seedValidationVector(t, seed, "m1")
+	seedValidationVector(t, seed, "dm1")
+	seedContents := validationDatabaseContents(t, seed)
+	// Copy only a closed, checkpointed database; each mode gets private bytes.
+	require.NoError(t, seed.Close())
+	require.NoFileExists(t, seedPath+"-wal")
+	seedBytes, err := os.ReadFile(seedPath)
+	require.NoError(t, err)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// A valid update precedes each malformed row, including rows whose
@@ -101,12 +114,13 @@ func TestMalformedEmbeddingRowsRollBackEntireDestination(t *testing.T) {
 				t.Run(mode, func(t *testing.T) {
 					t.Parallel()
 
-					dst := seedStore(t, filepath.Join(t.TempDir(), "dst.db"))
+					dstPath := filepath.Join(t.TempDir(), "dst.db")
+					require.NoError(t, os.WriteFile(dstPath, seedBytes, 0o600))
+					dst, err := store.Open(t.Context(), dstPath)
+					require.NoError(t, err)
 					t.Cleanup(func() { _ = dst.Close() })
-					seedDirectMessageData(t, t.Context(), dst)
-					seedValidationVector(t, dst, "m1")
-					seedValidationVector(t, dst, "dm1")
 					before := validationDatabaseContents(t, dst)
+					require.Equal(t, seedContents, before, "copied destination must preserve the complete seed fixture")
 					require.ErrorContains(t, runValidationImport(t, mode, dst, opts, manifest), tc.errMsg)
 					require.Equal(t, before, validationDatabaseContents(t, dst), "schema, canonical rows, indexes, local vectors and sync state must roll back together")
 				})
