@@ -40,3 +40,22 @@ func TestCachedChannelKeepsStoredThreadMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"777", "1"}, raw[0])
 }
+
+// A channel known only from the Desktop cache keeps refreshing from it.
+func TestCachedChannelRefreshesDesktopOwnedPayload(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := openTestStore(t, ctx)
+	defer func() { _ = s.Close() }()
+
+	for _, name := range []string{"old-name", "new-name"} {
+		require.NoError(t, s.UpsertCachedChannel(ctx, ChannelRecord{
+			ID: "c1", GuildID: "g1", Kind: "text", Name: name,
+			RawJSON: `{"id":"c1","guild_id":"g1","name":"` + name + `","type":0,"source":"discord_desktop"}`,
+		}))
+	}
+	_, rows, err := s.ReadOnlyQuery(ctx, "select name, json_extract(raw_json, '$.name'), json_extract(raw_json, '$.source') from channels where id = 'c1'")
+	require.NoError(t, err)
+	require.Equal(t, []string{"new-name", "new-name", "discord_desktop"}, rows[0])
+}

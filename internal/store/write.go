@@ -367,12 +367,13 @@ func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel Channel
 	return recordObservedTx(ctx, tx, "channels", changed, channel.ID)
 }
 
-// fillMissingRawKeys keeps a stored provider payload and adds only the keys a
-// cached payload has that the stored one lacks. The cached source marker is
-// not copied onto a payload from another source.
+// fillMissingRawKeys keeps a stored provider payload (from bot sync or tail)
+// and adds only the keys a cached payload has that the stored one lacks. The
+// cached source marker is not copied onto a payload from another source.
 func fillMissingRawKeys(stored, cached string) string {
 	base, ok := decodeRawObject(stored)
-	if !ok {
+	if !ok || base["source"] == "discord_desktop" {
+		// A payload the Desktop cache wrote itself refreshes as before.
 		return cached
 	}
 	extra, ok := decodeRawObject(cached)
