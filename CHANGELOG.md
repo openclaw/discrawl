@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep thread metadata when Discord Desktop cache imports revisit a bot-synced thread. A `wiretap` import cleared its archived and locked state, `thread_parent_id`, topic and stored `thread_metadata`/`applied_tags`, because the cache carries only the channel's id, kind and name.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.
