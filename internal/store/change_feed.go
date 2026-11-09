@@ -25,10 +25,6 @@ const (
 	// change_feed_meta. It stays 1 so contract-1 readers keep their cursors;
 	// later contracts are served next to it (see changeFeedContracts).
 	ChangeFeedContractVersion = 1
-	// ChangeFeedLatestContractVersion is the newest contract this binary
-	// serves. Contract 2 adds the content tables and entity_metrics with the
-	// same entry semantics; see docs/guides/change-feed.md.
-	ChangeFeedLatestContractVersion = 2
 	// ChangeFeedRetention bounds change_log growth. Entries younger than this
 	// are never compacted; a reader whose cursor falls below the compaction
 	// floor must reconcile once.
