@@ -1659,9 +1659,10 @@ func TestExportShardsLargeTables(t *testing.T) {
 	src := seedStore(t, filepath.Join(t.TempDir(), "src.db"))
 	defer func() { _ = src.Close() }()
 	now := time.Now().UTC()
+	mutations := make([]store.MessageMutation, 0, 25)
 	for i := range 25 {
 		id := "extra-" + strconv.Itoa(i)
-		require.NoError(t, src.UpsertMessages(ctx, []store.MessageMutation{{
+		mutations = append(mutations, store.MessageMutation{
 			Record: store.MessageRecord{
 				ID:                id,
 				GuildID:           "g1",
@@ -1678,8 +1679,9 @@ func TestExportShardsLargeTables(t *testing.T) {
 			EventType:   "upsert",
 			PayloadJSON: `{"id":"` + id + `"}`,
 			Options:     store.WriteOptions{AppendEvent: true},
-		}}))
+		})
 	}
+	require.NoError(t, src.UpsertMessages(ctx, mutations))
 
 	repo := filepath.Join(t.TempDir(), "share")
 	manifest, err := Export(ctx, src, Options{RepoPath: repo, Branch: "main"})
