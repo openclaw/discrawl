@@ -44,7 +44,7 @@ func (r *importRun) scanContext(candidates []fileCandidate) error {
 	if err := scanCandidates(r.ctx, r.rootFS, r.opts, candidates, r.base, r.channelLookup, r.stats); err != nil {
 		return err
 	}
-	return r.finalizeAndCommit(candidates, r.base, false)
+	return r.finalizeAndCommit(candidates, r.base)
 }
 
 func (r *importRun) scanCacheBatches(candidates []fileCandidate) error {
@@ -55,7 +55,7 @@ func (r *importRun) scanCacheBatches(candidates []fileCandidate) error {
 		if err := scanCandidates(r.ctx, r.rootFS, r.opts, batchCandidates, batch, r.channelLookup, r.stats); err != nil {
 			return err
 		}
-		if err := r.finalizeAndCommit(batchCandidates, batch, false); err != nil {
+		if err := r.finalizeAndCommit(batchCandidates, batch); err != nil {
 			return err
 		}
 		mergeSnapshotContext(r.base, batch)
@@ -63,8 +63,8 @@ func (r *importRun) scanCacheBatches(candidates []fileCandidate) error {
 	return nil
 }
 
-func (r *importRun) finalizeAndCommit(candidates []fileCandidate, snap snapshot, recordSkipped bool) error {
-	unresolved := finalizeSnapshot(snap, r.channelLookup, r.totals, r.stats, recordSkipped)
+func (r *importRun) finalizeAndCommit(candidates []fileCandidate, snap snapshot) error {
+	unresolved := finalizeSnapshot(snap, r.channelLookup, r.totals, r.stats, false)
 	checkpoint := len(unresolved) == 0
 	if !checkpoint {
 		r.deferCandidates(candidates, unresolved)
