@@ -133,7 +133,7 @@ Discover accessible guilds and initialize configuration.
 
 Sync Discord or desktop-cache data into the local archive.
 With --source discord --channels, --include-stored-threads also selects stored
-direct threads of selected text and announcement roots.
+direct threads of selected text, announcement, and forum roots.
 Configure Discord collection scope with sync.include_category_ids,
 sync.exclude_channel_ids, and sync.exclude_channel_kinds; exclusions win.
 `,

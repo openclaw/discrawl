@@ -521,13 +521,13 @@ func includeStoredThreadTargets(rows []store.ChannelRow, guildID string, request
 	parents := make(map[string]struct{})
 	for _, row := range rows {
 		channel := channelFromRow(row)
-		if _, selected := targets[channel.ID]; selected && channel.GuildID == guildID &&
-			(channel.Type == discordgo.ChannelTypeGuildText || channel.Type == discordgo.ChannelTypeGuildNews) {
+		if _, selected := targets[channel.ID]; selected && channel.GuildID == guildID && isThreadParent(channel) {
 			parents[channel.ID] = struct{}{}
 		}
 	}
 	// Freeze explicitly selected roots before adding children. A selected leaf
-	// never expands siblings or descendants; forum discovery retains its owner.
+	// never expands siblings or descendants. Retained forum children must remain
+	// targets even when live catalog discovery cannot list archived threads.
 	for _, row := range rows {
 		channel := channelFromRow(row)
 		if _, selected := parents[channel.ParentID]; selected && channel.GuildID == guildID && isThreadChannel(channel) {
