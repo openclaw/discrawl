@@ -27,7 +27,7 @@ Release-check HTTP requests time out after 30 seconds if the server does not res
 
 ## From source
 
-Requires Go `1.27.0+`; the module selects Go `1.27.3` as its preferred toolchain, which Go downloads automatically when needed. CI and the Docker build use this patch release too.
+Requires Go `1.27.0+`; the module selects Go `1.27.4` as its preferred toolchain, which Go downloads automatically when needed. CI follows the module's toolchain pin. Docker starts from a Go `1.27.3` image and selects the module's preferred toolchain during the build.
 
 ```bash
 git clone https://github.com/openclaw/discrawl.git
