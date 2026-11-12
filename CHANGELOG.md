@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Include retained direct forum threads in `sync --include-stored-threads` when live catalog discovery cannot list them, preserving individual history permission checks and bounded coverage receipts.
+- Use Go 1.27.4 for the standard-library fix for GO-2026-6859; retain the Go 1.27.0 minimum.
 
 ## 0.20.0 - 2026-11-06
 
