@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include retained direct forum threads in `sync --include-stored-threads` when live catalog discovery cannot list them, preserving individual history permission checks and bounded coverage receipts.
+
 ## 0.20.0 - 2026-11-06
 
 **Highlights:** Capture change-aware archive history and preserve literal SQLite paths.

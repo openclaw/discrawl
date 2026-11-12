@@ -182,9 +182,12 @@ workflow keeps its temporary copy private and outside all export paths.
 
 In `mode: current` (the default), the supervisor first runs the existing guild-wide latest-only refresh. It then
 runs native `sync --full --since --include-stored-threads` on the policy targets,
-including stored direct threads of selected text and announcement roots. This
+including stored direct threads of selected text, announcement, and forum roots. This
 keeps threads discovered by the first pass in the bounded coverage scan without
 rewriting the policy. Selected thread leaves do not expand to siblings or descendants.
+Stored forum threads still receive individual history permission checks when
+live archived-thread discovery is unavailable; catalog failure does not certify
+their message coverage.
 The scan starts at the previous
 UTC midnight by default. An optional `since` input may pin a UTC midnight less
 than 48 hours ago. It is fixed before restore and revalidated before acquisition;
