@@ -182,6 +182,28 @@ func TestNativeCaptureUsesOneSnapshot(t *testing.T) {
 	require.Equal(t, NativeValue{Kind: "text", Text: "after"}, nativeColumn(t, next.Changes[0], "cursor"))
 }
 
+func TestNativeCaptureCoverageUsesSameSnapshot(t *testing.T) {
+	s, path := openChangeFeedStore(t)
+	ctx := nativeTestContext(t)
+	seedChangeFeedGuild(t, s)
+	baseline, err := ObserveNativeBaseline(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, s.SetSyncState(ctx, "channel:c1:history_complete", "yes"))
+	reader, err := OpenReadOnly(ctx, path)
+	require.NoError(t, err)
+	defer reader.Close()
+	tx, err := reader.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	require.NoError(t, err)
+	defer tx.Rollback()
+	_, _, err = readNativeCursor(ctx, tx, nil)
+	require.NoError(t, err)
+	_, err = s.DB().ExecContext(ctx, `update channels set guild_id='other' where id='c1'`)
+	require.NoError(t, err)
+	captured, err := captureNativeTx(ctx, tx, baseline, NativeCaptureLimits{MaxEvents: 100, MaxBytes: 10000})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"channel:c1:history_complete": "g"}, captured.CoverageGuilds)
+}
+
 func TestNativeCaptureRejectsStaleBaseline(t *testing.T) {
 	for _, mode := range []string{"generation", "anchor", "source", "trigger", "floor", "blob"} {
 		t.Run(mode, func(t *testing.T) {

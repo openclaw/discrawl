@@ -66,6 +66,9 @@ type NativeCapture struct {
 	From, Through NativeBaseline
 	Changes       []NativeChange
 	EventsRead    int
+	// CoverageGuilds resolves changed channel checkpoint scopes in this same
+	// snapshot. Empty values mean the channel is absent, not globally readable.
+	CoverageGuilds map[string]string
 }
 
 // ObserveNativeBaseline records a source position without scanning its rows.
@@ -259,7 +262,49 @@ func captureNativeTx(ctx context.Context, tx *sql.Tx, baseline NativeBaseline, l
 			return NativeCapture{}, err
 		}
 	}
-	return NativeCapture{From: baseline, Through: NativeBaseline{SourceID: baseline.SourceID, Cursor: through}, Changes: changes, EventsRead: events}, nil
+	coverage, err := nativeCoverageGuilds(ctx, tx, changes, &budget)
+	if err != nil {
+		return NativeCapture{}, err
+	}
+	return NativeCapture{From: baseline, Through: NativeBaseline{SourceID: baseline.SourceID, Cursor: through}, Changes: changes, EventsRead: events, CoverageGuilds: coverage}, nil
+}
+
+func nativeCoverageGuilds(ctx context.Context, tx *sql.Tx, changes []NativeChange, budget *int64) (map[string]string, error) {
+	coverage := map[string]string{}
+	for _, change := range changes {
+		if change.Table != "sync_state" || change.Operation != "upsert" {
+			continue
+		}
+		scope := change.Key[0].Text
+		rest, ok := strings.CutPrefix(scope, "channel:")
+		if !ok {
+			continue
+		}
+		channel, suffix, ok := strings.Cut(rest, ":")
+		if !ok || channel == "" || suffix == "" {
+			return nil, ErrNativeData
+		}
+		var guild sql.NullString
+		err := tx.QueryRowContext(ctx, `select case when length(cast(guild_id as blob))<=? then guild_id end from channels where id=?`, *budget, channel).Scan(&guild)
+		if errors.Is(err, sql.ErrNoRows) {
+			coverage[scope] = ""
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !guild.Valid {
+			return nil, ErrNativeLimit
+		}
+		if !utf8.ValidString(guild.String) {
+			return nil, ErrNativeData
+		}
+		if err := nativeTake(budget, int64(len(guild.String))); err != nil {
+			return nil, err
+		}
+		coverage[scope] = guild.String
+	}
+	return coverage, nil
 }
 
 func nativeChangedKeys(ctx context.Context, tx *sql.Tx, from, through int64, limit int, budget *int64) ([]NativeChange, int, error) {

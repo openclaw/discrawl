@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add private service projection for native report changes, with whole-guild
+  scope, baseline-bound ownership and same-snapshot checkpoint evidence. Scope
+  exits retract previously delivered rows; catalog changes that affect dependent
+  rows require reconciliation before advancing. Reuse Crawlkit's shared change
+  protocol without enabling a delivery job.
+
 - Add bounded, read-only native report capture from the existing change feed,
   preserving typed values and removals at one snapshot head. This local API
   validates source identity and cursor continuity; delivery and source-scope

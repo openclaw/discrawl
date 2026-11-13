@@ -8,7 +8,7 @@ require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/openclaw/crawlkit v0.17.4
+	github.com/openclaw/crawlkit v0.17.5-0.20261113104631-5276b56d7422
 	github.com/stretchr/testify v1.12.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.49.0

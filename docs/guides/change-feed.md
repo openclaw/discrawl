@@ -196,6 +196,12 @@ triggers, table generations, schemas and the retained cursor entry. It folds
 repeated keys to their final row or explicit removal at that transaction's head.
 NULL, text containing NUL and 64-bit integers remain distinct.
 
+For changed channel checkpoint keys, the capture also resolves channel-to-guild
+evidence in that same transaction. Missing channels remain explicitly unresolved.
+These are indexed lookups for the changed checkpoints, not a channel or message
+inventory scan. Reading that evidence from a later connection would mix source
+versions and could incorrectly admit a checkpoint.
+
 The caller supplies event and native-byte limits plus a context deadline. A
 capture that exceeds either limit returns no result and advances no cursor.
 The key-only journal cannot safely combine an earlier sequence cutoff with
@@ -209,6 +215,22 @@ seed, prove historical coverage or authorize publishing. The caller must bind
 that position to the same qualified retained snapshot and apply source scope
 before any egress. Native captures include private, unfiltered rows and must
 not be serialized as public report payloads.
+
+The internal `remotedelivery` projector implements the private
+`discrawl-report-changes/v1` profile. It accepts an immutable whole-guild scope
+and explicit ownership answers for every changed key, bound to the capture's
+starting baseline and scope hash. It reorders native columns into the receiver's
+fixed contract, preserves typed values, and excludes local host/worker/share
+checkpoints and DMs. Allowed rows become upserts; previously delivered rows
+that leave scope become removals. Unknown or failed ownership lookup is an error,
+never an inferred absence. Unowned excluded keys do not leave the source.
+
+Channel scope entry or exit, an owned guild removal, and unresolved checkpoint
+evidence require dependency reconciliation before advancing. Registration must
+prove that its retained seed has the same projection: skipping future excluded
+rows does not remove broader data already present in an old seed. The projector
+returns ownership changes for the outbox to stage with exact request bytes and
+apply atomically with final acknowledgement. It performs no HTTP or state writes.
 
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
 `digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when
