@@ -263,7 +263,18 @@ At most one capture may be pending. Failed staging or receipt persistence leaves
 the prior baseline intact. Completed captures remain available for receipt
 replay; this initial implementation does not prune them. Reconciliation holds
 remain explicit errors, not permission to drop data or rebase a pending capture.
-No CLI, sender, endpoint registration or timer is enabled by these APIs.
+`DeliverPending` sends the capture pending at entry through Crawlkit's shared
+change client, using the immutable registered origin and archive. The caller
+supplies an in-memory token provider, a positive duration, and a part limit of
+1–64. Each persisted part is sent once per invocation; a failed response or local
+receipt write stops delivery. A later invocation replays the same bytes. A
+capture staged concurrently after completion waits for another invocation.
+Results distinguish idle, pending, complete and part-limit outcomes; errors
+preserve cancellation identity without exposing raw transport or SQLite details.
+Token providers and custom HTTP transports must honor the supplied context.
+
+The driver does not acquire source data or stage captures. No CLI, endpoint
+registration or timer is enabled by these APIs.
 
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
 `digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when

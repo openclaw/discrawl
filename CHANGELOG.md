@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add bounded delivery of the pending native change capture through the shared
+  HTTP client. Failed sends or receipt writes stop without advancing the source
+  baseline; the next invocation replays persisted bytes. No delivery job is enabled.
+
 - Add a private SQLite delivery outbox that verifies the qualified seed's owned
   keys, persists exact bounded change batches, and applies ownership/cursor
   updates only with the final receipt. Interrupted delivery reuses stored bytes;

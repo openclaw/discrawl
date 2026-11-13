@@ -18,6 +18,10 @@ import (
 )
 
 func outboxFixture(t *testing.T) (context.Context, *store.Store, string, *Outbox, string, store.NativeBaseline) {
+	return outboxFixtureAt(t, "https://archive.example.test")
+}
+
+func outboxFixtureAt(t *testing.T, origin string) (context.Context, *store.Store, string, *Outbox, string, store.NativeBaseline) {
 	t.Helper()
 	ctx, source, path, baseline := projectionFixture(t)
 	seed := []SeedKey{
@@ -30,7 +34,7 @@ func outboxFixture(t *testing.T) (context.Context, *store.Store, string, *Outbox
 		require.NoError(t, err)
 		hashOwnershipKey(hash, key)
 	}
-	r := Registration{Origin: "https://archive.example.test", Archive: "fixture", BindingID: "qualified-binding", SeedManifestSHA256: strings.Repeat("a", 64), QualificationSHA256: strings.Repeat("b", 64), OwnedKeysSHA256: hex.EncodeToString(hash.Sum(nil)), OwnedKeysCount: int64(len(seed)), Scope: Scope{GuildIDs: []string{"g1"}}, Baseline: baseline, ServerCursor: "seed:complete"}
+	r := Registration{Origin: origin, Archive: "fixture", BindingID: "qualified-binding", SeedManifestSHA256: strings.Repeat("a", 64), QualificationSHA256: strings.Repeat("b", 64), OwnedKeysSHA256: hex.EncodeToString(hash.Sum(nil)), OwnedKeysCount: int64(len(seed)), Scope: Scope{GuildIDs: []string{"g1"}}, Baseline: baseline, ServerCursor: "seed:complete"}
 	outboxPath := filepath.Join(t.TempDir(), "delivery.sqlite")
 	outbox, err := InitOutbox(ctx, outboxPath, r, func(yield func(SeedKey) error) error {
 		for _, value := range seed {
