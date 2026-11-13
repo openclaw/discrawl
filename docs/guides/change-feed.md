@@ -294,6 +294,28 @@ Token providers and custom HTTP transports must honor the supplied context.
 The driver does not acquire source data or stage captures. No CLI, endpoint
 registration or timer is enabled by these APIs.
 
+#### PostgreSQL delivery qualification
+
+The opt-in integration test uses a real native SQLite store, snapshot export,
+durable outbox, PostgreSQL receiver and live HTTP reader:
+
+```sh
+DISCRAWL_TEST_CRAWL_REMOTE=/path/to/crawl-remote \
+  go test -tags integration ./internal/remotedelivery -run '^TestPostgresNativeDelivery$' -count=1 -v
+```
+
+Use a clean local `crawl-remote` checkout and a running Docker engine with
+`postgres:17-alpine` already cached. The test builds its test-only bridge against
+that checkout's public handlers with `-mod=readonly`; it logs the backend commit.
+It does not add a backend module dependency to Discrawl or pull a container image.
+It creates and removes one loopback-only, memory-limited PostgreSQL fixture.
+
+The test checks lost-response replay, failed local receipt persistence, restart,
+multipart visibility, incremental reader pagination, NUL/NULL/int64 fidelity,
+channel scope retractions and stable historical pins. Its synthetic seed proves
+this producer/receiver combination; it does not qualify retained production data,
+historical coverage, source credentials or a running collector.
+
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
 `digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when
 null) when no entry exists there.
