@@ -384,7 +384,7 @@ func TestChangeFeedServesContractTwoNextToContractOne(t *testing.T) {
 	status, err := s.ChangeFeedStatus(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, status.ContractVersion)
-	require.Equal(t, []int{1, 2}, status.ContractVersions)
+	require.Equal(t, []int{1, 2, 3}, status.ContractVersions)
 	contracts := map[string]int{}
 	for _, table := range status.Tables {
 		contracts[table.Table] = table.Contract

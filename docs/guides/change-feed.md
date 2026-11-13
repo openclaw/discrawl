@@ -1,9 +1,10 @@
 # Source change feed
 
 Discrawl records a durable change feed so that a reader can copy only changed
-rows instead of rereading whole tables. The archive serves two contracts side
+rows instead of rereading whole tables. The archive serves three contracts side
 by side. Contract 1 is unchanged; contract 2 adds the content tables and the
-metric series, with the same entry semantics:
+metric series; contract 3 adds native coverage checkpoints. All share the same
+entry semantics:
 
 | Table | Primary key (`row_key` order) | Contract |
 | --- | --- | --- |
@@ -21,8 +22,10 @@ metric series, with the same entry semantics:
 | `entity_check_history` | `check_id` | 2 |
 | `mention_event_history` | `event_id` | 2 |
 | `mention_event_id_map` | `source_event_id, identity_key` | 2 |
+| `sync_state` | `scope` | 3 |
 
-A contract-2 reader reads every table of both contracts.
+A contract-2 reader reads every table of contracts 1 and 2. A contract-3
+reader also reads `sync_state`; contracts 1 and 2 keep their exact table lists.
 
 The feed is local archive state. It is not exported to Git snapshots and does
 not change the columns of any tracked table or any existing reader contract.
@@ -43,12 +46,12 @@ not change the columns of any tracked table or any existing reader contract.
 `generation_id` (random 128-bit hex), `generation_seq` (feed head when the
 generation started), `reason`, `schema_sha256` (hash of the table's
 `sqlite_master.sql`), `contract_version` (the contract that introduced the
-table: 1 or 2) and `updated_at`.
+table: 1, 2 or 3) and `updated_at`.
 
 `change_feed_contracts` lists the contracts the archive serves:
 `contract_version` and `tables_json` (the JSON array of that contract's tables,
 in the order above) and `updated_at`. Discrawl 0.20.0 and later write rows 1
-and 2.
+and 2. Contract 3 adds row 3 without replacing those entries.
 
 `change_feed_meta` is a singleton: `contract_version` (the baseline contract,
 which stays 1 so contract-1 readers keep working),
@@ -161,6 +164,26 @@ An older (contract-1) binary that opens an archive with contract 2 leaves the
 contract-2 triggers in place, so its writes are still recorded (including its
 unconditional rewrites). If it recreates a lost log, the compaction floor
 moves to the head, so contract-2 cursors below it reconcile.
+
+## Contract 3: coverage checkpoints
+
+Contract 3 adds `sync_state` to the existing feed. Its `scope` is the key; insert,
+update (including NULL, timestamp and cursor changes), delete and key replacement
+use the same transaction, generation and compaction rules as other tables.
+History-window proofs, unavailable markers and collection checkpoints can now
+reach a backend incrementally, without polling the entire checkpoint table.
+
+Require the contract-3 registry entry before using these events. A contract-2
+archive has no retained history for earlier `sync_state` changes: take one
+consistent baseline and record its new generation before consuming later keys.
+Adding contract 3 leaves every existing tracked table's generation unchanged.
+It does not backfill entries or certify historical completeness. Native
+checkpoint values remain evidence to validate, not an ingestion watermark.
+
+Older binaries leave the added triggers in place, so their checkpoint writes are
+recorded too. A future snapshot replacement that includes `sync_state` suspends
+its triggers and starts its generation under the existing replacement contract.
+No database or running collector is upgraded merely by publishing this code.
 
 ## Reader algorithm
 

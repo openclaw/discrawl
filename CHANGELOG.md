@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add change-feed contract 3 for `sync_state`, so coverage proofs and checkpoint
+  edits/deletions can reach backend readers incrementally. Existing contract
+  table lists and generations remain unchanged; older checkpoint history still
+  requires a consistent baseline.
+
 - Include retained direct forum threads in `sync --include-stored-threads` when live catalog discovery cannot list them, preserving individual history permission checks and bounded coverage receipts.
 - Use Go 1.27.4 for the standard-library fix for GO-2026-6859; retain the Go 1.27.0 minimum.
 

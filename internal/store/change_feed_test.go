@@ -372,7 +372,7 @@ func TestChangeFeedBumpsGenerationWhenItCannotExpressHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "mention_events"))
 	require.NoError(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "messages"))
-	require.Error(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "sync_state"))
+	require.Error(t, BumpChangeFeedGenerationTx(ctx, tx, "snapshot_import", "entity_checks"))
 	require.NoError(t, tx.Rollback())
 }
 
@@ -621,6 +621,7 @@ func TestChangeFeedReaderReconstructsSnapshots(t *testing.T) {
 	// Source aliases are written by exact snapshot import, not normal native
 	// message mutations. Exercise that contract explicitly before random work.
 	check(-2)
+	require.NoError(t, s.SetSyncState(ctx, "channel:c1:history_complete", "true"))
 	tx, err := s.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
 	require.NoError(t, MapImportedMentionIdentityTx(ctx, tx, map[string]any{

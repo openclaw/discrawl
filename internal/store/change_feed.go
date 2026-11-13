@@ -65,12 +65,17 @@ var changeFeedV2Tables = []string{
 	"mention_event_id_map",
 }
 
-var changeFeedTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)
+// Coverage receipts live in sync_state. Keep them in a new contract so
+// existing contract-2 readers retain the exact table set they accepted.
+var changeFeedV3Tables = []string{"sync_state"}
+var changeFeedContractTwoTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)
+var changeFeedTables = append(slices.Clone(changeFeedContractTwoTables), changeFeedV3Tables...)
 
 // changeFeedContracts lists every contract this binary serves and its tables.
 var changeFeedContracts = map[int][]string{
 	1: changeFeedV1Tables,
-	2: changeFeedTables,
+	2: changeFeedContractTwoTables,
+	3: changeFeedTables,
 }
 
 // ChangeFeedTables returns the tables covered by the change feed (all
@@ -83,7 +88,10 @@ func changeFeedTableContract(table string) int {
 	if slices.Contains(changeFeedV1Tables, table) {
 		return 1
 	}
-	return 2
+	if slices.Contains(changeFeedV2Tables, table) {
+		return 2
+	}
+	return 3
 }
 
 func changeFeedContractsJSON(version int) string {
