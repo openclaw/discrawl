@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add bounded, read-only native report capture from the existing change feed,
+  preserving typed values and removals at one snapshot head. This local API
+  validates source identity and cursor continuity; delivery and source-scope
+  admission remain separate.
+
 - Add change-feed contract 3 for `sync_state`, so coverage proofs and checkpoint
   edits/deletions can reach backend readers incrementally. Existing contract
   table lists and generations remain unchanged; older checkpoint history still

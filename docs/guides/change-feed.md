@@ -111,7 +111,7 @@ log cannot express what happened:
 | `triggers_restored` | A trigger was missing or different at open, so writes may be unrecorded |
 | `contract_upgraded` | The feed contract version changed |
 | `feed_restored` | `change_log`, `change_feed_tables`, `change_feed_meta` or its row was missing at open, so entries or the compaction floor may be lost (applies to every table). A recreated log continues numbering above the highest retained floor or generation start, and the head becomes the new floor |
-| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored the tracked snapshot tables (`guilds`, `channels`, `members`, `messages`, `message_attachments`, `mention_events`). Their triggers are suspended during the replacement, so the import writes no per-row content entries; preservation of replaced mention identities and source-ID mappings still logs evidence/history inserts |
+| `snapshot_import` | A full Git snapshot replacement (`subscribe --exact`/`Import`) restored the tracked snapshot tables (`guilds`, `channels`, `members`, `messages`, `message_attachments`, `mention_events`, `sync_state`). Their triggers are suspended during replacement, so the import writes no per-row content entries; preservation of replaced mention identities and source-ID mappings still logs evidence/history inserts. Later search-index and import-receipt checkpoint writes are journaled normally. |
 
 Writable opens check the feed after every migration. When the installed
 triggers already match, the check issues no DDL, so routine opens do not change
@@ -186,6 +186,29 @@ its triggers and starts its generation under the existing replacement contract.
 No database or running collector is upgraded merely by publishing this code.
 
 ## Reader algorithm
+
+### Native service capture
+
+The internal `CaptureNativeChanges` API reads the five native report tables
+(`messages`, `guilds`, `channels`, `members`, `sync_state`) from a single read-only
+SQLite transaction. It validates physical source-file identity, installed feed
+triggers, table generations, schemas and the retained cursor entry. It folds
+repeated keys to their final row or explicit removal at that transaction's head.
+NULL, text containing NUL and 64-bit integers remain distinct.
+
+The caller supplies event and native-byte limits plus a context deadline. A
+capture that exceeds either limit returns no result and advances no cursor.
+The key-only journal cannot safely combine an earlier sequence cutoff with
+current row contents; a durable delivery owner may split a completed capture
+into transport parts afterward. This API neither scans unchanged table rows
+nor writes source or delivery state. Physical identity is currently supported
+on macOS and Linux; other platforms refuse capture.
+
+`ObserveNativeBaseline` only records a source position. It does not export a
+seed, prove historical coverage or authorize publishing. The caller must bind
+that position to the same qualified retained snapshot and apply source scope
+before any egress. Native captures include private, unfiltered rows and must
+not be serialized as public report payloads.
 
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
 `digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when
