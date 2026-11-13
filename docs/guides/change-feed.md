@@ -232,6 +232,39 @@ rows does not remove broader data already present in an old seed. The projector
 returns ownership changes for the outbox to stage with exact request bytes and
 apply atomically with final acknowledgement. It performs no HTTP or state writes.
 
+### Durable local outbox
+
+The internal `remotedelivery` outbox stores registration, captures, exact request
+parts/receipts, and an owned-key index in a separate private SQLite file. It does
+not modify the native archive. Initialization requires the already qualified
+seed manifest, qualification digest, scope, source baseline, service cursor and
+the count/digest of the seed's projected keys. Keys stream in ascending
+`OwnershipKey` byte order; the digest frames each key with its eight-byte unsigned
+big-endian byte length. Initialization checks this stream without loading the
+entire key set into memory. These inputs record external qualification; they do
+not themselves prove that a remote seed has the correct projection.
+
+Existing files are recognized read-only before writable opening. Unknown files,
+native archives and unsupported versions are refused; initialization never
+overwrites an existing path. The owner must keep the outbox pathname bound to
+its file while open. Credentials are not stored in the outbox.
+
+`Stage` reads ownership only for changed keys, performs projection and bounded
+partitioning, then rechecks the saved baseline under an immediate transaction.
+It persists the complete capture, ownership changes, exact request bytes and
+hashes before returning. `NextPart` returns the earliest unacknowledged part;
+reopening or retrying returns those same bytes even if the source has changed.
+`RecordReceipt` checks the binding, route identity, hash, batch and part order.
+Only the final receipt advances the native/service cursors and applies ownership
+changes, atomically with capture completion. Write transactions use SQLite
+`synchronous=FULL` and never span HTTP.
+
+At most one capture may be pending. Failed staging or receipt persistence leaves
+the prior baseline intact. Completed captures remain available for receipt
+replay; this initial implementation does not prune them. Reconciliation holds
+remain explicit errors, not permission to drop data or rebase a pending capture.
+No CLI, sender, endpoint registration or timer is enabled by these APIs.
+
 A reader stores, per table, a cursor `(generation_id, seq, digest)`, where
 `digest` is the digest of the entry at `seq`, or `compacted_entry` (empty when
 null) when no entry exists there.

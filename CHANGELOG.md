@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a private SQLite delivery outbox that verifies the qualified seed's owned
+  keys, persists exact bounded change batches, and applies ownership/cursor
+  updates only with the final receipt. Interrupted delivery reuses stored bytes;
+  no sender or schedule is enabled.
+
 - Add private service projection for native report changes, with whole-guild
   scope, baseline-bound ownership and same-snapshot checkpoint evidence. Scope
   exits retract previously delivered rows; catalog changes that affect dependent
