@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Capture complete, bounded checkpoint dependencies for changed channels in
+  the native read snapshot, including checkpoints retained after channel deletion.
+  This prepares reconciliation without scanning messages or enabling delivery.
+
 - Add bounded delivery of the pending native change capture through the shared
   HTTP client. Failed sends or receipt writes stop without advancing the source
   baseline; the next invocation replays persisted bytes. No delivery job is enabled.

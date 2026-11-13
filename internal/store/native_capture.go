@@ -40,6 +40,7 @@ type NativeBaseline struct {
 }
 
 type NativeCaptureLimits struct {
+	// MaxEvents bounds journal entries plus channel dependency rows.
 	MaxEvents int
 	MaxBytes  int64
 }
@@ -69,6 +70,15 @@ type NativeCapture struct {
 	// CoverageGuilds resolves changed channel checkpoint scopes in this same
 	// snapshot. Empty values mean the channel is absent, not globally readable.
 	CoverageGuilds map[string]string
+	// ChannelCoverage contains the complete current checkpoint set for each
+	// changed channel, including absent channels. Missing entries are unknown.
+	ChannelCoverage map[string]NativeChannelCoverage
+}
+
+type NativeChannelCoverage struct {
+	Present     bool
+	GuildID     string
+	Checkpoints []NativeChange
 }
 
 // ObserveNativeBaseline records a source position without scanning its rows.
@@ -266,7 +276,11 @@ func captureNativeTx(ctx context.Context, tx *sql.Tx, baseline NativeBaseline, l
 	if err != nil {
 		return NativeCapture{}, err
 	}
-	return NativeCapture{From: baseline, Through: NativeBaseline{SourceID: baseline.SourceID, Cursor: through}, Changes: changes, EventsRead: events, CoverageGuilds: coverage}, nil
+	dependencies, err := nativeChannelCoverage(ctx, tx, changes, limits.MaxEvents-events, &budget)
+	if err != nil {
+		return NativeCapture{}, err
+	}
+	return NativeCapture{From: baseline, Through: NativeBaseline{SourceID: baseline.SourceID, Cursor: through}, Changes: changes, EventsRead: events, CoverageGuilds: coverage, ChannelCoverage: dependencies}, nil
 }
 
 func nativeCoverageGuilds(ctx context.Context, tx *sql.Tx, changes []NativeChange, budget *int64) (map[string]string, error) {

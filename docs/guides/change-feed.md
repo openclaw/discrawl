@@ -202,12 +202,21 @@ These are indexed lookups for the changed checkpoints, not a channel or message
 inventory scan. Reading that evidence from a later connection would mix source
 versions and could incorrectly admit a checkpoint.
 
-The caller supplies event and native-byte limits plus a context deadline. A
+For every changed channel, `ChannelCoverage` additionally contains its current
+presence/guild and complete current checkpoint set from the same transaction.
+An absent channel can still have retained checkpoints. A present map entry with
+an empty set proves no current checkpoints; a missing map entry proves nothing.
+These indexed, literal-prefix reads include unchanged dependent rows. They do
+not scan messages. This evidence prepares dependency reconciliation; it does not
+by itself waive the projector's ownership and reconciliation requirements.
+
+The caller supplies event and native-byte limits plus a context deadline. The
+event limit bounds journal entries plus materialized channel dependency rows. A
 capture that exceeds either limit returns no result and advances no cursor.
 The key-only journal cannot safely combine an earlier sequence cutoff with
 current row contents; a durable delivery owner may split a completed capture
-into transport parts afterward. This API neither scans unchanged table rows
-nor writes source or delivery state. Physical identity is currently supported
+into transport parts afterward. This API writes neither source nor delivery
+state. Physical identity is currently supported
 on macOS and Linux; other platforms refuse capture.
 
 `ObserveNativeBaseline` only records a source position. It does not export a
