@@ -234,8 +234,14 @@ checkpoints and DMs. Allowed rows become upserts; previously delivered rows
 that leave scope become removals. Unknown or failed ownership lookup is an error,
 never an inferred absence. Unowned excluded keys do not leave the source.
 
-Channel scope entry or exit, an owned guild removal, and unresolved checkpoint
-evidence require dependency reconciliation before advancing. Registration must
+Channel scope entry or exit requires both complete native checkpoint evidence
+and a complete outbox ownership range at the starting baseline. The projector
+unions journal keys, current checkpoints and previously owned checkpoints, then
+emits one decision per key. Current allowed rows become upserts; missing or
+excluded owned rows become removals, including checkpoints whose channel was
+deleted. Messages remain scoped by their own `guild_id`; channel reconciliation
+does not scan or republish messages. An owned guild removal, unknown channel
+evidence or incomplete ownership still holds the capture. Registration must
 prove that its retained seed has the same projection: skipping future excluded
 rows does not remove broader data already present in an old seed. The projector
 returns ownership changes for the outbox to stage with exact request bytes and
@@ -258,8 +264,11 @@ native archives and unsupported versions are refused; initialization never
 overwrites an existing path. The owner must keep the outbox pathname bound to
 its file while open. Credentials are not stored in the outbox.
 
-`Stage` reads ownership only for changed keys, performs projection and bounded
-partitioning, then rechecks the saved baseline under an immediate transaction.
+`Stage` reads ownership for changed/dependent keys and indexed checkpoint ranges
+for changed channels. Range enumeration is limited to 32,000 keys and the supplied
+encoded-byte budget; overflow leaves the baseline and pending state unchanged.
+It performs projection and bounded partitioning, then rechecks the saved baseline
+under an immediate transaction.
 It persists the complete capture, ownership changes, exact request bytes and
 hashes before returning. `NextPart` returns the earliest unacknowledged part;
 reopening or retrying returns those same bytes even if the source has changed.

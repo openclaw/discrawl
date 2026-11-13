@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reconcile channel checkpoint scope changes using complete native evidence
+  and bounded outbox ownership ranges. Withdraw absent or excluded checkpoints
+  without rescanning messages; retain the hold for unresolved guild dependencies.
+
 - Capture complete, bounded checkpoint dependencies for changed channels in
   the native read snapshot, including checkpoints retained after channel deletion.
   This prepares reconciliation without scanning messages or enabling delivery.

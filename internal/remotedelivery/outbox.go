@@ -25,7 +25,7 @@ import (
 var (
 	ErrPendingCapture = errors.New("outbox has a pending capture; resume its persisted bytes")
 	ErrOutboxBaseline = errors.New("outbox baseline differs; preserve state and reconcile")
-	ErrOutboxLimit    = errors.New("outbox capture exceeds its encoded limit")
+	ErrOutboxLimit    = errors.New("outbox capture exceeds its row or byte limit")
 )
 
 // Registration is supplied only after external seed/scope qualification. These
@@ -346,8 +346,12 @@ func sameBaseline(a, b store.NativeBaseline) bool {
 }
 
 // Stage materializes every request before reserving a pending capture. It
-// reads only changed-key ownership and rechecks the baseline at the write.
+// reads changed-key and channel-checkpoint ownership, then rechecks the baseline
+// at the write. No source reopen or state advancement occurs during projection.
 func (o *Outbox) Stage(ctx context.Context, capture store.NativeCapture, maxEncodedBytes int64) (string, error) {
+	if maxEncodedBytes <= 0 || maxEncodedBytes > int64(remote.MaxChangeBytes)*remote.MaxChangeParts {
+		return "", ErrOutboxLimit
+	}
 	var state OutboxState
 	var ownership OwnershipSnapshot
 	err := o.base.WithTx(ctx, func(tx *sql.Tx) error {
@@ -367,18 +371,34 @@ func (o *Outbox) Stage(ctx context.Context, capture store.NativeCapture, maxEnco
 		if err != nil {
 			return err
 		}
-		for _, change := range capture.Changes {
+		lookup := func(change store.NativeChange) error {
 			key, err := OwnershipKey(change.Table, change.Key)
 			if err != nil {
 				return err
+			}
+			if _, known := ownership.Keys[key]; known {
+				return nil
 			}
 			var owned bool
 			if err := tx.QueryRowContext(ctx, `select exists(select 1 from owned_keys where key=?)`, key).Scan(&owned); err != nil {
 				return err
 			}
 			ownership.Keys[key] = owned
+			return nil
 		}
-		return nil
+		for _, change := range capture.Changes {
+			if err := lookup(change); err != nil {
+				return err
+			}
+		}
+		for _, entry := range capture.ChannelCoverage {
+			for _, change := range entry.Checkpoints {
+				if err := lookup(change); err != nil {
+					return err
+				}
+			}
+		}
+		return readOwnedCheckpoints(ctx, tx, capture.ChannelCoverage, &ownership, maxEncodedBytes)
 	})
 	if err != nil {
 		return "", err

@@ -39,6 +39,9 @@ type OwnershipSnapshot struct {
 	Baseline    store.NativeBaseline
 	ScopeSHA256 string
 	Keys        map[string]bool
+	// Presence, including an empty list, proves the outbox enumerated every
+	// previously owned checkpoint for this channel at Baseline.
+	ChannelCheckpoints map[string][]string
 }
 
 type Projection struct {
@@ -153,6 +156,10 @@ func ProjectCapture(capture store.NativeCapture, scope Scope, ownership Ownershi
 	if scopeHash != ownership.ScopeSHA256 || from.SourceID != owned.SourceID || from.Cursor.Sequence != owned.Cursor.Sequence || from.Cursor.Entry != owned.Cursor.Entry || !slices.Equal(from.Cursor.Generations, owned.Cursor.Generations) {
 		return Projection{}, ErrOwnership
 	}
+	capture, err = reconcileChannelCheckpoints(capture, ownership)
+	if err != nil {
+		return Projection{}, err
+	}
 	result := Projection{Changes: []remote.Change{}}
 	for _, change := range capture.Changes {
 		key, err := OwnershipKey(change.Table, change.Key)
@@ -175,16 +182,15 @@ func ProjectCapture(capture store.NativeCapture, scope Scope, ownership Ownershi
 			if err != nil {
 				return Projection{}, err
 			}
-			included, err = rowInScope(change, row, capture.CoverageGuilds, scope)
+			included, err = rowInScope(change, row, capture.CoverageGuilds, capture.ChannelCoverage, scope)
 			if err != nil {
 				return Projection{}, err
 			}
 		default:
 			return Projection{}, ErrProjection
 		}
-		// Channel scope entry can admit unchanged checkpoints; parent removal
-		// can withdraw existing children. Both need dependency reconciliation.
-		if (change.Table == "channels" && wasOwned != included) || (change.Table == "guilds" && wasOwned && !included) {
+		_, reconciled := capture.ChannelCoverage[change.Key[0].Text]
+		if (change.Table == "channels" && wasOwned != included && !reconciled) || (change.Table == "guilds" && wasOwned && !included) {
 			return Projection{}, ErrReconcile
 		}
 		if !included && !wasOwned {
@@ -262,7 +268,7 @@ func projectValues(values []store.NativeValue) ([]remote.ChangeValue, error) {
 	return out, nil
 }
 
-func rowInScope(change store.NativeChange, row []remote.ChangeValue, coverage map[string]string, scope Scope) (bool, error) {
+func rowInScope(change store.NativeChange, row []remote.ChangeValue, coverage map[string]string, channels map[string]store.NativeChannelCoverage, scope Scope) (bool, error) {
 	field := "guild_id"
 	if change.Table == "guilds" {
 		field = "id"
@@ -278,6 +284,10 @@ func rowInScope(change store.NativeChange, row []remote.ChangeValue, coverage ma
 		}
 		if strings.HasPrefix(checkpoint, "channel:") {
 			guild, present := coverage[checkpoint]
+			channel, _, _ := strings.Cut(strings.TrimPrefix(checkpoint, "channel:"), ":")
+			if complete, known := channels[channel]; present && guild == "" && known && !complete.Present {
+				return false, nil
+			}
 			if !present || guild == "" {
 				return false, fmt.Errorf("%w: checkpoint channel is unresolved", ErrReconcile)
 			}

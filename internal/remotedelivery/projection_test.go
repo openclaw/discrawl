@@ -2,6 +2,7 @@ package remotedelivery
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -58,7 +59,25 @@ func ownershipFor(t *testing.T, captured store.NativeCapture, owned map[string]b
 		require.NoError(t, err)
 		answers[key] = owned[key]
 	}
-	return OwnershipSnapshot{Baseline: captured.From, ScopeSHA256: hash, Keys: answers}
+	checkpoints := map[string][]string{}
+	for channel, coverage := range captured.ChannelCoverage {
+		checkpoints[channel] = []string{}
+		for _, change := range coverage.Checkpoints {
+			key, err := OwnershipKey(change.Table, change.Key)
+			require.NoError(t, err)
+			answers[key] = owned[key]
+		}
+		prefix, err := checkpointPrefix(channel)
+		require.NoError(t, err)
+		for key, wasOwned := range owned {
+			var fields []string
+			if wasOwned && json.Unmarshal([]byte(key), &fields) == nil && len(fields) == 2 && fields[0] == "sync_state" && strings.HasPrefix(fields[1], prefix) {
+				checkpoints[channel] = append(checkpoints[channel], key)
+				answers[key] = true
+			}
+		}
+	}
+	return OwnershipSnapshot{Baseline: captured.From, ScopeSHA256: hash, Keys: answers, ChannelCheckpoints: checkpoints}
 }
 
 func TestProjectNativeCaptureScopesAndTypedWire(t *testing.T) {
@@ -141,6 +160,7 @@ func TestProjectRequiresDependencyReconciliation(t *testing.T) {
 	_, err := s.DB().ExecContext(ctx, `update channels set guild_id='g2' where id='cg1'`)
 	require.NoError(t, err)
 	captured := capture(t, ctx, path, baseline)
+	captured.ChannelCoverage = nil // Missing source completeness must retain the hold.
 	key, err := OwnershipKey("channels", []store.NativeValue{{Kind: "text", Text: "cg1"}})
 	require.NoError(t, err)
 	projected, err := ProjectCapture(captured, Scope{GuildIDs: []string{"g1"}}, ownershipFor(t, captured, map[string]bool{key: true}))
@@ -199,7 +219,13 @@ func TestProjectChannelEntryRequiresCheckpointReconciliation(t *testing.T) {
 	require.NoError(t, err)
 	captured := capture(t, ctx, path, baseline)
 	require.Len(t, captured.Changes, 1, "the old checkpoint is absent from the changed-key batch")
-	projected, err := ProjectCapture(captured, Scope{GuildIDs: []string{"g1"}}, ownershipFor(t, captured, nil))
+	ownership := ownershipFor(t, captured, nil)
+	ownership.ChannelCheckpoints = nil // A complete source alone is insufficient.
+	projected, err := ProjectCapture(captured, Scope{GuildIDs: []string{"g1"}}, ownership)
+	require.ErrorIs(t, err, ErrOwnership)
+	require.Equal(t, Projection{}, projected)
+	captured.ChannelCoverage = nil
+	projected, err = ProjectCapture(captured, Scope{GuildIDs: []string{"g1"}}, ownershipFor(t, captured, nil))
 	require.ErrorIs(t, err, ErrReconcile)
 	require.Equal(t, Projection{}, projected)
 }
