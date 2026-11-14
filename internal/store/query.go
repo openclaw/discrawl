@@ -799,8 +799,9 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
-		clauses = append(clauses, "(m.author_id = ? or "+lexicalAuthorNameSQL+" like ?)")
-		args = append(args, opts.Author, "%"+opts.Author+"%")
+		clauses = append(clauses, `(m.author_id = ? or json_extract(m.raw_json, '$.member.nick') like ? or json_extract(m.raw_json, '$.author.global_name') like ? or json_extract(m.raw_json, '$.author.username') like ?)`)
+		name := "%" + opts.Author + "%"
+		args = append(args, opts.Author, name, name, name)
 	}
 	if !opts.IncludeEmpty {
 		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")

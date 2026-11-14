@@ -41,3 +41,21 @@ func TestSearchFallbackAuthorMatchesOnlyTheAuthor(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"m-alice"}, searchResultIDs(rows), "FTS control")
 }
+
+func TestSearchFallbackMatchesEachAuthorName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := openTestStore(t, ctx)
+	defer func() { _ = s.Close() }()
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{{Record: MessageRecord{
+		ID: "m-alice", GuildID: "g1", ChannelID: "c1", AuthorID: "u-alice", AuthorName: "Release Captain", CreatedAt: createdAt,
+		Content: "release checklist", NormalizedContent: "release checklist",
+		RawJSON: `{"author":{"id":"u-alice","username":"alice","global_name":"Global Alice"},"member":{"nick":"Release Captain"}}`,
+	}}}))
+	for _, author := range []string{"u-alice", "alice", "Global Alice", "Release Captain"} {
+		rows, err := s.searchFallback(ctx, SearchOptions{Query: "release", Author: author, Limit: 10})
+		require.NoError(t, err)
+		require.Equal(t, []string{"m-alice"}, searchResultIDs(rows), author)
+	}
+}
