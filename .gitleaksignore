@@ -1,0 +1,4 @@
+# Exact non-secret synthetic literals in immutable history, not current code.
+# Commit/path/rule/line fingerprints do not suppress new or changed findings.
+0dc6a87cad9a4652b944eb7366ef020371832f20:.agents/skills/autoreview/tests/test_autoreview_hardening.py:generic-api-key:1647
+0dc6a87cad9a4652b944eb7366ef020371832f20:.agents/skills/autoreview/tests/test_autoreview_hardening.py:generic-api-key:1648
