@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh provider SDKs, search helpers, and Go analysis dependencies; update SQLite/libc together and align optional helper builds with Go 1.27.4 while retaining their Go minimums and the crypto security pin.
+
 - Preserve complete guild and archived-thread pagination, sync media-channel posts, and index forwarded snapshot text. Thanks @saariuslystoned.
 - Keep channel-ID filters exact and author filters limited to authors across search modes, including users without display names. Thanks @saariuslystoned.
 - Preserve bot-synced thread metadata during Desktop imports, retain role mentions, and index poll and embed fields from the cache. Thanks @saariuslystoned.
