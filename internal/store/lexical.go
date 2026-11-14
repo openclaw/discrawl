@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -57,12 +56,7 @@ func openLexicalStore(
 }
 
 func (s *Store) lexicalLanguages() []string {
-	languages := make([]string, 0, len(s.lexicalTokenizers))
-	for language := range s.lexicalTokenizers {
-		languages = append(languages, language)
-	}
-	sort.Strings(languages)
-	return languages
+	return sortedMapKeys(s.lexicalTokenizers)
 }
 
 func (s *Store) tokenizeLexical(ctx context.Context, text string) (map[string]string, error) {

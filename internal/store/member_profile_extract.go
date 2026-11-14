@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/url"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -61,12 +60,7 @@ type memberProfileAccumulator struct {
 func (a *memberProfileAccumulator) walk(key string, value any) {
 	switch v := value.(type) {
 	case map[string]any:
-		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
+		for _, k := range sortedMapKeys(v) {
 			a.walk(k, v[k])
 		}
 	case []any:
@@ -125,12 +119,7 @@ func (a *memberProfileAccumulator) urlList() []string {
 	if len(a.urls) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(a.urls))
-	for raw := range a.urls {
-		out = append(out, raw)
-	}
-	sort.Strings(out)
-	return out
+	return sortedMapKeys(a.urls)
 }
 
 func shouldIgnoreProfileValue(key, value string) bool {
