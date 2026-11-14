@@ -112,8 +112,8 @@ func (s *Store) searchMessagesFTSTable(
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "("+table+".channel_id = ? or "+table+".channel_name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, table+".channel_id", "("+table+".channel_id = ? or "+table+".channel_name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "("+table+".author_id = ? or "+table+".author_name like ?)")

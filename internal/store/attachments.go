@@ -79,8 +79,8 @@ func (s *Store) ListAttachments(ctx context.Context, opts AttachmentListOptions)
 		}
 	}
 	if channel := normalizeChannelFilter(opts.Channel); channel != "" {
-		clauses = append(clauses, "(a.channel_id = ? or c.name = ? or c.name like ?)")
-		args = append(args, channel, channel, "%"+channel+"%")
+		clause, values := channelFilter(channel, "a.channel_id", "(a.channel_id = ? or c.name = ? or c.name like ?)", channel, channel, "%"+channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if author := strings.TrimSpace(opts.Author); author != "" {
 		clauses = append(clauses, `(a.author_id = ? or coalesce(mem.username, '') = ? or coalesce(mem.display_name, '') = ? or coalesce(json_extract(m.raw_json, '$.author.username'), '') = ? or coalesce(json_extract(m.raw_json, '$.author.global_name'), '') = ? or coalesce(mem.username, '') like ? or coalesce(mem.display_name, '') like ? or coalesce(json_extract(m.raw_json, '$.author.username'), '') like ? or coalesce(json_extract(m.raw_json, '$.author.global_name'), '') like ?)`)

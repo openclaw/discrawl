@@ -76,8 +76,15 @@ Part kinds include `authored`, `embed_author`, `embed_title`,
 `embed_description`, `embed_field_name`, `embed_field_value`, `embed_footer`,
 `attachment_filename`, `attachment_text`, `reply_context`, `forward_context`,
 `poll_question`, and `poll_answer`. Paths identify provider fields (for example
-`/embeds/0/fields/1/value`) or the attachment text column. These are original
-parts, not assertions that bot/embed/file text was written by the message author.
+`/embeds/0/fields/1/value`) or the attachment text column. Forwarded text comes
+from `/message_snapshots/<n>/message/content`, attributed to the forwarded
+message ID. These are original parts, not assertions that bot/embed/file text
+was written by the message author.
+
+Forward snapshot text is indexed when a message is ingested or re-observed.
+An existing version-2 text projection is not automatically rebuilt by this
+change, and routine sync does not rewind its history cursor. Recovering older
+empty forward projections requires backup-first targeted re-ingestion.
 
 `normalized_content` combines searchable parts with Unicode normalization and
 whitespace separation. It includes explicitly labelled reply/forward context

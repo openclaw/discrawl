@@ -1,6 +1,7 @@
 package messagetext
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -43,4 +44,26 @@ func TestForwardContextIsNeverAuthoredAndPollRemainsAttributed(t *testing.T) {
 	}
 	require.Equal(t, "poll_question", p[1].Kind)
 	require.Equal(t, "poll_answer", p[2].Kind)
+}
+
+func TestForwardSnapshotTextIsSearchableContext(t *testing.T) {
+	t.Parallel()
+	// Discord sends a forward as a DEFAULT message with empty content, a FORWARD
+	// message_reference and the original text in message_snapshots. It does not
+	// send referenced_message for forwards.
+	var m discordgo.Message
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id": "m2", "channel_id": "c2", "type": 0, "content": "",
+		"message_reference": {"type": 1, "message_id": "m1", "channel_id": "c1", "guild_id": "g1"},
+		"message_snapshots": [{"message": {"type": 0, "content": "forwarded words", "embeds": [], "attachments": [], "timestamp": "2026-08-19T12:00:00.000000+00:00", "flags": 0, "mentions": []}}]
+	}`), &m))
+	p := Parts(&m, nil)
+	require.Equal(t, []Part{{Kind: "forward_context", Path: "/message_snapshots/0/message/content", Text: "forwarded words", MessageID: "m1"}}, p)
+	require.Equal(t, "forward:forwarded words", Normalize(p))
+	// Empty snapshots do not panic; a non-forward reference does not claim
+	// snapshot text as either authored text or reply context.
+	m.MessageSnapshots = append(m.MessageSnapshots, discordgo.MessageSnapshot{})
+	require.Equal(t, p, Parts(&m, nil))
+	m.MessageReference.Type = discordgo.MessageReferenceTypeDefault
+	require.Empty(t, Parts(&m, nil))
 }

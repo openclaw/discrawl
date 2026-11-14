@@ -315,6 +315,25 @@ func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel Channel
 		if stored.kind != "" && stored.kind != "unknown" {
 			channel.Kind = stored.kind
 		}
+		// A sparse cached record cannot tell "not archived" from "unknown",
+		// so it never clears thread state or topic that a fuller source stored.
+		if channel.ThreadParentID == "" {
+			channel.ThreadParentID = stored.threadParent
+		}
+		if channel.Topic == "" {
+			channel.Topic = stored.topic
+		}
+		if channel.ArchiveTimestamp == "" {
+			channel.ArchiveTimestamp = stored.archiveTimestamp
+		}
+		channel.IsArchived = channel.IsArchived || stored.archived != 0
+		channel.IsLocked = channel.IsLocked || stored.locked != 0
+		channel.IsPrivateThread = channel.IsPrivateThread || stored.private != 0
+		channel.IsNSFW = channel.IsNSFW || stored.nsfw != 0
+		if channel.Position == 0 {
+			channel.Position = int(stored.position)
+		}
+		channel.RawJSON = fillMissingRawKeys(stored.raw, channel.RawJSON)
 	}
 	channel.ArchiveTimestamp = normalizeProviderTime(channel.ArchiveTimestamp)
 	merged, metrics := canonicalizeRaw(entityChannel, channel.RawJSON, stored.raw, channel.Kind)
@@ -350,6 +369,27 @@ func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel Channel
 		return err
 	}
 	return recordObservedTx(ctx, tx, "channels", changed, channel.ID)
+}
+
+// fillMissingRawKeys keeps a stored provider payload (from bot sync or tail)
+// and adds only the keys a cached payload has that the stored one lacks. The
+// cached source marker is not copied onto a payload from another source.
+func fillMissingRawKeys(stored, cached string) string {
+	base, ok := decodeRawObject(stored)
+	if !ok || base["source"] == "discord_desktop" {
+		// A payload the Desktop cache wrote itself refreshes as before.
+		return cached
+	}
+	extra, ok := decodeRawObject(cached)
+	if !ok {
+		return stored
+	}
+	for key, value := range extra {
+		if _, present := base[key]; !present && key != "source" {
+			base[key] = value
+		}
+	}
+	return encodeRawObject(base)
 }
 
 type storedChannel struct {
