@@ -80,7 +80,7 @@ func TestStartupRepairRecoversGapWhileCaptureContinues(t *testing.T) {
 				svc.SetTailEmbeddings(true)
 				done := make(chan error, 1)
 				go func() { defer close(done); done <- svc.RunTail(ctx, []string{"g1"}, interval) }()
-				defer func() { cancel(); <-done }()
+				defer func() { cancel(); require.NoError(t, <-done) }()
 				select {
 				case <-captured:
 				case <-ctx.Done():
@@ -197,7 +197,7 @@ func TestStartupRepairCursorSurvivesInterruptedOwner(t *testing.T) {
 	svc.SetTailRepairOnStart(true)
 	done := make(chan error, 1)
 	go func() { defer close(done); done <- svc.RunTail(ctx, []string{"g1"}, 6*time.Hour) }()
-	defer func() { cancel(); <-done }()
+	defer func() { cancel(); require.NoError(t, <-done) }()
 	require.Eventually(t, func() bool {
 		var count int
 		_ = s.DB().QueryRowContext(ctx, `select count(*) from messages where id in ('10','11')`).Scan(&count)

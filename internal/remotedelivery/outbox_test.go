@@ -78,7 +78,7 @@ func TestOutboxReplayAndFinalOwnershipAreAtomic(t *testing.T) {
 	require.NoError(t, outbox.Close())
 	reopened, err := OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	part, err = reopened.NextPart(ctx)
 	require.NoError(t, err)
 	require.Equal(t, saved, part.Body)
@@ -141,7 +141,7 @@ func TestOutboxConcurrentStageAndReceiptValidation(t *testing.T) {
 	captured := capture(t, ctx, path, baseline)
 	other, err := OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
-	defer other.Close()
+	defer func() { _ = other.Close() }()
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
 	for _, candidate := range []*Outbox{outbox, other} {

@@ -44,34 +44,35 @@ func nativeChannelCoverage(ctx context.Context, tx *sql.Tx, changes []NativeChan
 		if err != nil {
 			return nil, err
 		}
+		defer func() { _ = rows.Close() }()
 		var scopes []string
 		for rows.Next() {
 			if remaining == 0 {
-				rows.Close()
+				_ = rows.Close()
 				return nil, ErrNativeLimit
 			}
 			var scope sql.NullString
 			if err := rows.Scan(&scope); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			if !scope.Valid {
-				rows.Close()
+				_ = rows.Close()
 				return nil, ErrNativeLimit
 			}
 			if !utf8.ValidString(scope.String) || len(scope.String) == len(prefix) {
-				rows.Close()
+				_ = rows.Close()
 				return nil, ErrNativeData
 			}
 			if err := nativeTake(budget, int64(len(scope.String))); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			remaining--
 			scopes = append(scopes, scope.String)
 		}
 		err = rows.Err()
-		rows.Close()
+		_ = rows.Close()
 		if err != nil {
 			return nil, err
 		}

@@ -62,17 +62,17 @@ func PrepareSeed(ctx context.Context, source, root string, scope Scope) (SeedPre
 	if err != nil {
 		return result, "", err
 	}
-	defer spool.Close()
+	defer func() { _ = spool.Close() }()
 	tx, err := spool.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return result, "", err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	insert, err := tx.PrepareContext(ctx, "INSERT INTO keys VALUES(?,?)")
 	if err != nil {
 		return result, "", err
 	}
-	defer insert.Close()
+	defer func() { _ = insert.Close() }()
 	checked := map[string]bool{}
 	filter := func(ctx context.Context, read *sql.Tx, table string, row map[string]any) (bool, error) {
 		if !checked[table] {
@@ -232,12 +232,12 @@ func writeSeedOwnership(ctx context.Context, db *sql.DB, path string) (int64, st
 	if err != nil {
 		return 0, "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	rows, err := db.QueryContext(ctx, "SELECT key,value FROM keys ORDER BY key COLLATE BINARY")
 	if err != nil {
 		return 0, "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	hash := sha256.New()
 	var count int64
 	for rows.Next() {
@@ -267,7 +267,7 @@ func writeSeedFile(path string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(body); err != nil {
 		return err
 	}

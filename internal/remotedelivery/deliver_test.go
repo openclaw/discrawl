@@ -136,7 +136,7 @@ func TestDeliveryPartBudgetAndReopen(t *testing.T) {
 	require.NoError(t, outbox.Close())
 	reopened, err := OpenOutbox(ctx, path)
 	require.NoError(t, err)
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	result, err = reopened.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
 	require.NoError(t, err)
 	require.Equal(t, DeliveryComplete, result.Status)
@@ -197,7 +197,7 @@ func TestDeliveryPinsInitialCapture(t *testing.T) {
 	next := capture(t, ctx, sourcePath, first.Through)
 	other, err := OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
-	defer other.Close()
+	defer func() { _ = other.Close() }()
 	part, err := other.NextPart(ctx)
 	require.NoError(t, err)
 	var nextID string

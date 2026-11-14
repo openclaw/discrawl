@@ -232,7 +232,7 @@ func projectRow(change store.NativeChange) ([]remote.ChangeValue, error) {
 		if slices.Contains(integers[change.Table], name) {
 			kind = "integer"
 		}
-		if value.Kind != kind && !(value.Kind == "null" && slices.Contains(nullable[change.Table], name)) {
+		if value.Kind != kind && (value.Kind != "null" || !slices.Contains(nullable[change.Table], name)) {
 			return nil, ErrProjection
 		}
 		ordered = append(ordered, value)

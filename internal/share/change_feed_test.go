@@ -61,6 +61,7 @@ func TestSnapshotImportsKeepChangeFeedExact(t *testing.T) {
 	// They must be journaled, while imported coverage rows require reconciliation.
 	rows, err := dst.DB().QueryContext(ctx, `select json_extract(row_key,'$[0]') from change_log where table_name='sync_state' and seq>? order by seq`, beforeSequence)
 	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
 	var scopes []string
 	for rows.Next() {
 		var scope string

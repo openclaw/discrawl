@@ -43,9 +43,10 @@ func reconcileChannelCheckpoints(captured store.NativeCapture, ownership Ownersh
 			return store.NativeCapture{}, ErrProjection
 		}
 		index[key] = i
-		if change.Table == "channels" {
+		switch change.Table {
+		case "channels":
 			channels[change.Key[0].Text] = change
-		} else if change.Table == "sync_state" {
+		case "sync_state":
 			if rest, ok := strings.CutPrefix(change.Key[0].Text, "channel:"); ok {
 				channel, _, _ := strings.Cut(rest, ":")
 				journalCheckpoints[channel] = append(journalCheckpoints[channel], change)

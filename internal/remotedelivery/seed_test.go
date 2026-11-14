@@ -45,7 +45,7 @@ func TestPreparedSeedMatchesNativeProjectionAndOwnership(t *testing.T) {
 	// Import through the actual snapshot reader, including exact SQL types.
 	target, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
-	defer target.Close()
+	defer func() { _ = target.Close() }()
 	for table := range columns {
 		var ddl string
 		require.NoError(t, source.DB().QueryRowContext(ctx, "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", table).Scan(&ddl))
@@ -72,7 +72,7 @@ func TestPreparedSeedMatchesNativeProjectionAndOwnership(t *testing.T) {
 	// The real outbox checks strict canonical-key ordering and its count/digest.
 	f, err := os.Open(filepath.Join(root, "ownership.jsonl"))
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	outbox, err := InitOutbox(ctx, filepath.Join(t.TempDir(), "outbox.sqlite"), Registration{
 		Origin: "https://archive.example.test", Archive: "fixture", BindingID: "binding", ServerCursor: "seed:complete",
