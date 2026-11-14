@@ -15,6 +15,8 @@ discrawl delivery capture --outbox /private/outbox.sqlite \
   --source-db /private/native.sqlite --max-events 10000 --max-bytes 8388608
 discrawl delivery drain --outbox /private/outbox.sqlite \
   --token-env DISCRAWL_PUBLISHER_TOKEN --max-parts 64
+discrawl delivery cycle --outbox /private/outbox.sqlite \
+  --source-db /private/native.sqlite --token-env DISCRAWL_PUBLISHER_TOKEN
 ```
 
 `prepare-seed` creates an absent private output directory. Its parent must exist.
@@ -44,6 +46,7 @@ never overwritten. A failed initialization leaves its file for diagnosis;
 do not treat it as a usable outbox or delete it without reconciling the failure.
 Its default timeout is five minutes. `capture` and `drain` default to 30 seconds.
 All commands accept `--timeout` with a positive Go duration.
+`cycle` defaults to 90 seconds shared by all three phases.
 
 `capture` opens the source read-only and requires its existing native change
 feed. It does not migrate an older database. The qualified physical file,
@@ -58,6 +61,45 @@ there is no destination override. It neither captures new data nor retries a
 failed request automatically. Invoke it again to replay the exact persisted
 part after a failed request or local receipt write. Only final completion advances
 the acknowledged native baseline. The maximum part count is 64.
+
+`cycle` resumes the existing pending capture first, captures one new native
+interval, then delivers it. It uses the same owners and limits as the separate
+commands, with all 64 delivery parts available in each drain. Any failure stops
+the cycle immediately; a failed resume never reads newer native rows. Output is
+one JSON result per reached phase, labelled `resume`, `capture`, or `deliver`.
+A nonzero exit can follow successful phases. Preserve their receipts and the
+outbox, then run the next cycle to resume. Nothing reacquires upstream data.
+
+## Recurring Linux delivery
+
+`operations/discrawl-delivery@.service` and `.timer` are inactive installation
+templates for an already-qualified persistent source. They do not initialize an
+outbox, restore a source, install credentials, or disable another collector.
+Do not enable them until the source, seed, ownership stream, reader and publisher
+admission have been verified together. A copied source needs its own baseline.
+
+For instance `community`, the templates expect the qualified native database
+and outbox at `/var/lib/discrawl/community/native.sqlite` and `outbox.sqlite`,
+owned by the existing `discrawl` service account. Install the matching binary at
+`/usr/local/bin/discrawl`. Place only that source's publisher credential as
+`DISCRAWL_PUBLISHER_TOKEN` in root-owned mode-0600
+`/etc/discrawl/delivery-community.env`; systemd loads it for the service. Keep
+credentials out of unit files, command arguments and journal output.
+
+The timer waits five minutes after the previous invocation finishes, plus up
+to 15 seconds of jitter. The service takes a nonblocking per-instance `flock`,
+has a two-minute runtime limit, and caps memory at 512 MiB and CPU at one core.
+Lock contention exits 75 visibly. Direct operator cycles for this source must
+use the same `/var/lib/discrawl/community/delivery.lock`. Keep that file in
+place, so a unit stop cannot unlink a lock held by an operator. Different instance
+names must never share an outbox or represent competing owners of one scope.
+
+Validate the installed units with `systemd-analyze verify` before explicitly
+enabling a qualified instance. Observe its journal and completed source cursor;
+timer activity alone does not establish freshness. A capture-limit or expired
+native-feed error needs local reconciliation, not outbox replacement. Adjust
+limits only after measuring the retained interval. Acquisition has its own
+credential, cadence and scope lock; this timer only delivers committed data.
 
 ## Qualified input files
 

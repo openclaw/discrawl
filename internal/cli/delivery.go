@@ -24,12 +24,14 @@ const deliveryUsage = `Usage:
   discrawl delivery init --outbox PATH --registration FILE --ownership FILE [--timeout 5m]
   discrawl delivery capture --outbox PATH --source-db PATH [--timeout 30s] [--max-events 10000] [--max-bytes 8388608]
   discrawl delivery drain --outbox PATH --token-env NAME [--timeout 30s] [--max-parts 64]
+  discrawl delivery cycle --outbox PATH --source-db PATH --token-env NAME [--timeout 90s] [--max-events 10000] [--max-bytes 8388608]
 
 Use explicit absolute database paths. Init requires an externally qualified
 registration and a sorted JSON-lines ownership stream; it never replaces a file.
 Capture reads the native database without migrating it. Drain sends only the
 persisted pending capture; repeat it after a lost response. Destination and scope
 come from the immutable registration. No collection or schedule is started.
+Cycle resumes pending delivery, captures once, then delivers that capture.
 See docs/commands/delivery.md for input formats and qualification requirements.
 `
 
@@ -46,6 +48,7 @@ type deliveryOptions struct {
 }
 
 type deliveryResult struct {
+	Phase               string `json:"phase,omitempty"`
 	Status              string `json:"status"`
 	CaptureID           string `json:"capture_id,omitempty"`
 	NativeSequence      string `json:"native_sequence,omitempty"`
@@ -61,12 +64,12 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	op := args[0]
-	if op != "prepare-seed" && op != "init" && op != "capture" && op != "drain" {
-		return usageErr(errors.New("delivery requires prepare-seed, init, capture or drain"))
+	if op != "prepare-seed" && op != "init" && op != "capture" && op != "drain" && op != "cycle" {
+		return usageErr(errors.New("delivery requires prepare-seed, init, capture, drain or cycle"))
 	}
 	fs := flag.NewFlagSet("delivery "+op, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var options deliveryOptions
+	options := deliveryOptions{maxParts: remote.MaxChangeParts}
 	if op != "prepare-seed" {
 		fs.StringVar(&options.outboxPath, "outbox", "", "")
 	}
@@ -77,6 +80,9 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 	if op == "prepare-seed" {
 		timeoutDefault = 30 * time.Minute
 	}
+	if op == "cycle" {
+		timeoutDefault = 90 * time.Second
+	}
 	timeout := fs.Duration("timeout", timeoutDefault, "")
 	switch op {
 	case "prepare-seed":
@@ -86,10 +92,13 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 	case "init":
 		fs.StringVar(&options.registrationPath, "registration", "", "")
 		fs.StringVar(&options.ownershipPath, "ownership", "", "")
-	case "capture":
+	case "capture", "cycle":
 		fs.StringVar(&options.sourcePath, "source-db", "", "")
 		fs.IntVar(&options.maxEvents, "max-events", 10000, "")
 		fs.Int64Var(&options.maxBytes, "max-bytes", 8<<20, "")
+		if op == "cycle" {
+			fs.StringVar(&options.tokenEnv, "token-env", "", "")
+		}
 	case "drain":
 		fs.StringVar(&options.tokenEnv, "token-env", "", "")
 		fs.IntVar(&options.maxParts, "max-parts", remote.MaxChangeParts, "")
@@ -102,27 +111,39 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if (op == "prepare-seed" && (options.sourcePath == "" || options.outputPath == "" || options.guilds == "")) ||
 		(op == "init" && (options.registrationPath == "" || options.ownershipPath == "")) ||
-		(op == "capture" && (options.sourcePath == "" || options.maxEvents <= 0 || options.maxBytes <= 0)) ||
-		(op == "drain" && (options.tokenEnv == "" || options.maxParts < 1 || options.maxParts > remote.MaxChangeParts)) {
+		((op == "capture" || op == "cycle") && (options.sourcePath == "" || options.maxEvents <= 0 || options.maxBytes <= 0)) ||
+		((op == "drain" || op == "cycle") && (options.tokenEnv == "" || options.maxParts < 1 || options.maxParts > remote.MaxChangeParts)) {
 		return usageErr(errors.New("missing or invalid delivery arguments; see discrawl delivery --help"))
 	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	result, err := executeDelivery(ctx, op, options)
-	// A failed drain can have durable remote/local effects. Report the bounded
-	// partial result before returning the error; never imply rollback or retry.
-	if result.Status != "" {
-		if writeErr := json.NewEncoder(stdout).Encode(result); writeErr != nil {
-			return writeErr
-		}
+	operations, phases := []string{op}, []string{""}
+	if op == "cycle" {
+		operations = []string{"drain", "capture", "drain"}
+		phases = []string{"resume", "capture", "deliver"}
 	}
-	if err != nil {
-		// SQLite, filesystem and HTTP errors may contain paths or private values.
-		safe := errors.New("delivery " + op + " failed; preserve output and reconcile before resuming")
-		if ctx.Err() != nil {
-			return errors.Join(safe, ctx.Err())
+	for i, operation := range operations {
+		result, err := executeDelivery(ctx, operation, options)
+		result.Phase = phases[i]
+		// Failed delivery can already have durable effects. Emit its partial
+		// result and stop; never capture newer data after a failed resume.
+		if result.Status != "" {
+			if writeErr := json.NewEncoder(stdout).Encode(result); writeErr != nil {
+				return writeErr
+			}
 		}
-		return safe
+		if err != nil {
+			// SQLite, filesystem and HTTP errors may contain private values.
+			message := "delivery " + op + " failed"
+			if phases[i] != "" {
+				message += " during " + phases[i]
+			}
+			safe := errors.New(message + "; preserve output and reconcile before resuming")
+			if ctx.Err() != nil {
+				return errors.Join(safe, ctx.Err())
+			}
+			return safe
+		}
 	}
 	return nil
 }

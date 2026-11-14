@@ -114,16 +114,18 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
-	"delivery":         deliveryUsage,
-	"delivery init":    deliveryUsage,
-	"delivery capture": deliveryUsage,
-	"delivery drain":   deliveryUsage,
-	"metrics":          headlinemetrics.Usage,
-	"metrics collect":  headlinemetrics.Usage,
-	"metrics import":   headlinemetrics.Usage,
-	"metrics status":   headlinemetrics.Usage,
-	"lexical":          "Usage: discrawl lexical rebuild\n\nRebuild configured language indexes locally, without contacting Discord.\n",
-	"lexical rebuild":  "Usage: discrawl lexical rebuild\n\nRun after enabling languages or replacing helpers, dictionaries, or Kiwi models.\n",
+	"delivery":              deliveryUsage,
+	"delivery prepare-seed": deliveryUsage,
+	"delivery init":         deliveryUsage,
+	"delivery capture":      deliveryUsage,
+	"delivery drain":        deliveryUsage,
+	"delivery cycle":        deliveryUsage,
+	"metrics":               headlinemetrics.Usage,
+	"metrics collect":       headlinemetrics.Usage,
+	"metrics import":        headlinemetrics.Usage,
+	"metrics status":        headlinemetrics.Usage,
+	"lexical":               "Usage: discrawl lexical rebuild\n\nRebuild configured language indexes locally, without contacting Discord.\n",
+	"lexical rebuild":       "Usage: discrawl lexical rebuild\n\nRun after enabling languages or replacing helpers, dictionaries, or Kiwi models.\n",
 	"metadata": `Usage: discrawl metadata [--json]
 
 Print the archive control manifest.

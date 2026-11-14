@@ -1,0 +1,25 @@
+[Unit]
+Description=Deliver qualified Discrawl source %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=discrawl
+Group=discrawl
+WorkingDirectory=/var/lib/discrawl/%i
+EnvironmentFile=/etc/discrawl/delivery-%i.env
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code=75 /var/lib/discrawl/%i/delivery.lock /usr/local/bin/discrawl delivery cycle --source-db /var/lib/discrawl/%i/native.sqlite --outbox /var/lib/discrawl/%i/outbox.sqlite --token-env DISCRAWL_PUBLISHER_TOKEN --timeout 90s
+TimeoutStartSec=120s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/discrawl/%i
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal

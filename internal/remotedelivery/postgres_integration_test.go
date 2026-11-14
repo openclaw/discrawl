@@ -183,7 +183,15 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 	resume := initial.Rows[0][13].(string)
 	var mu sync.Mutex
 	var requests [][]byte
+	var rejectDelivery bool
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reject := rejectDelivery
+		mu.Unlock()
+		if reject {
+			http.Error(w, "fixture unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "fixture body read failed", 500)
@@ -440,5 +448,84 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 	result, err = deliver(1)
 	require.NoError(t, err)
 	require.Equal(t, DeliveryIdle, result.Status)
+	if command {
+		// A timer invocation must resume saved bytes before reading newer native
+		// state. A failed resume cannot turn into a replacement capture.
+		mutations[0].Record.Content = "pending timer capture"
+		require.NoError(t, source.UpsertMessages(ctx, mutations[:1]))
+		pendingCapture := capture(t, ctx, sourcePath, state.Baseline)
+		stage(pendingCapture)
+		pendingPart, err := outbox.NextPart(ctx)
+		require.NoError(t, err)
+		savedBody := append([]byte(nil), pendingPart.Body...)
+		beforeCycle := sequence()
+		mutations[0].Record.Content = "newer timer capture"
+		require.NoError(t, source.UpsertMessages(ctx, mutations[:1]))
+		type cyclePhase struct{ Phase, Status string }
+		runCycle := func(path string) ([]cyclePhase, error) {
+			t.Helper()
+			cmd := exec.CommandContext(ctx, binary, "--config", absentConfig, "delivery", "cycle", "--outbox", outboxPath, "--source-db", path, "--token-env", "DISCRAWL_TEST_PUBLISHER")
+			cmd.Env = append(os.Environ(), "DISCRAWL_TEST_PUBLISHER=fixture-publisher")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			runErr := cmd.Run()
+			require.NotContains(t, stderr.String(), sourcePath)
+			require.NotContains(t, stderr.String(), "fixture-publisher")
+			require.NoFileExists(t, absentConfig)
+			var phases []cyclePhase
+			decoder := json.NewDecoder(&stdout)
+			for {
+				var phase cyclePhase
+				err := decoder.Decode(&phase)
+				if err == io.EOF {
+					break
+				}
+				require.NoError(t, err)
+				phases = append(phases, phase)
+			}
+			return phases, runErr
+		}
+		mu.Lock()
+		rejectDelivery = true
+		mu.Unlock()
+		phases, err := runCycle(filepath.Join(t.TempDir(), "absent-native.sqlite"))
+		require.Error(t, err)
+		require.Equal(t, []cyclePhase{{"resume", "pending"}}, phases)
+		require.Equal(t, beforeCycle, sequence())
+		blocked, err := outbox.State(ctx)
+		require.NoError(t, err)
+		require.Equal(t, state.Baseline, blocked.Baseline)
+		require.NotEmpty(t, blocked.PendingID)
+		mu.Lock()
+		rejectDelivery = false
+		mu.Unlock()
+		phases, err = runCycle(sourcePath)
+		require.NoError(t, err)
+		require.Equal(t, []cyclePhase{{"resume", "complete"}, {"capture", "staged"}, {"deliver", "complete"}}, phases)
+		require.Equal(t, beforeCycle+2, sequence())
+		mu.Lock()
+		require.Equal(t, savedBody, requests[len(requests)-2])
+		mu.Unlock()
+		found := false
+		pin := query(remote.QueryRequest{Name: "discrawl.live.binding"}).Stats.SnapshotID
+		for req := (remote.QueryRequest{Name: "discrawl.live.messages", SnapshotID: pin, Limit: 500}); ; {
+			page := query(req)
+			for _, row := range page.Rows {
+				if row[0] == "m0000" {
+					found = true
+					require.Equal(t, "newer timer capture", row[8])
+				}
+			}
+			if page.Cursor == "" {
+				break
+			}
+			req.Cursor = page.Cursor
+		}
+		require.True(t, found)
+		phases, err = runCycle(sourcePath)
+		require.NoError(t, err)
+		require.Equal(t, []cyclePhase{{"resume", "idle"}, {"capture", "idle"}, {"deliver", "idle"}}, phases)
+		require.Equal(t, beforeCycle+2, sequence())
+	}
 	t.Logf("503 changes/two parts; lost-response replay at %d; final promotion at %d; local receipt failure/replay at %d; scope exit and old pins verified", fixture.Sequence+1, fixture.Sequence+2, fixture.Sequence+3)
 }

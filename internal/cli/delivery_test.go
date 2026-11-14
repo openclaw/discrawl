@@ -94,8 +94,14 @@ func TestDeliveryUsesExplicitStoresAndPreservesPendingCapture(t *testing.T) {
 	require.Equal(t, "pending", pending.Status)
 	require.Equal(t, result.CaptureID, pending.CaptureID)
 	t.Setenv("DISCRAWL_TEST_MISSING_TOKEN", "")
-	_, err = run("drain", "--outbox", outboxPath, "--token-env", "DISCRAWL_TEST_MISSING_TOKEN")
-	require.Error(t, err)
+	for _, op := range []string{"drain", "cycle"} {
+		args := []string{op, "--outbox", outboxPath, "--token-env", "DISCRAWL_TEST_MISSING_TOKEN"}
+		if op == "cycle" {
+			args = append(args, "--source-db", filepath.Join(t.TempDir(), "missing.sqlite"))
+		}
+		_, err = run(args...)
+		require.Error(t, err)
+	}
 	outbox, err := remotedelivery.OpenOutbox(t.Context(), outboxPath)
 	require.NoError(t, err)
 	defer outbox.Close()
@@ -121,6 +127,8 @@ func TestDeliveryRejectsUnqualifiedInputsWithoutOverwriting(t *testing.T) {
 		{"capture", "--outbox", outboxPath, "--source-db", registration, "--timeout", "0s"},
 		{"drain", "--outbox", outboxPath, "--token-env", "TOKEN", "--max-parts", "65"},
 		{"drain", "--outbox", outboxPath, "--token-env", "TOKEN", "--source-db", registration},
+		{"cycle", "--outbox", outboxPath, "--source-db", registration},
+		{"cycle", "--outbox", outboxPath, "--token-env", "TOKEN"},
 	} {
 		err := Run(t.Context(), append([]string{"delivery"}, args...), &output, &bytes.Buffer{})
 		require.Equal(t, 2, ExitCode(err))
@@ -128,7 +136,7 @@ func TestDeliveryRejectsUnqualifiedInputsWithoutOverwriting(t *testing.T) {
 }
 
 func TestDeliveryHelp(t *testing.T) {
-	for _, args := range [][]string{{"delivery"}, {"help", "delivery"}, {"delivery", "--help"}, {"delivery", "capture", "--help"}} {
+	for _, args := range [][]string{{"delivery"}, {"help", "delivery"}, {"delivery", "--help"}, {"delivery", "capture", "--help"}, {"delivery", "cycle", "--help"}, {"help", "delivery", "cycle"}, {"delivery", "prepare-seed", "--help"}} {
 		var output bytes.Buffer
 		require.NoError(t, Run(t.Context(), args, &output, &bytes.Buffer{}))
 		require.Contains(t, output.String(), "discrawl delivery capture")

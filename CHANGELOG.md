@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `delivery cycle` and inactive Linux timer templates for five-minute
+  delivery. Resume pending bytes before capturing new changes, stop visibly on
+  failure, and reuse the qualified outbox without starting upstream acquisition.
+
 - Add `delivery prepare-seed` to create a private whole-guild report snapshot,
   sorted ownership stream and matching native baseline in one read transaction.
   Existing collectors continue running; no remote binding or schedule is enabled.
