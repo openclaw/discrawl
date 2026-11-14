@@ -67,9 +67,11 @@ var changeFeedV2Tables = []string{
 
 // Coverage receipts live in sync_state. Keep them in a new contract so
 // existing contract-2 readers retain the exact table set they accepted.
-var changeFeedV3Tables = []string{"sync_state"}
-var changeFeedContractTwoTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)
-var changeFeedTables = append(slices.Clone(changeFeedContractTwoTables), changeFeedV3Tables...)
+var (
+	changeFeedV3Tables          = []string{"sync_state"}
+	changeFeedContractTwoTables = append(slices.Clone(changeFeedV1Tables), changeFeedV2Tables...)
+	changeFeedTables            = append(slices.Clone(changeFeedContractTwoTables), changeFeedV3Tables...)
+)
 
 // changeFeedContracts lists every contract this binary serves and its tables.
 var changeFeedContracts = map[int][]string{

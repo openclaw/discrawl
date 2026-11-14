@@ -104,7 +104,7 @@ func TestDeliveryUsesExplicitStoresAndPreservesPendingCapture(t *testing.T) {
 	}
 	outbox, err := remotedelivery.OpenOutbox(t.Context(), outboxPath)
 	require.NoError(t, err)
-	defer outbox.Close()
+	defer func() { _ = outbox.Close() }()
 	state, err := outbox.State(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, result.CaptureID, state.PendingID)

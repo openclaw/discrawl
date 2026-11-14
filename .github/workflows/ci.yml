@@ -78,7 +78,8 @@ jobs:
 
       - name: Gosec
         run: |
-          go tool gosec -exclude=G101,G115,G202,G301,G304 ./...
+          # Match the root module's buildable packages, not test fixtures or nested helper modules.
+          go list -f '{{.Dir}}' ./... | xargs go tool gosec -exclude=G101,G115,G202,G301,G304
 
   test:
     runs-on: ubuntu-latest

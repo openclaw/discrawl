@@ -14,5 +14,6 @@ func nativePhysicalIdentity(info fs.FileInfo) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	//nolint:unconvert // Device and inode integer types differ across Unix platforms.
 	return runtime.GOOS + ":" + strconv.FormatUint(uint64(stat.Dev), 10) + ":" + strconv.FormatUint(uint64(stat.Ino), 10), true
 }

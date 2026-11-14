@@ -107,7 +107,7 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 	sourcePath := filepath.Join(t.TempDir(), "source.sqlite")
 	source, err := store.Open(ctx, sourcePath)
 	require.NoError(t, err)
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	require.NoError(t, source.UpsertGuild(ctx, store.GuildRecord{ID: "g1", Name: "fixture", RawJSON: "{}"}))
 	require.NoError(t, source.UpsertChannel(ctx, store.ChannelRecord{ID: "cg1", GuildID: "g1", Name: "fixture", Kind: "text", RawJSON: "{}"}))
 	writeMessage(t, ctx, source, "seed", "g1")

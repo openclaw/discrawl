@@ -35,19 +35,20 @@ func readOwnedCheckpoints(ctx context.Context, tx *sql.Tx, coverage map[string]s
 		if err != nil {
 			return err
 		}
+		defer func() { _ = rows.Close() }()
 		owned := []string{}
 		for rows.Next() {
 			if remaining == 0 {
-				rows.Close()
+				_ = rows.Close()
 				return ErrOutboxLimit
 			}
 			var key sql.NullString
 			if err := rows.Scan(&key); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			if !key.Valid || int64(len(key.String)) > budget {
-				rows.Close()
+				_ = rows.Close()
 				return ErrOutboxLimit
 			}
 			remaining--
@@ -56,7 +57,7 @@ func readOwnedCheckpoints(ctx context.Context, tx *sql.Tx, coverage map[string]s
 			ownership.Keys[key.String] = true
 		}
 		err = rows.Err()
-		rows.Close()
+		_ = rows.Close()
 		if err != nil {
 			return err
 		}

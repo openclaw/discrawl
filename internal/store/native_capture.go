@@ -89,12 +89,12 @@ func ObserveNativeBaseline(ctx context.Context, path string) (NativeBaseline, er
 	if err != nil {
 		return NativeBaseline{}, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	tx, err := s.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return NativeBaseline{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	cursor, _, err := readNativeCursor(ctx, tx, nil)
 	if err != nil {
 		return NativeBaseline{}, err
@@ -121,7 +121,7 @@ func CaptureNativeChanges(ctx context.Context, path string, baseline NativeBasel
 	if err != nil {
 		return NativeCapture{}, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if identity != baseline.SourceID {
 		return NativeCapture{}, ErrNativeBaseline
 	}
@@ -129,7 +129,7 @@ func CaptureNativeChanges(ctx context.Context, path string, baseline NativeBasel
 	if err != nil {
 		return NativeCapture{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	captured, err := captureNativeTx(ctx, tx, baseline, limits)
 	if err != nil {
 		return NativeCapture{}, err
@@ -329,7 +329,7 @@ func nativeChangedKeys(ctx context.Context, tx *sql.Tx, from, through int64, lim
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	latest := map[string]NativeChange{}
 	events := 0
 	for rows.Next() {

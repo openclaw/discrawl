@@ -57,11 +57,14 @@ type OutboxState struct {
 	PendingID    string
 }
 
-type Outbox struct{ base *crawlstore.Store }
-type PartRef struct {
-	CaptureID string
-	Index     int
-}
+type (
+	Outbox  struct{ base *crawlstore.Store }
+	PartRef struct {
+		CaptureID string
+		Index     int
+	}
+)
+
 type PendingPart struct {
 	Ref    PartRef
 	Body   []byte
@@ -254,7 +257,11 @@ func OpenOutbox(ctx context.Context, path string) (*Outbox, error) {
 			if err != nil {
 				return err
 			}
+			defer func() { _ = rows.Close() }()
 			if err := rows.Close(); err != nil {
+				return err
+			}
+			if err := rows.Err(); err != nil {
 				return err
 			}
 		}
@@ -326,7 +333,7 @@ func (o *Outbox) write(ctx context.Context, fn func(*sql.Conn) error) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, `pragma synchronous=FULL`); err != nil {
 		return err
 	}

@@ -19,12 +19,12 @@ func ExportNativeSnapshot(ctx context.Context, path, root string, filter snapsho
 	if err != nil {
 		return snapshot.Manifest{}, NativeBaseline{}, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	tx, err := s.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return snapshot.Manifest{}, NativeBaseline{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	cursor, _, err := readNativeCursor(ctx, tx, nil)
 	if err != nil {
 		return snapshot.Manifest{}, NativeBaseline{}, err

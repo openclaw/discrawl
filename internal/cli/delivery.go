@@ -176,7 +176,7 @@ func executeDelivery(ctx context.Context, op string, options deliveryOptions) (d
 	if err != nil {
 		return deliveryResult{}, err
 	}
-	defer outbox.Close()
+	defer func() { _ = outbox.Close() }()
 	if op == "drain" {
 		deadline, _ := ctx.Deadline() // runDelivery always supplies a deadline.
 		result, err := outbox.DeliverPending(ctx, remotedelivery.DeliveryOptions{TokenProvider: remote.StaticToken(token)}, remotedelivery.DeliveryLimits{MaxParts: options.maxParts, MaxDuration: time.Until(deadline)})
@@ -224,7 +224,7 @@ func initializeDelivery(ctx context.Context, path, registrationPath, ownershipPa
 	if err != nil {
 		return deliveryResult{}, err
 	}
-	defer keys.Close()
+	defer func() { _ = keys.Close() }()
 	scanner := bufio.NewScanner(keys)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	outbox, err := remotedelivery.InitOutbox(ctx, path, input.Registration, func(yield func(remotedelivery.SeedKey) error) error {
