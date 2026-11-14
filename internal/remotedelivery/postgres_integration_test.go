@@ -5,8 +5,6 @@ package remotedelivery
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,14 +14,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/openclaw/crawlkit/remote"
-	"github.com/openclaw/crawlkit/snapshot"
 	"github.com/openclaw/discrawl/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -116,37 +112,51 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 	require.NoError(t, source.UpsertChannel(ctx, store.ChannelRecord{ID: "cg1", GuildID: "g1", Name: "fixture", Kind: "text", RawJSON: "{}"}))
 	writeMessage(t, ctx, source, "seed", "g1")
 	require.NoError(t, source.SetSyncState(ctx, "channel:cg1:history_complete", "seed"))
-	seedRoot := t.TempDir()
-	var seedKeys []SeedKey
-	_, err = snapshot.Export(ctx, snapshot.ExportOptions{
-		DB: source.DB(), RootDir: seedRoot,
-		Tables: []string{"guilds", "channels", "members", "messages", "sync_state"},
-		Filter: func(table string, row map[string]any) (bool, error) {
-			// The fixture has one whole-guild scope. Internal host/schema receipts
-			// are not in this profile, even when the native store creates them.
-			if table == "sync_state" && !strings.HasPrefix(row["scope"].(string), "channel:cg1:") && !strings.HasPrefix(row["scope"].(string), "guild:g1:") {
-				return false, nil
-			}
-			entry := SeedKey{Table: table}
-			for _, name := range keys[table] {
-				entry.Key = append(entry.Key, store.NativeValue{Kind: "text", Text: row[name].(string)})
-			}
-			seedKeys = append(seedKeys, entry)
-			return true, nil
-		},
-	})
-	require.NoError(t, err)
-	baseline, err := store.ObserveNativeBaseline(ctx, sourcePath)
-	require.NoError(t, err)
+	seedRoot := filepath.Join(t.TempDir(), "seed")
+	absentConfig := filepath.Join(t.TempDir(), "absent-collector.toml")
+	var binary, qualificationSHA string
+	var prepared SeedPreparation
+	if command {
+		binary = filepath.Join(t.TempDir(), "discrawl")
+		build := exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-buildvcs=false", "-o", binary, "./cmd/discrawl")
+		build.Dir = "../.."
+		out, err := build.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		cmd := exec.CommandContext(ctx, binary, "--config", absentConfig, "delivery", "prepare-seed", "--source-db", sourcePath, "--output", seedRoot, "--guilds", "g1")
+		out, err = cmd.Output()
+		require.NoError(t, err)
+		var result struct {
+			QualificationSHA256 string `json:"qualification_sha256"`
+		}
+		require.NoError(t, json.Unmarshal(out, &result))
+		qualificationSHA = result.QualificationSHA256
+		body, err := os.ReadFile(filepath.Join(seedRoot, "preparation.json"))
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &prepared))
+		require.NoFileExists(t, absentConfig)
+	} else {
+		prepared, qualificationSHA, err = PrepareSeed(ctx, sourcePath, seedRoot, Scope{GuildIDs: []string{"g1"}})
+		require.NoError(t, err)
+	}
+	baseline := prepared.Baseline
 	anchor, err := NativeAnchor(baseline.Cursor)
 	require.NoError(t, err)
-	qualification := sha256.Sum256([]byte("single-writer synthetic native seed"))
-	qualificationSHA := hex.EncodeToString(qualification[:])
-	fixture := startPostgresReceiver(t, ctx, backend, seedRoot, anchor, qualificationSHA)
-	manifest, err := os.ReadFile(filepath.Join(seedRoot, snapshot.ManifestName))
+	fixture := startPostgresReceiver(t, ctx, backend, filepath.Join(seedRoot, "snapshot"), anchor, qualificationSHA)
+	require.Equal(t, prepared.SeedManifestSHA256, fixture.ManifestSHA256)
+	keysFile, err := os.Open(filepath.Join(seedRoot, "ownership.jsonl"))
 	require.NoError(t, err)
-	manifestHash := sha256.Sum256(manifest)
-	require.Equal(t, hex.EncodeToString(manifestHash[:]), fixture.ManifestSHA256)
+	var seedKeys []SeedKey
+	decoder := json.NewDecoder(keysFile)
+	for {
+		var key SeedKey
+		err := decoder.Decode(&key)
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		seedKeys = append(seedKeys, key)
+	}
+	require.NoError(t, keysFile.Close())
 	reader, err := remote.NewClient(remote.Options{Endpoint: fixture.Origin, TokenProvider: remote.StaticToken("fixture-reader")})
 	require.NoError(t, err)
 	query := func(req remote.QueryRequest) remote.QueryResult {
@@ -211,30 +221,13 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 		_, _ = w.Write(payload)
 	}))
 	defer proxy.Close()
-	slices.SortFunc(seedKeys, func(a, b SeedKey) int {
-		ak, _ := OwnershipKey(a.Table, a.Key)
-		bk, _ := OwnershipKey(b.Table, b.Key)
-		return strings.Compare(ak, bk)
-	})
-	hash := sha256.New()
-	for _, entry := range seedKeys {
-		key, err := OwnershipKey(entry.Table, entry.Key)
-		require.NoError(t, err)
-		hashOwnershipKey(hash, key)
-	}
 	registration := Registration{
 		Origin: proxy.URL, Archive: "fixture", BindingID: "fixture-binding", SeedManifestSHA256: fixture.ManifestSHA256, QualificationSHA256: qualificationSHA,
-		OwnedKeysSHA256: hex.EncodeToString(hash.Sum(nil)), OwnedKeysCount: int64(len(seedKeys)), Scope: Scope{GuildIDs: []string{"g1"}}, Baseline: baseline, ServerCursor: fixture.Cursor,
+		OwnedKeysSHA256: prepared.OwnedKeysSHA256, OwnedKeysCount: prepared.OwnedKeysCount, Scope: prepared.Scope, Baseline: baseline, ServerCursor: fixture.Cursor,
 	}
 	outboxPath := filepath.Join(t.TempDir(), "outbox.sqlite")
 	var runCommand func(...string) (DeliveryResult, error)
 	if command {
-		binary := filepath.Join(t.TempDir(), "discrawl")
-		build := exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-buildvcs=false", "-o", binary, "./cmd/discrawl")
-		build.Dir = "../.."
-		out, err := build.CombinedOutput()
-		require.NoError(t, err, "%s", out)
-		absentConfig := filepath.Join(t.TempDir(), "absent-collector.toml")
 		runCommand = func(args ...string) (DeliveryResult, error) {
 			t.Helper()
 			cmd := exec.CommandContext(ctx, binary, append([]string{"--config", absentConfig, "delivery"}, args...)...)
@@ -257,13 +250,9 @@ func testPostgresNativeDelivery(t *testing.T, command bool) {
 		}
 		registrationBody, err := json.Marshal(map[string]any{"format": "discrawl-delivery-registration/v1", "registration": registration})
 		require.NoError(t, err)
-		registrationPath, ownershipPath := filepath.Join(t.TempDir(), "registration.json"), filepath.Join(t.TempDir(), "ownership.jsonl")
+		registrationPath := filepath.Join(t.TempDir(), "registration.json")
+		ownershipPath := filepath.Join(seedRoot, "ownership.jsonl")
 		require.NoError(t, os.WriteFile(registrationPath, registrationBody, 0o600))
-		var stream bytes.Buffer
-		for _, key := range seedKeys {
-			require.NoError(t, json.NewEncoder(&stream).Encode(key))
-		}
-		require.NoError(t, os.WriteFile(ownershipPath, stream.Bytes(), 0o600))
 		result, err := runCommand("init", "--outbox", outboxPath, "--registration", registrationPath, "--ownership", ownershipPath)
 		require.NoError(t, err)
 		require.Equal(t, DeliveryStatus("initialized"), result.Status)

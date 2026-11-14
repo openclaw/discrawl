@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `delivery prepare-seed` to create a private whole-guild report snapshot,
+  sorted ownership stream and matching native baseline in one read transaction.
+  Existing collectors continue running; no remote binding or schedule is enabled.
+
 - Add explicit `delivery init`, `capture`, and `drain` commands for qualified
   native report changes. Resume persisted batches after failure without loading
   collector configuration, migrating the source, or enabling a schedule.

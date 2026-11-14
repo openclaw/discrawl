@@ -7,6 +7,8 @@ configuration, check for releases, contact Discord, or start a schedule.
 ## Usage
 
 ```sh
+discrawl delivery prepare-seed --source-db /private/native.sqlite \
+  --output /private/new-seed --guilds 123456789
 discrawl delivery init --outbox /private/outbox.sqlite \
   --registration /private/registration.json --ownership /private/ownership.jsonl
 discrawl delivery capture --outbox /private/outbox.sqlite \
@@ -14,6 +16,28 @@ discrawl delivery capture --outbox /private/outbox.sqlite \
 discrawl delivery drain --outbox /private/outbox.sqlite \
   --token-env DISCRAWL_PUBLISHER_TOKEN --max-parts 64
 ```
+
+`prepare-seed` creates an absent private output directory. Its parent must exist.
+It exports the five native report tables for the explicit whole-guild scope and
+records their native baseline in the same read transaction. It includes private
+channels in that scope; this is a private service seed, not a public Git export.
+Guild and channel coverage checkpoints follow the same scope rules as incremental
+delivery. Host/worker receipts and absent-channel checkpoints are excluded.
+
+The output contains `snapshot/`, a sorted `ownership.jsonl`, and
+`preparation.json`. The last file is written only after successful export and
+ownership checks; its SHA-256 is the reported `qualification_sha256`. It proves
+local snapshot/baseline agreement, not remote seed completion or permission to
+publish. Keep it private: the baseline includes physical file identity. Temporary
+ownership sorting uses SQLite on disk, with a bounded page cache. The default
+timeout is 30 minutes. Failed output is retained and never overwritten.
+
+The source must already have the current schema and native coverage feed; the
+command opens it read-only. The existing v1 snapshot contract rejects BLOBs,
+invalid text, oversized rows and integers outside its exact JSON range rather
+than silently changing them. A source with those values needs a separately
+qualified seed encoding. Ordinary acquisition may continue while the read
+transaction is open; provision disk space for its retained WAL and the export.
 
 `init` creates an absent outbox with private permissions. Existing files are
 never overwritten. A failed initialization leaves its file for diagnosis;
@@ -78,7 +102,7 @@ and the count while streaming. Each input line is limited to 1 MiB.
 
 ## Results and recovery
 
-Output is JSON regardless of global display flags. Status is `initialized`,
+Output is JSON regardless of global display flags. Status is `prepared`, `initialized`,
 `idle`, `staged`, `pending`, `part_limit`, or `complete`. Capture results include
 the decimal-string `native_sequence`; persisted captures include `capture_id`.
 Delivery includes `receipts_recorded` when nonzero. Results omit message content,

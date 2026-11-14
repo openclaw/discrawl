@@ -134,3 +134,28 @@ func TestDeliveryHelp(t *testing.T) {
 		require.Contains(t, output.String(), "discrawl delivery capture")
 	}
 }
+
+func TestDeliveryPreparesPrivateSeedWithoutCollectorConfig(t *testing.T) {
+	_, source, _, _, _ := deliveryInputs(t)
+	root := filepath.Join(t.TempDir(), "seed")
+	config := filepath.Join(t.TempDir(), "absent-config.toml")
+	var output bytes.Buffer
+	err := Run(t.Context(), []string{"--config", config, "delivery", "prepare-seed", "--source-db", source, "--output", root, "--guilds", "g1"}, &output, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.NoFileExists(t, config)
+	var result deliveryResult
+	require.NoError(t, json.Unmarshal(output.Bytes(), &result))
+	require.Equal(t, "prepared", result.Status)
+	require.Equal(t, int64(2), result.OwnedKeysCount)
+	receipt, err := os.ReadFile(filepath.Join(root, "preparation.json"))
+	require.NoError(t, err)
+	sum := sha256.Sum256(receipt)
+	require.Equal(t, hex.EncodeToString(sum[:]), result.QualificationSHA256)
+	require.NotContains(t, output.String(), source)
+	require.NotContains(t, output.String(), root)
+	output.Reset()
+	err = Run(t.Context(), []string{"delivery", "prepare-seed", "--source-db", source, "--output", root, "--guilds", "g1"}, &output, &bytes.Buffer{})
+	require.Error(t, err)
+	require.Empty(t, output.String())
+	require.NotContains(t, err.Error(), root)
+}
