@@ -32,8 +32,8 @@ the normal publication behavior described below.
 ## Release
 
 When refreshing dependencies, keep `modernc.org/libc` at the exact version
-required by the selected `modernc.org/sqlite` module. SQLite v1.60.1 requires
-libc v1.77.1; upgrading libc independently bypasses the upstream compatibility
+required by the selected `modernc.org/sqlite` module. SQLite v1.62.0 requires
+libc v1.80.1; upgrading libc independently bypasses the upstream compatibility
 contract.
 
 Prepare a dated changelog section and land it on protected `main`, then dispatch the workflow from that exact head:
