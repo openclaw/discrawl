@@ -50,7 +50,7 @@ provenance never describes superseded text.
 - `--guild <id>` runs only that guild
 - `--guilds 123,456` runs an explicit set
 - `--all` ignores `default_guild_id` and fans out across every discovered guild
-- `--channels 111,222` targets specific channels (forum ids expand to their threads)
+- `--channels 111,222` targets specific channels (forum and media channel ids expand to their threads)
 - `--since <RFC3339>` limits initial history and `--full` backfill to messages at or after the timestamp; older history is not marked complete, so a later `sync --full` without `--since` can continue the backfill
 
 ## Performance and resilience

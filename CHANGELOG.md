@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve complete guild and archived-thread pagination, sync media-channel posts, and index forwarded snapshot text. Thanks @saariuslystoned.
+- Keep channel-ID filters exact and author filters limited to authors across search modes, including users without display names. Thanks @saariuslystoned.
+- Preserve bot-synced thread metadata during Desktop imports, retain role mentions, and index poll and embed fields from the cache. Thanks @saariuslystoned.
+- Match CI's buildable-package security scan in `make lint`, excluding standalone fixtures and nested modules.
+
 - Add `delivery cycle` and inactive Linux timer templates for five-minute
   delivery. Resume pending bytes before capturing new changes, stop visibly on
   failure, and reuse the qualified outbox without starting upstream acquisition.

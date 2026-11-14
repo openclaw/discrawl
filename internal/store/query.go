@@ -296,8 +296,8 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(message_fts.channel_id = ? or message_fts.channel_name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "message_fts.channel_id", "(message_fts.channel_id = ? or message_fts.channel_name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(message_fts.author_id = ? or message_fts.author_name like ?)")
@@ -419,17 +419,11 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "m.channel_id", "(m.channel_id = ? or c.name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
-	authorExpr := `coalesce(
-		json_extract(m.raw_json, '$.member.nick'),
-		json_extract(m.raw_json, '$.author.global_name'),
-		json_extract(m.raw_json, '$.author.username'),
-		''
-	)`
 	if strings.TrimSpace(opts.Author) != "" {
-		clauses = append(clauses, "(m.author_id = ? or "+authorExpr+" like ?)")
+		clauses = append(clauses, "(m.author_id = ? or "+lexicalAuthorNameSQL+" like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
 	}
 	if !opts.IncludeEmpty {
@@ -569,12 +563,6 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 	for _, messageID := range messageIDs {
 		args = append(args, messageID)
 	}
-	authorExpr := `coalesce(
-		json_extract(m.raw_json, '$.member.nick'),
-		json_extract(m.raw_json, '$.author.global_name'),
-		json_extract(m.raw_json, '$.author.username'),
-		''
-	)`
 	rows, err := s.db.QueryContext(ctx, `
 		select
 			m.id,
@@ -583,7 +571,7 @@ func (s *Store) searchResultDetails(ctx context.Context, messageIDs []string) (m
 			coalesce(c.name, ''),
 			c.id is not null,
 			coalesce(m.author_id, ''),
-			`+authorExpr+`,
+			`+lexicalAuthorNameSQL+`,
 			case
 				when trim(coalesce(m.content, '')) <> '' then m.content
 				else m.normalized_content
@@ -807,12 +795,13 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 		}
 	}
 	if strings.TrimSpace(opts.Channel) != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
-		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+		clause, values := channelFilter(opts.Channel, "m.channel_id", "(m.channel_id = ? or c.name like ?)", opts.Channel, "%"+opts.Channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if strings.TrimSpace(opts.Author) != "" {
-		clauses = append(clauses, "(m.author_id = ? or m.raw_json like ?)")
-		args = append(args, opts.Author, "%"+opts.Author+"%")
+		clauses = append(clauses, `(m.author_id = ? or json_extract(m.raw_json, '$.member.nick') like ? or json_extract(m.raw_json, '$.author.global_name') like ? or json_extract(m.raw_json, '$.author.username') like ?)`)
+		name := "%" + opts.Author + "%"
+		args = append(args, opts.Author, name, name, name)
 	}
 	if !opts.IncludeEmpty {
 		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")

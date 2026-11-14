@@ -79,6 +79,14 @@ func Parts(m *discordgo.Message, attachments []Attachment) []Part {
 		}
 		parts = append(parts, Part{Kind: kind, Path: "/referenced_message/content", Text: m.ReferencedMessage.Content, MessageID: m.ReferencedMessage.ID})
 	}
+	// Discord sends forwarded text in message_snapshots, not referenced_message.
+	if m.MessageReference != nil && m.MessageReference.Type == discordgo.MessageReferenceTypeForward {
+		for i, snapshot := range m.MessageSnapshots {
+			if snapshot.Message != nil && snapshot.Message.Content != "" {
+				parts = append(parts, Part{Kind: "forward_context", Path: fmt.Sprintf("/message_snapshots/%d/message/content", i), Text: snapshot.Message.Content, MessageID: m.MessageReference.MessageID})
+			}
+		}
+	}
 	if m.Poll != nil {
 		add("poll_question", "/poll/question/text", m.Poll.Question.Text)
 		for i, a := range m.Poll.Answers {

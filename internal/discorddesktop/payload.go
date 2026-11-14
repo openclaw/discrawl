@@ -174,7 +174,7 @@ func parseMessage(raw map[string]any, fallbackTime time.Time, channels map[strin
 	editedAt := parseDiscordTime(stringField(raw, "edited_timestamp"))
 	attachments := parseAttachments(raw, id, guildID, channelID, authorID)
 	mentions := parseMentions(raw, id, guildID, channelID, authorID, createdAt)
-	normalized := normalizeText(content, attachmentText(attachments), embedText(raw), componentText(raw))
+	normalized := normalizeText(content, attachmentText(attachments), embedText(raw), componentText(raw), pollText(raw))
 	return store.MessageMutation{
 		Record: store.MessageRecord{
 			ID:                id,
@@ -235,24 +235,40 @@ func parseAttachments(raw map[string]any, messageID, guildID, channelID, authorI
 }
 
 func parseMentions(raw map[string]any, messageID, guildID, channelID, authorID string, eventAt time.Time) []store.MentionEventRecord {
+	// Match bot sync (syncer.extractMentions): users from mentions, roles
+	// from mention_roles, one row per target.
 	items, _ := raw["mentions"].([]any)
-	out := make([]store.MentionEventRecord, 0, len(items))
-	for _, item := range items {
-		mention, _ := item.(map[string]any)
-		id := stringField(mention, "id")
-		if id == "" {
-			continue
+	roles, _ := raw["mention_roles"].([]any)
+	at := eventAt.UTC().Format(time.RFC3339Nano)
+	out := make([]store.MentionEventRecord, 0, len(items)+len(roles))
+	seen := make(map[string]struct{}, len(items)+len(roles))
+	add := func(targetType, id, name string) {
+		key := targetType + ":" + id
+		if _, ok := seen[key]; ok {
+			return
 		}
+		seen[key] = struct{}{}
 		out = append(out, store.MentionEventRecord{
 			MessageID:  messageID,
 			GuildID:    guildID,
 			ChannelID:  channelID,
 			AuthorID:   authorID,
-			TargetType: "user",
+			TargetType: targetType,
 			TargetID:   id,
-			TargetName: firstNonEmpty(stringField(mention, "global_name"), stringField(mention, "username")),
-			EventAt:    eventAt.UTC().Format(time.RFC3339Nano),
+			TargetName: name,
+			EventAt:    at,
 		})
+	}
+	for _, item := range items {
+		mention, _ := item.(map[string]any)
+		if id := stringField(mention, "id"); id != "" {
+			add("user", id, firstNonEmpty(stringField(mention, "global_name"), stringField(mention, "username")))
+		}
+	}
+	for _, item := range roles {
+		if id, _ := item.(string); strings.TrimSpace(id) != "" {
+			add("role", strings.TrimSpace(id), "")
+		}
 	}
 	return out
 }
@@ -266,14 +282,46 @@ func attachmentText(attachments []store.AttachmentRecord) []string {
 }
 
 func embedText(raw map[string]any) []string {
+	// Same embed fields as bot sync (messagetext.Parts).
 	items, _ := raw["embeds"].([]any)
 	out := []string{}
+	add := func(value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
 	for _, item := range items {
 		embed, _ := item.(map[string]any)
-		for _, key := range []string{"title", "description"} {
-			if value := strings.TrimSpace(stringField(embed, key)); value != "" {
-				out = append(out, value)
-			}
+		author, _ := embed["author"].(map[string]any)
+		add(stringField(author, "name"))
+		add(stringField(embed, "title"))
+		add(stringField(embed, "description"))
+		fields, _ := embed["fields"].([]any)
+		for _, field := range fields {
+			value, _ := field.(map[string]any)
+			add(stringField(value, "name"))
+			add(stringField(value, "value"))
+		}
+		footer, _ := embed["footer"].(map[string]any)
+		add(stringField(footer, "text"))
+	}
+	return out
+}
+
+// pollText collects a poll's question and answer text, as bot sync does.
+func pollText(raw map[string]any) []string {
+	poll, _ := raw["poll"].(map[string]any)
+	out := []string{}
+	question, _ := poll["question"].(map[string]any)
+	if text := strings.TrimSpace(stringField(question, "text")); text != "" {
+		out = append(out, text)
+	}
+	answers, _ := poll["answers"].([]any)
+	for _, item := range answers {
+		answer, _ := item.(map[string]any)
+		media, _ := answer["poll_media"].(map[string]any)
+		if text := strings.TrimSpace(stringField(media, "text")); text != "" {
+			out = append(out, text)
 		}
 	}
 	return out

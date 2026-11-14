@@ -195,6 +195,50 @@ func TestThreadsArchivedStopsAtAfterCursor(t *testing.T) {
 	require.Equal(t, 1, requests)
 }
 
+func TestThreadsArchivedKeepsSubsecondPageCursor(t *testing.T) {
+	// Discord orders archived threads by archive_timestamp (sub-second
+	// precision) descending, and before is exclusive. A whole-second cursor
+	// skips threads archived earlier within the page boundary's second.
+	boundary := time.Date(2026, time.August, 19, 12, 0, 0, 600_000_000, time.UTC)
+	stamps := make([]time.Time, 0, 101)
+	for i := range 100 {
+		stamps = append(stamps, boundary.Add(time.Duration(99-i)*time.Second))
+	}
+	stamps = append(stamps, boundary.Add(-300*time.Millisecond))
+	for _, private := range []bool{false, true} {
+		t.Run(fmt.Sprintf("private=%t", private), func(t *testing.T) {
+			path := "/api/v10/channels/c1/threads/archived/public"
+			if private {
+				path = "/api/v10/channels/c1/threads/archived/private"
+			}
+			var cursors []string
+			mux := http.NewServeMux()
+			mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+				raw := r.URL.Query().Get("before")
+				cursors = append(cursors, raw)
+				before, err := time.Parse(time.RFC3339Nano, raw)
+				var threads []map[string]any
+				for i, stamp := range stamps {
+					if raw == "" || (err == nil && stamp.Before(before)) {
+						threads = append(threads, archivedThreadJSON(fmt.Sprintf("t%03d", i), stamp))
+					}
+				}
+				hasMore := len(threads) > 100
+				if hasMore {
+					threads = threads[:100]
+				}
+				writeJSON(map[string]any{"threads": threads, "members": []any{}, "has_more": hasMore})(w, r)
+			})
+			client := newRESTTestClient(t, mux)
+
+			threads, err := client.ThreadsArchived(context.Background(), "c1", private, time.Time{})
+			require.NoError(t, err)
+			require.Equal(t, []string{"", boundary.Format(time.RFC3339Nano)}, cursors)
+			require.Len(t, threads, len(stamps))
+		})
+	}
+}
+
 func newRESTTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -389,6 +433,64 @@ func TestGuildsErrorsWhenFullPageHasEmptyID(t *testing.T) {
 	require.ErrorContains(t, err, "guild page missing id")
 	require.Nil(t, guilds)
 	require.Equal(t, 1, requests)
+}
+
+func TestGuildsPagesForwardThroughAscendingGuildList(t *testing.T) {
+	// Discord returns current-user guilds in ascending ID order on every page,
+	// with before/after selecting the window, so a bot in more than 200 guilds
+	// must page forward from the largest ID it has seen.
+	const total = 450
+	ids := make([]string, total)
+	for i := range ids {
+		ids[i] = strconv.FormatUint(100000000000000000+uint64(i)*7, 10)
+	}
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v10/users/@me/guilds", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		queries = append(queries, r.URL.RawQuery)
+		limit := 200
+		if parsed, err := strconv.Atoi(query.Get("limit")); err == nil {
+			limit = parsed
+		}
+		after, before := query.Get("after"), query.Get("before")
+		var window []string
+		for _, id := range ids {
+			if after != "" && id <= after {
+				continue
+			}
+			if before != "" && id >= before {
+				continue
+			}
+			window = append(window, id)
+		}
+		if len(window) > limit {
+			if before != "" && after == "" {
+				window = window[len(window)-limit:]
+			} else {
+				window = window[:limit]
+			}
+		}
+		page := make([]map[string]any, 0, len(window))
+		for _, id := range window {
+			page = append(page, map[string]any{"id": id, "name": "Guild " + id})
+		}
+		writeJSON(page)(w, r)
+	})
+	client := newRESTTestClient(t, mux)
+
+	guilds, err := client.Guilds(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"limit=200",
+		"after=" + ids[199] + "&limit=200",
+		"after=" + ids[399] + "&limit=200",
+	}, queries)
+	got := make([]string, 0, len(guilds))
+	for _, guild := range guilds {
+		got = append(got, guild.ID)
+	}
+	require.Equal(t, ids, got)
 }
 
 func TestThreadsArchivedErrorsWhenCursorDoesNotAdvance(t *testing.T) {

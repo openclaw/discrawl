@@ -521,7 +521,10 @@ func includeStoredThreadTargets(rows []store.ChannelRow, guildID string, request
 	parents := make(map[string]struct{})
 	for _, row := range rows {
 		channel := channelFromRow(row)
-		if _, selected := targets[channel.ID]; selected && channel.GuildID == guildID && isThreadParent(channel) {
+		// Stored-root recovery is limited to the documented text, news and
+		// forum roots; live discovery also supports media channels.
+		storedRoot := channel.Type == discordgo.ChannelTypeGuildText || channel.Type == discordgo.ChannelTypeGuildNews || channel.Type == discordgo.ChannelTypeGuildForum
+		if _, selected := targets[channel.ID]; selected && channel.GuildID == guildID && storedRoot {
 			parents[channel.ID] = struct{}{}
 		}
 	}
@@ -583,7 +586,7 @@ func canUseStoredTargets(storedByID map[string]*discordgo.Channel, requested map
 		return false
 	}
 	for _, channel := range storedByID {
-		if channel != nil && channel.Type == discordgo.ChannelTypeGuildForum {
+		if isThreadOnlyChannel(channel) {
 			return false
 		}
 	}
@@ -622,7 +625,7 @@ func requestedForumParents(channels map[string]*discordgo.Channel, requested map
 	parents := make(map[string]struct{})
 	for requestedID := range requested {
 		channel := channels[requestedID]
-		if channel != nil && channel.Type == discordgo.ChannelTypeGuildForum {
+		if isThreadOnlyChannel(channel) {
 			parents[requestedID] = struct{}{}
 		}
 	}
@@ -732,11 +735,17 @@ func isThreadParent(channel *discordgo.Channel) bool {
 		return false
 	}
 	switch channel.Type {
-	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews, discordgo.ChannelTypeGuildForum:
+	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews:
 		return true
 	default:
-		return false
+		return isThreadOnlyChannel(channel)
 	}
+}
+
+// isThreadOnlyChannel reports forum and media channels, whose posts are
+// threads and which hold no messages of their own.
+func isThreadOnlyChannel(channel *discordgo.Channel) bool {
+	return channel != nil && (channel.Type == discordgo.ChannelTypeGuildForum || channel.Type == discordgo.ChannelTypeGuildMedia)
 }
 
 // IsMessageChannel is the shared REST-history capability check used by sync

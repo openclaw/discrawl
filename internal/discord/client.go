@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"time"
@@ -79,10 +81,12 @@ func (c *Client) Self(ctx context.Context) (*discordgo.User, error) {
 
 func (c *Client) Guilds(ctx context.Context) ([]*discordgo.UserGuild, error) {
 	var out []*discordgo.UserGuild
-	before := ""
+	after := ""
 	for {
 		reqCtx, cancel := c.requestContext(ctx)
-		page, err := c.session.UserGuilds(200, before, "", false, discordgo.WithContext(reqCtx))
+		// Discord lists guilds in ascending ID order, so the next page starts
+		// after the last (largest) ID of the current page.
+		page, err := c.session.UserGuilds(200, "", after, false, discordgo.WithContext(reqCtx))
 		cancel()
 		if err != nil {
 			return nil, err
@@ -94,14 +98,14 @@ func (c *Client) Guilds(ctx context.Context) ([]*discordgo.UserGuild, error) {
 		if len(page) < 200 {
 			return out, nil
 		}
-		nextBefore := page[len(page)-1].ID
-		if nextBefore == "" {
+		nextAfter := page[len(page)-1].ID
+		if nextAfter == "" {
 			return nil, errors.New("guild page missing id")
 		}
-		if nextBefore == before {
+		if nextAfter == after {
 			return nil, errors.New("guild page cursor did not advance")
 		}
-		before = nextBefore
+		after = nextAfter
 	}
 }
 
@@ -148,13 +152,7 @@ func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private 
 	var before *time.Time
 	for {
 		reqCtx, cancel := c.requestContext(ctx)
-		var list *discordgo.ThreadsList
-		var err error
-		if private {
-			list, err = c.session.ThreadsPrivateArchived(channelID, before, 100, discordgo.WithContext(reqCtx))
-		} else {
-			list, err = c.session.ThreadsArchived(channelID, before, 100, discordgo.WithContext(reqCtx))
-		}
+		list, err := c.archivedThreadsPage(reqCtx, channelID, private, before)
 		cancel()
 		if err != nil {
 			return nil, err
@@ -183,6 +181,31 @@ func (c *Client) ThreadsArchived(ctx context.Context, channelID string, private 
 		}
 		before = &archiveAt
 	}
+}
+
+// archivedThreadsPage requests one archived-thread page. discordgo formats the
+// before cursor with whole seconds, but Discord orders by sub-second
+// archive_timestamp and treats before as exclusive, so a truncated cursor skips
+// threads archived earlier within the page boundary's second.
+func (c *Client) archivedThreadsPage(ctx context.Context, channelID string, private bool, before *time.Time) (*discordgo.ThreadsList, error) {
+	endpoint := discordgo.EndpointChannelPublicArchivedThreads(channelID)
+	if private {
+		endpoint = discordgo.EndpointChannelPrivateArchivedThreads(channelID)
+	}
+	query := url.Values{"limit": {"100"}}
+	if before != nil {
+		query.Set("before", before.UTC().Format(time.RFC3339Nano))
+	}
+	uri := endpoint + "?" + query.Encode()
+	body, err := c.session.RequestWithBucketID(http.MethodGet, uri, nil, uri, discordgo.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	var list discordgo.ThreadsList
+	if err := discordgo.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("%w: %w", discordgo.ErrJSONUnmarshal, err)
+	}
+	return &list, nil
 }
 
 func (c *Client) GuildMembers(ctx context.Context, guildID string) ([]*discordgo.Member, error) {

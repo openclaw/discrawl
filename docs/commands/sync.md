@@ -58,7 +58,7 @@ discrawl sync --with-media
 - `--latest-only` - explicit latest-only run (also the default for untargeted `sync`)
 - `--all` - ignore `default_guild_id` and fan out across every discovered guild
 - `--guild <id>` / `--guilds <id,id>` - target specific guilds
-- `--channels <id,id>` - target specific channels (forum ids expand to threads)
+- `--channels <id,id>` - target specific channels (forum and media channel ids expand to their threads)
 - `--include-stored-threads` - with `--source discord --channels`, also target stored direct threads of the selected text, announcement, and forum channels; does not discover new threads or change ordinary channel selection
 - `--since <RFC3339>` - limit initial history and `--full` backfill to messages at or after this timestamp
 - `--concurrency <n>` - override worker count (default auto-sized: floor 8, cap 32)

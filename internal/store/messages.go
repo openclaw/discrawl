@@ -103,8 +103,8 @@ func (s *Store) ListMessages(ctx context.Context, opts MessageListOptions) ([]Me
 		}
 	}
 	if channel := normalizeChannelFilter(opts.Channel); channel != "" {
-		clauses = append(clauses, "(m.channel_id = ? or c.name = ? or c.name like ?)")
-		args = append(args, channel, channel, "%"+channel+"%")
+		clause, values := channelFilter(channel, "m.channel_id", "(m.channel_id = ? or c.name = ? or c.name like ?)", channel, channel, "%"+channel+"%")
+		clauses, args = append(clauses, clause), append(args, values...)
 	}
 	if author := strings.TrimSpace(opts.Author); author != "" {
 		clauses = append(clauses, `(m.author_id = ? or coalesce(mem.username, '') = ? or coalesce(mem.display_name, '') = ? or coalesce(mem.username, '') like ? or coalesce(mem.display_name, '') like ? or json_extract(m.raw_json, '$.author.username') = ?)`)
@@ -284,6 +284,29 @@ func mergeMessageRows(primary, extra []MessageRow) []MessageRow {
 
 func normalizeChannelFilter(raw string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "#"))
+}
+
+// channelFilter selects exactly one channel when value is a Discord ID, because
+// other channels' names can contain that ID. Other values keep the caller's
+// name matching clause and arguments.
+func channelFilter(value, idColumn, nameClause string, nameArgs ...any) (string, []any) {
+	if id := strings.TrimSpace(value); isChannelID(id) {
+		return idColumn + " = ?", []any{id}
+	}
+	return nameClause, nameArgs
+}
+
+// isChannelID matches the CLI's Discord ID check: 16 or more decimal digits.
+func isChannelID(value string) bool {
+	if len(value) < 16 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) resolveMessageDisplayMentions(ctx context.Context, rows []MessageRow) error {
