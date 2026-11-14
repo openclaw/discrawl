@@ -84,7 +84,11 @@ func startPostgresReceiver(t *testing.T, ctx context.Context, backend, seed, anc
 	return ready
 }
 
-func TestPostgresNativeDelivery(t *testing.T) {
+func TestPostgresNativeDelivery(t *testing.T) { testPostgresNativeDelivery(t, false) }
+
+func TestPostgresNativeDeliveryCommand(t *testing.T) { testPostgresNativeDelivery(t, true) }
+
+func testPostgresNativeDelivery(t *testing.T, command bool) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("native capture identity is supported on macOS and Linux")
 	}
@@ -114,7 +118,8 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	require.NoError(t, source.SetSyncState(ctx, "channel:cg1:history_complete", "seed"))
 	seedRoot := t.TempDir()
 	var seedKeys []SeedKey
-	_, err = snapshot.Export(ctx, snapshot.ExportOptions{DB: source.DB(), RootDir: seedRoot,
+	_, err = snapshot.Export(ctx, snapshot.ExportOptions{
+		DB: source.DB(), RootDir: seedRoot,
 		Tables: []string{"guilds", "channels", "members", "messages", "sync_state"},
 		Filter: func(table string, row map[string]any) (bool, error) {
 			// The fixture has one whole-guild scope. Internal host/schema receipts
@@ -128,7 +133,8 @@ func TestPostgresNativeDelivery(t *testing.T) {
 			}
 			seedKeys = append(seedKeys, entry)
 			return true, nil
-		}})
+		},
+	})
 	require.NoError(t, err)
 	baseline, err := store.ObserveNativeBaseline(ctx, sourcePath)
 	require.NoError(t, err)
@@ -216,19 +222,83 @@ func TestPostgresNativeDelivery(t *testing.T) {
 		require.NoError(t, err)
 		hashOwnershipKey(hash, key)
 	}
-	registration := Registration{Origin: proxy.URL, Archive: "fixture", BindingID: "fixture-binding", SeedManifestSHA256: fixture.ManifestSHA256, QualificationSHA256: qualificationSHA,
-		OwnedKeysSHA256: hex.EncodeToString(hash.Sum(nil)), OwnedKeysCount: int64(len(seedKeys)), Scope: Scope{GuildIDs: []string{"g1"}}, Baseline: baseline, ServerCursor: fixture.Cursor}
+	registration := Registration{
+		Origin: proxy.URL, Archive: "fixture", BindingID: "fixture-binding", SeedManifestSHA256: fixture.ManifestSHA256, QualificationSHA256: qualificationSHA,
+		OwnedKeysSHA256: hex.EncodeToString(hash.Sum(nil)), OwnedKeysCount: int64(len(seedKeys)), Scope: Scope{GuildIDs: []string{"g1"}}, Baseline: baseline, ServerCursor: fixture.Cursor,
+	}
 	outboxPath := filepath.Join(t.TempDir(), "outbox.sqlite")
-	outbox, err := InitOutbox(ctx, outboxPath, registration, func(yield func(SeedKey) error) error {
-		for _, entry := range seedKeys {
-			if err := yield(entry); err != nil {
-				return err
+	var runCommand func(...string) (DeliveryResult, error)
+	if command {
+		binary := filepath.Join(t.TempDir(), "discrawl")
+		build := exec.CommandContext(ctx, "go", "build", "-mod=readonly", "-buildvcs=false", "-o", binary, "./cmd/discrawl")
+		build.Dir = "../.."
+		out, err := build.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		absentConfig := filepath.Join(t.TempDir(), "absent-collector.toml")
+		runCommand = func(args ...string) (DeliveryResult, error) {
+			t.Helper()
+			cmd := exec.CommandContext(ctx, binary, append([]string{"--config", absentConfig, "delivery"}, args...)...)
+			cmd.Env = append(os.Environ(), "DISCRAWL_TEST_PUBLISHER=fixture-publisher")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			require.NoFileExists(t, absentConfig)
+			require.NotContains(t, stderr.String(), sourcePath)
+			require.NotContains(t, stderr.String(), "fixture-publisher")
+			var wire struct {
+				Status           DeliveryStatus `json:"status"`
+				CaptureID        string         `json:"capture_id"`
+				ReceiptsRecorded int            `json:"receipts_recorded"`
 			}
+			if stdout.Len() > 0 {
+				require.NoError(t, json.Unmarshal(stdout.Bytes(), &wire), "%s", stdout.Bytes())
+			}
+			return DeliveryResult{Status: wire.Status, CaptureID: wire.CaptureID, ReceiptsRecorded: wire.ReceiptsRecorded}, err
 		}
-		return nil
-	})
+		registrationBody, err := json.Marshal(map[string]any{"format": "discrawl-delivery-registration/v1", "registration": registration})
+		require.NoError(t, err)
+		registrationPath, ownershipPath := filepath.Join(t.TempDir(), "registration.json"), filepath.Join(t.TempDir(), "ownership.jsonl")
+		require.NoError(t, os.WriteFile(registrationPath, registrationBody, 0o600))
+		var stream bytes.Buffer
+		for _, key := range seedKeys {
+			require.NoError(t, json.NewEncoder(&stream).Encode(key))
+		}
+		require.NoError(t, os.WriteFile(ownershipPath, stream.Bytes(), 0o600))
+		result, err := runCommand("init", "--outbox", outboxPath, "--registration", registrationPath, "--ownership", ownershipPath)
+		require.NoError(t, err)
+		require.Equal(t, DeliveryStatus("initialized"), result.Status)
+	} else {
+		initialized, err := InitOutbox(ctx, outboxPath, registration, func(yield func(SeedKey) error) error {
+			for _, entry := range seedKeys {
+				if err := yield(entry); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		require.NoError(t, err)
+		require.NoError(t, initialized.Close())
+	}
+	outbox, err := OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, outbox.Close()) }()
+	deliver := func(parts int) (DeliveryResult, error) {
+		if command {
+			return runCommand("drain", "--outbox", outboxPath, "--token-env", "DISCRAWL_TEST_PUBLISHER", "--max-parts", fmt.Sprint(parts))
+		}
+		return outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(parts))
+	}
+	stage := func(captured store.NativeCapture) {
+		t.Helper()
+		if command {
+			result, err := runCommand("capture", "--outbox", outboxPath, "--source-db", sourcePath)
+			require.NoError(t, err)
+			require.Equal(t, DeliveryStatus("staged"), result.Status)
+		} else {
+			_, err := outbox.Stage(ctx, captured, 8<<20)
+			require.NoError(t, err)
+		}
+	}
 	mutations := make([]store.MessageMutation, 501)
 	for i := range mutations {
 		mutations[i].Record = store.MessageRecord{ID: fmt.Sprintf("m%04d", i), GuildID: "g1", ChannelID: "cg1", CreatedAt: "2026-11-14T00:00:00Z", Content: "staged\x00☃", NormalizedContent: "staged", RawJSON: "{}"}
@@ -238,13 +308,16 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	_, err = source.DB().ExecContext(ctx, `update channels set position=9007199254740993 where id='cg1'`)
 	require.NoError(t, err)
 	captured := capture(t, ctx, sourcePath, baseline)
-	_, err = outbox.Stage(ctx, captured, 8<<20)
-	require.NoError(t, err)
+	stage(captured)
 	part, err := outbox.NextPart(ctx)
 	require.NoError(t, err)
 	firstBody := append([]byte(nil), part.Body...)
-	result, err := outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
-	require.ErrorIs(t, err, ErrDeliverySend)
+	result, err := deliver(1)
+	if command {
+		require.Error(t, err)
+	} else {
+		require.ErrorIs(t, err, ErrDeliverySend)
+	}
 	require.Equal(t, 0, result.ReceiptsRecorded)
 	require.Equal(t, fixture.Sequence+1, sequence(), "remote commit survived the dropped response")
 	require.Equal(t, initial.Stats.SnapshotID, query(remote.QueryRequest{Name: "discrawl.live.binding"}).Stats.SnapshotID)
@@ -254,7 +327,7 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	require.NoError(t, outbox.Close())
 	outbox, err = OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
-	result, err = outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
+	result, err = deliver(1)
 	require.NoError(t, err)
 	require.Equal(t, DeliveryPartLimit, result.Status)
 	require.Equal(t, fixture.Sequence+1, sequence(), "exact replay must not create a second commit")
@@ -267,7 +340,7 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	require.Equal(t, baseline, state.Baseline)
 	waiting := query(remote.QueryRequest{Name: "discrawl.live.changes", Cursor: resume})
 	require.Empty(t, waiting.Rows, "partial captures are invisible to incremental readers")
-	result, err = outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
+	result, err = deliver(1)
 	require.NoError(t, err)
 	require.Equal(t, DeliveryComplete, result.Status)
 	require.Equal(t, fixture.Sequence+2, sequence())
@@ -320,12 +393,15 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	_, err = source.DB().ExecContext(ctx, `update channels set guild_id='g2' where id='cg1'`)
 	require.NoError(t, err)
 	next := capture(t, ctx, sourcePath, state.Baseline)
-	_, err = outbox.Stage(ctx, next, 8<<20)
-	require.NoError(t, err)
+	stage(next)
 	_, err = outbox.base.DB().ExecContext(ctx, `create trigger fail_final_receipt before update on binding begin select raise(abort,'fixture local receipt failure'); end`)
 	require.NoError(t, err)
-	result, err = outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
-	require.ErrorIs(t, err, ErrDeliveryState)
+	result, err = deliver(1)
+	if command {
+		require.Error(t, err)
+	} else {
+		require.ErrorIs(t, err, ErrDeliveryState)
+	}
 	require.Equal(t, 0, result.ReceiptsRecorded)
 	require.Equal(t, fixture.Sequence+3, sequence())
 	failed, err := outbox.State(ctx)
@@ -336,7 +412,7 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	require.NoError(t, outbox.Close())
 	outbox, err = OpenOutbox(ctx, outboxPath)
 	require.NoError(t, err)
-	result, err = outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
+	result, err = deliver(1)
 	require.NoError(t, err)
 	require.Equal(t, DeliveryComplete, result.Status)
 	require.Equal(t, fixture.Sequence+3, sequence(), "failed local receipt replays the completed remote capture")
@@ -372,7 +448,7 @@ func TestPostgresNativeDelivery(t *testing.T) {
 	}
 	require.True(t, foundLatest, "the later message edit must be delivered")
 	require.Equal(t, channels, query(remote.QueryRequest{Name: "discrawl.live.channels", SnapshotID: live.Stats.SnapshotID}), "a later scope exit must not change an older pin")
-	result, err = outbox.DeliverPending(ctx, deliveryOptions(), deliveryLimits(1))
+	result, err = deliver(1)
 	require.NoError(t, err)
 	require.Equal(t, DeliveryIdle, result.Status)
 	t.Logf("503 changes/two parts; lost-response replay at %d; final promotion at %d; local receipt failure/replay at %d; scope exit and old pins verified", fixture.Sequence+1, fixture.Sequence+2, fixture.Sequence+3)

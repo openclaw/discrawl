@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add explicit `delivery init`, `capture`, and `drain` commands for qualified
+  native report changes. Resume persisted batches after failure without loading
+  collector configuration, migrating the source, or enabling a schedule.
+
 - Reconcile channel checkpoint scope changes using complete native evidence
   and bounded outbox ownership ranges. Withdraw absent or excluded checkpoints
   without rescanning messages; retain the hold for unresolved guild dependencies.
