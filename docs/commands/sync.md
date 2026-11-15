@@ -94,6 +94,61 @@ discrawl sync --with-media
 - Interrupted recovery resumes from its own saved page checkpoint on the next unwindowed sync, including after cancellation or process termination. Messages ingested in the meantime do not mark the older history complete.
 - Failed recovery leaves partial history resumable. After cancellation, restoring a still-empty channel's completion marker uses the existing five-second failure-cleanup budget.
 
+## Recurring latest-only acquisition on Linux
+
+`operations/discrawl-latest@.service` and `.timer` are inactive templates for an
+already-qualified native source. They do not create a source, enroll a bot,
+change permissions, import a snapshot, or enable delivery. Deployment and
+credential custody need explicit operator admission before enabling an instance.
+
+For instance `community`, use the existing `discrawl` account and qualified
+`/var/lib/discrawl/community/acquisition.toml`. Keep its database, cache, log and
+share paths inside that source directory. Admit `sync.source = "discord"`,
+`sync.full_history = false`, `sync.concurrency = 1`, disabled attachment text,
+media and embeddings, and disabled share auto-update. Keep the existing guild
+and channel policy. Set `discord.token_source = "env"` and
+`discord.token_env = "DISCORD_BOT_TOKEN"`; no desktop or user-token fallback.
+
+Install the matching Discrawl binary at `/usr/local/bin/discrawl` and this
+revision's `scripts/private_discord_checkpoint.py` at
+`/usr/local/libexec/discrawl/private_discord_checkpoint.py`, both root-owned and
+not writable by the service account. Python 3.11 or newer is required. Put only
+the approved bot credential and configured guild ID in root-owned mode-0600
+`/etc/discrawl/acquisition-community.env` as `DISCORD_BOT_TOKEN` and
+`DISCRAWL_GUILD_ID`. The latter must identify the already-admitted guild; it is
+passed as one argument, never evaluated as shell text. No publisher, reader,
+GitHub or fleet credential belongs in this file. A pre-start check rejects an
+empty normalized bot token before the native environment resolver could try
+its keyring fallback; it also requires a nonempty numeric guild ID.
+
+The service runs the native supervisor's `run --timeout 1200 --phase latest`
+with `sync --source discord --guild <configured-id> --no-update --latest-only
+--skip-members --with-media=false --concurrency 1`. It uses a nonblocking
+`acquisition.lock`; direct operator acquisitions must use the same lock and
+must not unlink it. `flock --no-fork` makes the supervisor the service's main
+process, so a stop reaches its owned-child termination and reaping path.
+The native deadline is 20 minutes, with a 21-minute unit ceiling and 20-second
+stop grace. The journal receives bounded supervisor records, not raw native
+stdout, stderr or credentials. Lock contention exits 75 visibly.
+
+The timer waits five minutes after completion, plus up to 15 seconds of jitter;
+it cannot overlap its own running service. Its boot trigger can run immediately
+when enabled on an already-running host. Acquisition retains the native
+`.discrawl-sync.lock` writer boundary. Delivery keeps its separate outbox lock
+and reads one coherent native snapshot, so it need not block the entire crawl.
+Do not replace these owners with a shared cross-service lock.
+
+Validate the installed units with native `systemd-analyze verify`, then qualify
+one actual timer invocation and its next due time. Preserve partial progress on
+failure; inspect the native terminal record before intervening. Routine sync
+honors existing unavailable markers and their normal seven-day retry policy;
+do not clear markers or substitute `--full` to make a run pass. A successful
+latest-only run does not prove historical or full-day report completeness.
+Native latest-only behavior still fills incomplete thread history when needed;
+the template does not replace those existing per-thread recovery rules.
+Rollback disables only this acquisition timer and settles its own service;
+retain source data, locks, markers and the independently managed delivery timer.
+
 ## Re-fetching Components V2 messages archived with empty text
 
 Discrawl versions before Components V2 support stored messages sent with the `IS_COMPONENTS_V2` flag (`32768`), such as app-posted GitHub cards, without their component tree or text. This affects both bot sync and Desktop cache imports. Those rows cannot be rebuilt locally, and routine runs don't re-read them: `sync`, `--all-channels`, `--full` and `--channels` only request messages after each channel's stored cursor, and `wiretap` skips cache files that haven't changed. Repair them with the fixed binary:

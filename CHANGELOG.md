@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add inactive Linux service and five-minute timer templates for bounded
+  latest-only Discord acquisition, reusing native supervision and source locks
+  without requesting a full-history rebuild or changing delivery schedules.
+
 - Refresh provider SDKs, search helpers, and Go analysis dependencies; update SQLite/libc together and align optional helper builds with Go 1.27.4 while retaining their Go minimums and the crypto security pin.
 
 - Preserve complete guild and archived-thread pagination, sync media-channel posts, and index forwarded snapshot text. Thanks @saariuslystoned.

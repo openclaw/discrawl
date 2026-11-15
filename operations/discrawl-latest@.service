@@ -1,0 +1,29 @@
+[Unit]
+Description=Refresh latest Discord messages for Discrawl source %i
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/discrawl/%i
+
+[Service]
+Type=oneshot
+User=discrawl
+Group=discrawl
+WorkingDirectory=/var/lib/discrawl/%i
+EnvironmentFile=/etc/discrawl/acquisition-%i.env
+UnsetEnvironment=GH_TOKEN GITHUB_TOKEN DISCORD_BACKUP_TOKEN DISCRAWL_REMOTE_TOKEN DISCRAWL_PUBLISHER_TOKEN CRAWL_ARCHIVE_PUBLISHER_TOKEN CRAWL_ARCHIVE_READER_TOKEN
+ExecStartPre=/usr/bin/python3 -c 'import os,sys; token=os.environ.get("DISCORD_BOT_TOKEN", "").strip(); guild=os.environ.get("DISCRAWL_GUILD_ID", ""); sys.exit(0 if token.removeprefix("Bot ").strip() and guild.isdecimal() else 1)'
+ExecStart=/usr/bin/flock --no-fork --nonblock --conflict-exit-code=75 /var/lib/discrawl/%i/acquisition.lock /usr/bin/python3 /usr/local/libexec/discrawl/private_discord_checkpoint.py run --timeout 1200 --phase latest -- /usr/local/bin/discrawl --public-errors --config /var/lib/discrawl/%i/acquisition.toml sync --source discord --guild ${DISCRAWL_GUILD_ID} --no-update --latest-only --skip-members --with-media=false --concurrency 1
+TimeoutStartSec=21min
+TimeoutStopSec=20s
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/discrawl/%i
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal
