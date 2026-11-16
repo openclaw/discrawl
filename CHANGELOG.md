@@ -2,16 +2,17 @@
 
 ## Unreleased
 
-- Add inactive Linux service and five-minute timer templates for bounded
-  latest-only Discord acquisition, reusing native supervision and source locks
-  without requesting a full-history rebuild or changing delivery schedules.
+## 0.21.0 - 2026-11-15
 
-- Refresh provider SDKs, search helpers, and Go analysis dependencies; update SQLite/libc together and align optional helper builds with Go 1.27.4 while retaining their Go minimums and the crypto security pin.
+**Highlights:** Preserve more Discord content and exact search filters, add resumable native delivery, and fix Go standard-library security issues.
 
 - Preserve complete guild and archived-thread pagination, sync media-channel posts, and index forwarded snapshot text. Thanks @saariuslystoned.
+
 - Keep channel-ID filters exact and author filters limited to authors across search modes, including users without display names. Thanks @saariuslystoned.
+
 - Preserve bot-synced thread metadata during Desktop imports, retain role mentions, and index poll and embed fields from the cache. Thanks @saariuslystoned.
-- Match CI's buildable-package security scan in `make lint`, excluding standalone fixtures and nested modules.
+
+- Include retained direct forum threads in `sync --include-stored-threads` when live catalog discovery cannot list them, preserving individual history permission checks and bounded coverage receipts.
 
 - Add `delivery cycle` and inactive Linux timer templates for five-minute
   delivery. Resume pending bytes before capturing new changes, stop visibly on
@@ -24,6 +25,10 @@
 - Add explicit `delivery init`, `capture`, and `drain` commands for qualified
   native report changes. Resume persisted batches after failure without loading
   collector configuration, migrating the source, or enabling a schedule.
+
+- Add inactive Linux service and five-minute timer templates for bounded
+  latest-only Discord acquisition, reusing native supervision and source locks
+  without requesting a full-history rebuild or changing delivery schedules.
 
 - Reconcile channel checkpoint scope changes using complete native evidence
   and bounded outbox ownership ranges. Withdraw absent or excluded checkpoints
@@ -58,8 +63,11 @@
   table lists and generations remain unchanged; older checkpoint history still
   requires a consistent baseline.
 
-- Include retained direct forum threads in `sync --include-stored-threads` when live catalog discovery cannot list them, preserving individual history permission checks and bounded coverage receipts.
 - Use Go 1.27.4 for the standard-library fix for GO-2026-6859; retain the Go 1.27.0 minimum.
+
+- Refresh provider SDKs, search helpers, and Go analysis dependencies; update SQLite/libc together and align optional helper builds with Go 1.27.4 while retaining their Go minimums and the crypto security pin.
+
+- Match CI's buildable-package security scan in `make lint`, excluding standalone fixtures and nested modules.
 
 ## 0.20.0 - 2026-11-06
 
