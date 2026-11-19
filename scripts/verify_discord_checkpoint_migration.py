@@ -19,7 +19,7 @@ import time
 from private_discord_checkpoint import (CheckpointError, GitHub, POLICY_REF, canonical, check_deadline, digest,
                                         custody_receipt, download_database, execution_context, load_policy,
                                         file_digest, github_command, hash_value, integer, keys,
-                                        readonly, release_manifest, require, strict_json, validate_policy)
+                                        readonly, release_manifest, require, strict_json, validate_policy, history_time, history_receipt)
 
 
 DEADLINE = None
@@ -282,13 +282,6 @@ def history_identity(raw):
     return value
 
 
-def history_time(value):
-    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z", value),
-            "history_timestamp")
-    # Keep native RFC3339Nano ordering; datetime alone discards sub-microseconds.
-    second, _, fraction = value.removesuffix("Z").partition(".")
-    return datetime.fromisoformat(second), int(fraction.ljust(9, "0") or "0")
-
 
 def history_checkpoint(github, run_id, manifest_sha, inventory_sha, identity, directory):
     repository = github.api("")
@@ -314,27 +307,6 @@ def history_checkpoint(github, run_id, manifest_sha, inventory_sha, identity, di
                         legacy_published=run["conclusion"] == "success")
     return custody_receipt(manifest, assets, reference), run, phases
 
-
-def history_receipt(value, channel, guild, kind, since):
-    receipt = strict_json(value.encode())
-    fields = "guild_id channel_id channel_type since until completed_at boundary"
-    keys(receipt, fields + (" boundary_message_id" if "boundary_message_id" in receipt else ""))
-    # These are the native channelKind/Discord type pairs, not inferred labels.
-    types = {"text": 0, "voice": 2, "announcement": 5, "thread_announcement": 10,
-             "thread_public": 11, "thread_private": 12, "stage": 13}
-    channel_type = types.get(kind)
-    if re.fullmatch(r"type_(?:0|[1-9][0-9]*)", kind):
-        channel_type = int(kind.removeprefix("type_"))
-    require(receipt["guild_id"] == guild and receipt["channel_id"] == channel
-            and channel_type in {0, 2, 5, 10, 11, 12, 13}
-            and type(receipt["channel_type"]) is int and receipt["channel_type"] == channel_type
-            and receipt["since"] == since, "history_receipt_identity")
-    require(history_time(since) < history_time(receipt["until"]) <= history_time(receipt["completed_at"]),
-            "history_receipt_window")
-    require(receipt["boundary"] in {"since", "end"}
-            and (receipt["boundary"] != "since" or isinstance(receipt.get("boundary_message_id"), str)
-                 and re.fullmatch(r"[1-9][0-9]{0,19}", receipt["boundary_message_id"])), "history_receipt_boundary")
-    return {key: receipt[key] for key in ("since", "until", "completed_at", "boundary")}
 
 
 def history_projection(database, channels, guild, identity, deadline):

@@ -875,6 +875,105 @@ def acquire(native, config, policy_path, expected_sha256, guild, completion, tim
     return run_writers(commands, timeout, completion, phases=["latest", "selected"] if mode == "current" else ["selected"])
 
 
+
+def history_time(value):
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z", value),
+            "history_timestamp")
+    # Keep native RFC3339Nano ordering; datetime alone discards sub-microseconds.
+    second, _, fraction = value.removesuffix("Z").partition(".")
+    return datetime.fromisoformat(second), int(fraction.ljust(9, "0") or "0")
+
+
+def history_receipt(value, channel, guild, kind, since):
+    receipt = strict_json(value.encode())
+    fields = "guild_id channel_id channel_type since until completed_at boundary"
+    keys(receipt, fields + (" boundary_message_id" if "boundary_message_id" in receipt else ""))
+    # These are the native channelKind/Discord type pairs, not inferred labels.
+    types = {"text": 0, "voice": 2, "announcement": 5, "thread_announcement": 10,
+             "thread_public": 11, "thread_private": 12, "stage": 13}
+    channel_type = types.get(kind)
+    if re.fullmatch(r"type_(?:0|[1-9][0-9]*)", kind):
+        channel_type = int(kind.removeprefix("type_"))
+    require(receipt["guild_id"] == guild and receipt["channel_id"] == channel
+            and channel_type in {0, 2, 5, 10, 11, 12, 13}
+            and type(receipt["channel_type"]) is int and receipt["channel_type"] == channel_type
+            and receipt["since"] == since, "history_receipt_identity")
+    require(history_time(since) < history_time(receipt["until"]) <= history_time(receipt["completed_at"]),
+            "history_receipt_window")
+    require(receipt["boundary"] in {"since", "end"}
+            and (receipt["boundary"] != "since" or isinstance(receipt.get("boundary_message_id"), str)
+                 and re.fullmatch(r"[1-9][0-9]{0,19}", receipt["boundary_message_id"])), "history_receipt_boundary")
+    return {key: receipt[key] for key in ("since", "until", "completed_at", "boundary")}
+
+
+def selected_history(native, config, manifest_path, guild, timeout=1200):
+    """Consume the report owner's exact roster without running its projection."""
+    import tomllib
+    require(0 < timeout <= 1200 and manifest_path.is_file() and not manifest_path.is_symlink(), "selected_manifest")
+    stat = manifest_path.stat()
+    require(not stat.st_mode & 0o027 and stat.st_size <= 1024 * 1024, "selected_manifest")
+    manifest = strict_json(manifest_path.read_bytes())
+    keys(manifest, "schema guild_id selected_ids unavailable_ids channel_ids selection_sha256 captured_at source")
+    require(manifest["schema"] == "discrawl-selected-history/v1" and manifest["guild_id"] == guild, "selected_manifest")
+    groups = [manifest[key] for key in ("selected_ids", "unavailable_ids", "channel_ids")]
+    for group in groups:
+        require(isinstance(group, list) and len(group) <= MAX_TARGETS
+                and all(isinstance(v, str) and re.fullmatch(r"[1-9][0-9]{0,19}", v) and int(v) < 2 ** 64 for v in group)
+                and group == sorted(set(group)), "selected_targets")
+    selected, unavailable, channels = groups
+    require(channels and set(channels).isdisjoint(unavailable)
+            and set(selected) == set(channels) | set(unavailable), "selected_targets")
+    # JSON field order is part of this small cross-language digest contract.
+    selection = dict(guild_id=guild, selected_ids=selected, unavailable_ids=unavailable, channel_ids=channels)
+    encoded = json.dumps(selection, separators=(",", ":"), ensure_ascii=False).encode()
+    require(digest(encoded) == manifest["selection_sha256"], "selected_digest")
+    source = manifest["source"]
+    keys(source, "snapshot_id manifest_sha256 channels_sha256 checkpoints_sha256 projection_revision")
+    require(isinstance(source["snapshot_id"], str) and source["snapshot_id"]
+            and integer(source["projection_revision"])
+            and all(hash_value(source[k]) for k in ("manifest_sha256", "channels_sha256", "checkpoints_sha256")), "selected_source")
+    now = datetime.now(timezone.utc)
+    since = acquisition_since()
+    require(isinstance(manifest["captured_at"], str) and manifest["captured_at"].endswith("Z"), "selected_stale")
+    captured = datetime.fromisoformat(manifest["captured_at"].replace("Z", "+00:00"))
+    require(captured.tzinfo is not None and datetime.fromisoformat(since.replace("Z", "+00:00")) <= captured <= now, "selected_stale")
+    with config.open("rb") as file:
+        configured = tomllib.load(file).get("db_path")
+    require(isinstance(configured, str) and Path(configured).is_absolute(), "selected_database")
+    database = Path(configured)
+    target_rows = {}
+    with contextlib.closing(readonly(database)) as db:
+        # Do not intersect the manifest with today's catalog: missing, moved or
+        # excluded targets must stop visibly instead of shrinking the denominator.
+        for channel in channels:
+            row = db.execute("SELECT guild_id,kind,collection_scope,deleted_at FROM channels WHERE id=?", (channel,)).fetchone()
+            require(row and row[0] == guild and row[2] == "allowed" and not row[3], "selected_catalog_changed")
+            require(not db.execute("SELECT 1 FROM sync_state WHERE scope=?", ("channel:" + channel + ":unavailable",)).fetchone(),
+                    "selected_catalog_changed")
+            target_rows[channel] = row
+    command = [str(native), "--public-errors", "--config", str(config), "sync", "--source", "discord", "--guild", guild,
+               "--no-update", "--skip-members", "--full", "--since", since, "--channels", ",".join(channels),
+               "--with-media=false", "--concurrency", "1"]
+    result = run_writer(command, timeout, phase="selected")
+    if result:
+        return result
+    observed = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with contextlib.closing(readonly(database)) as db:
+        for channel in channels:
+            row = db.execute("SELECT guild_id,kind,collection_scope,deleted_at FROM channels WHERE id=?", (channel,)).fetchone()
+            require(row == target_rows[channel] and not db.execute("SELECT 1 FROM sync_state WHERE scope=?",
+                    ("channel:" + channel + ":unavailable",)).fetchone(), "selected_catalog_changed")
+            row = db.execute("SELECT cursor FROM sync_state WHERE scope=?",
+                             ("channel:" + channel + ":history_window:v1:" + since,)).fetchone()
+            require(row, "selected_history_incomplete")
+            proof = history_receipt(row[0], channel, guild, target_rows[channel][1], since)
+            require(history_time(now.isoformat().replace("+00:00", "Z")) <= history_time(proof["until"])
+                    and history_time(proof["completed_at"]) <= history_time(observed), "selected_history_incomplete")
+    print("native: " + canonical({"phase": "selected", "state": "qualified", "channels": len(channels),
+                                   "selection_sha256": manifest["selection_sha256"], "since": since}).decode(), flush=True)
+    return 0
+
+
 def run_writer(command, timeout, completion=None, phase="command"):
     return run_writers([command], timeout, completion, phases=[phase])
 
@@ -1034,7 +1133,7 @@ def run_writers(commands, timeout, completion=None, phases=None):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__, epilog="acquire also accepts --with-members for its guild refresh.")
-    parser.add_argument("operation", choices=("restore", "save", "migrate", "verify-save", "promote-save", "run", "report-check", "policy", "acquire"))
+    parser.add_argument("operation", choices=("restore", "save", "migrate", "verify-save", "promote-save", "run", "report-check", "policy", "acquire", "selected"))
     parser.add_argument("--db", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--writer-receipt", type=Path)
@@ -1046,6 +1145,7 @@ def main():
     parser.add_argument("--prune", action="store_true")
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--policy", type=Path)
+    parser.add_argument("--selected-manifest", type=Path)
     parser.add_argument("--policy-commit")
     parser.add_argument("--policy-sha256")
     parser.add_argument("--native", type=Path)
@@ -1055,6 +1155,11 @@ def main():
     args, command = parser.parse_known_args()
     if args.operation == "run":
         return run_writer(command[1:] if command[:1] == ["--"] else command, args.timeout if args.timeout is not None else 2700, args.writer_receipt, args.phase)
+    if args.operation == "selected":
+        require(not command and args.native is not None and args.config is not None
+                and args.selected_manifest is not None, "arguments")
+        return selected_history(args.native, args.config, args.selected_manifest,
+                                os.environ.get("DISCRAWL_GUILD_ID", ""), args.timeout if args.timeout is not None else 1200)
     # Keep this acquisition-only flag out of the common parser: run forwards
     # the same native flag, including commands without a -- separator.
     with_members = args.operation == "acquire" and command == ["--with-members"]

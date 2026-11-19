@@ -427,3 +427,42 @@ three minutes still available for final gates, promotion and push/readback.
 Actual space is checked for restore and Git export; no cadence or completion
 time is inferred from source tests. No cache, new checkpoint upload, retention
 deletion, cloud publication, or scheduler activation is part of this route.
+
+
+## Server selected-history cadence
+
+`operations/discrawl-selected@.service` and its two-hour timer are inactive
+installation templates. They run as the same `discrawl` user, with the same
+`acquisition.toml`, credential environment and `acquisition.lock` as the latest
+service. Enable only after a real selected-history run qualifies the source.
+The existing `acquire` operation remains restricted to its GitHub Actions owner.
+
+The report producer's existing live-source refresh writes `selected-history.json`
+in the instance directory. Configure its `selectedHistoryManifest` destination
+and give the producer write access and the acquisition user group-read access
+through a private shared-group directory. No Node process or root transition runs
+inside this service. A complete verified live catalog/checkpoint read atomically refreshes the
+manifest, even when missing history holds report generation. Failed metadata
+reads leave the previous manifest intact. Catalog
+changes enter through that same owner, never a second set of channel-name rules.
+
+The manifest schema is `discrawl-selected-history/v1`. It contains `guild_id`,
+`selected_ids`, `unavailable_ids`, `channel_ids`, `selection_sha256`, `captured_at`
+and source snapshot/catalog/checkpoint hashes with the projection revision.
+IDs are sorted strings. The selection digest is SHA-256 of compact JSON with
+keys in this order: `guild_id`, `selected_ids`, `unavailable_ids`, `channel_ids`.
+`channel_ids` is the fixed available subset, including streams with no messages.
+The supervisor rejects altered, empty or stale manifests and missing, moved or
+excluded native targets. It never silently removes a target from the roster.
+
+Each invocation computes yesterday's midnight in UTC once and acquires those
+exact IDs using `--full --since`, without stored-thread expansion, member refresh
+or media downloads. `acquisition.toml` must have an explicit absolute `db_path`
+so preflight and native execution inspect the same archive. The manifest must
+have been captured since that lower bound; a stopped report refresh therefore
+fails visibly instead of running indefinitely on stale selection. Following
+native exit, every target needs a fresh matching history-window receipt. A zero
+native exit alone does not qualify coverage. Existing native supervision bounds
+execution to 1,200 seconds, reaps its process group and sanitizes diagnostics.
+The service retains the 512 MiB limit and one-CPU budget; it does not publish or
+change the delivery cadence.

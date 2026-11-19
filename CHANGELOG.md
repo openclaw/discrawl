@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an inactive selected-history service and two-hour timer using the report
+  owner's fixed channel manifest, UTC-yesterday window and native completion
+  receipts without changing GitHub Actions acquisition or delivery.
+
 ## 0.21.0 - 2026-11-15
 
 **Highlights:** Preserve more Discord content and exact search filters, add resumable native delivery, and fix Go standard-library security issues.

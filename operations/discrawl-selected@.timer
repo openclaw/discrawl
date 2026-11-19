@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh selected Discrawl history %i every two hours
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=2h
+RandomizedDelaySec=15s
+AccuracySec=1s
+Unit=discrawl-selected@%i.service
+
+[Install]
+WantedBy=timers.target
