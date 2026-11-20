@@ -123,3 +123,38 @@ func TestAcquirePostgresHTTP(t *testing.T) {
 }
 
 func ioString(w http.ResponseWriter, s string) { _, _ = w.Write([]byte(s)) }
+
+func TestAcquireRejectsInvalidScopeAndCredentialsBeforeNetwork(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DISCRAWL_TEST_PUBLISHER", "fixture-publisher")
+	t.Setenv("DISCRAWL_TEST_BOT", "fixture-bot")
+	t.Setenv("DISCRAWL_TEST_MISSING", "")
+	base := []string{"--config", filepath.Join(root, "absent", "config.toml"), "acquire", "--api-url", "http://127.0.0.1:1", "--source", "fixture", "--guild", "100", "--channel", "200", "--publisher-token-env", "DISCRAWL_TEST_PUBLISHER", "--discord-token-env", "DISCRAWL_TEST_BOT"}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--timeout", "0s"}, "bounded options"},
+		{[]string{"--max-pages", "0"}, "bounded options"},
+		{[]string{"--discord-token-env", "DISCRAWL_TEST_PUBLISHER"}, "separate credentials"},
+		{[]string{"--publisher-token-env", "invalid-name"}, "explicit credential"},
+		{[]string{"--discord-token-env", "DISCRAWL_TEST_MISSING"}, "unavailable"},
+		{[]string{"--since", "invalid"}, "UTC RFC3339"},
+		{[]string{"--api-url", "http://archive.example.test"}, "loopback"},
+		{[]string{"--guild", "01"}, "snowflake"},
+		{[]string{"--channel", "0"}, "snowflake"},
+		{[]string{"--unknown-option"}, "invalid acquire options"},
+	} {
+		var out bytes.Buffer
+		err := Run(t.Context(), append(append([]string{}, base...), tc.args...), &out, &out)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		if out.Len() != 0 {
+			t.Fatal("invalid acquisition emitted a success result")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "absent")); !os.IsNotExist(err) {
+		t.Fatal("invalid acquire opened local runtime")
+	}
+}

@@ -19,9 +19,9 @@ func TestAcquireServiceStopsAtAPIWithoutLocalFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	var command []string
-	for _, line := range strings.Split(string(unit), "\n") {
-		if strings.HasPrefix(line, "ExecStart=") {
-			command = strings.Fields(strings.TrimPrefix(line, "ExecStart="))
+	for line := range strings.SplitSeq(string(unit), "\n") {
+		if value, ok := strings.CutPrefix(line, "ExecStart="); ok {
+			command = strings.Fields(value)
 		}
 	}
 	if len(command) < 7 || strings.Join(command[:6], " ") != "/usr/bin/flock --no-fork --nonblock --conflict-exit-code=75 /var/lib/discrawl/%i/acquisition.lock /usr/local/bin/discrawl" {
@@ -39,7 +39,7 @@ func TestAcquireServiceStopsAtAPIWithoutLocalFallback(t *testing.T) {
 	}
 	root := t.TempDir()
 	config := filepath.Join(root, "invalid.toml")
-	if err := os.WriteFile(config, []byte("not valid TOML ["), 0600); err != nil {
+	if err := os.WriteFile(config, []byte("not valid TOML ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DISCRAWL_CONFIG", config)
