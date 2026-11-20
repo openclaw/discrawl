@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Read PostgreSQL API message rows in cloud listing and search instead of
+  incorrectly displaying an empty archive for columnar responses.
+
 - Add inactive five-minute PostgreSQL acquisition service templates with separate
   publisher/bot credentials, API-owned progress and no SQLite fallback.
 

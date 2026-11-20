@@ -249,6 +249,42 @@ func TestRemoteReadCommandsValidateAndQuery(t *testing.T) {
 	}
 }
 
+func TestCloudMessageCommandsReadColumnarHTTPResults(t *testing.T) {
+	t.Setenv("DISCRAWL_TEST_READER_TOKEN", "fixture-reader")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/apps/discrawl/archives/fixture/query" || req.Header.Get("Authorization") != "Bearer fixture-reader" {
+			t.Errorf("unexpected archive request: %s", req.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(crawlremote.QueryResult{
+			Columns: strings.Fields("message_id guild_id channel_id channel_name author_id author_username content created_at edited_at"),
+			Rows:    [][]any{{"m1", "g1", "c1", "general", "u1", "alice", "full message ☃", "2026-05-27T17:00:00Z", nil}},
+		})
+	}))
+	defer server.Close()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(t.TempDir(), "never-created", "archive.sqlite")
+	cfg.Remote = crawlremote.Config{Mode: crawlremote.ModeCloud, Endpoint: server.URL, Archive: "fixture", TokenEnv: "DISCRAWL_TEST_READER_TOKEN"}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Write(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"messages", "--guild", "g1", "--limit", "1"}, {"search", "full", "--guild", "g1", "--limit", "1"}} {
+		var out, stderr bytes.Buffer
+		if err := Run(context.Background(), append([]string{"--config", path, "--json"}, args...), &out, &stderr); err != nil {
+			t.Fatalf("%v: %v (%s)", args, err, stderr.String())
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0]["content"] != "full message ☃" || rows[0]["message_id"] != "m1" {
+			t.Fatalf("%v: expected full HTTP row, got %s (decode %v)", args, out.String(), err)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(cfg.DBPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cloud command touched local archive: %v", err)
+	}
+}
+
 func TestRemoteLoginValidationAndClientErrors(t *testing.T) {
 	r := &runtime{
 		ctx:        context.Background(),

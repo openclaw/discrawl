@@ -39,8 +39,12 @@ func (r *runtime) runRemoteSearch(opts store.SearchOptions, mode string, dm bool
 	if err != nil {
 		return nil, err
 	}
-	out := make([]store.SearchResult, 0, len(result.Values))
-	for _, value := range result.Values {
+	values, err := remoteMessageValues(result)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.SearchResult, 0, len(values))
+	for _, value := range values {
 		out = append(out, store.SearchResult{
 			MessageID:              remoteString(value, "message_id"),
 			GuildID:                remoteString(value, "guild_id"),
@@ -89,8 +93,12 @@ func (r *runtime) runRemoteMessages(opts store.MessageListOptions, dm bool) ([]s
 	if err != nil {
 		return nil, err
 	}
-	out := make([]store.MessageRow, 0, len(result.Values))
-	for _, value := range result.Values {
+	values, err := remoteMessageValues(result)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.MessageRow, 0, len(values))
+	for _, value := range values {
 		out = append(out, store.MessageRow{
 			MessageID:              remoteString(value, "message_id"),
 			GuildID:                remoteString(value, "guild_id"),
@@ -105,6 +113,37 @@ func (r *runtime) runRemoteMessages(opts store.MessageListOptions, dm bool) ([]s
 		})
 	}
 	return out, nil
+}
+
+func remoteMessageValues(result crawlremote.QueryResult) ([]map[string]any, error) {
+	if len(result.Columns) == 0 && len(result.Rows) == 0 {
+		// Published archive readers also return object rows in the v1 values field.
+		return result.Values, nil
+	}
+	columns := make(map[string]struct{}, len(result.Columns))
+	for _, name := range result.Columns {
+		if _, exists := columns[name]; exists {
+			return nil, errors.New("remote message response has duplicate columns")
+		}
+		columns[name] = struct{}{}
+	}
+	for _, name := range []string{"message_id", "guild_id", "channel_id", "channel_name", "author_id", "author_username", "content", "created_at"} {
+		if _, exists := columns[name]; !exists {
+			return nil, fmt.Errorf("remote message response is missing column %s", name)
+		}
+	}
+	values := make([]map[string]any, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		if len(row) != len(result.Columns) {
+			return nil, errors.New("remote message response row does not match its columns")
+		}
+		value := make(map[string]any, len(row))
+		for i, name := range result.Columns {
+			value[name] = row[i]
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func singleRemoteGuild(guildIDs []string) (string, error) {
