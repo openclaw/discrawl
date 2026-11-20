@@ -48,7 +48,7 @@ func runAcquire(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	token := func(name string) (string, error) {
 		if name == "" || strings.IndexFunc(name, func(r rune) bool {
-			return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+			return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
 		}) >= 0 {
 			return "", usageErr(errors.New("explicit credential environment variable required"))
 		}
@@ -85,7 +85,7 @@ func runAcquire(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	provider, err := discord.New(bot)
 	if err != nil {
-		return errors.New("Discord bot client could not be initialized")
+		return errors.New("discord bot client could not be initialized")
 	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()

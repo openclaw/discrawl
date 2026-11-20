@@ -20,8 +20,10 @@ import (
 	"github.com/openclaw/crawlkit/remote"
 )
 
-const profile = "discord-acquisition/v1"
-const pageLimit = 4 << 20
+const (
+	profile   = "discord-acquisition/v1"
+	pageLimit = 4 << 20
+)
 
 type Run struct {
 	ID               string    `json:"id"`
@@ -78,12 +80,13 @@ func NewClient(origin, source, token string) (*Client, error) {
 		}
 	}
 	if source == "" || len(source) > 128 || strings.IndexFunc(source, func(r rune) bool {
-		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-')
+		return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-'
 	}) >= 0 || token == "" || strings.ContainsAny(token, " \t\r\n") {
 		return nil, errors.New("explicit source and publisher token are required")
 	}
 	return &Client{strings.TrimRight(origin, "/"), source, token, &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
+
 func (c *Client) request(ctx context.Context, method, path string, input, output any, limit int) ([]byte, error) {
 	var body []byte
 	var err error
@@ -105,8 +108,8 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	if err != nil {
 		return nil, errors.New("acquisition API transport failed; reconcile server state")
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
 		return nil, &APIError{res.StatusCode}
 	}
 	raw, err := io.ReadAll(io.LimitReader(res.Body, int64(limit)+1))
@@ -120,6 +123,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	}
 	return body, nil
 }
+
 func (c *Client) State(ctx context.Context, channel string) (State, error) {
 	var s State
 	_, err := c.request(ctx, http.MethodGet, "state?channel="+url.QueryEscape(channel), nil, &s, 128<<10)
@@ -128,6 +132,7 @@ func (c *Client) State(ctx context.Context, channel string) (State, error) {
 	}
 	return s, err
 }
+
 func (c *Client) Begin(ctx context.Context, r Run) error {
 	var result struct {
 		RunID  string `json:"runId"`
@@ -139,6 +144,7 @@ func (c *Client) Begin(ctx context.Context, r Run) error {
 	}
 	return err
 }
+
 func (c *Client) Messages(ctx context.Context, r Run, s State, ids []string) ([]remote.Change, error) {
 	request := struct {
 		RunID            string   `json:"runId"`
@@ -169,6 +175,7 @@ func (c *Client) Messages(ctx context.Context, r Run, s State, ids []string) ([]
 	}
 	return result.Messages, nil
 }
+
 func (c *Client) Commit(ctx context.Context, s State, p Page) (Receipt, error) {
 	var receipt Receipt
 	body, err := c.request(ctx, http.MethodPost, "pages", p, &receipt, 4096)

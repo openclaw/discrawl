@@ -31,13 +31,14 @@ type Result struct {
 	RunID    string    `json:"run_id,omitempty"`
 	Pages    int       `json:"pages"`
 	Messages int       `json:"messages"`
-	Through  time.Time `json:"through,omitempty"`
+	Through  time.Time `json:"through,omitzero"`
 }
 
 func identifier(label string) string {
 	hash := sha256.Sum256([]byte(label))
 	return hex.EncodeToString(hash[:])
 }
+
 func snowflake(id string) (uint64, error) {
 	n, e := strconv.ParseUint(id, 10, 64)
 	if e != nil || n == 0 || strconv.FormatUint(n, 10) != id {
@@ -45,6 +46,7 @@ func snowflake(id string) (uint64, error) {
 	}
 	return n, nil
 }
+
 func validTime(t time.Time) bool {
 	return !t.IsZero() && t.Location() == time.UTC && t.Nanosecond()%1000000 == 0
 }
@@ -86,20 +88,23 @@ func Collect(ctx context.Context, api *Client, provider Provider, opts Options) 
 			return result, errors.New("first acquisition needs explicit UTC millisecond since before horizon")
 		}
 		run = Run{ExpectedRevision: state.Revision, GuildID: opts.Guild, ChannelID: opts.Channel, Since: since, Horizon: horizon}
-		encoded, _ := json.Marshal(struct{ Source, Guild, Channel, Since, Horizon string }{api.source, opts.Guild, opts.Channel, since.Format(time.RFC3339Nano), horizon.Format(time.RFC3339Nano)})
+		encoded, err := json.Marshal(struct{ Source, Guild, Channel, Since, Horizon string }{api.source, opts.Guild, opts.Channel, since.Format(time.RFC3339Nano), horizon.Format(time.RFC3339Nano)})
+		if err != nil {
+			return result, errors.New("acquisition identity encoding failed")
+		}
 		run.ID = identifier(string(encoded))
 	}
 	result.RunID = run.ID
 	channel, err := provider.Channel(ctx, opts.Channel)
 	if err != nil {
-		return result, errors.New("Discord channel metadata unavailable")
+		return result, errors.New("discord channel metadata unavailable")
 	}
 	if channel == nil || channel.ID != opts.Channel || channel.GuildID != opts.Guild {
-		return result, errors.New("Discord channel scope differs")
+		return result, errors.New("discord channel scope differs")
 	}
 	allowed, err := provider.CanReadHistory(ctx, channel)
 	if err != nil || !allowed {
-		return result, errors.New("Discord history permission unavailable")
+		return result, errors.New("discord history permission unavailable")
 	}
 	if state.ActiveRun == nil {
 		if err = api.Begin(ctx, run); err != nil {
@@ -132,7 +137,7 @@ func Collect(ctx context.Context, api *Client, provider Provider, opts Options) 
 		if page.Terminal != "" {
 			allowed, e := provider.CanReadHistory(ctx, channel)
 			if e != nil || !allowed {
-				return result, errors.New("Discord history permission changed before completion")
+				return result, errors.New("discord history permission changed before completion")
 			}
 		}
 		_, err = api.Commit(ctx, state, page)
@@ -172,10 +177,10 @@ func buildPage(ctx context.Context, api *Client, provider Provider, run Run, sta
 	}
 	messages, err := provider.ChannelMessages(ctx, run.ChannelID, 100, state.Before, "")
 	if err != nil {
-		return p, errors.New("Discord message page unavailable")
+		return p, errors.New("discord message page unavailable")
 	}
 	if len(messages) > 100 {
-		return p, errors.New("Discord page exceeds requested bound")
+		return p, errors.New("discord page exceeds requested bound")
 	}
 	if len(messages) == 0 {
 		p.Terminal = "empty"
@@ -185,16 +190,16 @@ func buildPage(ctx context.Context, api *Client, provider Provider, run Run, sta
 	selected := []*discordgo.Message{}
 	for _, m := range messages {
 		if m == nil || m.ChannelID != run.ChannelID || m.GuildID != "" && m.GuildID != run.GuildID {
-			return p, errors.New("Discord page contains a different channel")
+			return p, errors.New("discord page contains a different channel")
 		}
 		id, e := snowflake(m.ID)
 		if e != nil || id >= before {
-			return p, errors.New("Discord page does not descend from its cursor")
+			return p, errors.New("discord page does not descend from its cursor")
 		}
 		before = id
 		created := time.UnixMilli(int64(id>>22) + 1420070400000).UTC()
 		if m.Timestamp.UnixMilli() != created.UnixMilli() || !created.Before(run.Horizon) {
-			return p, errors.New("Discord message timestamp differs from its creation window")
+			return p, errors.New("discord message timestamp differs from its creation window")
 		}
 		if created.Before(run.Since) {
 			if p.Terminal == "" {
@@ -204,7 +209,7 @@ func buildPage(ctx context.Context, api *Client, provider Provider, run Run, sta
 			continue
 		}
 		if p.Terminal != "" {
-			return p, errors.New("Discord message page crosses the window out of order")
+			return p, errors.New("discord message page crosses the window out of order")
 		}
 		ids = append(ids, m.ID)
 		selected = append(selected, m)
@@ -224,7 +229,7 @@ func buildPage(ctx context.Context, api *Client, provider Provider, run Run, sta
 	for _, message := range selected {
 		record, e := syncer.NormalizeAcquiredMessage(ctx, message, run.GuildID)
 		if e != nil {
-			return p, errors.New("Discord message normalization failed")
+			return p, errors.New("discord message normalization failed")
 		}
 		if old, ok := retained[message.ID]; ok {
 			previous, e := retainedRecord(old)
@@ -271,6 +276,7 @@ func retainedRecord(row remote.Change) (store.MessageRecord, error) {
 	}
 	return r, nil
 }
+
 func messageChange(r store.MessageRecord, observed string) remote.Change {
 	text := func(s string) remote.ChangeValue { return remote.ChangeValue{Kind: "text", Value: &s} }
 	optional := func(s string) remote.ChangeValue {

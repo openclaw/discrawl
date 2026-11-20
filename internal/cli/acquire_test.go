@@ -52,13 +52,13 @@ func TestAcquirePostgresHTTP(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bot fixture-bot" {
 			t.Error("native bot credential missing")
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/channels/" + channel:
-			fmt.Fprintf(w, `{"id":%q,"guild_id":"100","type":0}`, channel)
+			_, _ = fmt.Fprintf(w, `{"id":%q,"guild_id":"100","type":0}`, channel)
 		case "/users/@me":
 			ioString(w, `{"id":"bot"}`)
 		case "/guilds/100":
@@ -74,7 +74,7 @@ func TestAcquirePostgresHTTP(t *testing.T) {
 				ioString(w, `[]`)
 				return
 			}
-			fmt.Fprintf(w, `[{"id":%q,"channel_id":%q,"timestamp":"2026-11-19T03:00:00Z","content":"new\u0000text","author":{"id":"42","username":"fixture"},"flags":32768,"components":[{"type":10,"content":"component text"}]},{"id":%q,"channel_id":%q,"timestamp":"2026-11-19T02:00:00Z","edited_timestamp":"2026-11-19T04:00:00Z","content":"newer retained text"}]`, newest, channel, protected, channel)
+			_, _ = fmt.Fprintf(w, `[{"id":%q,"channel_id":%q,"timestamp":"2026-11-19T03:00:00Z","content":"new\u0000text","author":{"id":"42","username":"fixture"},"flags":32768,"components":[{"type":10,"content":"component text"}]},{"id":%q,"channel_id":%q,"timestamp":"2026-11-19T02:00:00Z","edited_timestamp":"2026-11-19T04:00:00Z","content":"newer retained text"}]`, newest, channel, protected, channel)
 		default:
 			t.Errorf("unexpected native route %s", r.URL.Path)
 			http.NotFound(w, r)
