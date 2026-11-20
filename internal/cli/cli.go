@@ -366,6 +366,15 @@ type repairOffsetConfigurer interface {
 }
 
 func (r *runtime) dispatch(rest []string) error {
+	if r.configuredForCloudReadOnly() {
+		switch rest[0] {
+		case "metadata", "check-update", "search", "messages", "status", "doctor", "subscribe-cloud", "remote", "whoami":
+			// These commands use the API or manage configuration without opening
+			// the archive. Legacy readers and writers must never fall back to SQLite.
+		default:
+			return usageErr(fmt.Errorf("%s is not available in cloud mode; use an API-backed command", rest[0]))
+		}
+	}
 	switch rest[0] {
 	case "metadata":
 		return r.runMetadata(rest[1:])

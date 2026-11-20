@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject local-only commands in cloud mode before opening SQLite or updating
+  Git shares. Cloud `doctor` now checks the remote archive.
+
 - Add `delivery prepare-retained` for immutable, file-hash-bound snapshots of
   explicitly selected guilds from older archives without a native journal.
   Preserve full current rows without exporting unrelated DMs or inventing freshness.

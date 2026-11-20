@@ -1426,6 +1426,8 @@ func TestCloudStatusJSONUsesRemoteWithoutLocalDB(t *testing.T) {
 
 	var out bytes.Buffer
 	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "status", "--json"}, &out, &bytes.Buffer{}))
+	out.Reset()
+	require.NoError(t, Run(ctx, []string{"--config", cfgPath, "doctor", "--json"}, &out, &bytes.Buffer{}))
 	require.True(t, seen)
 	require.NoFileExists(t, dbPath)
 
@@ -1504,6 +1506,74 @@ func TestCloudSearchAndMessagesUseRemoteWithoutLocalDB(t *testing.T) {
 	require.Contains(t, messagesOut.String(), "worker-backed message")
 	require.True(t, seen["discrawl.messages.list"])
 	require.NoFileExists(t, dbPath)
+}
+
+func TestCloudModeRejectsLocalCommandsBeforeArchiveAccess(t *testing.T) {
+	t.Setenv("DISCRAWL_NO_AUTO_UPDATE", "1")
+	for _, command := range [][]string{
+		{"init"}, {"diagnostics"}, {"sync"}, {"tail"}, {"wiretap"}, {"tap"}, {"cache-import"},
+		{"lexical", "rebuild"}, {"tui"}, {"digest"}, {"analytics", "activity"},
+		{"dms"}, {"mentions"}, {"attachments"}, {"attachments", "fetch"},
+		{"embed"}, {"sql", "SELECT 1"}, {"sql", "--unsafe", "--confirm", "SELECT 1"},
+		{"members"}, {"channels"}, {"coverage"}, {"failures"}, {"report"},
+		{"publish"}, {"publish", "--check"}, {"cloud", "publish"}, {"update"},
+		{"subscribe", "https://example.invalid/archive.git"},
+	} {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := config.Default()
+			cfg.DBPath = filepath.Join(dir, "archive", "discrawl.db")
+			cfg.CacheDir = filepath.Join(dir, "cache")
+			cfg.Share.RepoPath = filepath.Join(dir, "share")
+			cfg.Desktop.Path = filepath.Join(dir, "desktop")
+			cfg.Discord.TokenSource = "none"
+			cfg.Remote.Mode = "cloud"
+			cfg.Remote.Endpoint = "http://127.0.0.1:1"
+			cfg.Remote.Archive = "discrawl/fixture"
+			cfgPath := filepath.Join(dir, "config.toml")
+			require.NoError(t, config.Write(cfgPath, cfg))
+			before, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			var output bytes.Buffer
+			err = Run(context.Background(), append([]string{"--config", cfgPath}, command...), &output, &bytes.Buffer{})
+			require.ErrorContains(t, err, "not available in cloud mode")
+			require.Empty(t, output.String())
+			require.NoDirExists(t, filepath.Dir(cfg.DBPath))
+			require.NoDirExists(t, cfg.CacheDir)
+			after, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			require.Equal(t, before, after)
+		})
+	}
+}
+
+func TestCloudCommandsLeaveExistingLocalArchiveUntouched(t *testing.T) {
+	t.Setenv("DISCRAWL_NO_AUTO_UPDATE", "1")
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DBPath = filepath.Join(dir, "discrawl.db")
+	cfg.Discord.TokenSource = "none"
+	cfg.Desktop.Path = filepath.Join(dir, "desktop")
+	cfg.Remote.Mode = "cloud"
+	cfg.Remote.Endpoint = "http://127.0.0.1:1"
+	cfg.Remote.Archive = "discrawl/fixture"
+	cfgPath := filepath.Join(dir, "config.toml")
+	require.NoError(t, config.Write(cfgPath, cfg))
+	db, err := store.Open(context.Background(), cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	before, err := os.ReadFile(cfg.DBPath)
+	require.NoError(t, err)
+	for _, command := range []string{"diagnostics", "init", "digest", "sync", "update"} {
+		err := Run(context.Background(), []string{"--config", cfgPath, command}, &bytes.Buffer{}, &bytes.Buffer{})
+		require.ErrorContains(t, err, "not available in cloud mode")
+	}
+	after, err := os.ReadFile(cfg.DBPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	loaded, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.True(t, loaded.RemoteCloudReadOnly())
 }
 
 func TestRemoteLoginStoresKeyringToken(t *testing.T) {

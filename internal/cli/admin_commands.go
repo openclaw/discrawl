@@ -613,6 +613,10 @@ func (r *runtime) runDoctor(args []string) error {
 	} else {
 		report["config"] = "ok"
 	}
+	if cfg.RemoteCloudReadOnly() {
+		r.cfg = cfg
+		return r.runRemoteStatusOutput()
+	}
 	report["default_guild_id"] = cfg.EffectiveDefaultGuildID()
 	if desktopPath, pathErr := config.ExpandPath(cfg.Desktop.Path); pathErr != nil {
 		report["desktop_cache"] = pathErr.Error()
