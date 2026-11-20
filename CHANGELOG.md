@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `delivery prepare-retained` for immutable, file-hash-bound snapshots of
+  explicitly selected guilds from older archives without a native journal.
+  Preserve full current rows without exporting unrelated DMs or inventing freshness.
+
 - Add `acquire` for bounded Discord message-creation windows with PostgreSQL API
   checkpoints, restart recovery and retained message enrichment. It opens no
   local archive or outbox; old-message edits still require a refresh owner.

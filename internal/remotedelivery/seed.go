@@ -81,29 +81,7 @@ func PrepareSeed(ctx context.Context, source, root string, scope Scope) (SeedPre
 			}
 			checked[table] = true
 		}
-		change, err := seedChange(table, row)
-		if err != nil {
-			return false, err
-		}
-		values, err := projectRow(change)
-		if err != nil {
-			return false, err
-		}
-		coverage, channels := map[string]string{}, map[string]store.NativeChannelCoverage{}
-		if table == "sync_state" && strings.HasPrefix(change.Key[0].Text, "channel:") {
-			channel, suffix, valid := strings.Cut(strings.TrimPrefix(change.Key[0].Text, "channel:"), ":")
-			if !valid || !validIdentity(channel) || suffix == "" {
-				return false, ErrProjection
-			}
-			var guild string
-			err := read.QueryRowContext(ctx, "SELECT guild_id FROM channels WHERE id=?", channel).Scan(&guild)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return false, err
-			}
-			coverage[change.Key[0].Text] = guild
-			channels[channel] = store.NativeChannelCoverage{Present: err == nil, GuildID: guild}
-		}
-		included, err := rowInScope(change, values, coverage, channels, scope)
+		change, included, err := scopedSeedRow(ctx, read, table, row, scope)
 		if err != nil || !included {
 			return false, err
 		}
@@ -160,6 +138,35 @@ func PrepareSeed(ctx context.Context, source, root string, scope Scope) (SeedPre
 	}
 	sum = sha256.Sum256(body)
 	return result, hex.EncodeToString(sum[:]), nil
+}
+
+// scopedSeedRow is the shared whole-guild projection boundary for native seeds
+// and immutable retained snapshots. Neither path admits personal DM rows.
+func scopedSeedRow(ctx context.Context, read *sql.Tx, table string, row map[string]any, scope Scope) (store.NativeChange, bool, error) {
+	change, err := seedChange(table, row)
+	if err != nil {
+		return change, false, err
+	}
+	values, err := projectRow(change)
+	if err != nil {
+		return change, false, err
+	}
+	coverage, channels := map[string]string{}, map[string]store.NativeChannelCoverage{}
+	if table == "sync_state" && strings.HasPrefix(change.Key[0].Text, "channel:") {
+		channel, suffix, valid := strings.Cut(strings.TrimPrefix(change.Key[0].Text, "channel:"), ":")
+		if !valid || !validIdentity(channel) || suffix == "" {
+			return change, false, ErrProjection
+		}
+		var guild string
+		err := read.QueryRowContext(ctx, "SELECT guild_id FROM channels WHERE id=?", channel).Scan(&guild)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return change, false, err
+		}
+		coverage[change.Key[0].Text] = guild
+		channels[channel] = store.NativeChannelCoverage{Present: err == nil, GuildID: guild}
+	}
+	included, err := rowInScope(change, values, coverage, channels, scope)
+	return change, included, err
 }
 
 func seedChange(table string, row map[string]any) (store.NativeChange, error) {

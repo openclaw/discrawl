@@ -136,7 +136,7 @@ func TestDeliveryRejectsUnqualifiedInputsWithoutOverwriting(t *testing.T) {
 }
 
 func TestDeliveryHelp(t *testing.T) {
-	for _, args := range [][]string{{"delivery"}, {"help", "delivery"}, {"delivery", "--help"}, {"delivery", "capture", "--help"}, {"delivery", "cycle", "--help"}, {"help", "delivery", "cycle"}, {"delivery", "prepare-seed", "--help"}} {
+	for _, args := range [][]string{{"delivery"}, {"help", "delivery"}, {"delivery", "--help"}, {"delivery", "capture", "--help"}, {"delivery", "cycle", "--help"}, {"help", "delivery", "cycle"}, {"delivery", "prepare-seed", "--help"}, {"help", "delivery", "prepare-retained"}} {
 		var output bytes.Buffer
 		require.NoError(t, Run(t.Context(), args, &output, &bytes.Buffer{}))
 		require.Contains(t, output.String(), "discrawl delivery capture")
@@ -166,4 +166,38 @@ func TestDeliveryPreparesPrivateSeedWithoutCollectorConfig(t *testing.T) {
 	require.Error(t, err)
 	require.Empty(t, output.String())
 	require.NotContains(t, err.Error(), root)
+}
+
+func TestDeliveryPreparesRetainedSnapshotWithoutConfigOrJournal(t *testing.T) {
+	db, source, _, _, _ := deliveryInputs(t)
+	_, err := db.DB().ExecContext(t.Context(), "DROP TABLE change_feed_meta")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	original, err := os.ReadFile(source)
+	require.NoError(t, err)
+	hash := sha256.Sum256(original)
+	sourceSHA := hex.EncodeToString(hash[:])
+	root := filepath.Join(t.TempDir(), "retained")
+	config := filepath.Join(t.TempDir(), "absent.toml")
+	var output bytes.Buffer
+	args := []string{"--config", config, "delivery", "prepare-retained", "--source-db", source, "--source-sha256", sourceSHA, "--output", root, "--guilds", "g1"}
+	require.NoError(t, Run(t.Context(), args, &output, &bytes.Buffer{}))
+	require.NoFileExists(t, config)
+	var result deliveryResult
+	require.NoError(t, json.Unmarshal(output.Bytes(), &result))
+	require.Equal(t, "retained", result.Status)
+	require.Empty(t, result.NativeSequence)
+	require.NotEmpty(t, result.ManifestSHA256)
+	var receipt remotedelivery.RetainedSnapshot
+	body, err := os.ReadFile(filepath.Join(root, "preparation.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &receipt))
+	require.Equal(t, sourceSHA, receipt.SourceFileSHA256)
+	require.NotContains(t, output.String(), source)
+	after, err := os.ReadFile(source)
+	require.NoError(t, err)
+	require.Equal(t, original, after)
+	output.Reset()
+	require.Error(t, Run(t.Context(), args, &output, &bytes.Buffer{}))
+	require.Empty(t, output.String())
 }

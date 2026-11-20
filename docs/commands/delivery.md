@@ -7,6 +7,8 @@ configuration, check for releases, contact Discord, or start a schedule.
 ## Usage
 
 ```sh
+discrawl delivery prepare-retained --source-db /private/stopped.sqlite \
+  --source-sha256 <full-file-sha256> --output /private/new-retained --guilds 123456789
 discrawl delivery prepare-seed --source-db /private/native.sqlite \
   --output /private/new-seed --guilds 123456789
 discrawl delivery init --outbox /private/outbox.sqlite \
@@ -18,6 +20,32 @@ discrawl delivery drain --outbox /private/outbox.sqlite \
 discrawl delivery cycle --outbox /private/outbox.sqlite \
   --source-db /private/native.sqlite --token-env DISCRAWL_PUBLISHER_TOKEN
 ```
+
+`prepare-retained` exports the five current report tables from a stopped,
+immutable source, including older databases without a native journal. It requires
+an explicit full-file SHA-256 and whole-guild scope; `@me` is rejected. It uses the
+same typed rows and guild/checkpoint filtering as `prepare-seed`, so unrelated
+DMs, other guilds and worker state are excluded. All five table layouts must match
+the current report layout, including empty tables; incompatible data fails
+instead of being synthesized or truncated.
+
+The command creates a new private directory with `snapshot/` and a final
+`preparation.json` (`discrawl-retained-snapshot/v1`). The receipt binds the source
+file hash, scope hash, snapshot manifest hash and selected row counts/JSON bytes.
+It does **not** create a native cursor, ownership stream, outbox or permission to
+publish. This is selected current-row custody, not all-history retention or fresh
+coverage. Remote registration and immutable reader admission are separate work.
+
+Stop the source writer first. Nonempty WAL or rollback journals are refused; an
+existing regular SHM file is allowed and left untouched. Source bytes are hashed
+before and after export, and the file/sidecar identities, sizes, modes and
+modification times must remain unchanged. SQLite opens with `immutable=1` and
+never migrates or creates source sidecars. The default timeout is 30 minutes;
+`--max-source-bytes` defaults to 1 GiB, `--max-rows` to 1,000,000 selected rows,
+and `--max-bytes` to 1 GiB of selected row JSON. A source row and output shard are
+bounded to 4 MiB (JSON escaping can make the output limit stricter). The existing
+v1 snapshot's exact-value limits below still apply. Failure leaves partial output
+without a successful receipt; preserve it and reconcile before another attempt.
 
 `prepare-seed` creates an absent private output directory. Its parent must exist.
 It exports the five native report tables for the explicit whole-guild scope and

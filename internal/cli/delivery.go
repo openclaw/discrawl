@@ -20,6 +20,7 @@ import (
 )
 
 const deliveryUsage = `Usage:
+  discrawl delivery prepare-retained --source-db PATH --source-sha256 SHA256 --output DIR --guilds ID[,ID...] [--timeout 30m]
   discrawl delivery prepare-seed --source-db PATH --output DIR --guilds ID[,ID...] [--timeout 30m]
   discrawl delivery init --outbox PATH --registration FILE --ownership FILE [--timeout 5m]
   discrawl delivery capture --outbox PATH --source-db PATH [--timeout 30s] [--max-events 10000] [--max-bytes 8388608]
@@ -42,7 +43,8 @@ type deliveryRegistration struct {
 
 type deliveryOptions struct {
 	outboxPath, registrationPath, ownershipPath, sourcePath, tokenEnv string
-	outputPath, guilds                                                string
+	outputPath, guilds, sourceSHA                                     string
+	maxSourceBytes, maxRows                                           int64
 	maxEvents, maxParts                                               int
 	maxBytes                                                          int64
 }
@@ -64,20 +66,20 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	op := args[0]
-	if op != "prepare-seed" && op != "init" && op != "capture" && op != "drain" && op != "cycle" {
-		return usageErr(errors.New("delivery requires prepare-seed, init, capture, drain or cycle"))
+	if op != "prepare-retained" && op != "prepare-seed" && op != "init" && op != "capture" && op != "drain" && op != "cycle" {
+		return usageErr(errors.New("delivery requires prepare-retained, prepare-seed, init, capture, drain or cycle"))
 	}
 	fs := flag.NewFlagSet("delivery "+op, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	options := deliveryOptions{maxParts: remote.MaxChangeParts}
-	if op != "prepare-seed" {
+	if op != "prepare-seed" && op != "prepare-retained" {
 		fs.StringVar(&options.outboxPath, "outbox", "", "")
 	}
 	timeoutDefault := 30 * time.Second
 	if op == "init" {
 		timeoutDefault = 5 * time.Minute
 	}
-	if op == "prepare-seed" {
+	if op == "prepare-seed" || op == "prepare-retained" {
 		timeoutDefault = 30 * time.Minute
 	}
 	if op == "cycle" {
@@ -85,10 +87,16 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	timeout := fs.Duration("timeout", timeoutDefault, "")
 	switch op {
-	case "prepare-seed":
+	case "prepare-seed", "prepare-retained":
 		fs.StringVar(&options.sourcePath, "source-db", "", "")
 		fs.StringVar(&options.outputPath, "output", "", "")
 		fs.StringVar(&options.guilds, "guilds", "", "")
+		if op == "prepare-retained" {
+			fs.StringVar(&options.sourceSHA, "source-sha256", "", "")
+			fs.Int64Var(&options.maxSourceBytes, "max-source-bytes", 1<<30, "")
+			fs.Int64Var(&options.maxRows, "max-rows", 1000000, "")
+			fs.Int64Var(&options.maxBytes, "max-bytes", 1<<30, "")
+		}
 	case "init":
 		fs.StringVar(&options.registrationPath, "registration", "", "")
 		fs.StringVar(&options.ownershipPath, "ownership", "", "")
@@ -106,10 +114,11 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return usageErr(errors.New("invalid delivery flags; see discrawl delivery --help"))
 	}
-	if fs.NArg() != 0 || (op != "prepare-seed" && options.outboxPath == "") || *timeout <= 0 {
+	if fs.NArg() != 0 || (op != "prepare-seed" && op != "prepare-retained" && options.outboxPath == "") || *timeout <= 0 {
 		return usageErr(errors.New("delivery requires explicit paths, positive timeout and flags only"))
 	}
-	if (op == "prepare-seed" && (options.sourcePath == "" || options.outputPath == "" || options.guilds == "")) ||
+	if ((op == "prepare-seed" || op == "prepare-retained") && (options.sourcePath == "" || options.outputPath == "" || options.guilds == "")) ||
+		(op == "prepare-retained" && (options.sourceSHA == "" || options.maxSourceBytes <= 0 || options.maxRows <= 0 || options.maxBytes <= 0)) ||
 		(op == "init" && (options.registrationPath == "" || options.ownershipPath == "")) ||
 		((op == "capture" || op == "cycle") && (options.sourcePath == "" || options.maxEvents <= 0 || options.maxBytes <= 0)) ||
 		((op == "drain" || op == "cycle") && (options.tokenEnv == "" || options.maxParts < 1 || options.maxParts > remote.MaxChangeParts)) {
@@ -149,6 +158,14 @@ func runDelivery(ctx context.Context, args []string, stdout io.Writer) error {
 }
 
 func executeDelivery(ctx context.Context, op string, options deliveryOptions) (deliveryResult, error) {
+	if op == "prepare-retained" {
+		prepared, qualification, err := remotedelivery.PrepareRetainedSnapshot(ctx, options.sourcePath, options.outputPath, options.sourceSHA,
+			remotedelivery.Scope{GuildIDs: strings.Split(options.guilds, ",")}, remotedelivery.RetainedSnapshotLimits{MaxSourceBytes: options.maxSourceBytes, MaxRows: options.maxRows, MaxBytes: options.maxBytes})
+		if err != nil {
+			return deliveryResult{}, err
+		}
+		return deliveryResult{Status: "retained", ManifestSHA256: prepared.ManifestSHA256, QualificationSHA256: qualification}, nil
+	}
 	if op == "prepare-seed" {
 		prepared, qualification, err := remotedelivery.PrepareSeed(ctx, options.sourcePath, options.outputPath,
 			remotedelivery.Scope{GuildIDs: strings.Split(options.guilds, ",")})
