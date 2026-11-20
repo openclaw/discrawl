@@ -94,11 +94,59 @@ discrawl sync --with-media
 - Interrupted recovery resumes from its own saved page checkpoint on the next unwindowed sync, including after cancellation or process termination. Messages ingested in the meantime do not mark the older history complete.
 - Failed recovery leaves partial history resumable. After cancellation, restoring a still-empty channel's completion marker uses the existing five-second failure-cleanup budget.
 
-## Recurring latest-only acquisition on Linux
+## Scheduled PostgreSQL acquisition
+
+`operations/discrawl-acquire@.service` and `.timer` are inactive Linux templates
+for the existing `discrawl acquire` command. They do not install themselves,
+prepare a source or enable a timer. Before activation, qualify the PostgreSQL
+source/binding, acquisition stream, channel permissions and completed channel
+horizon. Establish the first window separately with an explicit `--since`;
+the recurring command never guesses a starting boundary or resets progress.
+
+Each instance uses the existing `discrawl` account and
+`/var/lib/discrawl/<instance>` working directory. The persistent
+`acquisition.lock` serializes that source's invocations; manual acquisition must
+use the same lock. Do not configure multiple instances for the same source with
+different locks. A source with several channels needs an explicitly reviewed
+channel schedule; this template acquires exactly one channel, without discovery
+or implicit thread expansion.
+
+The root-owned mode-0600 `/etc/discrawl/acquire-<instance>.env` supplies:
+
+- `DISCRAWL_ORIGIN`: the qualified API origin (HTTPS except loopback fixtures).
+- `DISCRAWL_SOURCE`: the canonical registered source ID.
+- `DISCRAWL_GUILD_ID` and `DISCRAWL_CHANNEL_ID`: the admitted guild/channel.
+- `DISCRAWL_PUBLISHER_TOKEN`: the source-scoped API publisher credential.
+
+Keep `DISCORD_BOT_TOKEN` in a separate root-owned mode-0600
+`/etc/discrawl/provider-<instance>.env`. No reader token, personal GitHub token,
+local archive config or delivery credential is required. Systemd reads both
+files before changing to the service account. The command opens no local SQLite
+archive or outbox and does not load the normal Discrawl config.
+
+The service runs at most 20 provider pages within a 90-second command deadline,
+inside a 120-second service timeout, with 30 seconds for termination, 512 MiB
+memory and one CPU. It resumes API-owned run identity, page cursor and original
+window after interruption. Missing initial progress or API/provider failure
+stops visibly; there is no SQLite fallback or immediate restart loop. The timer
+starts two minutes after boot, then five minutes after completion, with up to
+15 seconds of jitter. Validate the exact units with `systemd-analyze verify`
+and qualify their resource limits and completed API horizon before activation.
+
+This remains message-creation acquisition: it does not collect old-message
+edits, deletion events, attachment downloads, channel discovery or complete
+thread history. Keep those coverage gaps explicit. Retire the old SQLite
+acquisition and delivery schedule for a source only after its replacement is
+qualified; preserve retained evidence and recovery paths.
+
+## Legacy SQLite latest-only acquisition on Linux
 
 `operations/discrawl-latest@.service` and `.timer` are inactive templates for an
-already-qualified native source. They do not create a source, enroll a bot,
-change permissions, import a snapshot, or enable delivery. Deployment and
+already-qualified native SQLite source. The selected-history
+`operations/discrawl-selected@.service` and `.timer` are also legacy SQLite
+templates. All remain inactive source templates, preserved for existing local
+and recovery contracts; they are not PostgreSQL acquisition. They do not create
+a source, enroll a bot, change permissions, import a snapshot, or enable delivery. Deployment and
 credential custody need explicit operator admission before enabling an instance.
 
 For instance `community`, use the existing `discrawl` account and qualified

@@ -1,0 +1,27 @@
+[Unit]
+Description=Acquire PostgreSQL-owned Discord channel %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=discrawl
+Group=discrawl
+WorkingDirectory=/var/lib/discrawl/%i
+EnvironmentFile=/etc/discrawl/acquire-%i.env
+EnvironmentFile=/etc/discrawl/provider-%i.env
+ExecStart=/usr/bin/flock --no-fork --nonblock --conflict-exit-code=75 /var/lib/discrawl/%i/acquisition.lock /usr/local/bin/discrawl acquire --api-url ${DISCRAWL_ORIGIN} --source ${DISCRAWL_SOURCE} --guild ${DISCRAWL_GUILD_ID} --channel ${DISCRAWL_CHANNEL_ID} --publisher-token-env DISCRAWL_PUBLISHER_TOKEN --discord-token-env DISCORD_BOT_TOKEN --max-pages 20 --timeout 90s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/discrawl/%i
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal

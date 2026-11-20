@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add inactive five-minute PostgreSQL acquisition service templates with separate
+  publisher/bot credentials, API-owned progress and no SQLite fallback.
+
 - Reject local-only commands in cloud mode before opening SQLite or updating
   Git shares. Cloud `doctor` now checks the remote archive.
 

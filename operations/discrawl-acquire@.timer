@@ -1,0 +1,12 @@
+[Unit]
+Description=Acquire PostgreSQL-owned Discord channel %i every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=15s
+AccuracySec=1s
+Unit=discrawl-acquire@%i.service
+
+[Install]
+WantedBy=timers.target

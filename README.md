@@ -140,6 +140,11 @@ horizon to the current UTC millisecond. `--max-pages` bounds each invocation and
 `--timeout` defaults to ten minutes. A `bounded` result leaves resumable API
 progress; only `complete` records the channel horizon. No timer is enabled.
 
+The inactive [`discrawl-acquire@` service and timer](docs/commands/sync.md#scheduled-postgresql-acquisition)
+run this command for one admitted channel every five minutes. Qualify its API
+checkpoint and separate publisher/bot credentials before activation. The older
+latest/selected-history templates remain legacy SQLite recovery paths.
+
 This command collects message creations, not edits to older messages, channel
 discovery, attachment downloads or deletion events. An overlapping provider
 revision reuses the complete retained row, including richer extracted text.
