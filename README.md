@@ -120,6 +120,35 @@ discrawl failures --json
 
 Start with [`status`](docs/commands/status.md) and [`doctor`](docs/commands/doctor.md), then use the [command reference](docs/README.md) for the full control surface.
 
+### PostgreSQL-owned acquisition
+
+For a source explicitly prepared in CrawlRemote's Discord acquisition mode,
+`acquire` collects one admitted channel without opening a local SQLite archive
+or delivery outbox:
+
+```sh
+discrawl acquire --api-url https://archive.example.com --source community \
+  --guild 100 --channel 200 \
+  --publisher-token-env ARCHIVE_PUBLISHER_TOKEN --discord-token-env DISCORD_BOT_TOKEN \
+  --since 2026-11-19T00:00:00Z --horizon 2026-11-20T00:00:00Z --max-pages 100
+```
+
+Use separate publisher and bot credentials. The first run needs an explicit
+`--since`; later runs start at that channel's completed horizon. Omit both time
+bounds to resume an interrupted run's original window. New runs default their
+horizon to the current UTC millisecond. `--max-pages` bounds each invocation and
+`--timeout` defaults to ten minutes. A `bounded` result leaves resumable API
+progress; only `complete` records the channel horizon. No timer is enabled.
+
+This command collects message creations, not edits to older messages, channel
+discovery, attachment downloads or deletion events. An overlapping provider
+revision reuses the complete retained row, including richer extracted text.
+A changed revision stops with a refresh-protocol error rather than replacing
+that row or claiming freshness. All new messages use the existing native text
+and raw-JSON normalization. Publication remains partial until the server accepts
+the terminal page, with history permission checked again before completion.
+
+
 ## Storage and security
 
 Discrawl follows platform storage conventions: XDG directories on Linux and `~/Library` on macOS. Configuration can read the bot token from an environment variable or the OS keyring; the token is not written into snapshots.

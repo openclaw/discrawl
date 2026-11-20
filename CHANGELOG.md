@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `acquire` for bounded Discord message-creation windows with PostgreSQL API
+  checkpoints, restart recovery and retained message enrichment. It opens no
+  local archive or outbox; old-message edits still require a refresh owner.
+
 - Add an inactive selected-history service and two-hour timer using the report
   owner's fixed channel manifest, UTC-yesterday window and native completion
   receipts without changing GitHub Actions acquisition or delivery.

@@ -114,6 +114,7 @@ func printCommandUsage(w io.Writer, args []string) error {
 }
 
 var commandUsage = map[string]string{
+	"acquire":               acquireUsage,
 	"delivery":              deliveryUsage,
 	"delivery prepare-seed": deliveryUsage,
 	"delivery init":         deliveryUsage,

@@ -95,6 +95,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 		// archive services, resolve credentials, or run archive update checks.
 		return headlinemetrics.Run(ctx, rest[1:], "discrawl", headlinemetrics.CollectDiscord, os.Stdin, stdout, stderr)
 	}
+	if rest[0] == "acquire" {
+		return runAcquire(ctx, rest[1:], stdout)
+	}
 	if rest[0] == "delivery" {
 		// Delivery owns explicit source/outbox paths and never loads collector
 		// configuration, checks for releases, or starts provider acquisition.
@@ -174,6 +177,7 @@ var discrawlCommandSpecs = []discrawlCommandSpec{
 	{name: "coverage", description: "Report archive coverage."},
 	{name: "failures", description: "List retained sync and import failures."},
 	{name: "remote", description: "Access a configured remote archive."},
+	{name: "acquire", description: "Collect message creation windows through the PostgreSQL API."},
 	{name: "delivery", description: "Stage and deliver qualified native changes."},
 	{name: "whoami", description: "Show the configured remote identity."},
 	{name: "report", description: "Generate archive reports."},
