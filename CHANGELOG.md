@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update crawlkit to v0.18.0 and refresh compatible Go dependencies and analyzers while retaining the Go 1.27.0 minimum and Go 1.27.4 toolchain.
+
 - Read PostgreSQL API message rows in cloud listing and search instead of
   incorrectly displaying an empty archive for columnar responses.
 
