@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 26.13.0
+          node-version: 26.13.1
       - name: Test cloud publisher
         run: node --test scripts/publish-cloud.test.mjs
       - name: Test documentation build
@@ -228,7 +228,7 @@ jobs:
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: v2.19.0
+          version: v2.20.2
           args: release --snapshot --clean --skip=publish
 
   linux-helpers:
@@ -262,7 +262,7 @@ jobs:
         working-directory: tools/discrawl-zh
         run: go test -count=1 ./...
 
-      - name: Install Kiwi 0.24.0
+      - name: Install Kiwi 0.24.1
         working-directory: tools/discrawl-kiwi
         run: bash install-kiwi.sh
 
@@ -286,7 +286,7 @@ jobs:
           go-version-file: tools/discrawl-kiwi/go.mod
           cache-dependency-path: tools/discrawl-kiwi/go.sum
 
-      - name: Install Kiwi 0.24.0
+      - name: Install Kiwi 0.24.1
         working-directory: tools/discrawl-kiwi
         run: bash install-kiwi.sh
 
