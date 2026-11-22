@@ -177,7 +177,7 @@ func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state sc
 	if !indexChanged {
 		return nil
 	}
-	if err := saveFileIndex(ctx, st, state.current); err != nil {
+	if err := saveFileIndex(ctx, st, state.current, *stats); err != nil {
 		return err
 	}
 	clear(state.saved)

@@ -2,14 +2,21 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/openclaw/discrawl/internal/store/storedb"
 )
 
-const wiretapStatsScope = "wiretap:last_stats:v1"
+const (
+	wiretapStatsScope        = "wiretap:last_stats:v1"
+	wiretapPendingStatsScope = "wiretap:pending_stats:v1"
+)
 
 const (
 	coverageQueryTimeout       = 2 * time.Minute
@@ -142,6 +149,73 @@ func (s *Store) SetWiretapImportStats(ctx context.Context, stats WiretapImportSt
 		return fmt.Errorf("encode wiretap coverage stats: %w", err)
 	}
 	return s.SetSyncState(ctx, wiretapStatsScope, string(body))
+}
+
+// StageWiretapCheckpoint records recovery information in the same transaction
+// as the file index, so a restart cannot skip files and lose their coverage.
+func (s *Store) StageWiretapCheckpoint(ctx context.Context, scope, index string, stats WiretapImportStats) error {
+	body, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	qtx := s.q.WithTx(tx)
+	now := time.Now().UTC().Format(timeLayout)
+	if err := qtx.SetSyncState(ctx, wiretapStateParams(scope, index, now)); err != nil {
+		return err
+	}
+	if err := qtx.SetSyncState(ctx, wiretapStateParams(wiretapPendingStatsScope, string(body), now)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PublishWiretapCheckpoint publishes one consistent progress receipt. With
+// nil stats it recovers a staged checkpoint from a previous pass, or does
+// nothing for an idle pass. A failed publish always leaves the stage intact.
+func (s *Store) PublishWiretapCheckpoint(ctx context.Context, stats *WiretapImportStats) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	qtx := s.q.WithTx(tx)
+	if stats == nil {
+		body, err := qtx.GetSyncState(ctx, wiretapPendingStatsScope)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		stats = new(WiretapImportStats)
+		if err := json.Unmarshal([]byte(body), stats); err != nil {
+			return fmt.Errorf("decode pending wiretap coverage stats: %w", err)
+		}
+	}
+	body, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timeLayout)
+	if err := qtx.SetSyncState(ctx, wiretapStateParams("wiretap:last_import", stats.FinishedAt.UTC().Format(timeLayout), now)); err != nil {
+		return err
+	}
+	if err := qtx.SetSyncState(ctx, wiretapStateParams(wiretapStatsScope, string(body), now)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from sync_state where scope=?`, wiretapPendingStatsScope); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func wiretapStateParams(scope, cursor, now string) storedb.SetSyncStateParams {
+	return storedb.SetSyncStateParams{Scope: scope, Cursor: sql.NullString{String: cursor, Valid: true}, UpdatedAt: now}
 }
 
 func (s *Store) Coverage(ctx context.Context, guildID string, generatedAt time.Time) (CoverageReport, error) {

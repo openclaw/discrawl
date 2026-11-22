@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
@@ -83,12 +84,15 @@ func loadLegacyFileIndex(ctx context.Context, st *store.Store) (map[string]fileF
 	return map[string]fileFingerprint{}, nil
 }
 
-func saveFileIndex(ctx context.Context, st *store.Store, index map[string]fileFingerprint) error {
+func saveFileIndex(ctx context.Context, st *store.Store, index map[string]fileFingerprint, stats Stats) error {
 	body, err := json.Marshal(index)
 	if err != nil {
 		return err
 	}
-	return st.SetSyncState(ctx, wiretapFileIndexScope, string(body))
+	if stats.FinishedAt.IsZero() {
+		stats.FinishedAt = time.Now().UTC()
+	}
+	return st.StageWiretapCheckpoint(ctx, wiretapFileIndexScope, string(body), coverageStats(stats))
 }
 
 func sameFileFingerprint(a, b fileFingerprint) bool {

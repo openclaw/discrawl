@@ -79,7 +79,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 	}
 	if !opts.DryRun {
 		if !maps.Equal(state.saved, state.current) {
-			if err := saveFileIndex(ctx, st, state.current); err != nil {
+			if err := saveFileIndex(ctx, st, state.current, stats); err != nil {
 				stats.FinishedAt = now().UTC()
 				return stats, err
 			}

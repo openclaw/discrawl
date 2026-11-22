@@ -32,7 +32,7 @@ func TestFileIndexSharedAcrossScanModes(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, st.Close()) })
 	index := map[string]fileFingerprint{"fixture.json": {Size: 123, ModUnixNS: 456, Status: fileStatusImported}}
-	require.NoError(t, saveFileIndex(ctx, st, index))
+	require.NoError(t, saveFileIndex(ctx, st, index, Stats{}))
 	for _, opts := range []Options{{}, {FullCache: true}} {
 		state, err := loadScanState(ctx, st, opts)
 		require.NoError(t, err)

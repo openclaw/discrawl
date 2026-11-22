@@ -257,3 +257,48 @@ func TestFrozenPartialReplayDoesNotAdvanceFeed(t *testing.T) {
 	requireMessageCount(t, ctx, st, "messages", 2)
 	requireMessageCount(t, ctx, st, "message_events", 2)
 }
+
+func TestImportRecoversUnpublishedCheckpointCoverage(t *testing.T) {
+	for _, scope := range []string{"wiretap:last_import", "wiretap:last_stats:v1"} {
+		for _, full := range []bool{false, true} {
+			t.Run(fmt.Sprintf("scope=%s/full=%t", scope, full), func(t *testing.T) {
+				ctx, st, dir := replayStore(t)
+				known := "https://discord.com/channels/" + replayGuild + "/" + replayChannel + "\n"
+				replayCacheEntry(t, dir, "Cache/Cache_Data/entry_0", known+replayPayload(t, replayChannel, "checkpoint coverage recovery", ""))
+				trigger := fmt.Sprintf(`create trigger deny_receipt before insert on sync_state when new.scope='%s' begin select raise(abort, 'receipt refused'); end`, scope)
+				_, err := st.DB().ExecContext(ctx, trigger)
+				require.NoError(t, err)
+				opts := Options{Path: dir, FullCache: full}
+				_, err = Import(ctx, st, opts)
+				require.ErrorContains(t, err, "receipt refused")
+				requireMessageCount(t, ctx, st, "messages", 1)
+				for _, published := range []string{"wiretap:last_import", "wiretap:last_stats:v1"} {
+					val, err := st.GetSyncState(ctx, published)
+					require.NoError(t, err)
+					require.Empty(t, val, "a failed publish may not leave half a coverage receipt")
+				}
+				_, err = st.DB().ExecContext(ctx, `drop trigger deny_receipt`)
+				require.NoError(t, err)
+				require.NoError(t, st.Close())
+				st, err = store.Open(ctx, filepath.Join(dir, "archive.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = st.Close() })
+				stats, err := Import(ctx, st, opts)
+				require.NoError(t, err)
+				require.Zero(t, stats.FilesScanned, "the checkpoint itself already committed")
+				for _, published := range []string{"wiretap:last_import", "wiretap:last_stats:v1"} {
+					val, err := st.GetSyncState(ctx, published)
+					require.NoError(t, err)
+					require.NotEmpty(t, val)
+				}
+				var seq int64
+				require.NoError(t, st.DB().QueryRowContext(ctx, `select max(seq) from change_log`).Scan(&seq))
+				_, err = Import(ctx, st, opts)
+				require.NoError(t, err)
+				var after int64
+				require.NoError(t, st.DB().QueryRowContext(ctx, `select max(seq) from change_log`).Scan(&after))
+				require.Equal(t, seq, after, "an idle replay after recovery cannot move the feed")
+			})
+		}
+	}
+}
