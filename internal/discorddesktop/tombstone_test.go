@@ -63,7 +63,7 @@ func TestCachedImportKeepsAuthoritativeAncestryAndCountsPolicySkips(t *testing.T
 	stats := &Stats{}
 	require.Empty(t, finalizeSnapshot(snap, map[string]store.ChannelRecord{}, totals, stats, true))
 	require.Equal(t, 1, stats.Messages)
-	require.NoError(t, commitSnapshot(ctx, s, Options{}, scanState{previous: map[string]fileFingerprint{}, current: map[string]fileFingerprint{}}, nil, snap, true, totals, stats))
+	require.NoError(t, commitSnapshot(ctx, s, Options{}, scanState{previous: map[string]fileFingerprint{}, current: map[string]fileFingerprint{}}, nil, snap, nil, totals, stats))
 
 	var parent, kind, name string
 	require.NoError(t, s.DB().QueryRowContext(ctx, `select coalesce(parent_id,''),kind,name from channels where id='thread'`).Scan(&parent, &kind, &name))

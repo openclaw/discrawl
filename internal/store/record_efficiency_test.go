@@ -478,3 +478,28 @@ func TestCanonicalRawKeepsIncomingBytesWithoutEdits(t *testing.T) {
 	require.Equal(t, "2026-10-30T13:11:29.58Z", normalizeProviderTime("2026-10-30T13:11:29.580999+00:00"))
 	require.Equal(t, "bogus", normalizeProviderTime("bogus"))
 }
+
+func TestCachedReceiptDoesNotDeduplicateRealTransitions(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "cache-replay.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	m := MessageMutation{Record: MessageRecord{
+		ID: "1", GuildID: "g", ChannelID: "c", CreatedAt: "2026-06-01T00:00:00Z", RawJSON: `{}`,
+	}, Options: WriteOptions{DeduplicateObservation: true, PreserveNewer: true}}
+	var hashes []string
+	for i, content := range []string{"A", "A", "B", "A", "A"} {
+		m.Record.Content = content
+		require.NoError(t, s.UpsertMessages(ctx, []MessageMutation{m}))
+		var receipts, checks int
+		require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_observations where table_name='messages' and observed_at <> 'legacy'`).Scan(&receipts))
+		require.NoError(t, s.DB().QueryRowContext(ctx, `select count(*) from entity_check_history where table_name='messages' and check_kind='observed'`).Scan(&checks))
+		require.Equal(t, []int{1, 1, 2, 3, 3}[i], receipts)
+		require.Equal(t, receipts, checks)
+		var hash string
+		require.NoError(t, s.DB().QueryRowContext(ctx, `select evidence_hash from entity_observations where table_name='messages' and observed_at <> 'legacy' order by observation_id desc limit 1`).Scan(&hash))
+		hashes = append(hashes, hash)
+	}
+	require.NotEqual(t, hashes[0], hashes[2])
+	require.Equal(t, hashes[0], hashes[3])
+}

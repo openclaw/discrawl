@@ -3,6 +3,7 @@ package discorddesktop
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,14 +100,13 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 			return stats, err
 		}
 		recordPolicySkipped(skipped, totals, &stats)
-		if err := saveFileIndex(ctx, st, state.current); err != nil {
-			return stats, err
+		if !maps.Equal(state.current, state.previous) {
+			if err := saveFileIndex(ctx, st, state.current, stats); err != nil {
+				return stats, err
+			}
+			stats.Checkpoints = 1
 		}
-		stats.Checkpoints = 1
-		if err := saveCoverageStats(ctx, st, stats); err != nil {
-			return stats, err
-		}
-		return stats, nil
+		return stats, publishCoverage(ctx, st, stats)
 	}
 	stats, err := scanAndImport(ctx, st, opts, state)
 	if err != nil {
@@ -114,15 +114,23 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 	}
 	stats.DryRun = opts.DryRun
 	if !opts.DryRun {
-		if err := saveCoverageStats(ctx, st, stats); err != nil {
-			return stats, err
-		}
+		return stats, publishCoverage(ctx, st, stats)
 	}
 	return stats, nil
 }
 
-func saveCoverageStats(ctx context.Context, st *store.Store, stats Stats) error {
-	return st.SetWiretapImportStats(ctx, store.WiretapImportStats{
+// Coverage is a progress receipt, not an idle watcher heartbeat. Recover a
+// staged receipt after interruption without advancing the feed on idle passes.
+func publishCoverage(ctx context.Context, st *store.Store, stats Stats) error {
+	if stats.Checkpoints == 0 {
+		return st.PublishWiretapCheckpoint(ctx, nil)
+	}
+	coverage := coverageStats(stats)
+	return st.PublishWiretapCheckpoint(ctx, &coverage)
+}
+
+func coverageStats(stats Stats) store.WiretapImportStats {
+	return store.WiretapImportStats{
 		FilesScanned:    stats.FilesScanned,
 		Messages:        stats.Messages,
 		Channels:        stats.Channels,
@@ -130,5 +138,5 @@ func saveCoverageStats(ctx context.Context, st *store.Store, stats Stats) error 
 		SkippedChannels: stats.SkippedChannels,
 		StartedAt:       stats.StartedAt,
 		FinishedAt:      stats.FinishedAt,
-	})
+	}
 }

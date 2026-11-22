@@ -266,13 +266,20 @@ func (s *Store) SeedEntityMetrics(ctx context.Context) (int, error) {
 // freshness rejection. Repeated observations share immutable evidence bytes;
 // every receipt retains its own sequence and check time, including A-B-A.
 func recordEvidenceTx(ctx context.Context, tx *sql.Tx, table string, value any, rowKey ...any) error {
+	_, err := recordEvidenceReceiptTx(ctx, tx, table, value, false, rowKey...)
+	return err
+}
+
+// Compare only the latest real receipt, not every seen hash: A→B→A is
+// a transition. This option is for replayable cache inputs, not live checks.
+func recordEvidenceReceiptTx(ctx context.Context, tx *sql.Tx, table string, value any, deduplicate bool, rowKey ...any) (bool, error) {
 	// WriteOptions are local execution policy, not source evidence. Keep the
 	// request start as a narrow check rather than duplicating the entire
 	// unchanged message body for each repair's different start time.
 	if mutation, ok := value.(MessageMutation); ok {
 		if started := mutation.Options.ObservationStartedAt; !started.IsZero() {
 			if err := recordCheckTx(ctx, tx, table, "observation_started", started.UTC().Format(timeLayout), "", "requested", rowKey...); err != nil {
-				return err
+				return false, err
 			}
 		}
 		mutation.Options = WriteOptions{}
@@ -280,15 +287,27 @@ func recordEvidenceTx(ctx context.Context, tx *sql.Tx, table string, value any, 
 	}
 	body, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return false, err
 	}
 	sum := sha256.Sum256(body)
 	hash := hex.EncodeToString(sum[:])
+	if deduplicate {
+		var latest string
+		err := tx.QueryRowContext(ctx, `select evidence_hash from entity_observations
+			where table_name=? and row_key=json_array(`+placeholders(len(rowKey))+`) and observed_at <> 'legacy'
+			order by observed_at desc, observation_id desc limit 1`, append([]any{table}, rowKey...)...).Scan(&latest)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if latest == hash {
+			return false, nil
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `insert into entity_evidence(evidence_hash,payload_json) values(?,?) on conflict do nothing`, hash, string(body)); err != nil {
-		return err
+		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `insert into entity_observations(table_name,row_key,observed_at,evidence_hash) values(?,json_array(`+placeholders(len(rowKey))+`),?,?)`, append(append([]any{table}, rowKey...), time.Now().UTC().Format(timeLayout), hash)...)
-	return err
+	return err == nil, err
 }
 
 // retainMentionIDTx keeps the original exact row addressable after removal,

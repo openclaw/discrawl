@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/openclaw/discrawl/internal/store"
@@ -146,16 +147,8 @@ func recordUnresolved(unresolved unresolvedMessages, totals scanTotals, stats *S
 	stats.SkippedMessages = len(totals.skippedMessages)
 }
 
-func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state scanState, candidates []fileCandidate, snap snapshot, checkpoint bool, totals scanTotals, stats *Stats) error {
+func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state scanState, candidates []fileCandidate, snap snapshot, pending map[string][]string, totals scanTotals, stats *Stats) error {
 	if opts.DryRun {
-		return nil
-	}
-	if !checkpoint {
-		if snapshotHasChanges(snap) {
-			skipped, err := writeSnapshot(ctx, st, snapshotWithoutMessageEvents(snap), false)
-			recordPolicySkipped(skipped, totals, stats)
-			return err
-		}
 		return nil
 	}
 	if snapshotHasChanges(snap) {
@@ -164,49 +157,33 @@ func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state sc
 			return err
 		}
 		recordPolicySkipped(skipped, totals, stats)
-	} else if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return err
 	}
+	// Save only after all writes for these candidates succeeded. An
+	// interrupted write is retried, with duplicate cache receipts suppressed.
+	indexChanged := false
 	for _, candidate := range candidates {
-		state.current[candidate.relKey] = importedFingerprint(candidate.fingerprint)
+		fingerprint := importedFingerprint(candidate.fingerprint)
+		if ids := pending[candidate.relKey]; len(ids) != 0 {
+			fingerprint = skippedFingerprint(candidate.fingerprint)
+			fingerprint.PendingIDs = strings.Join(ids, ",")
+		}
+		previous, ok := state.current[candidate.relKey]
+		if !ok {
+			previous = state.previous[candidate.relKey]
+		}
+		indexChanged = indexChanged || previous != fingerprint
+		state.current[candidate.relKey] = fingerprint
 	}
-	if err := saveFileIndex(ctx, st, state.current); err != nil {
-		return err
-	}
-	stats.Checkpoints++
-	return nil
-}
-
-func checkpointScannedCandidates(ctx context.Context, st *store.Store, opts Options, state scanState, candidates []fileCandidate, stats *Stats) error {
-	if opts.DryRun {
+	if !indexChanged {
 		return nil
 	}
-	if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := saveFileIndex(ctx, st, state.current, *stats); err != nil {
 		return err
 	}
-	for _, candidate := range candidates {
-		state.current[candidate.relKey] = skippedFingerprint(candidate.fingerprint)
-	}
-	if err := saveFileIndex(ctx, st, state.current); err != nil {
-		return err
-	}
+	clear(state.saved)
+	maps.Copy(state.saved, state.current)
 	stats.Checkpoints++
 	return nil
-}
-
-func snapshotWithoutMessageEvents(snap snapshot) snapshot {
-	out := snapshot{
-		guilds:     snap.guilds,
-		channels:   snap.channels,
-		messages:   make(map[string]store.MessageMutation, len(snap.messages)),
-		routes:     snap.routes,
-		userLabels: snap.userLabels,
-	}
-	for id, message := range snap.messages {
-		message.Options.AppendEvent = false
-		out.messages[id] = message
-	}
-	return out
 }
 
 func newSnapshot() snapshot {
@@ -252,7 +229,7 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := st.UpsertGuild(ctx, guild); err != nil {
+		if err := st.UpsertCachedGuild(ctx, guild); err != nil {
 			return nil, recordImportFailure(ctx, st, store.FailureRef{
 				Operation: "import_guild",
 				Source:    "wiretap",
@@ -319,7 +296,7 @@ func writeSnapshot(ctx context.Context, st *store.Store, snap snapshot, prune bo
 			return nil, err
 		}
 	}
-	return skipped, st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano))
+	return skipped, nil
 }
 
 // admittedCachedMessages drops cached messages whose channel or an ancestor

@@ -117,13 +117,14 @@ type MessageMutation struct {
 }
 
 type WriteOptions struct {
-	ObservationStartedAt time.Time
-	ScopePolicy          string
-	AppendEvent          bool
-	EnqueueEmbedding     bool
-	EmbeddingCatchUp     bool
-	PreserveNewer        bool
-	DeduplicateEvent     bool
+	ObservationStartedAt   time.Time
+	ScopePolicy            string
+	AppendEvent            bool
+	EnqueueEmbedding       bool
+	EmbeddingCatchUp       bool
+	PreserveNewer          bool
+	DeduplicateEvent       bool
+	DeduplicateObservation bool `json:"-"`
 }
 
 const deleteMessageFTSByRowIDSQL = `delete from message_fts where rowid = ?`
@@ -137,23 +138,33 @@ func (s *Store) UpsertGuild(ctx context.Context, guild GuildRecord) error {
 // stored row writes no content row; it records a check and any changed live
 // counters only.
 func (s *Store) UpsertObservedGuild(ctx context.Context, guild GuildRecord, started time.Time) error {
+	return s.upsertObservedGuild(ctx, guild, started, false)
+}
+
+// UpsertCachedGuild applies Desktop metadata without repeating identical receipts.
+func (s *Store) UpsertCachedGuild(ctx context.Context, guild GuildRecord) error {
+	return s.upsertObservedGuild(ctx, guild, time.Time{}, true)
+}
+
+func (s *Store) upsertObservedGuild(ctx context.Context, guild GuildRecord, started time.Time, deduplicate bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	if err := upsertGuildTx(ctx, tx, s.q.WithTx(tx), guild, started); err != nil {
+	if err := upsertGuildTx(ctx, tx, s.q.WithTx(tx), guild, started, deduplicate); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func upsertGuildTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, guild GuildRecord, started time.Time) error {
-	if err := recordEvidenceTx(ctx, tx, "guilds", guild, guild.ID); err != nil {
+func upsertGuildTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, guild GuildRecord, started time.Time, deduplicate bool) error {
+	receipt, err := recordEvidenceReceiptTx(ctx, tx, "guilds", guild, deduplicate, guild.ID)
+	if err != nil {
 		return err
 	}
 	var name, icon, raw, deleted string
-	err := tx.QueryRowContext(ctx, `select name,coalesce(icon,''),raw_json,coalesce(deleted_at,'') from guilds where id=?`, guild.ID).Scan(&name, &icon, &raw, &deleted)
+	err = tx.QueryRowContext(ctx, `select name,coalesce(icon,''),raw_json,coalesce(deleted_at,'') from guilds where id=?`, guild.ID).Scan(&name, &icon, &raw, &deleted)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -181,6 +192,9 @@ func upsertGuildTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, guild 
 	}
 	if err := recordMetricsTx(ctx, tx, "guild", guild.ID, metrics); err != nil {
 		return err
+	}
+	if !receipt && !changed {
+		return nil
 	}
 	return recordObservedTx(ctx, tx, "guilds", changed, guild.ID)
 }
@@ -284,11 +298,12 @@ func (s *Store) upsertChannel(ctx context.Context, channel ChannelRecord, starte
 }
 
 func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel ChannelRecord, started time.Time, authoritative bool) error {
-	if err := recordEvidenceTx(ctx, tx, "channels", channel, channel.ID); err != nil {
+	receipt, err := recordEvidenceReceiptTx(ctx, tx, "channels", channel, !authoritative, channel.ID)
+	if err != nil {
 		return err
 	}
 	var stored storedChannel
-	err := tx.QueryRowContext(ctx, `select guild_id,coalesce(parent_id,''),kind,name,coalesce(topic,''),coalesce(position,0),is_nsfw,is_archived,is_locked,is_private_thread,coalesce(thread_parent_id,''),coalesce(archive_timestamp,''),raw_json,coalesce(deleted_at,'') from channels where id=?`, channel.ID).
+	err = tx.QueryRowContext(ctx, `select guild_id,coalesce(parent_id,''),kind,name,coalesce(topic,''),coalesce(position,0),is_nsfw,is_archived,is_locked,is_private_thread,coalesce(thread_parent_id,''),coalesce(archive_timestamp,''),raw_json,coalesce(deleted_at,'') from channels where id=?`, channel.ID).
 		Scan(&stored.guild, &stored.parent, &stored.kind, &stored.name, &stored.topic, &stored.position, &stored.nsfw, &stored.archived, &stored.locked, &stored.private, &stored.threadParent, &stored.archiveTimestamp, &stored.raw, &stored.deleted)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -367,6 +382,9 @@ func (s *Store) upsertChannelTx(ctx context.Context, tx *sql.Tx, channel Channel
 	}
 	if err := recordMetricsTx(ctx, tx, "channel", channel.ID, metrics); err != nil {
 		return err
+	}
+	if !receipt && !changed {
+		return nil
 	}
 	return recordObservedTx(ctx, tx, "channels", changed, channel.ID)
 }
@@ -604,7 +622,8 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err := requireMessageScope(ctx, tx, message.Record, message.Options.ScopePolicy); err != nil {
 			return err
 		}
-		if err := recordEvidenceTx(ctx, tx, "messages", message, message.Record.ID); err != nil {
+		receipt, err := recordEvidenceReceiptTx(ctx, tx, "messages", message, message.Options.DeduplicateObservation, message.Record.ID)
+		if err != nil {
 			return err
 		}
 		if err := prepareTextMutation(ctx, tx, &message); err != nil {
@@ -628,7 +647,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 		if err != nil {
 			return err
 		}
-		attachmentsChanged, err := applyAttachmentsTx(ctx, tx, qtx, message.Record.ID, message.Attachments)
+		attachmentsChanged, err := applyAttachmentsTx(ctx, tx, qtx, message.Record.ID, message.Attachments, message.Options.DeduplicateObservation)
 		if err != nil {
 			return err
 		}
@@ -644,8 +663,10 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 			}
 			changed = true
 		}
-		if err := recordObservedTx(ctx, tx, "messages", changed, message.Record.ID); err != nil {
-			return err
+		if receipt || changed {
+			if err := recordObservedTx(ctx, tx, "messages", changed, message.Record.ID); err != nil {
+				return err
+			}
 		}
 		if err := appendMutationEventTx(ctx, qtx, message); err != nil {
 			return err
@@ -1017,7 +1038,7 @@ func appendEventTx(ctx context.Context, q *storedb.Queries, guildID, channelID, 
 // text_succeeded_at are check fields: an extraction attempt that changes no
 // content is recorded in entity_checks ('attachment_text') and leaves the row
 // untouched. Retained text history is unchanged.
-func applyAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord) (bool, error) {
+func applyAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, messageID string, attachments []AttachmentRecord, deduplicate bool) (bool, error) {
 	if err := retainAttachmentText(ctx, tx, messageID); err != nil {
 		return false, err
 	}
@@ -1044,7 +1065,7 @@ func applyAttachmentsTx(ctx context.Context, tx *sql.Tx, qtx *storedb.Queries, m
 	}
 	now := time.Now().UTC().Format(timeLayout)
 	for _, attachment := range attachments {
-		if err := recordEvidenceTx(ctx, tx, "message_attachments", attachment, attachment.AttachmentID); err != nil {
+		if _, err := recordEvidenceReceiptTx(ctx, tx, "message_attachments", attachment, deduplicate, attachment.AttachmentID); err != nil {
 			return false, err
 		}
 		if media, ok := existing[attachment.AttachmentID]; ok && attachment.MediaPath == "" {
