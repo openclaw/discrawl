@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,11 +78,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 		return stats, err
 	}
 	if !opts.DryRun {
-		if len(contextFiles) == 0 && len(cacheFiles) == 0 {
-			if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-				stats.FinishedAt = now().UTC()
-				return stats, err
-			}
+		if !maps.Equal(state.saved, state.current) {
 			if err := saveFileIndex(ctx, st, state.current); err != nil {
 				stats.FinishedAt = now().UTC()
 				return stats, err
@@ -238,9 +235,13 @@ func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts 
 		}
 		if candidate.source == fileSourceCacheData {
 			if previous, ok := state.previous[relKey]; ok && sameFileFingerprint(previous, fingerprint) {
+				state.current[relKey] = previous
 				if isImportedFingerprint(previous) {
-					state.current[relKey] = previous
 					stats.FilesUnchanged++
+					return nil
+				}
+				if previous.PendingIDs != "" {
+					cacheFiles = append(cacheFiles, candidate)
 					return nil
 				}
 			}
@@ -271,28 +272,44 @@ func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts 
 	return contextFiles, cacheFiles, err
 }
 
-func scanCandidates(ctx context.Context, rootFS *os.Root, opts Options, candidates []fileCandidate, snap snapshot, channelLookup map[string]store.ChannelRecord, stats *Stats) error {
+// scannedFiles associates each message with every successfully read candidate
+// that contributed it, including duplicate copies of a pending message.
+type scannedFiles struct {
+	files          []fileCandidate
+	messageSources map[string][]string
+}
+
+func scanCandidates(ctx context.Context, rootFS *os.Root, opts Options, candidates []fileCandidate, snap snapshot, channelLookup map[string]store.ChannelRecord, stats *Stats) (scannedFiles, error) {
+	result := scannedFiles{messageSources: make(map[string][]string)}
 	maxBytes := opts.MaxFileBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxFileBytes
 	}
+	fileSnap := snap // share route and channel context, not message ownership
+	fileSnap.messages = make(map[string]store.MessageMutation)
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return err
+			return result, err
 		}
 		data, err := rootFS.ReadFile(candidate.relPath)
 		if err != nil {
 			stats.FilesSkipped++
 			if err := ignoreCacheFileError(err); err != nil {
-				return err
+				return result, err
 			}
 			continue
 		}
-		if err := scanFileData(ctx, data, candidate.info, maxBytes, snap, channelLookup, stats); err != nil {
-			return err
+		clear(fileSnap.messages)
+		if err := scanFileData(ctx, data, candidate.info, maxBytes, fileSnap, channelLookup, stats); err != nil {
+			return result, err
 		}
+		for id, message := range fileSnap.messages {
+			snap.messages[id] = message
+			result.messageSources[id] = append(result.messageSources[id], candidate.relKey)
+		}
+		result.files = append(result.files, candidate)
 	}
-	return nil
+	return result, nil
 }
 
 func scanFileData(ctx context.Context, data []byte, info fs.FileInfo, maxBytes int64, snap snapshot, channelLookup map[string]store.ChannelRecord, stats *Stats) error {

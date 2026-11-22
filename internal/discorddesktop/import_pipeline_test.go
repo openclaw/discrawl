@@ -121,7 +121,7 @@ func TestImportUsesLaterCacheMetadataBeforeCheckpointingEarlierBatch(t *testing.
 
 	stats, err := Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, checkpointEveryFiles+1+checkpointEveryFiles, stats.FilesScanned)
+	require.Equal(t, checkpointEveryFiles+2, stats.FilesScanned)
 	require.Equal(t, 1, stats.Messages)
 	require.GreaterOrEqual(t, stats.Checkpoints, 2)
 
@@ -169,7 +169,7 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 
 	stats, err := Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, checkpointEveryFiles+1+checkpointEveryFiles, stats.FilesScanned)
+	require.Equal(t, checkpointEveryFiles+2, stats.FilesScanned)
 	require.Equal(t, 1, stats.Messages)
 	require.Equal(t, 1, stats.SkippedMessages)
 	require.GreaterOrEqual(t, stats.Checkpoints, 1)
@@ -188,7 +188,7 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 `, unresolvedChannelID, unresolvedChannelID, guildID), 0o600))
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, checkpointEveryFiles+1+checkpointEveryFiles, stats.FilesScanned)
+	require.Equal(t, 2, stats.FilesScanned)
 	require.Equal(t, 2, stats.Messages)
 
 	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "still unresolved retry", Limit: 10})

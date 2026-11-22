@@ -203,3 +203,57 @@ func TestFullCacheRetriesOnlyUnresolvedSourceFiles(t *testing.T) {
 		})
 	}
 }
+
+// A later cache batch resolves one channel, forcing an intra-pass retry while
+// a second message is still unresolved. Frozen retries, including after a
+// reopen, must not add receipts or move the feed cursor.
+func TestFrozenPartialReplayDoesNotAdvanceFeed(t *testing.T) {
+	ctx, st, dir := replayStore(t)
+	const mixedPath = "Cache/Cache_Data/entry_000"
+	const missingMessage = "333333333333333347"
+	unresolved := fmt.Sprintf(`{"id":"%s","channel_id":"%s","content":"needs more context","timestamp":"2026-04-23T18:20:44Z","author":{"id":"222222222222222232","username":"alice"}}`, missingMessage, replayUnknownChannel)
+	replayCacheEntry(t, dir, mixedPath, replayPayload(t, replayChannel, "first version", "")+"\n"+unresolved)
+	for i := 1; i < checkpointEveryFiles; i++ {
+		replayCacheEntry(t, dir, fmt.Sprintf("Cache/Cache_Data/entry_%03d", i), "https://discord.com/api/v9/channels/"+replayChannel+"/messages?limit=50\n")
+	}
+	metadata := func(id string) string {
+		return fmt.Sprintf("https://discord.com/api/v9/channels/%s/messages?limit=50\n"+`{"id":"%s","guild_id":"%s","type":0,"name":"known"}`, id, id, replayGuild)
+	}
+	replayCacheEntry(t, dir, fmt.Sprintf("Cache/Cache_Data/entry_%03d", checkpointEveryFiles), metadata(replayChannel))
+	marks := func(st *store.Store) [3]int64 {
+		t.Helper()
+		var m [3]int64
+		require.NoError(t, st.DB().QueryRowContext(ctx, `select
+			coalesce((select seq from sqlite_sequence where name='entity_observations'),0),
+			coalesce((select seq from sqlite_sequence where name='entity_check_history'),0),
+			coalesce((select seq from sqlite_sequence where name='change_log'),0)`).Scan(&m[0], &m[1], &m[2]))
+		return m
+	}
+	opts := Options{Path: dir}
+	stats, err := Import(ctx, st, opts)
+	require.NoError(t, err)
+	require.Equal(t, checkpointEveryFiles+2, stats.FilesScanned)
+	require.Positive(t, stats.Checkpoints)
+	require.Equal(t, 1, stats.SkippedMessages)
+	afterFirst := marks(st)
+	stats, err = Import(ctx, st, opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.FilesScanned, "only the unresolved source remains eligible")
+	require.Zero(t, stats.Checkpoints)
+	require.Equal(t, afterFirst, marks(st))
+	require.NoError(t, st.Close())
+	st, err = store.Open(ctx, filepath.Join(dir, "archive.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	stats, err = Import(ctx, st, opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.SkippedMessages)
+	require.Equal(t, afterFirst, marks(st))
+
+	replayCacheEntry(t, dir, "Cache/Cache_Data/zz-resolved", metadata(replayUnknownChannel))
+	stats, err = Import(ctx, st, opts)
+	require.NoError(t, err)
+	require.Zero(t, stats.SkippedMessages)
+	requireMessageCount(t, ctx, st, "messages", 2)
+	requireMessageCount(t, ctx, st, "message_events", 2)
+}

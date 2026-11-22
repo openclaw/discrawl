@@ -3,21 +3,24 @@ package discorddesktop
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"strings"
 
 	"github.com/openclaw/discrawl/internal/store"
 )
 
 type fileFingerprint struct {
-	Size      int64  `json:"size"`
-	ModUnixNS int64  `json:"mod_unix_ns"`
-	Status    string `json:"status,omitempty"`
+	Size       int64  `json:"size"`
+	ModUnixNS  int64  `json:"mod_unix_ns"`
+	PendingIDs string `json:"pending_ids,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 type scanState struct {
 	previous map[string]fileFingerprint
 	current  map[string]fileFingerprint
 	channels map[string]store.ChannelRecord
+	saved    map[string]fileFingerprint
 }
 
 func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanState, error) {
@@ -44,6 +47,7 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 		}
 		state.previous = migrated
 	}
+	state.saved = maps.Clone(state.previous)
 	channels, err := st.Channels(ctx, "")
 	if err != nil {
 		return state, err
@@ -97,11 +101,13 @@ func isImportedFingerprint(fingerprint fileFingerprint) bool {
 
 func importedFingerprint(fingerprint fileFingerprint) fileFingerprint {
 	fingerprint.Status = fileStatusImported
+	fingerprint.PendingIDs = ""
 	return fingerprint
 }
 
 func skippedFingerprint(fingerprint fileFingerprint) fileFingerprint {
 	fingerprint.Status = fileStatusSkipped
+	fingerprint.PendingIDs = ""
 	return fingerprint
 }
 

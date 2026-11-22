@@ -3,6 +3,7 @@ package discorddesktop
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,12 +100,14 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 			return stats, err
 		}
 		recordPolicySkipped(skipped, totals, &stats)
-		if err := saveFileIndex(ctx, st, state.current); err != nil {
-			return stats, err
-		}
-		stats.Checkpoints = 1
-		if err := saveCoverageStats(ctx, st, stats); err != nil {
-			return stats, err
+		if !maps.Equal(state.current, state.previous) {
+			if err := saveFileIndex(ctx, st, state.current); err != nil {
+				return stats, err
+			}
+			stats.Checkpoints = 1
+			if err := saveCoverageStats(ctx, st, stats); err != nil {
+				return stats, err
+			}
 		}
 		return stats, nil
 	}
@@ -113,7 +116,7 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		return stats, err
 	}
 	stats.DryRun = opts.DryRun
-	if !opts.DryRun {
+	if !opts.DryRun && stats.Checkpoints > 0 {
 		if err := saveCoverageStats(ctx, st, stats); err != nil {
 			return stats, err
 		}
@@ -121,7 +124,12 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 	return stats, nil
 }
 
+// The last progress receipt is not a watcher heartbeat: sync_state is in the
+// change feed, so publishing a new timestamp on every idle pass adds noise.
 func saveCoverageStats(ctx context.Context, st *store.Store, stats Stats) error {
+	if err := st.SetSyncState(ctx, "wiretap:last_import", stats.FinishedAt.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	return st.SetWiretapImportStats(ctx, store.WiretapImportStats{
 		FilesScanned:    stats.FilesScanned,
 		Messages:        stats.Messages,

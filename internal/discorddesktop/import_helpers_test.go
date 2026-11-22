@@ -66,21 +66,6 @@ func TestSnapshotCopyHelpers(t *testing.T) {
 	require.Equal(t, "random", base.channels["111111111111111122"].Name)
 }
 
-func TestSnapshotWithoutMessageEvents(t *testing.T) {
-	snap := newSnapshot()
-	snap.messages["333333333333333346"] = store.MessageMutation{
-		Record: store.MessageRecord{ID: "333333333333333346"},
-		Options: store.WriteOptions{
-			AppendEvent:      true,
-			EnqueueEmbedding: true,
-		},
-	}
-	stripped := snapshotWithoutMessageEvents(snap)
-	require.False(t, stripped.messages["333333333333333346"].Options.AppendEvent)
-	require.True(t, stripped.messages["333333333333333346"].Options.EnqueueEmbedding)
-	require.True(t, snap.messages["333333333333333346"].Options.AppendEvent)
-}
-
 func TestRouteFilteredCacheHelpers(t *testing.T) {
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Cache/Cache_Data/entry", "Cache/Cache_Data/entry"))
 	require.Equal(t, fileSourceCacheData, sourceForPath("/tmp/discord", "/tmp/discord/Service Worker/CacheStorage/cache/entry", "Service Worker/CacheStorage/cache/entry"))
@@ -128,7 +113,7 @@ func TestImportAndStateEdgeBranches(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, dir, stats.Path)
-	require.Equal(t, 1, stats.Checkpoints)
+	require.Zero(t, stats.Checkpoints)
 
 	stats, err = Import(ctx, nil, Options{Path: filepath.Join(dir, "missing"), DryRun: true})
 	require.NoError(t, err)
@@ -175,16 +160,15 @@ func TestSnapshotFinalizeAndCommitBranches(t *testing.T) {
 	recordUnresolved(unresolved, totals, stats)
 	require.Equal(t, 2, stats.SkippedMessages)
 
-	state := scanState{current: map[string]fileFingerprint{}}
+	state := scanState{current: map[string]fileFingerprint{}, saved: map[string]fileFingerprint{}}
 	candidates := []fileCandidate{{relKey: "Cache_Data/entry", fingerprint: fileFingerprint{Size: 10, ModUnixNS: 20}}}
-	require.NoError(t, commitSnapshot(ctx, s, Options{DryRun: true}, state, candidates, newSnapshot(), true, totals, stats))
-	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), false, totals, stats))
-	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), true, totals, stats))
-	require.True(t, isImportedFingerprint(state.current["Cache_Data/entry"]))
-
-	require.NoError(t, checkpointScannedCandidates(ctx, s, Options{DryRun: true}, state, candidates, stats))
-	require.NoError(t, checkpointScannedCandidates(ctx, s, Options{}, state, candidates, stats))
+	pending := map[string][]string{"Cache_Data/entry": {"pending"}}
+	require.NoError(t, commitSnapshot(ctx, s, Options{DryRun: true}, state, candidates, newSnapshot(), pending, totals, stats))
+	require.Empty(t, state.current)
+	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), pending, totals, stats))
 	require.False(t, isImportedFingerprint(state.current["Cache_Data/entry"]))
+	require.NoError(t, commitSnapshot(ctx, s, Options{}, state, candidates, newSnapshot(), nil, totals, stats))
+	require.True(t, isImportedFingerprint(state.current["Cache_Data/entry"]))
 }
 
 func TestRouteHintCollectionBranches(t *testing.T) {
